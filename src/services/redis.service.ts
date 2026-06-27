@@ -6,6 +6,27 @@ export const redisClient = createClient({
 });
 
 let redisReady: Promise<void> | null = null;
+let redisConnectLogged = false;
+
+export function getRedisTarget() {
+  const raw = process.env.REDIS_URL || "redis://localhost:6379";
+  try {
+    const url = new URL(raw);
+    return {
+      host: url.hostname || "unknown",
+      port: url.port || "6379",
+      database: url.pathname?.replace("/", "") || "0",
+      configured: Boolean(process.env.REDIS_URL),
+    };
+  } catch {
+    return {
+      host: "invalid-url",
+      port: "",
+      database: "",
+      configured: Boolean(process.env.REDIS_URL),
+    };
+  }
+}
 
 redisClient.on("error", (error) => {
   console.error("[REDIS] error:", error?.message || error);
@@ -14,9 +35,28 @@ redisClient.on("error", (error) => {
 export async function connectRedis(): Promise<void> {
   if (redisClient.isOpen) return;
   if (!redisReady) {
-    redisReady = redisClient.connect().then(() => undefined);
+    const target = getRedisTarget();
+    if (!redisConnectLogged) {
+      console.log(`[OPENBOT:REDIS] connecting host=${target.host} port=${target.port} db=${target.database}`);
+      redisConnectLogged = true;
+    }
+    redisReady = redisClient
+      .connect()
+      .then(() => {
+        console.log(`[OPENBOT:REDIS] connected host=${target.host} port=${target.port}`);
+      })
+      .catch((error) => {
+        redisReady = null;
+        console.error(`[OPENBOT:REDIS] connect failed host=${target.host} port=${target.port}:`, error?.message || error);
+        throw error;
+      });
   }
   await redisReady;
+}
+
+export async function pingRedis(): Promise<string> {
+  await connectRedis();
+  return redisClient.ping();
 }
 
 async function safeRedis<T>(fallback: T, fn: () => Promise<T>): Promise<T> {

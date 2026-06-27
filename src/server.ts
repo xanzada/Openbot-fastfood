@@ -5,6 +5,7 @@ import { Server } from "socket.io";
 import { whatsappWebhookRoute } from "./routes/whatsappWebhook.route.js";
 import { systemRoute } from "./routes/system.route.js";
 import { connectRedis } from "./services/redis.service.js";
+import { logStartupDiagnostics } from "./services/diagnostics.service.js";
 
 const app = express();
 const port = Number(process.env.PORT || 4100);
@@ -25,9 +26,12 @@ io.on("connection", (socket) => {
 });
 
 await connectRedis().catch((error) => {
-  console.warn("[OPENBOT] Redis unavailable at startup:", error?.message || error);
+  console.warn("[OPENBOT:BOOT:WARN] Redis unavailable at startup:", error?.message || error);
 });
 
 httpServer.listen(port, () => {
   console.log(`[OPENBOT] VoltAgent FastFood agent listening on ${port}`);
+  void logStartupDiagnostics().catch((error) => {
+    console.error("[OPENBOT:BOOT:FAIL] startup diagnostics crashed:", error?.message || error);
+  });
 });

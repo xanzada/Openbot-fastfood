@@ -4,6 +4,7 @@ import { getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { deleteShiftNote, saveShiftNote } from "../services/redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
+import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.service.js";
 
 function verifySecret(req: any, res: any, next: any) {
   const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
@@ -42,6 +43,17 @@ export function systemRoute(): Router {
       service: "openbot-agent",
       brain: "VoltAgent",
       stateless_context: true,
+    });
+  });
+
+  router.get("/health/detailed", async (_req, res) => {
+    const checks = await runDependencyChecks();
+    const ok = checks.every((check) => check.ok);
+    res.status(ok ? 200 : 503).json({
+      ok,
+      service: "openbot-agent",
+      config: getConfigSummary(),
+      checks,
     });
   });
 
