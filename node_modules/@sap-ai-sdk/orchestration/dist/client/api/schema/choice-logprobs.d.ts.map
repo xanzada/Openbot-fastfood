@@ -1,0 +1,1 @@
+{"version":3,"file":"choice-logprobs.d.ts","sourceRoot":"","sources":["../../../../src/client/api/schema/choice-logprobs.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,0BAA0B,EAAE,MAAM,oCAAoC,CAAC;AACrF;;GAEG;AACH,MAAM,MAAM,cAAc,GAAG;IAC3B;;OAEG;IACH,OAAO,CAAC,EAAE,0BAA0B,EAAE,CAAC;IACvC;;OAEG;IACH,OAAO,CAAC,EAAE,0BAA0B,EAAE,CAAC;CACxC,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC"}

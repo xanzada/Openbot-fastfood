@@ -1,0 +1,1 @@
+{"version":3,"file":"error-response.d.ts","sourceRoot":"","sources":["../../../../src/client/prompt-registry/schema/error-response.ts"],"names":[],"mappings":"AAMA;;GAEG;AACH,MAAM,MAAM,aAAa,GAAG;IAC1B,UAAU,EAAE,MAAM,CAAC;IACnB,OAAO,EAAE,MAAM,CAAC;CACjB,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC"}

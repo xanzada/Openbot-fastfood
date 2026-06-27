@@ -1,0 +1,1 @@
+{"version":3,"file":"bcknd-service-service-plan-item-metadata.d.ts","sourceRoot":"","sources":["../../../../src/client/AI_CORE_API/schema/bcknd-service-service-plan-item-metadata.ts"],"names":[],"mappings":"AAMA;;GAEG;AACH,MAAM,MAAM,mCAAmC,GAAG;IAChD;;OAEG;IACH,kBAAkB,CAAC,EAAE,CAAC,cAAc,GAAG,YAAY,GAAG,QAAQ,CAAC,EAAE,CAAC;CACnE,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC"}

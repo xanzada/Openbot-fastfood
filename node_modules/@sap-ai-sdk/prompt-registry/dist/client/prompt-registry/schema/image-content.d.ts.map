@@ -1,0 +1,1 @@
+{"version":3,"file":"image-content.d.ts","sourceRoot":"","sources":["../../../../src/client/prompt-registry/schema/image-content.ts"],"names":[],"mappings":"AAMA;;GAEG;AACH,MAAM,MAAM,YAAY,GAAG;IACzB,IAAI,EAAE,WAAW,CAAC;IAClB,SAAS,EAAE;QACT,GAAG,EAAE,MAAM,CAAC;QACZ;;WAEG;QACH,MAAM,CAAC,EAAE,MAAM,CAAC;KACjB,CAAC;CACH,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC"}

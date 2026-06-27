@@ -1,0 +1,1 @@
+{"version":3,"file":"user-chat-message.d.ts","sourceRoot":"","sources":["../../../../src/client/prompt-registry/schema/user-chat-message.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,sBAAsB,EAAE,MAAM,gCAAgC,CAAC;AAC7E;;GAEG;AACH,MAAM,MAAM,eAAe,GAAG;IAC5B,OAAO,EAAE,sBAAsB,CAAC;IAChC,IAAI,EAAE,MAAM,CAAC;CACd,CAAC"}

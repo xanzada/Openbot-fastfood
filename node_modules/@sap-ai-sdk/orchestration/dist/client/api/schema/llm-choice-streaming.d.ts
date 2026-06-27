@@ -1,0 +1,18 @@
+import type { ChatDelta } from './chat-delta.js';
+import type { ChoiceLogprobs } from './choice-logprobs.js';
+/**
+ * Representation of the 'LlmChoiceStreaming' schema.
+ */
+export type LlmChoiceStreaming = {
+    /**
+     * Index of the choice
+     */
+    index: number;
+    delta: ChatDelta;
+    logprobs?: ChoiceLogprobs;
+    /**
+     * Reason for stopping the model
+     */
+    finish_reason?: string;
+} & Record<string, any>;
+//# sourceMappingURL=llm-choice-streaming.d.ts.map

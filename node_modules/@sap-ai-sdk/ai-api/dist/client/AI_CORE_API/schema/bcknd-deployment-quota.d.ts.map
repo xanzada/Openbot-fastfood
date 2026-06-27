@@ -1,0 +1,1 @@
+{"version":3,"file":"bcknd-deployment-quota.d.ts","sourceRoot":"","sources":["../../../../src/client/AI_CORE_API/schema/bcknd-deployment-quota.ts"],"names":[],"mappings":"AAMA;;GAEG;AACH,MAAM,MAAM,oBAAoB,GAAG;IACjC;;;OAGG;IACH,QAAQ,CAAC,EAAE,MAAM,CAAC;IAClB,uBAAuB,CAAC,EAAE,MAAM,CAAC;CAClC,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC"}

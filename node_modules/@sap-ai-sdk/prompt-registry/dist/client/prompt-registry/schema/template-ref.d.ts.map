@@ -1,0 +1,1 @@
+{"version":3,"file":"template-ref.d.ts","sourceRoot":"","sources":["../../../../src/client/prompt-registry/schema/template-ref.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,yBAAyB,CAAC;AAC/D,OAAO,KAAK,EAAE,gCAAgC,EAAE,MAAM,4CAA4C,CAAC;AACnG;;GAEG;AACH,MAAM,MAAM,WAAW,GAAG;IACxB;;OAEG;IACH,YAAY,EAAE,eAAe,GAAG,gCAAgC,CAAC;CAClE,CAAC"}

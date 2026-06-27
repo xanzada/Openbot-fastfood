@@ -1,0 +1,1 @@
+{"version":3,"file":"tool-chat-message.d.ts","sourceRoot":"","sources":["../../../../src/client/api/schema/tool-chat-message.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,kBAAkB,EAAE,MAAM,2BAA2B,CAAC;AACpE;;GAEG;AACH,MAAM,MAAM,eAAe,GAAG;IAC5B;;OAEG;IACH,IAAI,EAAE,MAAM,CAAC;IACb,YAAY,EAAE,MAAM,CAAC;IACrB,OAAO,EAAE,kBAAkB,CAAC;CAC7B,CAAC"}

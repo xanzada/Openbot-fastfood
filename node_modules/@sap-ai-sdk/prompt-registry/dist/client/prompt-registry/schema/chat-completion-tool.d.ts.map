@@ -1,0 +1,1 @@
+{"version":3,"file":"chat-completion-tool.d.ts","sourceRoot":"","sources":["../../../../src/client/prompt-registry/schema/chat-completion-tool.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,sBAAsB,CAAC;AAC3D;;GAEG;AACH,MAAM,MAAM,kBAAkB,GAAG;IAC/B;;OAEG;IACH,IAAI,EAAE,UAAU,CAAC;IACjB,QAAQ,EAAE,cAAc,CAAC;CAC1B,CAAC"}

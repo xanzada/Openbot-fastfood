@@ -1,0 +1,1 @@
+{"version":3,"file":"global-stream-options.d.ts","sourceRoot":"","sources":["../../../../src/client/api/schema/global-stream-options.ts"],"names":[],"mappings":"AAMA;;GAEG;AACH,MAAM,MAAM,mBAAmB,GAAG;IAChC;;OAEG;IACH,OAAO,CAAC,EAAE,OAAO,CAAC;IAClB;;;;;OAKG;IACH,UAAU,CAAC,EAAE,MAAM,CAAC;IACpB;;;;;;;;;OASG;IACH,UAAU,CAAC,EAAE,MAAM,EAAE,CAAC;CACvB,CAAC"}

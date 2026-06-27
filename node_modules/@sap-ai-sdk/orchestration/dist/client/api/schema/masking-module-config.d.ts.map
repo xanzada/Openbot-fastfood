@@ -1,0 +1,1 @@
+{"version":3,"file":"masking-module-config.d.ts","sourceRoot":"","sources":["../../../../src/client/api/schema/masking-module-config.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,qBAAqB,EAAE,MAAM,8BAA8B,CAAC;AAC1E;;GAEG;AACH,MAAM,MAAM,mBAAmB,GAC3B;IACE;;;OAGG;IACH,SAAS,EAAE,qBAAqB,EAAE,CAAC;CACpC,GACD;IACE;;;;OAIG;IACH,iBAAiB,EAAE,qBAAqB,EAAE,CAAC;CAC5C,CAAC"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"multi-chat-template.d.ts","sourceRoot":"","sources":["../../../../src/client/prompt-registry/schema/multi-chat-template.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,yBAAyB,CAAC;AAChE;;GAEG;AACH,MAAM,MAAM,iBAAiB,GAAG;IAC9B,IAAI,EAAE,MAAM,CAAC;IACb,OAAO,EAAE,gBAAgB,EAAE,CAAC;CAC7B,CAAC"}

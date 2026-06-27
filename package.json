@@ -1,0 +1,30 @@
+{
+  "name": "openbot-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "VoltAgent-based FastFood OpenBot adapter for the legacy fastfood-gateway logic.",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.74",
+    "@voltagent/core": "^2.8.0",
+    "ai": "^6.0.208",
+    "axios": "^1.16.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "redis": "^5.10.0",
+    "socket.io": "^4.8.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

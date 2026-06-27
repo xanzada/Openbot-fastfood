@@ -1,0 +1,1 @@
+{"version":3,"file":"response-chat-message.d.ts","sourceRoot":"","sources":["../../../../src/client/api/schema/response-chat-message.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,yBAAyB,CAAC;AAChE;;GAEG;AACH,MAAM,MAAM,mBAAmB,GAAG;IAChC,IAAI,EAAE,WAAW,CAAC;IAClB,OAAO,CAAC,EAAE,MAAM,CAAC;IACjB,OAAO,CAAC,EAAE,MAAM,CAAC;IACjB,UAAU,CAAC,EAAE,gBAAgB,CAAC;CAC/B,CAAC"}

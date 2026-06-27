@@ -1,0 +1,1 @@
+{"version":3,"file":"embeddings-model-config.d.ts","sourceRoot":"","sources":["../../../../src/client/api/schema/embeddings-model-config.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,sBAAsB,EAAE,MAAM,+BAA+B,CAAC;AAC5E;;GAEG;AACH,MAAM,MAAM,qBAAqB,GAAG;IAClC,KAAK,EAAE,sBAAsB,CAAC;CAC/B,CAAC"}

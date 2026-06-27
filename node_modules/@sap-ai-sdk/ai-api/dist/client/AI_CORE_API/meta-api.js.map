@@ -1,0 +1,1 @@
+{"version":3,"file":"meta-api.js","sourceRoot":"","sources":["../../../src/client/AI_CORE_API/meta-api.ts"],"names":[],"mappings":"AAAA;;;;GAIG;AACH,OAAO,EAAE,qBAAqB,EAAE,MAAM,kBAAkB,CAAC;AAEzD;;;GAGG;AACH,MAAM,CAAC,MAAM,OAAO,GAAG;IACrB,gBAAgB,EAAE,SAAS;IAC3B;;;OAGG;IACH,OAAO,EAAE,GAAG,EAAE,CACZ,IAAI,qBAAqB,CACvB,KAAK,EACL,UAAU,EACV,EAAE,EACF,OAAO,CAAC,gBAAgB,CACzB;CACJ,CAAC"}

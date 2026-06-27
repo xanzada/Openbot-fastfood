@@ -1,0 +1,1 @@
+{"version":3,"file":"bcknd-instance-type-get-response.d.ts","sourceRoot":"","sources":["../../../../src/client/AI_CORE_API/schema/bcknd-instance-type-get-response.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,iBAAiB,EAAE,MAAM,0BAA0B,CAAC;AAClE;;GAEG;AACH,MAAM,MAAM,4BAA4B,GAAG;IACzC,aAAa,EAAE,iBAAiB,CAAC;CAClC,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC"}

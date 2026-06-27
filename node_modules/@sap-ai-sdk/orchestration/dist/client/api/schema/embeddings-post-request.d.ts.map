@@ -1,0 +1,1 @@
+{"version":3,"file":"embeddings-post-request.d.ts","sourceRoot":"","sources":["../../../../src/client/api/schema/embeddings-post-request.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,6BAA6B,EAAE,MAAM,sCAAsC,CAAC;AAC1F,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,uBAAuB,CAAC;AAC7D;;GAEG;AACH,MAAM,MAAM,qBAAqB,GAAG;IAClC,MAAM,EAAE,6BAA6B,CAAC;IACtC,KAAK,EAAE,eAAe,CAAC;CACxB,CAAC"}

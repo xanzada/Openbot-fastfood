@@ -1,0 +1,1 @@
+{"version":3,"file":"dpi-entity-config.d.ts","sourceRoot":"","sources":["../../../../src/client/prompt-registry/schema/dpi-entity-config.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,iBAAiB,EAAE,MAAM,0BAA0B,CAAC;AAClE,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,wBAAwB,CAAC;AAC9D;;GAEG;AACH,MAAM,MAAM,eAAe,GAAG,iBAAiB,GAAG,eAAe,CAAC"}
