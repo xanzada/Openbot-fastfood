@@ -3,7 +3,17 @@ import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
 import { saveToHistory } from "../services/redis.service.js";
-import { sendWhatsProMessage } from "../transport/whatspro.client.js";
+import {
+  clearInboundProcessing,
+  extractInboundMedia,
+  extractInboundText,
+  extractMessageId,
+  guardIncomingMessage,
+  markInboundDone,
+  saveMediaContext,
+} from "../services/inboundGuard.service.js";
+import { syncKanbanEvent } from "../services/kanbanSync.service.js";
+import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
 
 function maskPhone(phone = "") {
   const clean = String(phone || "").replace(/\D/g, "");
@@ -32,37 +42,84 @@ function isOwnWhatsAppMessage(body: any): boolean {
 async function processWhatsAppWebhook(body: any, started: number) {
   const instanceId = body.instanceId || body.instance || body.restaurant_id;
   const phone = body.phone || body.senderPhone || body.normalizedPhone;
-  const text = body.text || body.message || body.body;
+  const messageId = extractMessageId(body);
+  const mediaContext = extractInboundMedia(body);
+  const text =
+    extractInboundText(body) ||
+    mediaContext?.caption ||
+    (mediaContext ? `[${mediaContext.kind} received]` : "");
 
   console.log(
-    `[OPENBOT:INBOUND] received instance=${instanceId || "-"} phone=${maskPhone(phone)} text_len=${String(text || "").length} source=${body.source || "-"}`
+    `[OPENBOT:INBOUND] received instance=${instanceId || "-"} phone=${maskPhone(phone)} text_len=${String(text || "").length} media=${mediaContext?.kind || "no"} source=${body.source || "-"}`
   );
 
-  const ctx = await preloadContext({ instanceId, phone, text });
-  console.log(
-    `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.runtimeStatus?.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`
-  );
+  try {
+    const guard = await guardIncomingMessage({
+      instanceId,
+      phone,
+      text,
+      messageId,
+      fromMe: isOwnWhatsAppMessage(body),
+    });
+    if (guard.blocked) {
+      console.log(
+        `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=${guard.reason || "blocked"} elapsed=${Date.now() - started}ms`
+      );
+      return;
+    }
 
-  await saveToHistory(ctx.instanceId, ctx.phone, "user", ctx.text, {
-    source: "openbot-agent",
-  });
+    const ctx = await preloadContext({ instanceId, phone, text, mediaContext });
+    console.log(
+      `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`
+    );
 
-  console.log(`[OPENBOT:AI] generating model=${process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash"}`);
-  const result = await runFastFoodAgent(ctx);
-  console.log(`[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"}`);
+    await syncKanbanEvent(ctx, {
+      event: "openbot_inbound",
+      message_id: messageId || undefined,
+      text,
+      media: mediaContext,
+    });
 
-  await saveToHistory(ctx.instanceId, ctx.phone, "assistant", result.text, {
-    source: "openbot-agent",
-  });
+    if (mediaContext && !mediaContext.valid) {
+      const reply =
+        ctx.language === "ru"
+          ? "Файл не принят. Отправьте четкое фото, PDF или MP4 до 15 MB."
+          : "Файл қабылданбады. 15 MB дейінгі анық фото, PDF немесе MP4 жіберіңіз.";
+      await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: reply });
+      await markInboundDone(ctx.instanceId, messageId);
+      return;
+    }
 
-  const sendResult = await sendWhatsProMessage({
-    instanceId: ctx.instanceId,
-    phone: ctx.phone,
-    text: result.text,
-  });
-  console.log(
-    `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} ok=${Boolean(sendResult?.success ?? sendResult?.ok ?? !sendResult?.skipped)} elapsed=${Date.now() - started}ms`
-  );
+    if (mediaContext?.valid) {
+      await saveMediaContext(ctx.instanceId, ctx.phone, mediaContext);
+    }
+
+    await saveToHistory(ctx.instanceId, ctx.phone, "user", ctx.text, {
+      source: "openbot-agent",
+      media: mediaContext,
+    });
+
+    console.log(`[OPENBOT:AI] generating model=${process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash"}`);
+    const result = await runFastFoodAgent(ctx);
+    console.log(`[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"}`);
+
+    await saveToHistory(ctx.instanceId, ctx.phone, "assistant", result.text, {
+      source: "openbot-agent",
+    });
+
+    const sendResult = await sendWhatsProResponseSequence({
+      instanceId: ctx.instanceId,
+      phone: ctx.phone,
+      text: result.text,
+    });
+    await markInboundDone(ctx.instanceId, messageId);
+    console.log(
+      `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} elapsed=${Date.now() - started}ms`
+    );
+  } catch (error) {
+    await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);
+    throw error;
+  }
 }
 
 export function whatsappWebhookRoute(): Router {

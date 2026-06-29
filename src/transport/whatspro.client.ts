@@ -1,5 +1,8 @@
 import axios from "axios";
 
+const RESPONSE_CHUNK_MAX = Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 650);
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
+
 function maskPhone(phone = "") {
   const clean = String(phone || "").replace(/\D/g, "");
   if (clean.length <= 6) return clean || "-";
@@ -12,6 +15,58 @@ function hostFromUrl(url = "") {
   } catch {
     return url || "-";
   }
+}
+
+function whatsproHeaders() {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (process.env.WHATSPRO_API_TOKEN) {
+    headers.authorization = `Bearer ${process.env.WHATSPRO_API_TOKEN}`;
+    headers["x-api-key"] = process.env.WHATSPRO_API_TOKEN;
+  }
+  return headers;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomTypingDelayMs() {
+  return 1500 + Math.floor(Math.random() * 1500);
+}
+
+function pushSized(chunks: string[], value = "") {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text) return;
+  if (text.length <= RESPONSE_CHUNK_MAX) {
+    chunks.push(text);
+    return;
+  }
+
+  const sentences = text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [text];
+  let current = "";
+  for (const sentence of sentences) {
+    const next = `${current} ${sentence}`.trim();
+    if (next.length > RESPONSE_CHUNK_MAX && current) {
+      chunks.push(current);
+      current = sentence.trim();
+    } else {
+      current = next;
+    }
+  }
+  if (current) chunks.push(current.trim());
+}
+
+export function splitWhatsProResponse(text = ""): string[] {
+  const urls = Array.from(new Set(String(text || "").match(URL_RE) || []));
+  const textOnly = String(text || "").replace(URL_RE, "").replace(/[ \t]+\n/g, "\n").trim();
+  const chunks: string[] = [];
+
+  for (const paragraph of textOnly.split(/\n{2,}/)) {
+    pushSized(chunks, paragraph);
+  }
+
+  for (const url of urls) chunks.push(url);
+  return chunks.filter(Boolean);
 }
 
 export async function sendWhatsProMessage(payload: {
@@ -27,11 +82,7 @@ export async function sendWhatsProMessage(payload: {
     return { skipped: true, reason: "WHATSPRO_SEND_URL or WHATSPRO_BASE_URL is not configured" };
   }
 
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (process.env.WHATSPRO_API_TOKEN) {
-    headers.authorization = `Bearer ${process.env.WHATSPRO_API_TOKEN}`;
-    headers["x-api-key"] = process.env.WHATSPRO_API_TOKEN;
-  }
+  const headers = whatsproHeaders();
 
   const started = Date.now();
   console.log(
@@ -59,4 +110,47 @@ export async function sendWhatsProMessage(payload: {
     );
     throw error;
   }
+}
+
+export async function sendWhatsProPresence(payload: { instanceId: string; phone: string }) {
+  const baseUrl = String(process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
+  const url = process.env.WHATSPRO_PRESENCE_URL || (baseUrl ? `${baseUrl}/api/presence` : "");
+  if (!url) return { skipped: true, reason: "WHATSPRO_PRESENCE_URL or WHATSPRO_BASE_URL is not configured" };
+
+  try {
+    const response = await axios.post(
+      url,
+      {
+        instanceId: payload.instanceId,
+        phone: payload.phone,
+        state: "composing",
+      },
+      { timeout: 3000, headers: whatsproHeaders() }
+    );
+    return response.data;
+  } catch (error: any) {
+    console.warn(
+      `[OPENBOT:WHATSPRO:PRESENCE:SKIP] host=${hostFromUrl(url)} instance=${payload.instanceId} phone=${maskPhone(payload.phone)} status=${error?.response?.status || "-"} error=${error?.message || error}`
+    );
+    return { skipped: true, reason: error?.message || "presence_failed" };
+  }
+}
+
+export async function sendWhatsProResponseSequence(payload: { instanceId: string; phone: string; text: string }) {
+  const chunks = splitWhatsProResponse(payload.text);
+  const sent: any[] = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (index > 0) {
+      await sendWhatsProPresence(payload);
+      await delay(randomTypingDelayMs());
+    }
+    sent.push(
+      await sendWhatsProMessage({
+        instanceId: payload.instanceId,
+        phone: payload.phone,
+        text: chunks[index],
+      })
+    );
+  }
+  return { ok: true, chunks: chunks.length, sent };
 }

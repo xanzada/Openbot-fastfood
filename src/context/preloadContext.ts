@@ -16,6 +16,7 @@ export interface InboundMessage {
   instanceId: string;
   phone: string;
   text: string;
+  mediaContext?: Record<string, any> | null;
 }
 
 export async function preloadContext(input: InboundMessage): Promise<FastFoodContext> {
@@ -54,6 +55,19 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
 
   await saveUserLang(instanceId, phone, language).catch(() => undefined);
 
+  const hardRealtimeContext = {
+    source: runtimeStatus?.source || "dle_spa_settings",
+    fetched_at: runtimeStatus?.fetched_at || new Date().toISOString(),
+    kitchen_status: runtimeStatus?.kitchen_status || null,
+    wait_time: Number(runtimeStatus?.wait_time || runtimeStatus?.kitchen_status?.wait_time || 0) || 0,
+    delivery: runtimeStatus?.delivery ?? runtimeStatus?.kitchen_status?.delivery ?? null,
+    pickup: runtimeStatus?.pickup ?? runtimeStatus?.kitchen_status?.pickup ?? null,
+    is_emergency: Boolean(runtimeStatus?.is_emergency || runtimeStatus?.kitchen_status?.is_emergency),
+    reset_at: Number(runtimeStatus?.reset_at || runtimeStatus?.kitchen_status?.reset_at || 0) || 0,
+    active_shift_notes: activeShiftNotes,
+    stale: Boolean(runtimeStatus?.stale || runtimeStatus?.is_stale || runtimeStatus?.stale_runtime_backup),
+  };
+
   return {
     instanceId,
     phone,
@@ -61,9 +75,11 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     language,
     config: safeConfig,
     runtimeStatus,
+    hardRealtimeContext,
     activeOrder,
     chatHistory,
     activeShiftNotes,
+    mediaContext: input.mediaContext || null,
     shporContext,
     magicLinkAlreadySent,
     explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
