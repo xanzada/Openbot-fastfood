@@ -79,6 +79,7 @@ function magicLinkKey(instanceId: string, phone: string) {
 const CHAT_HISTORY_TTL_SECONDS = 604800;
 const CHAT_HISTORY_MAX_ITEMS = 120;
 const MAGIC_LINK_SENT_TTL_SECONDS = 2592000;
+const USER_LANG_TTL_SECONDS = 43200;
 
 export async function getChatHistory(instanceId: string, phone: string): Promise<any[]> {
   return safeRedis([], async () => {
@@ -121,7 +122,7 @@ export async function getUserLang(instanceId: string, phone: string): Promise<"k
 
 export async function saveUserLang(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<void> {
   await safeRedis(undefined, async () => {
-    await redisClient.setEx(`lang:${instanceId}:${phone}`, 604800, lang);
+    await redisClient.setEx(`lang:${instanceId}:${phone}`, USER_LANG_TTL_SECONDS, lang);
   });
 }
 

@@ -13,6 +13,7 @@ import {
   saveMediaContext,
 } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
+import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
 
 function maskPhone(phone = "") {
@@ -47,7 +48,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
   const text =
     extractInboundText(body) ||
     mediaContext?.caption ||
-    (mediaContext ? `[${mediaContext.kind} received]` : "");
+    mediaContext?.historyLabel ||
+    (mediaContext ? "[Media sent]" : "");
 
   console.log(
     `[OPENBOT:INBOUND] received instance=${instanceId || "-"} phone=${maskPhone(phone)} text_len=${String(text || "").length} media=${mediaContext?.kind || "no"} source=${body.source || "-"}`
@@ -73,6 +75,16 @@ async function processWhatsAppWebhook(body: any, started: number) {
       `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`
     );
 
+    if (mediaContext?.kind === "video") {
+      const reply =
+        ctx.language === "ru"
+          ? "Извините, я не принимаю видео. Пожалуйста, опишите ситуацию текстом или аудио."
+          : "Кешіріңіз, видео қабылдай алмаймын. Қандай жағдай болғанын мәтінмен немесе аудиомен айтсаңыз.";
+      await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: reply });
+      await markInboundDone(ctx.instanceId, messageId);
+      return;
+    }
+
     await syncKanbanEvent(ctx, {
       event: "openbot_inbound",
       message_id: messageId || undefined,
@@ -80,17 +92,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       media: mediaContext,
     });
 
-    if (mediaContext && !mediaContext.valid) {
-      const reply =
-        ctx.language === "ru"
-          ? "Файл не принят. Отправьте четкое фото, PDF или MP4 до 15 MB."
-          : "Файл қабылданбады. 15 MB дейінгі анық фото, PDF немесе MP4 жіберіңіз.";
-      await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: reply });
-      await markInboundDone(ctx.instanceId, messageId);
-      return;
-    }
-
-    if (mediaContext?.valid) {
+    if (mediaContext) {
       await saveMediaContext(ctx.instanceId, ctx.phone, mediaContext);
     }
 
@@ -118,6 +120,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
     );
   } catch (error) {
     await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);
+    await notifyDeveloperSystemFailure(String(instanceId || ""), error, {
+      scope: "whatsapp_webhook",
+      messageId,
+      customerPhone: maskPhone(phone),
+    }).catch(() => undefined);
     throw error;
   }
 }

@@ -4,6 +4,9 @@ const WAIT_SENTENCE_RE =
   /[^.!?\n]*(?:\b(?:30|40|50|60|90|120)\s*(?:мин|минут|minute|min)\b|күту|кідіріс|күт|ожидан|задерж)[^.!?\n]*[.!?]?/giu;
 const ORDER_STATUS_RE =
   /(тапсырысыңыз|заказыңыз|заказ|order).*(дайындалып|әзірленіп|курьер|жолда|жеткіз|аяқтал|готов|едет|достав)/iu;
+const KAZAKH_SPECIFIC_RE = /[әғқңөұүіӘҒҚҢӨҰҮІ]/u;
+const RUSSIAN_SERVICE_WORD_RE =
+  /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ)\b/iu;
 
 function fallback(ctx: FastFoodContext) {
   return ctx.language === "kk"
@@ -21,6 +24,13 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): string
   let text = String(rawText || "").trim();
 
   if (!text) return fallback(ctx);
+
+  if (ctx.language === "ru" && KAZAKH_SPECIFIC_RE.test(text)) {
+    return fallback(ctx);
+  }
+  if (ctx.language === "kk" && RUSSIAN_SERVICE_WORD_RE.test(text)) {
+    return fallback(ctx);
+  }
 
   const liveWaitTime = Number(ctx.fetchedSettings?.wait_time || 0);
   if (!liveWaitTime) {

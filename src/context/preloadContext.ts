@@ -40,7 +40,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     ]);
 
   const safeConfig = config || {};
-  const language = detectLang(text, storedLang);
+  const language = storedLang === "kk" || storedLang === "ru" ? storedLang : detectLang(text, null);
   const domain = safeConfig.domain || "";
 
   const [runtimeStatus, activeOrder, shporContext] = await Promise.all([
@@ -85,6 +85,14 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     phone,
     text,
     language,
+    languagePolicy: {
+      cached: Boolean(storedLang),
+      output: language === "ru" ? "pure_ru_only" : "pure_kk_only",
+      rule:
+        language === "ru"
+          ? "Reply only in Russian. Do not mix Kazakh words into Russian sentences."
+          : "Reply only in Kazakh. Do not mix Russian words into Kazakh sentences.",
+    },
     config: safeConfig,
     runtimeStatus,
     fetchedSettings,

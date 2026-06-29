@@ -49,6 +49,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
       {
         now_iso: new Date().toISOString(),
         language: ctx.language,
+        language_policy: ctx.languagePolicy,
         restaurant: {
           instance_id: ctx.instanceId,
           name: ctx.config.name,

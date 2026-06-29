@@ -3,6 +3,7 @@ export interface FastFoodContext {
   phone: string;
   text: string;
   language: "kk" | "ru";
+  languagePolicy: Record<string, any>;
   config: Record<string, any>;
   runtimeStatus: Record<string, any> | null;
   fetchedSettings: Record<string, any>;

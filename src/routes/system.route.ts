@@ -5,6 +5,7 @@ import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { deleteShiftNote, saveShiftNote } from "../services/redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.service.js";
+import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 
 function verifySecret(req: any, res: any, next: any) {
   const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
@@ -111,6 +112,9 @@ export function systemRoute(): Router {
 
       return res.json({ ok: true, action: action || "noop" });
     } catch (error: any) {
+      await notifyDeveloperSystemFailure(getInstanceId(req.body || {}), error, {
+        scope: "kanban-webhook",
+      }).catch(() => undefined);
       if (!res.headersSent) {
         res.status(500).json({ ok: false, error: error?.message || "kanban webhook failed" });
       }
@@ -123,6 +127,9 @@ export function systemRoute(): Router {
       if (io) io.emit("print_new_order", req.body || {});
       res.json({ ok: true, emitted: Boolean(io) });
     } catch (error: any) {
+      void notifyDeveloperSystemFailure(getInstanceId(req.body || {}), error, {
+        scope: "print_trigger",
+      }).catch(() => undefined);
       if (!res.headersSent) {
         res.status(500).json({ ok: false, error: error?.message || "print trigger failed" });
       }

@@ -10,8 +10,8 @@ const DUPLICATE_TEXT_SECONDS = 5;
 const PROCESSING_LOCK_SECONDS = 180;
 const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
-const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 15 * 1024 * 1024);
-const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|png|webp)|application\/pdf|video\/mp4)$/i;
+const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
+const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|mpeg|mp3|wav))(?:;.*)?$/i;
 
 export interface InboundMediaContext {
   hasMedia: boolean;
@@ -20,8 +20,10 @@ export interface InboundMediaContext {
   sizeBytes: number;
   valid: boolean;
   reason?: string;
+  flags: string[];
   caption?: string;
   messageId?: string;
+  historyLabel: string;
 }
 
 export interface GuardResult {
@@ -37,6 +39,11 @@ function nestedMessage(body: any) {
   return body?.data?.message || body?.messageData?.message || body?.message || {};
 }
 
+function actualMessage(body: any) {
+  const msg = nestedMessage(body);
+  return msg?.ephemeralMessage?.message || msg || {};
+}
+
 function firstString(...values: any[]) {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value.trim();
@@ -48,8 +55,28 @@ function firstNumber(...values: any[]) {
   for (const value of values) {
     const num = Number(value);
     if (Number.isFinite(num) && num > 0) return num;
+    if (value && typeof value.toNumber === "function") {
+      const converted = Number(value.toNumber());
+      if (Number.isFinite(converted) && converted > 0) return converted;
+    }
   }
   return 0;
+}
+
+function getDeclaredMediaBytes(mediaMessage: any) {
+  return firstNumber(mediaMessage?.fileLength, mediaMessage?.fileSize, mediaMessage?.size);
+}
+
+function normalizeMimeBase(mimeType = "") {
+  return String(mimeType || "").split(";")[0].trim().toLowerCase();
+}
+
+function defaultMimeForKind(kind: InboundMediaContext["kind"], rawMedia: any) {
+  if (kind === "image") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "image/jpeg";
+  if (kind === "audio") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "audio/ogg";
+  if (kind === "video") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "video/mp4";
+  if (kind === "document") return firstString(rawMedia?.mimetype, rawMedia?.mimeType);
+  return firstString(rawMedia?.mimetype, rawMedia?.mimeType);
 }
 
 export function extractMessageId(body: any): string {
@@ -64,7 +91,7 @@ export function extractMessageId(body: any): string {
 }
 
 export function extractInboundText(body: any): string {
-  const msg = nestedMessage(body);
+  const msg = actualMessage(body);
   return firstString(
     body?.text,
     body?.body,
@@ -79,47 +106,63 @@ export function extractInboundText(body: any): string {
 }
 
 export function extractInboundMedia(body: any): InboundMediaContext | null {
-  const msg = nestedMessage(body);
+  const msg = actualMessage(body);
   const image = msg?.imageMessage || body?.imageMessage || body?.media?.imageMessage;
   const document = msg?.documentMessage || body?.documentMessage || body?.media?.documentMessage;
   const video = msg?.videoMessage || body?.videoMessage || body?.media?.videoMessage;
-  const audio = msg?.audioMessage || body?.audioMessage || body?.media?.audioMessage;
-  const rawMedia = image || document || video || audio || body?.media || null;
-  const hasMedia = Boolean(body?.hasMedia || body?.media || image || document || video || audio);
+  const audio = msg?.audioMessage || body?.audioMessage || body?.media?.audioMessage || (body?.type === "audio" ? body?.media || body : null);
+  const ptv = msg?.ptvMessage || body?.ptvMessage || body?.media?.ptvMessage;
+  const rawMedia = image || document || video || audio || ptv || body?.media || null;
+  const hasMedia = Boolean(body?.hasMedia || body?.media || image || document || video || audio || ptv);
   if (!hasMedia) return null;
 
   const kind: InboundMediaContext["kind"] = image
     ? "image"
     : document
       ? "document"
-      : video
+      : video || ptv
         ? "video"
         : audio
           ? "audio"
           : "unknown";
-  const mimeType = firstString(body?.mimeType, body?.mediaType, rawMedia?.mimetype, rawMedia?.mimeType);
-  const sizeBytes = firstNumber(body?.fileLength, body?.sizeBytes, body?.mediaSize, rawMedia?.fileLength, rawMedia?.sizeBytes);
+  const mimeType = firstString(body?.mimeType, body?.mediaType, defaultMimeForKind(kind, rawMedia));
+  const mimeBase = normalizeMimeBase(mimeType);
+  const sizeBytes =
+    firstNumber(body?.fileLength, body?.sizeBytes, body?.mediaSize) || getDeclaredMediaBytes(rawMedia);
   const caption = firstString(body?.caption, rawMedia?.caption);
-  const reason =
+  const flags: string[] = [];
+
+  if (!mimeBase) flags.push("missing_mime_type");
+  if (kind === "document" && mimeBase !== "application/pdf") flags.push("unsupported_document");
+  if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType)) flags.push("unsupported_mime_type");
+  if (sizeBytes > MAX_MEDIA_BYTES) flags.push("media_too_large");
+  if (kind === "audio" && !["audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav"].includes(mimeBase)) {
+    flags.push("unsupported_audio_mime");
+  }
+  if (kind === "unknown") flags.push("unknown_media_type");
+
+  const historyLabel =
     kind === "audio"
-      ? "audio_not_supported"
-      : !mimeType
-        ? "missing_mime_type"
-        : !ALLOWED_MEDIA_MIME.test(mimeType)
-          ? "unsupported_mime_type"
-          : sizeBytes > MAX_MEDIA_BYTES
-            ? "media_too_large"
-            : "";
+      ? "[Audio sent]"
+      : kind === "image"
+        ? "[Photo sent]"
+        : kind === "document"
+          ? "[Document sent]"
+          : kind === "video"
+            ? "[Video sent]"
+            : "[Media sent]";
 
   return {
     hasMedia: true,
     kind,
     mimeType,
     sizeBytes,
-    valid: !reason,
-    reason: reason || undefined,
+    valid: flags.length === 0,
+    reason: flags[0] || undefined,
+    flags,
     caption,
     messageId: extractMessageId(body) || undefined,
+    historyLabel,
   };
 }
 
@@ -203,7 +246,6 @@ export async function saveMediaContext(
   phone: string,
   mediaContext: InboundMediaContext
 ): Promise<void> {
-  if (!mediaContext.valid) return;
   await connectRedis();
   await redisClient.setEx(
     `media_context:${instanceId}:${phone}`,
