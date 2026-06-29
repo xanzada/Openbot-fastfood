@@ -74,6 +74,10 @@ function normalizePaymentDetails(value: unknown): Array<{ label: string; value: 
 }
 
 export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
+  const settings = safeJsonObject(data.settings, {});
+  const rawKitchenSettings = safeJsonObject(settings.kitchen_status, null);
+  const fetchedWaitTime = Number(rawKitchenSettings?.wait_time || 0) || 0;
+  const fetchedEmergency = rawKitchenSettings ? toBool(rawKitchenSettings.is_emergency, false) : false;
   const nested =
     safeJsonObject(data.runtime_status, null) ||
     safeJsonObject(data.kitchen_status, null) ||
@@ -98,6 +102,11 @@ export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
       delivery: toBool(kitchen.delivery ?? nested.delivery ?? data.delivery, true),
       pickup: toBool(kitchen.pickup ?? nested.pickup ?? data.pickup, true),
       is_emergency: toBool(kitchen.is_emergency ?? nested.is_emergency ?? data.is_emergency, false),
+    },
+    fetched_settings: {
+      wait_time: fetchedWaitTime,
+      is_emergency: fetchedEmergency,
+      source: rawKitchenSettings ? "settings.kitchen_status" : "missing_settings.kitchen_status",
     },
     payment_details: normalizePaymentDetails(data.payment_details || nested.payment_details || kitchen.payment_details),
     source: data.source || "dle_spa_settings",

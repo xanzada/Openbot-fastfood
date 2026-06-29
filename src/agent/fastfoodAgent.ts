@@ -13,9 +13,24 @@ const openrouter = createOpenAI({
 
 export async function runFastFoodAgent(ctx: FastFoodContext) {
   const modelId = process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash";
+  let system_prompt = `${FASTFOOD_AGENT_INSTRUCTIONS}\n\n${buildFactsPrompt(ctx)}`;
+  const fetchedSettings = ctx.fetchedSettings || {};
+  const liveWaitTime = fetchedSettings.wait_time ? fetchedSettings.wait_time : "UNKNOWN";
+  const liveEmergency = fetchedSettings.is_emergency ? "YES (Stop orders)" : "NO";
+
+  const forceFacts = `
+
+=== LIVE SYSTEM FACTS (MANDATORY) ===
+CURRENT WAIT TIME: ${liveWaitTime} minutes.
+EMERGENCY STOP MODE: ${liveEmergency}.
+If CURRENT WAIT TIME is UNKNOWN, you MUST say: "Дәл күту уақыты қазір көрінбей тұр, ас үйден нақтылап берейін." DO NOT INVENT NUMBERS. DO NOT SAY 40 MINUTES.
+=====================================
+`;
+  system_prompt += forceFacts;
+
   const agent = new Agent({
     name: "FastFood OpenBot",
-    instructions: `${FASTFOOD_AGENT_INSTRUCTIONS}\n\n${buildFactsPrompt(ctx)}`,
+    instructions: system_prompt,
     model: openrouter(modelId),
     tools: createFastFoodSkills(ctx),
     maxSteps: 6,

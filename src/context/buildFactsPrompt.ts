@@ -31,6 +31,10 @@ function compactOrder(order: Record<string, any> | null) {
 
 export function buildFactsPrompt(ctx: FastFoodContext): string {
   const runtime = compactRuntime(ctx.runtimeStatus);
+  if (runtime) {
+    runtime.wait_time = Number(ctx.fetchedSettings?.wait_time || 0);
+    runtime.is_emergency = Boolean(ctx.fetchedSettings?.is_emergency);
+  }
   const activeOrder = compactOrder(ctx.activeOrder);
   const notes = ctx.activeShiftNotes.map((note: any) => ({
     id: note.id,

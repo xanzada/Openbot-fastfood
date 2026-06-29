@@ -55,14 +55,26 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
 
   await saveUserLang(instanceId, phone, language).catch(() => undefined);
 
+  const fetchedSettings = {
+    wait_time: Number(runtimeStatus?.fetched_settings?.wait_time || 0) || 0,
+    is_emergency: Boolean(runtimeStatus?.fetched_settings?.is_emergency),
+    source: runtimeStatus?.fetched_settings?.source || "missing_settings.kitchen_status",
+  };
+
   const hardRealtimeContext = {
-    source: runtimeStatus?.source || "dle_spa_settings",
+    source: fetchedSettings.source,
     fetched_at: runtimeStatus?.fetched_at || new Date().toISOString(),
-    kitchen_status: runtimeStatus?.kitchen_status || null,
-    wait_time: Number(runtimeStatus?.wait_time || runtimeStatus?.kitchen_status?.wait_time || 0) || 0,
+    kitchen_status: runtimeStatus?.kitchen_status
+      ? {
+          ...runtimeStatus.kitchen_status,
+          wait_time: fetchedSettings.wait_time,
+          is_emergency: fetchedSettings.is_emergency,
+        }
+      : null,
+    wait_time: fetchedSettings.wait_time,
     delivery: runtimeStatus?.delivery ?? runtimeStatus?.kitchen_status?.delivery ?? null,
     pickup: runtimeStatus?.pickup ?? runtimeStatus?.kitchen_status?.pickup ?? null,
-    is_emergency: Boolean(runtimeStatus?.is_emergency || runtimeStatus?.kitchen_status?.is_emergency),
+    is_emergency: fetchedSettings.is_emergency,
     reset_at: Number(runtimeStatus?.reset_at || runtimeStatus?.kitchen_status?.reset_at || 0) || 0,
     active_shift_notes: activeShiftNotes,
     stale: Boolean(runtimeStatus?.stale || runtimeStatus?.is_stale || runtimeStatus?.stale_runtime_backup),
@@ -75,6 +87,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     language,
     config: safeConfig,
     runtimeStatus,
+    fetchedSettings,
     hardRealtimeContext,
     activeOrder,
     chatHistory,

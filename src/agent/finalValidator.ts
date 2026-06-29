@@ -22,8 +22,8 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): string
 
   if (!text) return fallback(ctx);
 
-  const runtimeWait = Number(ctx.runtimeStatus?.wait_time || 0);
-  if (!runtimeWait) {
+  const liveWaitTime = Number(ctx.fetchedSettings?.wait_time || 0);
+  if (!liveWaitTime) {
     text = text.replace(WAIT_SENTENCE_RE, "").replace(/\s{2,}/g, " ").trim();
   }
 

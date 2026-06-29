@@ -5,6 +5,7 @@ export interface FastFoodContext {
   language: "kk" | "ru";
   config: Record<string, any>;
   runtimeStatus: Record<string, any> | null;
+  fetchedSettings: Record<string, any>;
   hardRealtimeContext: Record<string, any>;
   activeOrder: Record<string, any> | null;
   chatHistory: any[];
