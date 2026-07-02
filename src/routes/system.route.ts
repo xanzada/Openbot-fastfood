@@ -6,17 +6,28 @@ import { deleteShiftNote, saveShiftNote } from "../services/redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
+import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 
-function verifySecret(req: any, res: any, next: any) {
+function verifySecret(channel = "webhook") {
+  return async (req: any, res: any, next: any) => {
   const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
-  if (!expected) return next();
   const got =
     req.headers.authorization?.replace(/^Bearer\s+/i, "") ||
     req.headers["x-api-key"] ||
     req.body?.token ||
     req.query?.token;
-  if (got !== expected) return res.status(401).json({ ok: false, error: "unauthorized" });
-  return next();
+  if (expected && safeCompare(got, expected)) return next();
+
+  try {
+    const instanceId = getInstanceId(req.body || {});
+    if (!instanceId) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const config = await getRestaurantConfig(instanceId);
+    assertTenantSecret(req, config, channel);
+    return next();
+  } catch (error: any) {
+    return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
+  }
+  };
 }
 
 function getInstanceId(body: Record<string, any>) {
@@ -33,6 +44,34 @@ function paymentDetailsText(details: any[]) {
     .map((item) => `${String(item.label || "Реквизит").trim()}: ${String(item.value || "").trim()}`)
     .filter(Boolean)
     .join("\n");
+}
+
+function getDeveloperPhone(config: Record<string, any> = {}) {
+  return normalizePhone(config.developer || config.developer_phone || config.dev_phone || process.env.DEVELOPER_PHONE || "");
+}
+
+async function notifyKanbanDeveloperSiren(req: any, error: any) {
+  try {
+    const instance = req.body?.instance || req.body?.instanceId || req.body?.restaurant_id || "Белгісіз";
+    const orderId = req.body?.order_id || "Белгісіз";
+    let config = null;
+
+    if (instance !== "Белгісіз" && /^[a-zA-Z0-9_-]{2,64}$/.test(String(instance))) {
+      config = await getRestaurantConfig(String(instance)).catch(() => null);
+    }
+
+    const devMsg = `🚨 *CRITICAL DLE KANBAN ERROR!* 🚨\n📍 *Instance:* ${instance}\n📦 *Заказ №:* ${orderId}\n⚠️ *Қате:* ${error?.message || error}\n🛠 *Орны:* kanbanController.js\n\nЧек немесе статус клиентке бармай қалды!`;
+    const developerPhone = getDeveloperPhone(config || {});
+    if (instance !== "Белгісіз") {
+      if (developerPhone) {
+        await sendWhatsProMessage({ instanceId: String(instance), phone: developerPhone, text: devMsg });
+      } else {
+        console.warn(`[DEV SIREN] ${instance} developer phone not found.`);
+      }
+    }
+  } catch (devError: any) {
+    console.error("[DEV SIREN FAILED]:", devError?.message || devError);
+  }
 }
 
 export function systemRoute(): Router {
@@ -58,7 +97,7 @@ export function systemRoute(): Router {
     });
   });
 
-  router.post("/kanban-webhook", verifySecret, async (req, res) => {
+  router.post("/kanban-webhook", verifySecret("kanban"), async (req, res) => {
     try {
       const body = req.body || {};
       const instanceId = getInstanceId(body);
@@ -108,10 +147,12 @@ export function systemRoute(): Router {
       const io = req.app.get("io");
       if (io && (action === "new_order" || action === "print_order" || body.print)) {
         io.emit("print_new_order", body);
+        console.log(`[SOCKET] Print signal sent. Order: #${body.order_id || body.id || "-"}`);
       }
 
       return res.json({ ok: true, action: action || "noop" });
     } catch (error: any) {
+      await notifyKanbanDeveloperSiren(req, error);
       await notifyDeveloperSystemFailure(getInstanceId(req.body || {}), error, {
         scope: "kanban-webhook",
       }).catch(() => undefined);
@@ -121,17 +162,24 @@ export function systemRoute(): Router {
     }
   });
 
-  router.post("/api/print_trigger", verifySecret, (req, res) => {
+  router.post("/api/print_trigger", verifySecret("kanban"), (req, res) => {
     try {
       const io = req.app.get("io");
-      if (io) io.emit("print_new_order", req.body || {});
-      res.json({ ok: true, emitted: Boolean(io) });
+      const orderData = req.body || {};
+      if (io) {
+        io.emit("print_new_order", orderData);
+        console.log(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
+        res.status(200).send({ success: true, message: "Print signal sent to agent" });
+      } else {
+        console.error("[SOCKET] Error: Socket.io (io) not found.");
+        res.status(500).send({ success: false, error: "Socket server error" });
+      }
     } catch (error: any) {
       void notifyDeveloperSystemFailure(getInstanceId(req.body || {}), error, {
         scope: "print_trigger",
       }).catch(() => undefined);
       if (!res.headersSent) {
-        res.status(500).json({ ok: false, error: error?.message || "print trigger failed" });
+        res.status(500).send({ success: false, error: error?.message || "print trigger failed" });
       }
     }
   });

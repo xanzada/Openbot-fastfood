@@ -1,22 +1,86 @@
 import http from "node:http";
 import https from "node:https";
+import net from "node:net";
+import * as dnsCallback from "node:dns";
+import dns from "node:dns/promises";
 import axios from "axios";
 import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
-const safeHttpAgent = new http.Agent({ keepAlive: false });
-const safeHttpsAgent = new https.Agent({ keepAlive: false });
-export function normalizePhone(value = "") {
-    return String(value || "").replace(/\D/g, "");
+function normalizeIp(ip) {
+    return String(ip || "").replace(/^::ffff:/i, "");
 }
-function normalizePublicDomain(rawDomain = "") {
-    const trimmed = String(rawDomain || "").trim().replace(/\/+$/, "");
-    if (!trimmed)
+export function isPrivateIp(ipValue) {
+    const ip = normalizeIp(ipValue).toLowerCase();
+    if (!net.isIP(ip))
+        return false;
+    if (ip === "::1" || ip === "0:0:0:0:0:0:0:1")
+        return true;
+    if (ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80:"))
+        return true;
+    if (ip === "127.0.0.1" || ip === "0.0.0.0")
+        return true;
+    if (ip.startsWith("10."))
+        return true;
+    if (ip.startsWith("192.168."))
+        return true;
+    if (ip.startsWith("169.254."))
+        return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip))
+        return true;
+    return false;
+}
+function safeLookup(hostname, options, callback) {
+    dnsCallback.lookup(hostname, options, (error, address, family) => {
+        if (error)
+            return callback(error);
+        if (isPrivateIp(address))
+            return callback(new Error("PRIVATE_DNS_BLOCKED"));
+        return callback(null, address, family);
+    });
+}
+export const safeHttpAgent = new http.Agent({ keepAlive: false, lookup: safeLookup });
+export const safeHttpsAgent = new https.Agent({ keepAlive: false, lookup: safeLookup });
+export function normalizeKazakhstanPhone(digits) {
+    if (!digits)
         return "";
-    const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-    const url = new URL(withProtocol);
-    return `${url.protocol}//${url.host}`;
+    let phone = String(digits).replace(/\D/g, "");
+    if (phone.startsWith("00"))
+        phone = phone.slice(2);
+    if (phone.length === 10)
+        phone = `7${phone}`;
+    if (phone.startsWith("8") && phone.length === 11)
+        phone = `7${phone.slice(1)}`;
+    return /^7\d{10}$/.test(phone) ? phone : "";
+}
+export function normalizePhone(value = "") {
+    return normalizeKazakhstanPhone(value);
+}
+export async function normalizePublicDomain(rawDomain = "") {
+    const input = String(rawDomain || "").trim();
+    if (!input || input.length > 255)
+        throw new Error("BAD_DOMAIN");
+    const parsed = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+    if (!["http:", "https:"].includes(parsed.protocol))
+        throw new Error("BAD_DOMAIN_PROTOCOL");
+    if (parsed.username || parsed.password)
+        throw new Error("BAD_DOMAIN_AUTH");
+    const host = parsed.hostname.toLowerCase();
+    if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) {
+        throw new Error("LOCAL_DOMAIN_BLOCKED");
+    }
+    if (net.isIP(host) && isPrivateIp(host)) {
+        throw new Error("PRIVATE_IP_BLOCKED");
+    }
+    const records = await Promise.race([
+        dns.lookup(host, { all: true }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("DNS_TIMEOUT")), 5000)),
+    ]);
+    if (!records.length || records.some((record) => isPrivateIp(record.address))) {
+        throw new Error("PRIVATE_DNS_BLOCKED");
+    }
+    return `${parsed.protocol}//${parsed.host}`;
 }
 async function apiBot(domain, payload, timeout = 10000) {
-    const safeDomain = normalizePublicDomain(domain);
+    const safeDomain = await normalizePublicDomain(domain);
     if (!safeDomain)
         throw new Error("DLE domain is empty");
     const response = await axios.post(`${safeDomain}/api_bot.php`, {
@@ -71,6 +135,10 @@ function normalizePaymentDetails(value) {
         .filter((item) => item.label && item.value);
 }
 export function normalizeRuntimeStatus(data = {}) {
+    const settings = safeJsonObject(data.settings, {});
+    const rawKitchenSettings = safeJsonObject(settings.kitchen_status, null);
+    const fetchedWaitTime = Number(rawKitchenSettings?.wait_time || 0) || 0;
+    const fetchedEmergency = rawKitchenSettings ? toBool(rawKitchenSettings.is_emergency, false) : false;
     const nested = safeJsonObject(data.runtime_status, null) ||
         safeJsonObject(data.kitchen_status, null) ||
         safeJsonObject(data.status, null) ||
@@ -93,6 +161,11 @@ export function normalizeRuntimeStatus(data = {}) {
             delivery: toBool(kitchen.delivery ?? nested.delivery ?? data.delivery, true),
             pickup: toBool(kitchen.pickup ?? nested.pickup ?? data.pickup, true),
             is_emergency: toBool(kitchen.is_emergency ?? nested.is_emergency ?? data.is_emergency, false),
+        },
+        fetched_settings: {
+            wait_time: fetchedWaitTime,
+            is_emergency: fetchedEmergency,
+            source: rawKitchenSettings ? "settings.kitchen_status" : "missing_settings.kitchen_status",
         },
         payment_details: normalizePaymentDetails(data.payment_details || nested.payment_details || kitchen.payment_details),
         source: data.source || "dle_spa_settings",

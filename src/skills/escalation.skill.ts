@@ -2,6 +2,7 @@ import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import type { FastFoodContext } from "../context/types.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
+import { getComplaintMedia } from "../services/redis.service.js";
 
 function normalizePhone(value = "") {
   return String(value || "").replace(/\D/g, "");
@@ -23,12 +24,29 @@ export function createEscalateToAdminSkill(ctx: FastFoodContext) {
     execute: async ({ reason, customerReply, urgency }) => {
       const liveConfig = (await getRestaurantConfig(ctx.instanceId).catch(() => null)) || {};
       const adminPhone = getAdminPhone(liveConfig);
+      const complaintMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
+      const orderInfo = ctx.activeOrder?.order_id || ctx.activeOrder?.id || "Табылмады";
+      const restaurantLabel = liveConfig.name || liveConfig.restaurant_name || ctx.config.name || ctx.instanceId;
+      const adminMsg = `${urgency === "high" ? "🚨 *ЖАҢА ШАҒЫМ*" : "⚠️ *ОПЕРАТОР КӨМЕГІ ҚАЖЕТ*"}\n🏪 *Ресторан:* ${restaurantLabel}\n📞 *Клиент:* +${ctx.phone}\n📌 *Тапсырыс №:* ${orderInfo}\n\n🧠 *AI Анализі:* ${reason}`;
       return {
         action: "escalate_to_admin",
         instanceId: ctx.instanceId,
         phone: ctx.phone,
         adminPhone: adminPhone || null,
         escalationAvailable: Boolean(adminPhone),
+        adminPayload: {
+          phone: adminPhone || null,
+          text: adminMsg,
+          media: complaintMedia?.base64
+            ? {
+                base64: complaintMedia.base64,
+                mimeType: complaintMedia.mediaType || complaintMedia.mimeType || "image/jpeg",
+                type: String(complaintMedia.mediaType || complaintMedia.mimeType || "image").includes("image")
+                  ? "image"
+                  : "document",
+              }
+            : null,
+        },
         reason,
         urgency,
         customerReply,

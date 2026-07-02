@@ -56,6 +56,12 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           domain: ctx.config.domain,
           work_hours: ctx.config.work_hours,
         },
+        sender_meta: {
+          pushName: ctx.senderMeta?.pushName || "",
+          contactName: ctx.senderMeta?.contactName || "",
+          contactShortName: ctx.senderMeta?.contactShortName || "",
+          contactPushName: ctx.senderMeta?.contactPushName || "",
+        },
         hard_realtime_context: {
           rule: "These facts are authoritative for this turn. Do not invent wait times, kitchen status, delivery status, pickup status, or shift notes outside this object.",
           ...ctx.hardRealtimeContext,

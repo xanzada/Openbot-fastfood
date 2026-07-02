@@ -1,4 +1,4 @@
-import { detectLang } from "../utils/language.js";
+import { detectLangWithFallback } from "../utils/language.js";
 import { buildMagicLink, hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/nocodb.service.js";
@@ -17,6 +17,7 @@ export interface InboundMessage {
   phone: string;
   text: string;
   mediaContext?: Record<string, any> | null;
+  senderMeta?: Record<string, any>;
 }
 
 export async function preloadContext(input: InboundMessage): Promise<FastFoodContext> {
@@ -40,7 +41,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     ]);
 
   const safeConfig = config || {};
-  const language = storedLang === "kk" || storedLang === "ru" ? storedLang : detectLang(text, null);
+  const language = await detectLangWithFallback(text, storedLang);
   const domain = safeConfig.domain || "";
 
   const [runtimeStatus, activeOrder, shporContext] = await Promise.all([
@@ -84,6 +85,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     instanceId,
     phone,
     text,
+    senderMeta: input.senderMeta || {},
     language,
     languagePolicy: {
       cached: Boolean(storedLang),

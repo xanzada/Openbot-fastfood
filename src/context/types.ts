@@ -2,6 +2,7 @@ export interface FastFoodContext {
   instanceId: string;
   phone: string;
   text: string;
+  senderMeta: Record<string, any>;
   language: "kk" | "ru";
   languagePolicy: Record<string, any>;
   config: Record<string, any>;

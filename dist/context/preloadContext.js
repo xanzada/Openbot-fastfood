@@ -1,4 +1,4 @@
-import { detectLang } from "../utils/language.js";
+import { detectLangWithFallback } from "../utils/language.js";
 import { buildMagicLink, hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/nocodb.service.js";
@@ -22,7 +22,7 @@ export async function preloadContext(input) {
         hasMagicLinkBeenSent(instanceId, phone).catch(() => false),
     ]);
     const safeConfig = config || {};
-    const language = detectLang(text, storedLang);
+    const language = await detectLangWithFallback(text, storedLang);
     const domain = safeConfig.domain || "";
     const [runtimeStatus, activeOrder, shporContext] = await Promise.all([
         domain
@@ -34,16 +34,50 @@ export async function preloadContext(input) {
         getShporContext(instanceId, text).catch(() => []),
     ]);
     await saveUserLang(instanceId, phone, language).catch(() => undefined);
+    const fetchedSettings = {
+        wait_time: Number(runtimeStatus?.fetched_settings?.wait_time || 0) || 0,
+        is_emergency: Boolean(runtimeStatus?.fetched_settings?.is_emergency),
+        source: runtimeStatus?.fetched_settings?.source || "missing_settings.kitchen_status",
+    };
+    const hardRealtimeContext = {
+        source: fetchedSettings.source,
+        fetched_at: runtimeStatus?.fetched_at || new Date().toISOString(),
+        kitchen_status: runtimeStatus?.kitchen_status
+            ? {
+                ...runtimeStatus.kitchen_status,
+                wait_time: fetchedSettings.wait_time,
+                is_emergency: fetchedSettings.is_emergency,
+            }
+            : null,
+        wait_time: fetchedSettings.wait_time,
+        delivery: runtimeStatus?.delivery ?? runtimeStatus?.kitchen_status?.delivery ?? null,
+        pickup: runtimeStatus?.pickup ?? runtimeStatus?.kitchen_status?.pickup ?? null,
+        is_emergency: fetchedSettings.is_emergency,
+        reset_at: Number(runtimeStatus?.reset_at || runtimeStatus?.kitchen_status?.reset_at || 0) || 0,
+        active_shift_notes: activeShiftNotes,
+        stale: Boolean(runtimeStatus?.stale || runtimeStatus?.is_stale || runtimeStatus?.stale_runtime_backup),
+    };
     return {
         instanceId,
         phone,
         text,
+        senderMeta: input.senderMeta || {},
         language,
+        languagePolicy: {
+            cached: Boolean(storedLang),
+            output: language === "ru" ? "pure_ru_only" : "pure_kk_only",
+            rule: language === "ru"
+                ? "Reply only in Russian. Do not mix Kazakh words into Russian sentences."
+                : "Reply only in Kazakh. Do not mix Russian words into Kazakh sentences.",
+        },
         config: safeConfig,
         runtimeStatus,
+        fetchedSettings,
+        hardRealtimeContext,
         activeOrder,
         chatHistory,
         activeShiftNotes,
+        mediaContext: input.mediaContext || null,
         shporContext,
         magicLinkAlreadySent,
         explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),

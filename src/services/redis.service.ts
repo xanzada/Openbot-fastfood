@@ -80,6 +80,8 @@ const CHAT_HISTORY_TTL_SECONDS = 604800;
 const CHAT_HISTORY_MAX_ITEMS = 120;
 const MAGIC_LINK_SENT_TTL_SECONDS = 2592000;
 const USER_LANG_TTL_SECONDS = 43200;
+const COMPLAINT_MEDIA_TTL_SECONDS = 300;
+const DAILY_LOG_TTL_SECONDS = 172800;
 
 export async function getChatHistory(instanceId: string, phone: string): Promise<any[]> {
   return safeRedis([], async () => {
@@ -123,6 +125,49 @@ export async function getUserLang(instanceId: string, phone: string): Promise<"k
 export async function saveUserLang(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<void> {
   await safeRedis(undefined, async () => {
     await redisClient.setEx(`lang:${instanceId}:${phone}`, USER_LANG_TTL_SECONDS, lang);
+  });
+}
+
+export async function saveComplaintMedia(
+  instanceId: string,
+  phone: string,
+  base64: string,
+  mimeType: string
+): Promise<void> {
+  if (!base64) return;
+  await safeRedis(undefined, async () => {
+    const key = `complaint_media:${instanceId}:${phone}`;
+    await redisClient.setEx(key, COMPLAINT_MEDIA_TTL_SECONDS, JSON.stringify({ base64, mimeType }));
+  });
+}
+
+export async function getComplaintMedia(instanceId: string, phone: string): Promise<Record<string, any> | null> {
+  return safeRedis(null, async () => {
+    try {
+      const data = await redisClient.get(`complaint_media:${instanceId}:${phone}`);
+      return data ? JSON.parse(data) : null;
+    } catch (error: any) {
+      console.warn(`[REDIS] getComplaintMedia read failed (${phone}):`, error?.message || error);
+      return null;
+    }
+  });
+}
+
+export async function clearComplaintMedia(instanceId: string, phone: string): Promise<void> {
+  await safeRedis(undefined, async () => {
+    await redisClient.del(`complaint_media:${instanceId}:${phone}`);
+  });
+}
+
+export async function saveDailyLog(instanceId: string, logData: Record<string, any>): Promise<void> {
+  await safeRedis(undefined, async () => {
+    const key = `daily_logs:${instanceId}`;
+    try {
+      await redisClient.rPush(key, JSON.stringify(logData));
+      await redisClient.expire(key, DAILY_LOG_TTL_SECONDS);
+    } catch (error: any) {
+      console.error(`[REDIS] Daily log save failed (${instanceId}):`, error?.message || error);
+    }
   });
 }
 

@@ -29,6 +29,10 @@ function compactOrder(order) {
 }
 export function buildFactsPrompt(ctx) {
     const runtime = compactRuntime(ctx.runtimeStatus);
+    if (runtime) {
+        runtime.wait_time = Number(ctx.fetchedSettings?.wait_time || 0);
+        runtime.is_emergency = Boolean(ctx.fetchedSettings?.is_emergency);
+    }
     const activeOrder = compactOrder(ctx.activeOrder);
     const notes = ctx.activeShiftNotes.map((note) => ({
         id: note.id,
@@ -41,15 +45,27 @@ export function buildFactsPrompt(ctx) {
         JSON.stringify({
             now_iso: new Date().toISOString(),
             language: ctx.language,
+            language_policy: ctx.languagePolicy,
             restaurant: {
                 instance_id: ctx.instanceId,
                 name: ctx.config.name,
                 domain: ctx.config.domain,
                 work_hours: ctx.config.work_hours,
             },
+            sender_meta: {
+                pushName: ctx.senderMeta?.pushName || "",
+                contactName: ctx.senderMeta?.contactName || "",
+                contactShortName: ctx.senderMeta?.contactShortName || "",
+                contactPushName: ctx.senderMeta?.contactPushName || "",
+            },
+            hard_realtime_context: {
+                rule: "These facts are authoritative for this turn. Do not invent wait times, kitchen status, delivery status, pickup status, or shift notes outside this object.",
+                ...ctx.hardRealtimeContext,
+            },
             runtime_status: runtime,
             active_order: activeOrder,
             active_shift_notes: notes,
+            inbound_media: ctx.mediaContext,
             magic_link: {
                 already_sent: ctx.magicLinkAlreadySent,
                 explicit_request: ctx.explicitMenuLinkIntent,

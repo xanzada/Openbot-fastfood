@@ -4,6 +4,27 @@ export const redisClient = createClient({
     url: process.env.REDIS_URL || "redis://localhost:6379",
 });
 let redisReady = null;
+let redisConnectLogged = false;
+export function getRedisTarget() {
+    const raw = process.env.REDIS_URL || "redis://localhost:6379";
+    try {
+        const url = new URL(raw);
+        return {
+            host: url.hostname || "unknown",
+            port: url.port || "6379",
+            database: url.pathname?.replace("/", "") || "0",
+            configured: Boolean(process.env.REDIS_URL),
+        };
+    }
+    catch {
+        return {
+            host: "invalid-url",
+            port: "",
+            database: "",
+            configured: Boolean(process.env.REDIS_URL),
+        };
+    }
+}
 redisClient.on("error", (error) => {
     console.error("[REDIS] error:", error?.message || error);
 });
@@ -11,9 +32,27 @@ export async function connectRedis() {
     if (redisClient.isOpen)
         return;
     if (!redisReady) {
-        redisReady = redisClient.connect().then(() => undefined);
+        const target = getRedisTarget();
+        if (!redisConnectLogged) {
+            console.log(`[OPENBOT:REDIS] connecting host=${target.host} port=${target.port} db=${target.database}`);
+            redisConnectLogged = true;
+        }
+        redisReady = redisClient
+            .connect()
+            .then(() => {
+            console.log(`[OPENBOT:REDIS] connected host=${target.host} port=${target.port}`);
+        })
+            .catch((error) => {
+            redisReady = null;
+            console.error(`[OPENBOT:REDIS] connect failed host=${target.host} port=${target.port}:`, error?.message || error);
+            throw error;
+        });
     }
     await redisReady;
+}
+export async function pingRedis() {
+    await connectRedis();
+    return redisClient.ping();
 }
 async function safeRedis(fallback, fn) {
     try {
@@ -33,6 +72,9 @@ function magicLinkKey(instanceId, phone) {
 const CHAT_HISTORY_TTL_SECONDS = 604800;
 const CHAT_HISTORY_MAX_ITEMS = 120;
 const MAGIC_LINK_SENT_TTL_SECONDS = 2592000;
+const USER_LANG_TTL_SECONDS = 43200;
+const COMPLAINT_MEDIA_TTL_SECONDS = 300;
+const DAILY_LOG_TTL_SECONDS = 172800;
 export async function getChatHistory(instanceId, phone) {
     return safeRedis([], async () => {
         const raw = await redisClient.lRange(historyKey(instanceId, phone), 0, -1);
@@ -68,7 +110,44 @@ export async function getUserLang(instanceId, phone) {
 }
 export async function saveUserLang(instanceId, phone, lang) {
     await safeRedis(undefined, async () => {
-        await redisClient.setEx(`lang:${instanceId}:${phone}`, 604800, lang);
+        await redisClient.setEx(`lang:${instanceId}:${phone}`, USER_LANG_TTL_SECONDS, lang);
+    });
+}
+export async function saveComplaintMedia(instanceId, phone, base64, mimeType) {
+    if (!base64)
+        return;
+    await safeRedis(undefined, async () => {
+        const key = `complaint_media:${instanceId}:${phone}`;
+        await redisClient.setEx(key, COMPLAINT_MEDIA_TTL_SECONDS, JSON.stringify({ base64, mimeType }));
+    });
+}
+export async function getComplaintMedia(instanceId, phone) {
+    return safeRedis(null, async () => {
+        try {
+            const data = await redisClient.get(`complaint_media:${instanceId}:${phone}`);
+            return data ? JSON.parse(data) : null;
+        }
+        catch (error) {
+            console.warn(`[REDIS] getComplaintMedia read failed (${phone}):`, error?.message || error);
+            return null;
+        }
+    });
+}
+export async function clearComplaintMedia(instanceId, phone) {
+    await safeRedis(undefined, async () => {
+        await redisClient.del(`complaint_media:${instanceId}:${phone}`);
+    });
+}
+export async function saveDailyLog(instanceId, logData) {
+    await safeRedis(undefined, async () => {
+        const key = `daily_logs:${instanceId}`;
+        try {
+            await redisClient.rPush(key, JSON.stringify(logData));
+            await redisClient.expire(key, DAILY_LOG_TTL_SECONDS);
+        }
+        catch (error) {
+            console.error(`[REDIS] Daily log save failed (${instanceId}):`, error?.message || error);
+        }
     });
 }
 export async function hasMagicLinkBeenSent(instanceId, phone) {

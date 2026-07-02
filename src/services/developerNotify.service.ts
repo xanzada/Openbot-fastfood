@@ -18,7 +18,7 @@ export async function notifyDeveloperSystemFailure(
   if (!safeInstanceId) return false;
 
   const config = (await getRestaurantConfig(safeInstanceId).catch(() => null)) || {};
-  const developerPhone = normalizePhone(config.developer_phone);
+  const developerPhone = normalizePhone(config.developer || config.developer_phone || config.dev_phone || process.env.DEVELOPER_PHONE);
   if (!developerPhone) return false;
 
   await sendWhatsProMessage({

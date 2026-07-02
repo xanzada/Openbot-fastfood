@@ -10,8 +10,45 @@ const DUPLICATE_TEXT_SECONDS = 5;
 const PROCESSING_LOCK_SECONDS = 180;
 const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
+const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS || 300);
 const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|mpeg|mp3|wav))(?:;.*)?$/i;
+const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || [
+  "мама",
+  "мам",
+  "папа",
+  "пап",
+  "ана",
+  "әке",
+  "аке",
+  "апа",
+  "ата",
+  "әже",
+  "аже",
+  "нағашы",
+  "нагашы",
+  "аға",
+  "ага",
+  "әпке",
+  "апке",
+  "тәте",
+  "тате",
+  "көке",
+  "коке",
+  "брат",
+  "сестра",
+  "жена",
+  "муж",
+  "дос",
+  "бауырым",
+  "карындас",
+  "қарындас",
+  "сіңлі",
+  "синли",
+].join(","))
+  .split(",")
+  .map((item) => item.trim().toLowerCase())
+  .filter(Boolean);
 
 export interface InboundMediaContext {
   hasMedia: boolean;
@@ -23,12 +60,17 @@ export interface InboundMediaContext {
   flags: string[];
   caption?: string;
   messageId?: string;
+  base64?: string;
+  dataUrl?: string;
+  mediaType?: string;
+  analysis?: Record<string, any>;
   historyLabel: string;
 }
 
 export interface GuardResult {
   blocked: boolean;
   reason?: string;
+  source?: string;
 }
 
 function sha1(value = "") {
@@ -71,6 +113,26 @@ function normalizeMimeBase(mimeType = "") {
   return String(mimeType || "").split(";")[0].trim().toLowerCase();
 }
 
+function normalizeContactText(value: unknown) {
+  return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function tokenizeContactText(value: unknown) {
+  return normalizeContactText(value).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+function hasPrivateKeyword(values: unknown[]) {
+  const contactTokens = values.flatMap(tokenizeContactText);
+  if (!contactTokens.length) return false;
+
+  const tokenText = ` ${contactTokens.join(" ")} `;
+  return PRIVATE_CONTACT_KEYWORDS.some((keyword) => {
+    const keywordTokens = tokenizeContactText(keyword);
+    if (!keywordTokens.length) return false;
+    return tokenText.includes(` ${keywordTokens.join(" ")} `);
+  });
+}
+
 function defaultMimeForKind(kind: InboundMediaContext["kind"], rawMedia: any) {
   if (kind === "image") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "image/jpeg";
   if (kind === "audio") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "audio/ogg";
@@ -103,6 +165,17 @@ export function extractInboundText(body: any): string {
     msg?.videoMessage?.caption,
     msg?.documentMessage?.caption
   );
+}
+
+export function extractSenderMeta(body: any) {
+  const eventData = body?.data || body || {};
+  return {
+    pushName: eventData.pushName || body?.pushName || "",
+    contactName: eventData.contactName || body?.contactName || eventData.contact?.name || body?.contact?.name || "",
+    contactShortName: eventData.contact?.shortName || body?.contact?.shortName || "",
+    contactPushName: eventData.contact?.pushName || body?.contact?.pushName || "",
+    isMyContact: Boolean(eventData.isMyContact || body?.isMyContact || eventData.contact?.isMyContact || body?.contact?.isMyContact),
+  };
 }
 
 export function extractInboundMedia(body: any): InboundMediaContext | null {
@@ -162,8 +235,132 @@ export function extractInboundMedia(body: any): InboundMediaContext | null {
     flags,
     caption,
     messageId: extractMessageId(body) || undefined,
+    mediaType: mimeType,
     historyLabel,
   };
+}
+
+function cleanDataUrlBase64(value = "", fallbackMimeType = "application/octet-stream") {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.includes(";base64,")) {
+    const [prefix, data] = raw.split(";base64,");
+    const mimeType = prefix.replace(/^data:/i, "") || fallbackMimeType;
+    return { dataUrl: raw, base64: data || "", mimeType };
+  }
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw) && raw.length > 80) {
+    const cleanBase64 = raw.replace(/\s+/g, "");
+    return {
+      dataUrl: `data:${fallbackMimeType};base64,${cleanBase64}`,
+      base64: cleanBase64,
+      mimeType: fallbackMimeType,
+    };
+  }
+  return null;
+}
+
+function mediaDownloadUrl(body: any) {
+  return firstString(
+    body?.mediaUrl,
+    body?.downloadUrl,
+    body?.url,
+    body?.media?.url,
+    body?.media?.downloadUrl,
+    body?.media?.mediaUrl,
+    body?.data?.mediaUrl,
+    body?.data?.downloadUrl,
+    body?.data?.media?.url,
+    body?.message?.mediaUrl,
+    body?.message?.downloadUrl
+  );
+}
+
+function directMediaBase64(body: any) {
+  return firstString(
+    body?.base64,
+    body?.dataUrl,
+    body?.media?.base64,
+    body?.media?.data,
+    body?.media?.dataUrl,
+    body?.data?.base64,
+    body?.data?.media?.base64,
+    body?.message?.base64
+  );
+}
+
+function whatsproHeaders() {
+  const headers: Record<string, string> = {};
+  if (process.env.WHATSPRO_API_TOKEN) {
+    headers.authorization = `Bearer ${process.env.WHATSPRO_API_TOKEN}`;
+    headers["x-api-key"] = process.env.WHATSPRO_API_TOKEN;
+  }
+  return headers;
+}
+
+export async function getBase64Media(body: any, mediaContext: InboundMediaContext | null = extractInboundMedia(body)) {
+  const mimeType = mediaContext?.mimeType || firstString(body?.mimeType, body?.mediaType) || "application/octet-stream";
+  const direct = cleanDataUrlBase64(directMediaBase64(body), mimeType);
+  if (direct?.base64) return direct;
+
+  const url = mediaDownloadUrl(body);
+  if (!url) return null;
+
+  try {
+    const response = await fetch(url, { headers: whatsproHeaders() });
+    if (!response.ok) throw new Error(`MEDIA_HTTP_${response.status}`);
+
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > MAX_MEDIA_BYTES) throw new Error("MEDIA_TOO_LARGE");
+    const responseMimeType = response.headers.get("content-type")?.split(";")[0] || mimeType;
+    const base64 = Buffer.from(arrayBuffer).toString("base64");
+    return {
+      dataUrl: `data:${responseMimeType};base64,${base64}`,
+      base64,
+      mimeType: responseMimeType,
+    };
+  } catch (error: any) {
+    console.error("[DOWNLOAD MEDIA ERROR]:", error?.message || error);
+    return null;
+  }
+}
+
+export async function hydrateInboundMedia(body: any, mediaContext: InboundMediaContext | null): Promise<InboundMediaContext | null> {
+  if (!mediaContext) return null;
+  const downloaded = await getBase64Media(body, mediaContext);
+  if (!downloaded?.base64) return mediaContext;
+  return {
+    ...mediaContext,
+    mimeType: downloaded.mimeType || mediaContext.mimeType,
+    mediaType: downloaded.mimeType || mediaContext.mediaType,
+    sizeBytes: Math.floor(downloaded.base64.length * 0.75),
+    base64: downloaded.dataUrl,
+    dataUrl: downloaded.dataUrl,
+  };
+}
+
+async function getFreshOperatorMute(instanceId: string, phone: string) {
+  if (!redisClient.isOpen) return "";
+
+  const key = `mute:${instanceId}:${phone}`;
+  const value = String((await redisClient.get(key).catch(() => "")) || "");
+  if (!/^(muted|muted_by_agent)$/.test(value)) return "";
+
+  const ttl = await redisClient.ttl(key).catch(() => -2);
+  if (ttl < 0 || ttl > OPERATOR_MUTE_MAX_SECONDS) {
+    await redisClient.del(key).catch(() => undefined);
+    console.warn(`[OPERATOR MUTE] stale mute cleared: ${key}, ttl=${ttl}`);
+    return "";
+  }
+
+  return value;
+}
+
+export async function setOperatorAutoMute(instanceId: string, phone: string): Promise<void> {
+  const safeInstanceId = String(instanceId || "").trim();
+  const safePhone = String(phone || "").replace(/\D/g, "");
+  if (!safeInstanceId || !safePhone) return;
+  await connectRedis();
+  await redisClient.setEx(`mute:${safeInstanceId}:${safePhone}`, OPERATOR_MUTE_MAX_SECONDS, "muted_by_agent");
 }
 
 export async function guardIncomingMessage(input: {
@@ -172,6 +369,7 @@ export async function guardIncomingMessage(input: {
   text: string;
   messageId?: string;
   fromMe?: boolean;
+  senderMeta?: Record<string, any>;
 }): Promise<GuardResult> {
   const instanceId = String(input.instanceId || "").trim();
   const phone = String(input.phone || "").replace(/\D/g, "");
@@ -181,6 +379,17 @@ export async function guardIncomingMessage(input: {
   if (input.fromMe) return { blocked: true, reason: "fromMe" };
   if (!INSTANCE_RE.test(instanceId)) return { blocked: true, reason: "bad_instance" };
   if (!PHONE_RE.test(phone)) return { blocked: true, reason: "bad_phone" };
+
+  const privateNames = [
+    input.senderMeta?.contactName,
+    input.senderMeta?.contactShortName,
+    input.senderMeta?.contactPushName,
+    input.senderMeta?.pushName,
+    text,
+  ].filter(Boolean);
+  const ignoreSavedContacts = String(process.env.BOT_IGNORE_SAVED_CONTACTS || "false").trim().toLowerCase() === "true";
+  if (hasPrivateKeyword(privateNames)) return { blocked: true, reason: "private_contact_keyword" };
+  if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact)) return { blocked: true, reason: "private_saved_contact" };
 
   await connectRedis();
 
@@ -193,6 +402,12 @@ export async function guardIncomingMessage(input: {
       EX: PROCESSING_LOCK_SECONDS,
     });
     if (!lock) return { blocked: true, reason: "duplicate_processing" };
+  }
+
+  const operatorMute = await getFreshOperatorMute(instanceId, phone);
+  if (operatorMute) {
+    await markInboundDone(instanceId, messageId);
+    return { blocked: true, reason: "muted", source: "operator_override" };
   }
 
   if (await redisClient.get(`mute:${instanceId}:${phone}`)) {

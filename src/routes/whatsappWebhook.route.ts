@@ -2,19 +2,26 @@ import type { Router } from "express";
 import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
-import { saveToHistory } from "../services/redis.service.js";
+import { saveComplaintMedia, saveToHistory } from "../services/redis.service.js";
 import {
   clearInboundProcessing,
   extractInboundMedia,
+  extractSenderMeta,
   extractInboundText,
   extractMessageId,
   guardIncomingMessage,
+  hydrateInboundMedia,
   markInboundDone,
   saveMediaContext,
+  setOperatorAutoMute,
 } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
+import { normalizePhone } from "../services/dle.service.js";
+import { evaluateForShpor, getRestaurantConfig, saveToShpor } from "../services/nocodb.service.js";
+import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
+import { analyzeMedia } from "../services/mediaAnalysis.service.js";
 
 function maskPhone(phone = "") {
   const clean = String(phone || "").replace(/\D/g, "");
@@ -22,18 +29,32 @@ function maskPhone(phone = "") {
   return `${clean.slice(0, 3)}***${clean.slice(-3)}`;
 }
 
-function verifySecret(req: any, res: any, next: any) {
+function getInstanceId(body: any) {
+  return String(body?.instanceId || body?.instance || body?.restaurant_id || "").trim();
+}
+
+function getPhone(body: any) {
+  return normalizePhone(body?.phone || body?.senderPhone || body?.normalizedPhone || "");
+}
+
+async function verifySecret(req: any, res: any, next: any) {
   const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
-  if (!expected) return next();
   const got =
     req.headers.authorization?.replace(/^Bearer\s+/i, "") ||
     req.headers["x-api-key"] ||
     req.body?.token;
-  if (got !== expected) {
-    console.warn(`[OPENBOT:AUTH:FAIL] path=${req.path} reason=bad_token`);
-    return res.status(401).json({ ok: false, error: "unauthorized" });
+  if (expected && safeCompare(got, expected)) return next();
+
+  try {
+    const instanceId = getInstanceId(req.body || {});
+    if (!instanceId) throw new Error("INVALID_TENANT_SECRET");
+    const config = await getRestaurantConfig(instanceId);
+    assertTenantSecret(req, config, "webhook");
+    return next();
+  } catch (error: any) {
+    console.warn(`[OPENBOT:AUTH:FAIL] path=${req.path} reason=${error?.message || "bad_token"}`);
+    return res.status(error?.statusCode || 401).json({ ok: false, error: "unauthorized" });
   }
-  return next();
 }
 
 function isOwnWhatsAppMessage(body: any): boolean {
@@ -41,10 +62,11 @@ function isOwnWhatsAppMessage(body: any): boolean {
 }
 
 async function processWhatsAppWebhook(body: any, started: number) {
-  const instanceId = body.instanceId || body.instance || body.restaurant_id;
-  const phone = body.phone || body.senderPhone || body.normalizedPhone;
+  const instanceId = getInstanceId(body);
+  const phone = getPhone(body);
   const messageId = extractMessageId(body);
-  const mediaContext = extractInboundMedia(body);
+  let mediaContext = await hydrateInboundMedia(body, extractInboundMedia(body));
+  const senderMeta = extractSenderMeta(body);
   const text =
     extractInboundText(body) ||
     mediaContext?.caption ||
@@ -62,15 +84,22 @@ async function processWhatsAppWebhook(body: any, started: number) {
       text,
       messageId,
       fromMe: isOwnWhatsAppMessage(body),
+      senderMeta,
     });
     if (guard.blocked) {
+      if (guard.source === "operator_override") {
+        await saveToHistory(String(instanceId || ""), String(phone || ""), "user", text || mediaContext?.historyLabel || "[operator override]", {
+          source: "operator_override",
+          media: mediaContext,
+        });
+      }
       console.log(
         `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=${guard.reason || "blocked"} elapsed=${Date.now() - started}ms`
       );
       return;
     }
 
-    const ctx = await preloadContext({ instanceId, phone, text, mediaContext });
+    const ctx = await preloadContext({ instanceId, phone, text, mediaContext, senderMeta });
     console.log(
       `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`
     );
@@ -83,6 +112,23 @@ async function processWhatsAppWebhook(body: any, started: number) {
       await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: reply });
       await markInboundDone(ctx.instanceId, messageId);
       return;
+    }
+
+    if (mediaContext?.base64 && mediaContext.valid) {
+      const mediaAnalysis = await analyzeMedia(
+        mediaContext.base64,
+        mediaContext.mimeType || mediaContext.mediaType || "application/octet-stream",
+        text,
+        ctx.language,
+        (mediaContext.mimeType || "").includes("pdf")
+      );
+      if (mediaAnalysis) {
+        mediaContext = { ...mediaContext, analysis: mediaAnalysis };
+        ctx.mediaContext = mediaContext;
+        if (mediaAnalysis.type === "complaint" && mediaContext.base64) {
+          await saveComplaintMedia(ctx.instanceId, ctx.phone, mediaContext.base64, mediaContext.mimeType || mediaContext.mediaType || "image/jpeg");
+        }
+      }
     }
 
     await syncKanbanEvent(ctx, {
@@ -108,6 +154,17 @@ async function processWhatsAppWebhook(body: any, started: number) {
     await saveToHistory(ctx.instanceId, ctx.phone, "assistant", result.text, {
       source: "openbot-agent",
     });
+
+    void evaluateForShpor(ctx.text, result.text)
+      .then((evaluation) => {
+        if (evaluation.save) {
+          return saveToShpor(ctx.instanceId, ctx.text, result.text, evaluation.category || "faq", evaluation.memory || null);
+        }
+        return undefined;
+      })
+      .catch((error) => {
+        console.warn("[SHPOR:EVAL] async save skipped:", error?.message || error);
+      });
 
     const sendResult = await sendWhatsProResponseSequence({
       instanceId: ctx.instanceId,
@@ -135,6 +192,9 @@ export function whatsappWebhookRoute(): Router {
   router.post("/webhook/whatsapp", verifySecret, (req, res) => {
     const started = Date.now();
     if (isOwnWhatsAppMessage(req.body)) {
+      void setOperatorAutoMute(getInstanceId(req.body || {}), getPhone(req.body || {})).catch((error: any) => {
+        console.warn("[OPENBOT:OPERATOR:MUTE:FAIL]", error?.message || error);
+      });
       console.log(`[OPENBOT:INBOUND:SKIP] fromMe=true elapsed=${Date.now() - started}ms`);
       return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
     }
