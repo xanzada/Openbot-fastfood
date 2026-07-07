@@ -101,7 +101,7 @@ export async function getChatHistory(instanceId: string, phone: string): Promise
 export async function saveToHistory(
   instanceId: string,
   phone: string,
-  role: "user" | "assistant" | "system",
+  role: "user" | "assistant" | "system" | "operator" | "model",
   text: string,
   meta: Record<string, unknown> = {}
 ): Promise<void> {

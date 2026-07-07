@@ -1,6 +1,6 @@
 import type { Router } from "express";
 import { Router as createRouter } from "express";
-import { getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
+import { getPhoneCandidatesFromWebhook, getRuntimeStatus, normalizePhone, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { deleteShiftNote, saveShiftNote } from "../services/redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
@@ -35,7 +35,9 @@ function getInstanceId(body: Record<string, any>) {
 }
 
 function getPhone(body: Record<string, any>) {
-  return normalizePhone(body.phone || body.senderPhone || body.normalizedPhone || "");
+  const eventData = body.data || body;
+  const key = eventData.key || body.key || {};
+  return normalizePhoneFromCandidates(getPhoneCandidatesFromWebhook(body, eventData, key));
 }
 
 function paymentDetailsText(details: any[]) {
@@ -74,6 +76,18 @@ async function notifyKanbanDeveloperSiren(req: any, error: any) {
   }
 }
 
+function emitPrintNewOrder(req: any, orderData: Record<string, any>) {
+  const io = req.app.get("io");
+  if (!io) {
+    console.error("[SOCKET] Error: Socket.io (io) not found.");
+    return false;
+  }
+
+  io.emit("print_new_order", orderData);
+  console.log(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
+  return true;
+}
+
 export function systemRoute(): Router {
   const router = createRouter();
 
@@ -103,8 +117,13 @@ export function systemRoute(): Router {
       const instanceId = getInstanceId(body);
       const action = String(body.action || body.event || "").trim();
       const phone = getPhone(body);
+      const kanbanStatus = String(body?.status || body?.new_status || body?.order_status || "").trim();
 
       if (!instanceId) return res.status(400).json({ ok: false, error: "instance is required" });
+
+      if (kanbanStatus === "paid") {
+        emitPrintNewOrder(req, body);
+      }
 
       if (action === "shift_note_created") {
         await saveShiftNote(instanceId, body.id || body.note_id || body.key, body.text || body.note, body.expires_at || body.expiresAt);
@@ -146,8 +165,7 @@ export function systemRoute(): Router {
 
       const io = req.app.get("io");
       if (io && (action === "new_order" || action === "print_order" || body.print)) {
-        io.emit("print_new_order", body);
-        console.log(`[SOCKET] Print signal sent. Order: #${body.order_id || body.id || "-"}`);
+        emitPrintNewOrder(req, body);
       }
 
       return res.json({ ok: true, action: action || "noop" });
@@ -167,8 +185,7 @@ export function systemRoute(): Router {
       const io = req.app.get("io");
       const orderData = req.body || {};
       if (io) {
-        io.emit("print_new_order", orderData);
-        console.log(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
+        emitPrintNewOrder(req, orderData);
         res.status(200).send({ success: true, message: "Print signal sent to agent" });
       } else {
         console.error("[SOCKET] Error: Socket.io (io) not found.");

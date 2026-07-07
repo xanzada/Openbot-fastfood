@@ -18,7 +18,7 @@ import {
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
-import { normalizePhone } from "../services/dle.service.js";
+import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { evaluateForShpor, getRestaurantConfig, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { analyzeMedia } from "../services/mediaAnalysis.service.js";
@@ -34,7 +34,9 @@ function getInstanceId(body: any) {
 }
 
 function getPhone(body: any) {
-  return normalizePhone(body?.phone || body?.senderPhone || body?.normalizedPhone || "");
+  const eventData = body?.data || body || {};
+  const key = eventData?.key || body?.key || {};
+  return normalizePhoneFromCandidates(getPhoneCandidatesFromWebhook(body || {}, eventData, key));
 }
 
 async function verifySecret(req: any, res: any, next: any) {
@@ -189,12 +191,20 @@ async function processWhatsAppWebhook(body: any, started: number) {
 export function whatsappWebhookRoute(): Router {
   const router = createRouter();
 
-  router.post("/webhook/whatsapp", verifySecret, (req, res) => {
+  router.post("/webhook/whatsapp", verifySecret, async (req, res) => {
     const started = Date.now();
     if (isOwnWhatsAppMessage(req.body)) {
-      void setOperatorAutoMute(getInstanceId(req.body || {}), getPhone(req.body || {})).catch((error: any) => {
+      const instanceId = getInstanceId(req.body || {});
+      const phone = getPhone(req.body || {});
+      const opText = extractInboundText(req.body) || "[Оператор сөйледі]";
+      await setOperatorAutoMute(instanceId, phone).catch((error: any) => {
         console.warn("[OPENBOT:OPERATOR:MUTE:FAIL]", error?.message || error);
       });
+      if (instanceId && phone && opText) {
+        await saveToHistory(instanceId, phone, "operator", opText, { source: "operator_from_me" }).catch((error: any) => {
+          console.warn("[OPENBOT:OPERATOR:HISTORY:FAIL]", error?.message || error);
+        });
+      }
       console.log(`[OPENBOT:INBOUND:SKIP] fromMe=true elapsed=${Date.now() - started}ms`);
       return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
     }

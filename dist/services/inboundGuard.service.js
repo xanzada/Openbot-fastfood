@@ -11,7 +11,7 @@ const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
 const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS || 300);
 const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
-const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|mpeg|mp3|wav))(?:;.*)?$/i;
+const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
 const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || [
     "мама",
     "мам",
@@ -132,7 +132,7 @@ export function extractSenderMeta(body) {
         pushName: eventData.pushName || body?.pushName || "",
         contactName: eventData.contactName || body?.contactName || eventData.contact?.name || body?.contact?.name || "",
         contactShortName: eventData.contact?.shortName || body?.contact?.shortName || "",
-        contactPushName: eventData.contact?.pushName || body?.contact?.pushName || "",
+        contactPushName: eventData.contact?.pushName || eventData.contact?.pushname || body?.contact?.pushName || body?.contact?.pushname || "",
         isMyContact: Boolean(eventData.isMyContact || body?.isMyContact || eventData.contact?.isMyContact || body?.contact?.isMyContact),
     };
 }
@@ -169,7 +169,20 @@ export function extractInboundMedia(body) {
         flags.push("unsupported_mime_type");
     if (sizeBytes > MAX_MEDIA_BYTES)
         flags.push("media_too_large");
-    if (kind === "audio" && !["audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav"].includes(mimeBase)) {
+    if (kind === "audio" &&
+        ![
+            "audio/ogg",
+            "audio/opus",
+            "audio/mpeg",
+            "audio/mp3",
+            "audio/wav",
+            "audio/x-wav",
+            "audio/webm",
+            "audio/mp4",
+            "audio/m4a",
+            "audio/aac",
+            "audio/flac",
+        ].includes(mimeBase)) {
         flags.push("unsupported_audio_mime");
     }
     if (kind === "unknown")

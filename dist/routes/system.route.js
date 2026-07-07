@@ -1,5 +1,5 @@
 import { Router as createRouter } from "express";
-import { getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
+import { getPhoneCandidatesFromWebhook, getRuntimeStatus, normalizePhone, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { deleteShiftNote, saveShiftNote } from "../services/redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
@@ -32,7 +32,9 @@ function getInstanceId(body) {
     return String(body.instanceId || body.instance || body.restaurant_id || "").trim();
 }
 function getPhone(body) {
-    return normalizePhone(body.phone || body.senderPhone || body.normalizedPhone || "");
+    const eventData = body.data || body;
+    const key = eventData.key || body.key || {};
+    return normalizePhoneFromCandidates(getPhoneCandidatesFromWebhook(body, eventData, key));
 }
 function paymentDetailsText(details) {
     if (!details.length)
@@ -68,6 +70,16 @@ async function notifyKanbanDeveloperSiren(req, error) {
         console.error("[DEV SIREN FAILED]:", devError?.message || devError);
     }
 }
+function emitPrintNewOrder(req, orderData) {
+    const io = req.app.get("io");
+    if (!io) {
+        console.error("[SOCKET] Error: Socket.io (io) not found.");
+        return false;
+    }
+    io.emit("print_new_order", orderData);
+    console.log(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
+    return true;
+}
 export function systemRoute() {
     const router = createRouter();
     router.get("/health", (_req, res) => {
@@ -94,8 +106,12 @@ export function systemRoute() {
             const instanceId = getInstanceId(body);
             const action = String(body.action || body.event || "").trim();
             const phone = getPhone(body);
+            const kanbanStatus = String(body?.status || body?.new_status || body?.order_status || "").trim();
             if (!instanceId)
                 return res.status(400).json({ ok: false, error: "instance is required" });
+            if (kanbanStatus === "paid") {
+                emitPrintNewOrder(req, body);
+            }
             if (action === "shift_note_created") {
                 await saveShiftNote(instanceId, body.id || body.note_id || body.key, body.text || body.note, body.expires_at || body.expiresAt);
                 return res.json({ ok: true, action, saved: true });
@@ -133,8 +149,7 @@ export function systemRoute() {
             }
             const io = req.app.get("io");
             if (io && (action === "new_order" || action === "print_order" || body.print)) {
-                io.emit("print_new_order", body);
-                console.log(`[SOCKET] Print signal sent. Order: #${body.order_id || body.id || "-"}`);
+                emitPrintNewOrder(req, body);
             }
             return res.json({ ok: true, action: action || "noop" });
         }
@@ -153,8 +168,7 @@ export function systemRoute() {
             const io = req.app.get("io");
             const orderData = req.body || {};
             if (io) {
-                io.emit("print_new_order", orderData);
-                console.log(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
+                emitPrintNewOrder(req, orderData);
                 res.status(200).send({ success: true, message: "Print signal sent to agent" });
             }
             else {

@@ -4,7 +4,10 @@ import net from "node:net";
 import * as dnsCallback from "node:dns";
 import dns from "node:dns/promises";
 import axios from "axios";
-import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
+import { deleteCache, getJsonCache, saveDailyLog, setJsonCache } from "./redis.service.js";
+const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
+const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;
+const LID_JID_RE = /@lid$/i;
 function normalizeIp(ip) {
     return String(ip || "").replace(/^::ffff:/i, "");
 }
@@ -51,8 +54,58 @@ export function normalizeKazakhstanPhone(digits) {
         phone = `7${phone.slice(1)}`;
     return /^7\d{10}$/.test(phone) ? phone : "";
 }
+export function isGroupOrStatusJid(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    return GROUP_OR_STATUS_RE.test(raw);
+}
+export function extractPhoneCandidate(rawValue) {
+    const raw = String(rawValue || "").trim();
+    if (!raw || isGroupOrStatusJid(raw))
+        return "";
+    if (LID_JID_RE.test(raw))
+        return "";
+    const phoneLikeMatch = raw.match(/(?:\+?7|8)[\s().-]*\d{3}[\s().-]*\d{3}[\s().-]*\d{2}[\s().-]*\d{2}/) ||
+        raw.match(/\d{10,15}/);
+    return phoneLikeMatch ? phoneLikeMatch[0] : "";
+}
 export function normalizePhone(value = "") {
-    return normalizeKazakhstanPhone(value);
+    return normalizeKazakhstanPhone(extractPhoneCandidate(value));
+}
+export function normalizePhoneFromCandidates(candidates = []) {
+    for (const candidate of candidates) {
+        const phone = normalizePhone(candidate);
+        if (phone)
+            return phone;
+    }
+    return "";
+}
+export function getPhoneCandidatesFromWebhook(data = {}, eventData = {}, key = {}) {
+    return [
+        eventData.normalizedPhone,
+        data.normalizedPhone,
+        eventData.senderPhone,
+        data.senderPhone,
+        eventData.phone,
+        data.phone,
+        typeof eventData.sender === "string" ? eventData.sender : "",
+        typeof data.sender === "string" ? data.sender : "",
+        key.participant,
+        key.remoteJid,
+        key.id?.remote,
+    ];
+}
+export function toWhatsAppChatId(value, jidLookup = null) {
+    const raw = String(value || "").trim();
+    if (!raw || isGroupOrStatusJid(raw))
+        return "";
+    const phone = normalizePhone(raw);
+    if (phone && jidLookup && jidLookup.has(phone))
+        return jidLookup.get(phone) || "";
+    if (PHONE_JID_RE.test(raw) || LID_JID_RE.test(raw))
+        return raw;
+    if (phone)
+        return `${phone}@c.us`;
+    return "";
 }
 export async function normalizePublicDomain(rawDomain = "") {
     const input = String(rawDomain || "").trim();
@@ -366,7 +419,15 @@ export async function updateCrmAction(actionType, instanceId, phone, data) {
         });
     }
     try {
-        return await apiBot(domain, payload, 10000);
+        const response = await apiBot(domain, payload, 10000);
+        await saveDailyLog(instanceId, {
+            action: actionType,
+            phone: cleanPhone,
+            ...data,
+        }).catch((error) => {
+            console.error("[CRM] Daily log save error:", error?.message || error);
+        });
+        return response;
     }
     catch (error) {
         console.error(`[CRM] update failed (${actionType}/${instanceId}/${cleanPhone}):`, error?.message || error);
