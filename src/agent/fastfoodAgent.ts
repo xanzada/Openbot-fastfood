@@ -26,9 +26,11 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     maxSteps: 6,
   });
 
-  const text = validateFinalText(result.text, ctx);
+  const validation = validateFinalText(result.text, ctx);
   return {
-    text,
+    text: validation.text,
+    hasLink: validation.hasLink,
+    link: ctx.magicLink,
     rawText: result.text,
     usage: result.usage,
     finishReason: result.finishReason,

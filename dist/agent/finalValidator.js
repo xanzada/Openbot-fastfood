@@ -1,21 +1,34 @@
-const WAIT_SENTENCE_RE = /[^.!?\n]*(?:\b(?:30|40|50|60|90|120)\s*(?:мин|минут|minute|min|РјРёРЅ|РјРёРЅСѓС‚)\b|күту|кідіріс|күт|ожидан|задерж|РєТЇС‚Сѓ|РєС–РґС–СЂС–СЃ|РєТЇС‚|РѕР¶РёРґР°РЅ|Р·Р°РґРµСЂР¶)[^.!?\n]*[.!?]?/giu;
-const ORDER_STATUS_RE = /(тапсырысыңыз|заказыңыз|заказ|order|С‚Р°РїСЃС‹СЂС‹СЃС‹ТЈС‹Р·|Р·Р°РєР°Р·С‹ТЈС‹Р·).*(дайындалып|әзірленіп|курьер|жолда|жеткіз|аяқтал|готов|едет|достав|РґР°Р№С‹РЅРґР°Р»С‹Рї|У™Р·С–СЂР»РµРЅС–Рї|РєСѓСЂСЊРµСЂ|Р¶РѕР»РґР°|Р¶РµС‚РєС–Р·|Р°СЏТ›С‚Р°Р»|РіРѕС‚РѕРІ|РµРґРµС‚|РґРѕСЃС‚Р°РІ)/iu;
-const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІУ™Т“Т›ТЈУ©Т±ТЇС–УТ’ТљТўУЁТ°Т®Р†]/u;
-const RUSSIAN_SERVICE_WORD_RE = /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ|РІС‹|РІР°С€|РІР°С€Р°|РјРѕР¶РµС‚Рµ|РїРѕР¶Р°Р»СѓР№СЃС‚Р°|Р·Р°РєР°Р·|РјРµРЅСЋ|СЃСЃС‹Р»РєР°|РѕРїР»Р°С‚Р°|РґРѕСЃС‚Р°РІРєР°|СЃРµР№С‡Р°СЃ|РµСЃР»Рё|РґР»СЏ|С‡РµСЂРµР·|РѕРїРµСЂР°С‚РѕСЂ|Р°РґРјРёРЅ)\b/iu;
-const OTHER_CITY_DELIVERY_RE = /(зачаганск|зашаған|зачаган|зачаганскқа|зачаганскка|зачаған|zachagansk|zachagan|zashaған|басқа\s+қала|баска\s+кала|другой\s+город|другую\s+город|в\s+другой\s+город|Р·Р°С‡Р°РіР°РЅСЃРє|Р·Р°С€Р°Т“Р°РЅ|Р·Р°С‡Р°РіР°РЅ|Р±Р°СЃТ›Р°\s+Т›Р°Р»Р°|Р±Р°СЃРєР°\s+РєР°Р»Р°|РґСЂСѓРіРѕР№\s+РіРѕСЂРѕРґ)/iu;
-function fallback(ctx) {
-    return ctx.language === "kk"
-        ? "Қалай көмектесе аламын? Мәзір, тапсырыс немесе төлем бойынша сұрай беріңіз."
-        : "Как могу помочь? Можете спросить про меню, заказ или оплату.";
+const WAIT_SENTENCE_RE = /[^.!?\n]*(?:\b(?:30|40|50|60|90|120)\s*(?:мин|минут|minute|min)\b|күту|кідіріс|күт|ожидан|задерж)[^.!?\n]*[.!?]?/giu;
+const ORDER_STATUS_RE = /(тапсырысыңыз|заказыңыз|заказ|order).*(дайындалып|әзірленіп|курьер|жолда|жеткіз|аяқтал|готов|едет|достав|дайын|әзір|даяр)/iu;
+const KITCHEN_STATUS_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|дайындал|готов|жұмыс істеп|жабық|closed|работает)/iu;
+const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІУ™Т“Т›ТЈУ©Т±ТЇС–УТ’ТљТўУЁТ°Т®]/u;
+const RUSSIAN_SERVICE_WORD_RE = /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ)\b/iu;
+const OTHER_CITY_DELIVERY_RE = /(зачаганск|зашаған|зачаган|zachagansk|zachagan|zashaған|басқа\s+қала|баска\s+кала|другой\s+город|в\s+другой\s+город)/iu;
+const MENU_TOPIC_RE = /(мәзір|меню|menu|бар ма|барма|каталог|catalog|пицц|бургер|донер|шаурм|салат|суп|напит|десерт|комбо|сеты|ассортимент|не бар|что есть|прайс|баға|цена|сколько стоит|қанша тұра|қанша тура|прейскурант)/iu;
+const PAYMENT_TOPIC_RE = /(төлем|оплат|kaspi|halyk|карт|реквизит|перевод|аудар|чек|receipt|қолма-қол|налич)/iu;
+const DELIVERY_TOPIC_RE = /(жеткіз|достав|курьер|courier|jetkiz|aparyp|алып кел)/iu;
+const ORDER_TOPIC_RE = /(тапсырыс|заказ|order|статус|status|қашан бола|когда будет|дайын ба|готов ли)/iu;
+const BONUS_TOPIC_RE = /(бонус|скидк|жеңілд|акци|promo|промо|жарна|купон)/iu;
+const MENU_LINK_SENT_RE = /(алдыңғы сілтеме|предыдущ ссылк|ескі сілтеме|стара ссылка)/iu;
+function sentenceCount(text) {
+    const trimmed = text.trim();
+    if (!trimmed)
+        return 0;
+    const sentences = trimmed.match(/[^.!?]*[.!?]+/g);
+    return sentences ? sentences.length : 1;
 }
-function noActiveOrderText(ctx) {
-    return ctx.language === "kk"
-        ? "Қазір сіздің белсенді тапсырысыңыз көрінбей тұр. Тапсырыс беру үшін мәзір сілтемесін қолдана аласыз."
-        : "Сейчас активный заказ не отображается. Для оформления можно воспользоваться ссылкой меню.";
+function enforceMaxSentences(text, max = 2) {
+    const trimmed = text.trim();
+    if (!trimmed)
+        return text;
+    const sentences = trimmed.match(/[^.!?]*[.!?]+/g);
+    if (!sentences || sentences.length <= max)
+        return text;
+    return sentences.slice(0, max).join(" ").trim();
 }
 function stripBotTags(text) {
     return String(text || "")
-        .replace(/\[(?:Системный Анализ|РЎРёСЃС‚РµРјРЅС‹Р№ РђРЅР°Р»РёР·|System Analysis):[\s\S]*?\]/gi, "")
+        .replace(/\[(?:Системный Анализ|System Analysis):[\s\S]*?\]/gi, "")
         .replace(/\[ESCALATE_ADMIN\]/gi, "")
         .replace(/\[ESCALATE_DEVELOPER\]/gi, "")
         .replace(/\[IGNORE_MESSAGE\]/gi, "")
@@ -23,11 +36,36 @@ function stripBotTags(text) {
         .replace(/\*/g, "")
         .trim();
 }
+function fallback(ctx) {
+    return ctx.language === "kk"
+        ? "Қалай көмектесе аламын? 😊"
+        : "Как могу помочь? 😊";
+}
+function noActiveOrderText(ctx) {
+    return ctx.language === "kk"
+        ? "Қазір белсенді тапсырысыңыз жоқ."
+        : "Сейчас нет активного заказа.";
+}
+function runtimeUnavailableText(ctx) {
+    return ctx.language === "kk"
+        ? "Қазір асүй статусын тексере алмаймын. Кейін қайталап жазыңыз."
+        : "Не могу проверить статус кухни. Напишите позже.";
+}
+function deliveryAreaText(ctx, areas) {
+    if (ctx.language === "ru") {
+        return areas.length
+            ? `Да, доставка есть. Зоны: ${areas.join(", ")}.`
+            : "Да, доставка есть.";
+    }
+    return areas.length
+        ? `Иә, жеткізу бар. Аймақтар: ${areas.join(", ")}.`
+        : "Иә, жеткізу бар.";
+}
 function asksDelivery(text = "") {
     const ascii = String(text || "").toLowerCase();
     if (/(delivery|dostavka|kurier|courier|jetkizu|zhetkizu|alyp\s+kel|aparyp|aparyp\s+ber)/i.test(ascii))
         return true;
-    return /(доставка|курьер|жеткізу|жетк[іi]з|апарып|алып кел|РґРѕСЃС‚Р°РІРєР°|РєСѓСЂСЊРµСЂ|Р¶РµС‚РєС–Р·Сѓ|Р¶РµС‚Рє[С–i]Р·|Р°РїР°СЂС‹Рї|Р°Р»С‹Рї РєРµР»)/iu.test(String(text || ""));
+    return /(доставка|курьер|жеткізу|жетк[іi]з|апарып|алып кел)/iu.test(String(text || ""));
 }
 function normalizeAreaList(value) {
     if (Array.isArray(value))
@@ -52,48 +90,88 @@ function buildDeliveryAreaReply(ctx) {
         return "";
     if (OTHER_CITY_DELIVERY_RE.test(String(ctx.text || ""))) {
         return ctx.language === "ru"
-            ? "Извините, в другой город доставку не обещаем. Доставка работает только по зоне ресторана; точный адрес проверяется при оформлении заказа."
-            : "Кешіріңіз, басқа қалаға жеткіземіз деп айта алмаймыз. Жеткізу тек ресторанның қызмет аймағында, нақты мекенжай тапсырыс рәсімдегенде тексеріледі.";
+            ? "Извините, в другой город доставку не обещаем."
+            : "Кешіріңіз, басқа қалаға жеткізе алмаймыз.";
     }
     const areas = getConfiguredDeliveryAreas(ctx.config);
+    if (areas.length)
+        return deliveryAreaText(ctx, areas);
     const deliveryInfo = String(ctx.config.delivery_info || ctx.config.delivery_terms || "").trim();
-    if (areas.length) {
-        return ctx.language === "ru"
-            ? `Да, доставка есть. Зоны доставки: ${areas.join(", ")}. Точный адрес система проверит при оформлении заказа.`
-            : `Иә, жеткізу бар. Жеткізу аймақтары: ${areas.join(", ")}. Нақты мекенжай тапсырыс рәсімдеген кезде тексеріледі.`;
-    }
     if (deliveryInfo && ctx.runtimeStatus?.is_accepting_orders !== false && ctx.runtimeStatus?.delivery === true) {
         return deliveryInfo;
     }
     if (ctx.runtimeStatus && ctx.runtimeStatus.is_accepting_orders !== false && ctx.runtimeStatus.delivery === true) {
-        return ctx.language === "ru"
-            ? "Да, доставка есть. Точный адрес и зону доставки система проверит при оформлении заказа."
-            : "Иә, жеткізу бар. Нақты мекенжай мен жеткізу аймағы тапсырыс рәсімдеген кезде тексеріледі.";
+        return deliveryAreaText(ctx, []);
     }
     return "";
 }
+function isOnlyMenuQuestion(text) {
+    const t = String(text || "").toLowerCase();
+    const hasMenu = MENU_TOPIC_RE.test(t);
+    const hasPayment = PAYMENT_TOPIC_RE.test(t);
+    const hasDelivery = DELIVERY_TOPIC_RE.test(t);
+    const hasOrder = ORDER_TOPIC_RE.test(t);
+    const hasBonus = BONUS_TOPIC_RE.test(t);
+    return hasMenu && !hasPayment && !hasDelivery && !hasOrder && !hasBonus;
+}
+function hasLinkInResponse(text) {
+    return /https?:\/\/[^\s<>"')\]]+/i.test(text);
+}
+function removeUnrelatedSentences(text, keepPattern) {
+    const sentences = text.match(/[^.!?]*[.!?]+/g) || [text];
+    const kept = sentences.filter((s) => keepPattern.test(s));
+    return kept.length > 0 ? kept.join(" ").trim() : text;
+}
 export function validateFinalText(rawText, ctx) {
     let text = stripBotTags(String(rawText || "").trim());
+    const hasLink = hasLinkInResponse(text);
     if (!text)
-        return fallback(ctx);
+        return { text: fallback(ctx), hasLink: false };
+    // 1. Delivery area check — must run before any other processing
     const deliveryAreaReply = buildDeliveryAreaReply(ctx);
     if (deliveryAreaReply)
-        return deliveryAreaReply;
+        return { text: deliveryAreaReply, hasLink: false };
+    // 2. Language purity check
     if (ctx.language === "ru" && KAZAKH_SPECIFIC_RE.test(text)) {
-        return fallback(ctx);
+        return { text: fallback(ctx), hasLink: false };
     }
     if (ctx.language === "kk" && RUSSIAN_SERVICE_WORD_RE.test(text)) {
-        return fallback(ctx);
+        return { text: fallback(ctx), hasLink: false };
     }
+    // 3. Runtime unavailable → block kitchen mentions
+    if (!ctx.runtimeStatus || ctx.hardRealtimeContext?.stale) {
+        if (KITCHEN_STATUS_RE.test(text)) {
+            return { text: runtimeUnavailableText(ctx), hasLink: false };
+        }
+    }
+    // 4. Wait time = 0 → strip wait sentences
     const liveWaitTime = Number(ctx.fetchedSettings?.wait_time || 0);
     if (!liveWaitTime) {
         text = text.replace(WAIT_SENTENCE_RE, "").replace(/\s{2,}/g, " ").trim();
     }
+    // 5. No active order → strip order status mentions
     if (!ctx.activeOrder && ORDER_STATUS_RE.test(text)) {
-        return noActiveOrderText(ctx);
+        return { text: noActiveOrderText(ctx), hasLink: false };
     }
-    if (ctx.magicLinkAlreadySent && !ctx.explicitMenuLinkIntent && ctx.magicLink) {
-        text = text.replace(ctx.magicLink, "").trim();
+    // 6. Menu-only question → strip unrelated topics
+    if (isOnlyMenuQuestion(ctx.text)) {
+        if (PAYMENT_TOPIC_RE.test(text) || DELIVERY_TOPIC_RE.test(text) || BONUS_TOPIC_RE.test(text)) {
+            text = removeUnrelatedSentences(text, MENU_TOPIC_RE);
+            if (!text)
+                return { text: fallback(ctx), hasLink: false };
+        }
     }
-    return text || fallback(ctx);
+    // 7. Magic link dedup — if already sent and no explicit intent, strip link
+    const hasLinkInText = hasLinkInResponse(text);
+    if (ctx.magicLinkAlreadySent && !ctx.explicitMenuLinkIntent && hasLinkInText) {
+        text = text.replace(/https?:\/\/[^\s<>"')\]]+/gi, "").replace(/\s{2,}/g, " ").trim();
+        if (MENU_LINK_SENT_RE.test(text))
+            return { text: text || fallback(ctx), hasLink: false };
+        return { text: text || fallback(ctx), hasLink: false };
+    }
+    // 8. Enforce max 2 sentences
+    if (sentenceCount(text) > 2) {
+        text = enforceMaxSentences(text, 2);
+    }
+    return { text: text || fallback(ctx), hasLink };
 }

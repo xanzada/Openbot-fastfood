@@ -5,11 +5,12 @@ import { saveComplaintMedia, saveToHistory } from "../services/redis.service.js"
 import { clearInboundProcessing, extractInboundMedia, extractSenderMeta, extractInboundText, extractMessageId, guardIncomingMessage, hydrateInboundMedia, markInboundDone, saveMediaContext, setOperatorAutoMute, } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
-import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
+import { sendWhatsProMessage, sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { evaluateForShpor, getRestaurantConfig, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { analyzeMedia } from "../services/mediaAnalysis.service.js";
+const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
 function maskPhone(phone = "") {
     const clean = String(phone || "").replace(/\D/g, "");
     if (clean.length <= 6)
@@ -47,6 +48,18 @@ async function verifySecret(req, res, next) {
 function isOwnWhatsAppMessage(body) {
     return body?.fromMe === true || body?.isFromMe === true || body?.data?.key?.fromMe === true;
 }
+function isStatusQuestion(text = "") {
+    return STATUS_CONTEXT_RE.test(String(text || ""));
+}
+function runtimeUnavailableReply(ctx) {
+    if (!isStatusQuestion(ctx.text))
+        return null;
+    if (ctx.runtimeStatus)
+        return null;
+    return ctx.language === "kk"
+        ? "Қазір асүй статусын тексере алмаймын. Кейін қайталап жазыңыз."
+        : "Не могу проверить статус кухни. Напишите позже.";
+}
 async function processWhatsAppWebhook(body, started) {
     const instanceId = getInstanceId(body);
     const phone = getPhone(body);
@@ -81,8 +94,8 @@ async function processWhatsAppWebhook(body, started) {
         console.log(`[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`);
         if (mediaContext?.kind === "video") {
             const reply = ctx.language === "ru"
-                ? "Извините, я не принимаю видео. Пожалуйста, опишите ситуацию текстом или аудио."
-                : "Кешіріңіз, видео қабылдай алмаймын. Қандай жағдай болғанын мәтінмен немесе аудиомен айтсаңыз.";
+                ? "Извините, я не принимаю видео. Пожалуйста, опишите ситуацию текстом."
+                : "Кешіріңіз, видео қабылдай алмаймын. Жағдайды мәтінмен жазыңыз.";
             await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: reply });
             await markInboundDone(ctx.instanceId, messageId);
             return;
@@ -110,9 +123,24 @@ async function processWhatsAppWebhook(body, started) {
             source: "openbot-agent",
             media: mediaContext,
         });
+        // Pre-LLM short-circuit: if runtime is unavailable and customer asks about kitchen
+        const runtimeReply = runtimeUnavailableReply(ctx);
+        if (runtimeReply) {
+            console.log(`[OPENBOT:PREEMPT] runtime unavailable, using fallback`);
+            await saveToHistory(ctx.instanceId, ctx.phone, "assistant", runtimeReply, {
+                source: "openbot-agent",
+            });
+            await sendWhatsProResponseSequence({
+                instanceId: ctx.instanceId,
+                phone: ctx.phone,
+                text: runtimeReply,
+            });
+            await markInboundDone(ctx.instanceId, messageId);
+            return;
+        }
         console.log(`[OPENBOT:AI] generating model=${process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash"}`);
         const result = await runFastFoodAgent(ctx);
-        console.log(`[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"}`);
+        console.log(`[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"} link=${result.hasLink}`);
         await saveToHistory(ctx.instanceId, ctx.phone, "assistant", result.text, {
             source: "openbot-agent",
         });
@@ -126,13 +154,22 @@ async function processWhatsAppWebhook(body, started) {
             .catch((error) => {
             console.warn("[SHPOR:EVAL] async save skipped:", error?.message || error);
         });
+        // Send main text response
         const sendResult = await sendWhatsProResponseSequence({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
             text: result.text,
         });
+        // If agent decided to send a link, send link as separate message
+        if (result.hasLink && result.link) {
+            await sendWhatsProMessage({
+                instanceId: ctx.instanceId,
+                phone: ctx.phone,
+                text: result.link,
+            });
+        }
         await markInboundDone(ctx.instanceId, messageId);
-        console.log(`[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} elapsed=${Date.now() - started}ms`);
+        console.log(`[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_separate=${result.hasLink} elapsed=${Date.now() - started}ms`);
     }
     catch (error) {
         await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);

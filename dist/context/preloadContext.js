@@ -34,6 +34,7 @@ export async function preloadContext(input) {
         getShporContext(instanceId, text).catch(() => []),
     ]);
     await saveUserLang(instanceId, phone, language).catch(() => undefined);
+    const runtimeAvailable = Boolean(runtimeStatus);
     const fetchedSettings = {
         wait_time: Number(runtimeStatus?.fetched_settings?.wait_time || 0) || 0,
         is_emergency: Boolean(runtimeStatus?.fetched_settings?.is_emergency),
@@ -56,6 +57,8 @@ export async function preloadContext(input) {
         reset_at: Number(runtimeStatus?.reset_at || runtimeStatus?.kitchen_status?.reset_at || 0) || 0,
         active_shift_notes: activeShiftNotes,
         stale: Boolean(runtimeStatus?.stale || runtimeStatus?.is_stale || runtimeStatus?.stale_runtime_backup),
+        runtime_available: runtimeAvailable,
+        redis_available: true,
     };
     return {
         instanceId,

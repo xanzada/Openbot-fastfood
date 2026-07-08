@@ -52,15 +52,33 @@ function pushSized(chunks, value = "") {
     if (current)
         chunks.push(current.trim());
 }
+function normalizeUrlForSeparateMessage(url) {
+    const u = url.trim();
+    if (u.startsWith("http://") || u.startsWith("https://"))
+        return u;
+    return u;
+}
 export function splitWhatsProResponse(text = "") {
-    const urls = Array.from(new Set(String(text || "").match(URL_RE) || []));
-    const textOnly = String(text || "").replace(URL_RE, "").replace(/[ \t]+\n/g, "\n").trim();
+    const cleanText = String(text || "").trim();
+    if (!cleanText)
+        return [];
+    // Extract all URLs
+    const urls = Array.from(new Set(cleanText.match(URL_RE) || []));
+    // Remove URLs from text body
+    const textOnly = cleanText.replace(URL_RE, "").replace(/[ \t]+\n/g, "\n").replace(/\s{2,}/g, " ").trim();
     const chunks = [];
+    // Split text-only body into chunks (paragraph-based)
     for (const paragraph of textOnly.split(/\n{2,}/)) {
         pushSized(chunks, paragraph);
     }
-    for (const url of urls)
-        chunks.push(url);
+    // If there are URLs AND text chunks, URLs go as completely separate messages
+    if (urls.length > 0 && chunks.length > 0) {
+        // Keep text chunks as-is
+        // URLs will be appended as individual separate messages
+    }
+    for (const url of urls) {
+        chunks.push(normalizeUrlForSeparateMessage(url));
+    }
     return chunks.filter(Boolean);
 }
 export async function sendWhatsProMessage(payload) {
