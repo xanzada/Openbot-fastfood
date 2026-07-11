@@ -1,1 +1,0 @@
-{"version":3,"file":"tnt-tenant-info.d.ts","sourceRoot":"","sources":["../../../../src/client/AI_CORE_API/schema/tnt-tenant-info.ts"],"names":[],"mappings":"AAMA;;GAEG;AACH,MAAM,MAAM,aAAa,GAAG;IAC1B;;;OAGG;IACH,QAAQ,EAAE,MAAM,CAAC;IACjB,WAAW,EAAE,MAAM,CAAC;IACpB;;OAEG;IACH,MAAM,EAAE,MAAM,CAAC;CAChB,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC"}
