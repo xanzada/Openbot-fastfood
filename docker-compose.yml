@@ -2,11 +2,29 @@ services:
   bot:
     build: .
     restart: unless-stopped
+
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      NOCODB_URL: ${NOCODB_URL}
+      NOCODB_TOKEN: ${NOCODB_TOKEN}
+      NOCODB_TABLE_ID: ${NOCODB_TABLE_ID}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_AGENT_MODEL: ${OPENROUTER_AGENT_MODEL}
+      OPENROUTER_MEDIA_MODEL: ${OPENROUTER_MEDIA_MODEL}
+      CRM_SECRET_TOKEN: ${CRM_SECRET_TOKEN}
+      WHATSPRO_BASE_URL: ${WHATSPRO_BASE_URL}
+      WHATSPRO_SEND_URL: ${WHATSPRO_SEND_URL}
+      WHATSPRO_PRESENCE_URL: ${WHATSPRO_PRESENCE_URL}
+      WHATSPRO_API_TOKEN: ${WHATSPRO_API_TOKEN}
+      OPENBOT_WEBHOOK_SECRET: ${OPENBOT_WEBHOOK_SECRET}
+      DEVELOPER_PHONE: ${DEVELOPER_PHONE}
+      NODE_ENV: production
+
     depends_on:
       - redis
 
   redis:
-    image: redis:alpine
+    image: redis:7-alpine
     restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:
