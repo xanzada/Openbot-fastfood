@@ -24,12 +24,15 @@ services:
       DEVELOPER_PHONE: ${DEVELOPER_PHONE}
       NODE_ENV: production
 
-  redis:
+redis:
     image: redis:7-alpine
     restart: always
     command: redis-server --appendonly yes
     volumes:
-      - redis_data:/data
+      - openbot_redis_data:/data # Атын өзгерттік
+
+volumes:
+  openbot_redis_data: # Атын өзгерттік
 
 volumes:
   redis_data:
