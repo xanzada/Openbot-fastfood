@@ -1,4 +1,5 @@
 version: '3.8'
+
 services:
   bot:
     build: .
@@ -6,9 +7,7 @@ services:
     depends_on:
       - redis
     environment:
-      # Егер .env-те REDIS_URL болса, сол қолданылады. 
-      # Егер жоқ болса, мына жерге тікелей жазып қойыңыз:
-      REDIS_URL: redis://redis:6379 
+      REDIS_URL: redis://redis:6379
       NOCODB_URL: ${NOCODB_URL}
       NOCODB_TOKEN: ${NOCODB_TOKEN}
       NOCODB_TABLE_ID: ${NOCODB_TABLE_ID}
@@ -24,15 +23,12 @@ services:
       DEVELOPER_PHONE: ${DEVELOPER_PHONE}
       NODE_ENV: production
 
-redis:
+  redis:
     image: redis:7-alpine
     restart: always
     command: redis-server --appendonly yes
     volumes:
-      - openbot_redis_data:/data # Атын өзгерттік
+      - openbot_redis_data:/data
 
 volumes:
-  openbot_redis_data: # Атын өзгерттік
-
-volumes:
-  redis_data:
+  openbot_redis_data:
