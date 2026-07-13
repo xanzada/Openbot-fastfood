@@ -1,10 +1,14 @@
+version: '3.8'
 services:
   bot:
     build: .
     restart: unless-stopped
-
+    depends_on:
+      - redis
     environment:
-      REDIS_URL: ${REDIS_URL}
+      # Егер .env-те REDIS_URL болса, сол қолданылады. 
+      # Егер жоқ болса, мына жерге тікелей жазып қойыңыз:
+      REDIS_URL: redis://redis:6379 
       NOCODB_URL: ${NOCODB_URL}
       NOCODB_TOKEN: ${NOCODB_TOKEN}
       NOCODB_TABLE_ID: ${NOCODB_TABLE_ID}
@@ -20,12 +24,9 @@ services:
       DEVELOPER_PHONE: ${DEVELOPER_PHONE}
       NODE_ENV: production
 
-    depends_on:
-      - redis
-
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
+    restart: always
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
