@@ -6,7 +6,8 @@ const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 function maskPhone(phone = "") {
   const clean = String(phone || "").replace(/\D/g, "");
   if (clean.length <= 6) return clean || "-";
-  return `${clean.slice(0, 3)}***${clean.slice(-3)}`;
+  // ӨЗГЕРІС: Бірінші санды анық көру үшін масканы 4 санға дейін ұзарттық (мысалы 7707***567)
+  return `${clean.slice(0, 4)}***${clean.slice(-3)}`; 
 }
 
 function hostFromUrl(url = "") {
