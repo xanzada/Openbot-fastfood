@@ -43,7 +43,23 @@ function getPhone(body: any) {
 }
 
 async function verifySecret(req: any, res: any, next: any) {
-  return next(); 
+  const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
+  const got =
+    req.headers.authorization?.replace(/^Bearer\s+/i, "") ||
+    req.headers["x-api-key"] ||
+    req.body?.token ||
+    req.query?.token;
+  if (expected && safeCompare(got, expected)) return next();
+
+  try {
+    const instanceId = getInstanceId(req.body || {});
+    if (!instanceId) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const config = await getRestaurantConfig(instanceId);
+    assertTenantSecret(req, config, "webhook");
+    return next();
+  } catch (error: any) {
+    return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
+  }
 }
 function isOwnWhatsAppMessage(body: any): boolean {
   return body?.fromMe === true || body?.isFromMe === true || body?.data?.key?.fromMe === true;
@@ -218,10 +234,15 @@ export function whatsappWebhookRoute(): Router {
 
   router.post("/webhook/whatsapp", verifySecret, async (req, res) => {
     const started = Date.now();
-    if (isOwnWhatsAppMessage(req.body)) {
-      const instanceId = getInstanceId(req.body || {});
-      const phone = getPhone(req.body || {});
-      const opText = extractInboundText(req.body) || "[Оператор сөйледі]";
+    const body = req.body || {};
+    console.log(
+      `[OPENBOT:WEBHOOK] POST /webhook/whatsapp fromMe=${isOwnWhatsAppMessage(body)} instance=${getInstanceId(body) || "-"} phone=${maskPhone(getPhone(body))}`
+    );
+
+    if (isOwnWhatsAppMessage(body)) {
+      const instanceId = getInstanceId(body);
+      const phone = getPhone(body);
+      const opText = extractInboundText(body) || "[Оператор сөйледі]";
       await setOperatorAutoMute(instanceId, phone).catch((error: any) => {
         console.warn("[OPENBOT:OPERATOR:MUTE:FAIL]", error?.message || error);
       });
@@ -234,13 +255,13 @@ export function whatsappWebhookRoute(): Router {
       return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
     }
 
-    res.status(202).json({ ok: true, accepted: true });
-
     setImmediate(() => {
-      void processWhatsAppWebhook(req.body, started).catch((error: any) => {
+      void processWhatsAppWebhook(body, started).catch((error: any) => {
         console.error(`[OPENBOT:INBOUND:FAIL] elapsed=${Date.now() - started}ms:`, error?.stack || error?.message || error);
       });
     });
+
+    return res.status(202).json({ ok: true, accepted: true });
   });
 
   return router;
