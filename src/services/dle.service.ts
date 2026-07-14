@@ -143,10 +143,14 @@ export async function normalizePublicDomain(rawDomain = "") {
 async function apiBot(domain: string, payload: Record<string, any>, timeout = 10000) {
   const safeDomain = await normalizePublicDomain(domain);
   if (!safeDomain) throw new Error("DLE domain is empty");
+  const token = process.env.CRM_SECRET_TOKEN;
+  if (!token) {
+    console.warn("[DLE] CRM_SECRET_TOKEN is not configured — api_bot requests will fail with 403");
+  }
   const response = await axios.post(
     `${safeDomain}/api_bot.php`,
     {
-      token: process.env.CRM_SECRET_TOKEN,
+      token,
       ...payload,
     },
     {

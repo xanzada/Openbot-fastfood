@@ -24,6 +24,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
 
   const result = await agent.generateText(ctx.text, {
     maxSteps: 6,
+    allowSystemMessages: true,
   });
 
   const validation = validateFinalText(result.text, ctx);
