@@ -20,7 +20,7 @@ export function createUpdateCrmLeadSkill(ctx: FastFoodContext) {
     description: "Track the customer's current stage in the sales funnel for CRM analytics. This does NOT change any order status in DLE — it only records the customer's progress for reporting.",
     parameters: z.object({
       interest: z.string().optional().describe("What the customer is interested in (e.g., pizza, combo, delivery info)"),
-      salesStage: z.enum(CRM_SALES_STAGES).optional().describe(
+      salesStage: z.enum([...CRM_SALES_STAGES]).optional().describe(
         "NEW — first contact, no link sent yet. "
         + "MENU_SENT — magic link was delivered. "
         + "CHECKING_KITCHEN — order received, waiting for kitchen confirmation. "
