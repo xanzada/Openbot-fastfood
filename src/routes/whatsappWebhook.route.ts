@@ -17,7 +17,7 @@ import {
 } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
-import { sendWhatsProMessage, sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
+import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { evaluateForShpor, getRestaurantConfig, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
@@ -205,18 +205,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
       text: result.text,
     });
 
-    // If agent decided to send a link, send link as separate message
-    if (result.hasLink && result.link) {
-      await sendWhatsProMessage({
-        instanceId: ctx.instanceId,
-        phone: ctx.phone,
-        text: result.link,
-      });
-    }
-
     await markInboundDone(ctx.instanceId, messageId);
     console.log(
-      `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_separate=${result.hasLink} elapsed=${Date.now() - started}ms`
+      `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_in_text=${result.hasLink} elapsed=${Date.now() - started}ms`
     );
   } catch (error) {
     await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);

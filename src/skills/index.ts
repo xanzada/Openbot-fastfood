@@ -4,7 +4,7 @@ import { createGetPaymentDetailsSkill, createRegisterPaymentReceiptSkill } from 
 import { createUpdateCrmLeadSkill } from "./crm.skill.js";
 import { createEscalateToAdminSkill } from "./escalation.skill.js";
 import { createSendMenuLinkSkill } from "./menuLink.skill.js";
-import { createTavilySearchSkill } from "./tavilySearch.skill.js";
+import { createCheckOrderStatusSkill } from "./checkOrderStatus.skill.js";
 
 export function createFastFoodSkills(ctx: FastFoodContext) {
   return [
@@ -14,6 +14,6 @@ export function createFastFoodSkills(ctx: FastFoodContext) {
     createUpdateCrmLeadSkill(ctx),
     createEscalateToAdminSkill(ctx),
     createSendMenuLinkSkill(ctx),
-    createTavilySearchSkill(ctx),
+    createCheckOrderStatusSkill(ctx),
   ];
 }

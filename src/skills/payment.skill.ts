@@ -34,18 +34,16 @@ export function createGetPaymentDetailsSkill(ctx: FastFoodContext) {
 export function createRegisterPaymentReceiptSkill(ctx: FastFoodContext) {
   return createTool({
     name: "registerPaymentReceipt",
-    description: "Register a customer payment receipt in the DLE CRM.",
+    description: "Register a customer's Kaspi/Halyk payment receipt in the DLE CRM. This calls add_payment_comment in DLE which updates ai_comment — it does NOT change order status. Call ONLY after validating the media IS a real payment receipt.",
     parameters: z.object({
-      amount: z.number().optional(),
-      bankName: z.string().optional(),
-      senderName: z.string().optional(),
+      amountPaid: z.number().positive().describe("Amount paid in tenge from the receipt"),
+      senderName: z.string().min(1).max(80).describe("Sender name extracted from the receipt via OCR/Vision"),
     }),
-    execute: async (args) => {
+    execute: async ({ amountPaid, senderName }) => {
       return updateCrmAction("receipt", ctx.instanceId, ctx.phone, {
         config: ctx.config,
-        amount_paid: args.amount,
-        bank_name: args.bankName,
-        sender_name: args.senderName,
+        amount_paid: amountPaid,
+        sender_name: senderName,
       });
     },
   });
