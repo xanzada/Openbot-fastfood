@@ -12,8 +12,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 
-# 4. TypeScript-ті компиляциялау (серверде жаңа dist папкасын жасайды)
-RUN npm run build
+
 
 # 5. Продакшнға керек емес (dev) кітапханаларды өшіріп, контейнерді жеңілдету
 RUN npm prune --omit=dev
