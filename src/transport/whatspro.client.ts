@@ -99,7 +99,18 @@ export async function sendWhatsProMessage(payload: {
   media?: any;
 }) {
   const baseUrl = String(process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
-  const url = process.env.WHATSPRO_SEND_URL || (baseUrl ? `${baseUrl}/api/send` : "");
+  const rawSendUrl = process.env.WHATSPRO_SEND_URL || "";
+  let url: string;
+  if (rawSendUrl) {
+    try {
+      const parsed = new URL(rawSendUrl);
+      url = parsed.pathname === "/" || parsed.pathname === "" ? `${rawSendUrl.replace(/\/+$/, "")}/api/send` : rawSendUrl;
+    } catch {
+      url = rawSendUrl;
+    }
+  } else {
+    url = baseUrl ? `${baseUrl}/api/send` : "";
+  }
   if (!url) {
     console.warn("[OPENBOT:WHATSPRO:SKIP] WHATSPRO_SEND_URL or WHATSPRO_BASE_URL is not configured");
     return { skipped: true, reason: "WHATSPRO_SEND_URL or WHATSPRO_BASE_URL is not configured" };
@@ -137,7 +148,18 @@ export async function sendWhatsProMessage(payload: {
 
 export async function sendWhatsProPresence(payload: { instanceId: string; phone: string }) {
   const baseUrl = String(process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
-  const url = process.env.WHATSPRO_PRESENCE_URL || (baseUrl ? `${baseUrl}/api/presence` : "");
+  const rawPresenceUrl = process.env.WHATSPRO_PRESENCE_URL || "";
+  let url: string;
+  if (rawPresenceUrl) {
+    try {
+      const parsed = new URL(rawPresenceUrl);
+      url = parsed.pathname === "/" || parsed.pathname === "" ? `${rawPresenceUrl.replace(/\/+$/, "")}/api/presence` : rawPresenceUrl;
+    } catch {
+      url = rawPresenceUrl;
+    }
+  } else {
+    url = baseUrl ? `${baseUrl}/api/presence` : "";
+  }
   if (!url) return { skipped: true, reason: "WHATSPRO_PRESENCE_URL or WHATSPRO_BASE_URL is not configured" };
 
   try {
