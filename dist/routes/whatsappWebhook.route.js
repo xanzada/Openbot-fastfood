@@ -5,7 +5,7 @@ import { saveComplaintMedia, saveToHistory } from "../services/redis.service.js"
 import { clearInboundProcessing, extractInboundMedia, extractSenderMeta, extractInboundText, extractMessageId, guardIncomingMessage, hydrateInboundMedia, markInboundDone, saveMediaContext, setOperatorAutoMute, } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
-import { sendWhatsProMessage, sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
+import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { evaluateForShpor, getRestaurantConfig, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
@@ -29,20 +29,20 @@ async function verifySecret(req, res, next) {
     const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
     const got = req.headers.authorization?.replace(/^Bearer\s+/i, "") ||
         req.headers["x-api-key"] ||
-        req.body?.token;
+        req.body?.token ||
+        req.query?.token;
     if (expected && safeCompare(got, expected))
         return next();
     try {
         const instanceId = getInstanceId(req.body || {});
         if (!instanceId)
-            throw new Error("INVALID_TENANT_SECRET");
+            return res.status(401).json({ ok: false, error: "unauthorized" });
         const config = await getRestaurantConfig(instanceId);
         assertTenantSecret(req, config, "webhook");
         return next();
     }
     catch (error) {
-        console.warn(`[OPENBOT:AUTH:FAIL] path=${req.path} reason=${error?.message || "bad_token"}`);
-        return res.status(error?.statusCode || 401).json({ ok: false, error: "unauthorized" });
+        return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
     }
 }
 function isOwnWhatsAppMessage(body) {
@@ -160,16 +160,8 @@ async function processWhatsAppWebhook(body, started) {
             phone: ctx.phone,
             text: result.text,
         });
-        // If agent decided to send a link, send link as separate message
-        if (result.hasLink && result.link) {
-            await sendWhatsProMessage({
-                instanceId: ctx.instanceId,
-                phone: ctx.phone,
-                text: result.link,
-            });
-        }
         await markInboundDone(ctx.instanceId, messageId);
-        console.log(`[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_separate=${result.hasLink} elapsed=${Date.now() - started}ms`);
+        console.log(`[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_in_text=${result.hasLink} elapsed=${Date.now() - started}ms`);
     }
     catch (error) {
         await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);
@@ -185,10 +177,12 @@ export function whatsappWebhookRoute() {
     const router = createRouter();
     router.post("/webhook/whatsapp", verifySecret, async (req, res) => {
         const started = Date.now();
-        if (isOwnWhatsAppMessage(req.body)) {
-            const instanceId = getInstanceId(req.body || {});
-            const phone = getPhone(req.body || {});
-            const opText = extractInboundText(req.body) || "[Оператор сөйледі]";
+        const body = req.body || {};
+        console.log(`[OPENBOT:WEBHOOK] POST /webhook/whatsapp fromMe=${isOwnWhatsAppMessage(body)} instance=${getInstanceId(body) || "-"} phone=${maskPhone(getPhone(body))}`);
+        if (isOwnWhatsAppMessage(body)) {
+            const instanceId = getInstanceId(body);
+            const phone = getPhone(body);
+            const opText = extractInboundText(body) || "[Оператор сөйледі]";
             await setOperatorAutoMute(instanceId, phone).catch((error) => {
                 console.warn("[OPENBOT:OPERATOR:MUTE:FAIL]", error?.message || error);
             });
@@ -200,12 +194,12 @@ export function whatsappWebhookRoute() {
             console.log(`[OPENBOT:INBOUND:SKIP] fromMe=true elapsed=${Date.now() - started}ms`);
             return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
         }
-        res.status(202).json({ ok: true, accepted: true });
         setImmediate(() => {
-            void processWhatsAppWebhook(req.body, started).catch((error) => {
+            void processWhatsAppWebhook(body, started).catch((error) => {
                 console.error(`[OPENBOT:INBOUND:FAIL] elapsed=${Date.now() - started}ms:`, error?.stack || error?.message || error);
             });
         });
+        return res.status(202).json({ ok: true, accepted: true });
     });
     return router;
 }

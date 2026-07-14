@@ -46,6 +46,12 @@ export function buildFactsPrompt(ctx) {
             now_iso: new Date().toISOString(),
             language: ctx.language,
             language_policy: ctx.languagePolicy,
+            language_persistence: {
+                locked_language: ctx.language,
+                cache_ttl_hours: 12,
+                cached_from_previous_message: Boolean(ctx.languagePolicy?.cached),
+                rule: "This language is locked for 12 hours from the first detected message. You MUST reply ONLY in this language regardless of the customer's current message language or any system data in other languages.",
+            },
             restaurant: {
                 instance_id: ctx.instanceId,
                 name: ctx.config.name,
@@ -70,6 +76,7 @@ export function buildFactsPrompt(ctx) {
                 already_sent: ctx.magicLinkAlreadySent,
                 explicit_request: ctx.explicitMenuLinkIntent,
                 value_available: Boolean(ctx.magicLink),
+                url: ctx.magicLink,
                 validity_rule: "Magic link is valid for 1 month and is tied to the customer's WhatsApp number.",
             },
             recent_dialog: ctx.chatHistory.slice(-8),

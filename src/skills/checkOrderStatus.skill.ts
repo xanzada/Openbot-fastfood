@@ -23,17 +23,18 @@ export function createCheckOrderStatusSkill(ctx: FastFoodContext) {
         };
       }
 
+      const data = order as Record<string, any>;
       return {
         active: true,
-        order_id: order.order_id,
-        status: order.status,
-        payment_status: order.payment_status,
-        total_price: order.total_price,
-        items: order.items || [],
-        address: order.address || null,
-        is_pickup: order.is_pickup || false,
-        is_stale: Boolean(order.is_stale),
-        recent_orders: order.recent_orders || [],
+        order_id: data.order_id,
+        status: data.status,
+        payment_status: data.payment_status,
+        total_price: data.total_price,
+        items: data.items || [],
+        address: data.address || null,
+        is_pickup: data.is_pickup || false,
+        is_stale: Boolean(data.is_stale),
+        recent_orders: data.recent_orders || [],
       };
     },
   });

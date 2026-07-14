@@ -28,7 +28,7 @@ export function getRedisTarget() {
   }
 }
 
-redisClient.on("error", (error) => {
+redisClient.on("error", (error: any) => {
   console.error("[REDIS] error:", error?.message || error);
 });
 
@@ -45,7 +45,7 @@ export async function connectRedis(): Promise<void> {
       .then(() => {
         console.log(`[OPENBOT:REDIS] connected host=${target.host} port=${target.port}`);
       })
-      .catch((error) => {
+      .catch((error: any) => {
         redisReady = null;
         console.error(`[OPENBOT:REDIS] connect failed host=${target.host} port=${target.port}:`, error?.message || error);
         throw error;
@@ -87,7 +87,7 @@ export async function getChatHistory(instanceId: string, phone: string): Promise
   return safeRedis([], async () => {
     const raw = await redisClient.lRange(historyKey(instanceId, phone), 0, -1);
     return raw
-      .map((item) => {
+      .map((item: any) => {
         try {
           return JSON.parse(item);
         } catch {
@@ -229,7 +229,7 @@ async function purgeShiftNoteTextFromHistory(instanceId: string, noteText: strin
   const keys = await scanKeys(`history:${instanceId}:*`);
   for (const key of keys) {
     const raw = await redisClient.lRange(key, 0, -1).catch(() => []);
-    const kept = raw.filter((item) => {
+    const kept = raw.filter((item: any) => {
       try {
         const parsed = JSON.parse(item);
         return !shiftNoteTextMatches(parsed?.text || "", noteText);

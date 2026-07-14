@@ -20,6 +20,8 @@ export async function runFastFoodAgent(ctx) {
     });
     const result = await agent.generateText(ctx.text, {
         maxSteps: 6,
+        // @ts-expect-error - allowSystemMessages is valid in AI SDK v6 but missing from @voltagent/core types
+        allowSystemMessages: true,
     });
     const validation = validateFinalText(result.text, ctx);
     return {
