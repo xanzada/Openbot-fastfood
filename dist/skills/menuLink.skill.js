@@ -4,7 +4,7 @@ import { markMagicLinkSent } from "../services/redis.service.js";
 export function createSendMenuLinkSkill(ctx) {
     return createTool({
         name: "sendMenuLink",
-        description: "Generate and return the customer's personal authenticated menu link. MUST be called when the customer wants to order, see the menu, or browse items. If the link was already sent but the customer explicitly asks for it again, says they lost it, or cannot find it — call this tool anyway to resend the link. After calling, include the returned 'link' value in your response text.",
+        description: "Generate and return the customer's personal authenticated menu link. MUST be called when the customer wants to order, see the menu, browse items, or asks for a link. If the link was already sent but the customer explicitly asks to order/menu/link again, call this tool anyway and resend the link. After calling, include the returned 'link' value in your response text.",
         parameters: z.object({
             reason: z.string().describe("Why the link is being sent"),
         }),

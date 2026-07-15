@@ -3,6 +3,7 @@ const ORDER_STATUS_RE = /(тапсырысыңыз|заказыңыз|заказ
 const KITCHEN_STATUS_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|дайындал|готов|жұмыс істеп|жабық|closed|работает)/iu;
 const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІУ™Т“Т›ТЈУ©Т±ТЇС–УТ’ТљТўУЁТ°Т®]/u;
 const RUSSIAN_SERVICE_WORD_RE = /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ)\b/iu;
+const FORBIDDEN_FOREIGN_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bengali}\p{Script=Devanagari}\p{Script=Thai}]/u;
 const OTHER_CITY_DELIVERY_RE = /(зачаганск|зашаған|зачаган|zachagansk|zachagan|zashaған|басқа\s+қала|баска\s+кала|другой\s+город|в\s+другой\s+город)/iu;
 const MENU_TOPIC_RE = /(мәзір|меню|menu|бар ма|барма|каталог|catalog|пицц|бургер|донер|шаурм|салат|суп|напит|десерт|комбо|сеты|ассортимент|не бар|что есть|прайс|баға|цена|сколько стоит|қанша тұра|қанша тура|прейскурант)/iu;
 const PAYMENT_TOPIC_RE = /(төлем|оплат|kaspi|halyk|карт|реквизит|перевод|аудар|чек|receipt|қолма-қол|налич)/iu;
@@ -168,6 +169,9 @@ export function validateFinalText(rawText, ctx) {
     if (deliveryAreaReply)
         return { text: deliveryAreaReply, hasLink: false };
     // 2. Language purity check
+    if (FORBIDDEN_FOREIGN_SCRIPT_RE.test(text)) {
+        return { text: fallback(ctx), hasLink: false };
+    }
     if (ctx.language === "ru" && KAZAKH_SPECIFIC_RE.test(text)) {
         return { text: fallback(ctx), hasLink: false };
     }

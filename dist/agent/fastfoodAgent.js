@@ -4,6 +4,12 @@ import { createFastFoodSkills } from "../skills/index.js";
 import { FASTFOOD_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { validateFinalText } from "./finalValidator.js";
 import { resolveModel } from "./modelRouter.js";
+function enforceExplicitMagicLink(text, ctx) {
+    if (!ctx.explicitMenuLinkIntent || !ctx.magicLink || text.includes(ctx.magicLink))
+        return text;
+    const intro = ctx.language === "kk" ? "Міне мәзір сілтемесі:" : "Вот ссылка на меню:";
+    return `${intro}\n${ctx.magicLink}`;
+}
 export async function runFastFoodAgent(ctx) {
     const instructions = `${FASTFOOD_AGENT_INSTRUCTIONS}\n\n${buildFactsPrompt(ctx)}`;
     const agent = new Agent({
@@ -20,9 +26,10 @@ export async function runFastFoodAgent(ctx) {
         allowSystemMessages: true,
     });
     const validation = validateFinalText(result.text, ctx);
+    const finalText = enforceExplicitMagicLink(validation.text, ctx);
     return {
-        text: validation.text,
-        hasLink: validation.hasLink,
+        text: finalText,
+        hasLink: validation.hasLink || Boolean(ctx.magicLink && finalText.includes(ctx.magicLink)),
         link: ctx.magicLink,
         rawText: result.text,
         usage: result.usage,

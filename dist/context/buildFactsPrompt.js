@@ -42,6 +42,9 @@ export function buildFactsPrompt(ctx) {
         "FACTS_CONTEXT_START",
         JSON.stringify({
             now_iso: new Date().toISOString(),
+            lang: ctx.language,
+            domain: ctx.config.domain,
+            language_enforcement: "CRITICAL: Reply ONLY in lang. If lang=kk, reply ONLY in Kazakh. If lang=ru, reply ONLY in Russian. Never use Chinese, Bengali, English, or any other language.",
             language: ctx.language,
             language_policy: ctx.languagePolicy,
             language_persistence: {

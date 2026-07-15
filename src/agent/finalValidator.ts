@@ -9,6 +9,7 @@ const KITCHEN_STATUS_RE =
 const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІУ™Т“Т›ТЈУ©Т±ТЇС–УТ’ТљТўУЁТ°Т®]/u;
 const RUSSIAN_SERVICE_WORD_RE =
   /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ)\b/iu;
+const FORBIDDEN_FOREIGN_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bengali}\p{Script=Devanagari}\p{Script=Thai}]/u;
 const OTHER_CITY_DELIVERY_RE =
   /(зачаганск|зашаған|зачаган|zachagansk|zachagan|zashaған|басқа\s+қала|баска\s+кала|другой\s+город|в\s+другой\s+город)/iu;
 const MENU_TOPIC_RE =
@@ -204,6 +205,9 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
   if (deliveryAreaReply) return { text: deliveryAreaReply, hasLink: false };
 
   // 2. Language purity check
+  if (FORBIDDEN_FOREIGN_SCRIPT_RE.test(text)) {
+    return { text: fallback(ctx), hasLink: false };
+  }
   if (ctx.language === "ru" && KAZAKH_SPECIFIC_RE.test(text)) {
     return { text: fallback(ctx), hasLink: false };
   }
