@@ -37,12 +37,15 @@ export function normalizeMenuDomain(domain: string): string | null {
 }
 
 export function generateSecureMenuUrl(domain: string, phone: string): string | null {
-  const secret = process.env.NOCODB_TOKEN || "secret";
+  const secret = String(process.env.CRM_SECRET_TOKEN || "").trim();
   const cleanDomain = normalizeMenuDomain(domain);
   const cleanPhone = String(phone || "").replace(/\D/g, "");
-  if (!cleanDomain || !cleanPhone) return null;
+  if (!cleanDomain || !cleanPhone || !secret) return null;
   const timestamp = Date.now();
-  const hash = crypto.createHmac("sha256", secret).update(cleanPhone).digest("hex");
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${cleanPhone}${secret}${timestamp}`, "utf8")
+    .digest("hex");
   const cb = Math.floor(Math.random() * 9999999);
   return `${cleanDomain}/?phone=${encodeURIComponent(cleanPhone)}&hash=${hash}&t=${timestamp}&cb=${cb}`;
 }
