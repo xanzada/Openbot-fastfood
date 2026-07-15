@@ -37,10 +37,8 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
   }
   const activeOrder = compactOrder(ctx.activeOrder);
   const notes = ctx.activeShiftNotes.map((note: any) => ({
-    id: note.id,
     text: note.text,
-    expires_at: note.expires_at || note.expiresAt,
-    category: note.category,
+    expires_at: note.expiresAt || note.expires_at,
   }));
 
   return [

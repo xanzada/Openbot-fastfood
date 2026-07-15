@@ -35,10 +35,8 @@ export function buildFactsPrompt(ctx) {
     }
     const activeOrder = compactOrder(ctx.activeOrder);
     const notes = ctx.activeShiftNotes.map((note) => ({
-        id: note.id,
         text: note.text,
-        expires_at: note.expires_at || note.expiresAt,
-        category: note.category,
+        expires_at: note.expiresAt || note.expires_at,
     }));
     return [
         "FACTS_CONTEXT_START",

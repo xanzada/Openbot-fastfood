@@ -199,20 +199,6 @@ function parseShiftNoteRecord(raw = "") {
   }
 }
 
-function normalizeShiftNoteText(value = "") {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function shiftNoteTextMatches(currentText = "", expectedText = "") {
-  const current = normalizeShiftNoteText(currentText);
-  const expected = normalizeShiftNoteText(expectedText);
-  return Boolean(current && expected && (current === expected || current.includes(expected) || expected.includes(current)));
-}
-
 async function scanKeys(pattern: string): Promise<string[]> {
   await connectRedis();
   const keys: string[] = [];
@@ -221,29 +207,6 @@ async function scanKeys(pattern: string): Promise<string[]> {
     else keys.push(String(chunk));
   }
   return keys;
-}
-
-async function purgeShiftNoteTextFromHistory(instanceId: string, noteText: string): Promise<void> {
-  const expected = normalizeShiftNoteText(noteText);
-  if (!expected) return;
-  const keys = await scanKeys(`history:${instanceId}:*`);
-  for (const key of keys) {
-    const raw = await redisClient.lRange(key, 0, -1).catch(() => []);
-    const kept = raw.filter((item: any) => {
-      try {
-        const parsed = JSON.parse(item);
-        return !shiftNoteTextMatches(parsed?.text || "", noteText);
-      } catch {
-        return true;
-      }
-    });
-    if (kept.length !== raw.length) {
-      const ttl = await redisClient.ttl(key).catch(() => -1);
-      await redisClient.del(key);
-      if (kept.length) await redisClient.rPush(key, kept);
-      if (ttl > 0) await redisClient.expire(key, ttl);
-    }
-  }
 }
 
 export async function saveShiftNote(
@@ -277,31 +240,18 @@ export async function saveShiftNote(
 export async function deleteShiftNote(
   instanceId: string,
   noteId?: string | number,
-  text = ""
+  _text = ""
 ): Promise<void> {
   await safeRedis(undefined, async () => {
-    const purgeTexts = new Set<string>();
     const safeNoteId = String(noteId || "").trim();
-    if (text) purgeTexts.add(text);
 
     if (safeNoteId && safeNoteId !== "0") {
-      const key = `shift_note:${instanceId}:${safeNoteId}`;
-      const existing = parseShiftNoteRecord((await redisClient.get(key)) || "");
-      if (existing.text) purgeTexts.add(existing.text);
-      await redisClient.del(key);
+      await redisClient.del(`shift_note:${instanceId}:${safeNoteId}`);
     } else {
       const keys = await scanKeys(`shift_note:${instanceId}:*`);
       for (const key of keys) {
-        const existing = parseShiftNoteRecord((await redisClient.get(key)) || "");
-        if (!text || shiftNoteTextMatches(existing.text, text)) {
-          if (existing.text) purgeTexts.add(existing.text);
-          await redisClient.del(key);
-        }
+        await redisClient.del(key);
       }
-    }
-
-    for (const purgeText of purgeTexts) {
-      await purgeShiftNoteTextFromHistory(instanceId, purgeText);
     }
   });
 }
