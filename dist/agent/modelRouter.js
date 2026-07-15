@@ -44,7 +44,7 @@ function createKeyRotationModel(keys, modelId, finalFallback) {
     const rest = createKeyRotationModel(keys.slice(1), modelId, finalFallback);
     return createFallbackModel(current, rest);
 }
-const textModel = createFallbackModel(openrouterProvider("deepseek/deepseek-flash"), openrouterProvider("deepseek/deepseek-chat"));
+const textModel = createFallbackModel(openrouterProvider("deepseek/deepseek-chat"), openrouterProvider("google/gemini-2.5-flash"));
 const multimodalModel = GEMINI_API_KEYS.length > 0
     ? createKeyRotationModel(GEMINI_API_KEYS, "gemini-2.5-flash", openrouterProvider("google/gemini-2.5-flash"))
     : openrouterProvider("google/gemini-2.5-flash");

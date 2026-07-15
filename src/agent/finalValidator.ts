@@ -23,24 +23,41 @@ const BONUS_TOPIC_RE =
   /(бонус|скидк|жеңілд|акци|promo|промо|жарна|купон)/iu;
 const MENU_LINK_SENT_RE =
   /(алдыңғы сілтеме|предыдущ ссылк|ескі сілтеме|стара ссылка)/iu;
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
+
+function trimUrlPunctuation(url: string) {
+  return String(url || "").trim().replace(/[.,!?;:]+$/g, "");
+}
+
+function uniqueUrls(text: string): string[] {
+  return Array.from(new Set((String(text || "").match(URL_RE) || []).map(trimUrlPunctuation).filter(Boolean)));
+}
+
+function textWithoutUrls(text: string): string {
+  return String(text || "").replace(URL_RE, " ").replace(/\s{2,}/g, " ").trim();
+}
 
 function sentenceCount(text: string): number {
-  const trimmed = text.trim();
+  const trimmed = textWithoutUrls(text);
   if (!trimmed) return 0;
   const sentences = trimmed.match(/[^.!?]*[.!?]+/g);
   return sentences ? sentences.length : 1;
 }
 
 function enforceMaxSentences(text: string, max = 2): string {
-  const trimmed = text.trim();
+  const urls = uniqueUrls(text);
+  const trimmed = textWithoutUrls(text);
   if (!trimmed) return text;
   const sentences = trimmed.match(/[^.!?]*[.!?]+/g);
-  if (!sentences || sentences.length <= max) return text;
-  return sentences.slice(0, max).join(" ").trim();
+  const body = !sentences || sentences.length <= max ? trimmed : sentences.slice(0, max).join(" ").trim();
+  return [body, ...urls].filter(Boolean).join("\n");
 }
 
 function stripBotTags(text: string) {
   return String(text || "")
+    .replace(/\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi, (_match, label, url) =>
+      [String(label || "").trim(), String(url || "").trim()].filter(Boolean).join("\n")
+    )
     .replace(/\[(?:Системный Анализ|System Analysis):[\s\S]*?\]/gi, "")
     .replace(/\[ESCALATE_ADMIN\]/gi, "")
     .replace(/\[ESCALATE_DEVELOPER\]/gi, "")
@@ -140,7 +157,32 @@ function isOnlyMenuQuestion(text: string): boolean {
 }
 
 function hasLinkInResponse(text: string): boolean {
-  return /https?:\/\/[^\s<>"')\]]+/i.test(text);
+  return uniqueUrls(text).length > 0;
+}
+
+function isLikelyMagicLinkUrl(url: string, magicLink: string): boolean {
+  try {
+    const magicHost = new URL(magicLink).hostname.replace(/\.+$/g, "").toLowerCase();
+    const host = new URL(url).hostname.replace(/\.+$/g, "").toLowerCase();
+    return host === magicHost || magicHost.startsWith(`${host}.`) || host === magicHost.split(".")[0];
+  } catch {
+    try {
+      const magicHost = new URL(magicLink).hostname.replace(/\.+$/g, "").toLowerCase();
+      const firstLabel = magicHost.split(".")[0];
+      const lowerUrl = url.toLowerCase();
+      return lowerUrl.startsWith(`http://${firstLabel}`) || lowerUrl.startsWith(`https://${firstLabel}`);
+    } catch {
+      return false;
+    }
+  }
+}
+
+function enforceExactMagicLink(text: string, ctx: FastFoodContext): string {
+  if (!ctx.magicLink || !hasLinkInResponse(text)) return text;
+  return String(text || "").replace(URL_RE, (url) => {
+    const cleanUrl = trimUrlPunctuation(url);
+    return isLikelyMagicLinkUrl(cleanUrl, ctx.magicLink || "") ? ctx.magicLink || cleanUrl : cleanUrl;
+  });
 }
 
 function removeUnrelatedSentences(text: string, keepPattern: RegExp): string {
@@ -154,7 +196,6 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
   hasLink: boolean;
 } {
   let text = stripBotTags(String(rawText || "").trim());
-  const hasLink = hasLinkInResponse(text);
 
   if (!text) return { text: fallback(ctx), hasLink: false };
 
@@ -199,15 +240,17 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
   // 7. Magic link dedup — if already sent and no explicit intent, strip link
   const hasLinkInText = hasLinkInResponse(text);
   if (ctx.magicLinkAlreadySent && !ctx.explicitMenuLinkIntent && hasLinkInText) {
-    text = text.replace(/https?:\/\/[^\s<>"')\]]+/gi, "").replace(/\s{2,}/g, " ").trim();
+    text = text.replace(URL_RE, "").replace(/\s{2,}/g, " ").trim();
     if (MENU_LINK_SENT_RE.test(text)) return { text: text || fallback(ctx), hasLink: false };
     return { text: text || fallback(ctx), hasLink: false };
   }
+
+  text = enforceExactMagicLink(text, ctx);
 
   // 8. Enforce max 2 sentences
   if (sentenceCount(text) > 2) {
     text = enforceMaxSentences(text, 2);
   }
 
-  return { text: text || fallback(ctx), hasLink };
+  return { text: text || fallback(ctx), hasLink: hasLinkInResponse(text) };
 }

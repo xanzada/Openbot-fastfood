@@ -60,8 +60,8 @@ function createKeyRotationModel(
 }
 
 const textModel = createFallbackModel(
-  openrouterProvider("deepseek/deepseek-flash"),
   openrouterProvider("deepseek/deepseek-chat"),
+  openrouterProvider("google/gemini-2.5-flash"),
 );
 
 const multimodalModel = GEMINI_API_KEYS.length > 0

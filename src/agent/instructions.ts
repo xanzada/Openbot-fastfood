@@ -33,7 +33,8 @@ ABSOLUTE RULES — These are enforced by code, not suggestions:
      a) You MUST call the "sendMenuLink" tool FIRST to generate the customer's personal link.
      b) The tool returns the link in the "link" field. You MUST include this exact URL in your response.
      c) The URL goes on its own line at the end of your message.
-     d) Example: "Иә, мәзірді қарай аласыз 😊\nhttps://prestige.bekaba.com/?phone=7747..."
+     d) Use the raw full URL exactly as returned. Never shorten it, mask it with "...", or format it as Markdown.
+     e) Example: "Иә, мәзірді қарай аласыз 😊\nhttps://prestige.bekaba.com/?phone=77471234567&hash=FULL_HASH&t=TIMESTAMP&cb=CACHE_BUSTER"
    — NEVER tell the customer to "look at the menu" or "view the menu" without providing the actual URL.
    — The system will send the URL as a separate message, but you MUST still include it in your text so the system can extract it.
 

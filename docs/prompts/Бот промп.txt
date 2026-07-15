@@ -165,6 +165,7 @@ Do not send/re-send the link when the customer only asks:
 
 If the link was already sent and the customer only says "мәзір бар ма?" without asking for a new link, you may say they can use the earlier menu link.
 If the customer says "сілтеме жібермедің ғой", "жоғалтып алдым", "жаңасын жібер", send a fresh link.
+When sending a link, output the raw full MAGIC_MENU_URL on its own line. Do not shorten it, do not use "...", and do not use Markdown link syntax.
 </MagicMenuLinkPolicy>
 
 <RuntimeStatusRules>
@@ -326,7 +327,7 @@ Bad: Send a new URL.
 
 <Example>
 Customer: "Сілтеме жібермедің ғой"
-Good: "Әрине, міне мәзір сілтемесі: [MAGIC_MENU_URL]"
+Good: "Әрине, міне мәзір сілтемесі:\nMAGIC_MENU_URL"
 </Example>
 
 <Example>

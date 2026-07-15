@@ -1,5 +1,5 @@
 import { detectLangWithFallback } from "../utils/language.js";
-import { generateSecureMenuUrl, hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
+import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/nocodb.service.js";
 import { connectRedis, getActiveShiftNotes, getChatHistory, getUserLang, hasMagicLinkBeenSent, saveUserLang, } from "../services/redis.service.js";
@@ -21,9 +21,11 @@ export async function preloadContext(input) {
         getActiveShiftNotes(instanceId).catch(() => []),
         hasMagicLinkBeenSent(instanceId, phone).catch(() => false),
     ]);
-    const safeConfig = config || {};
+    const safeConfig = { ...(config || {}) };
     const language = await detectLangWithFallback(text, storedLang);
-    const domain = safeConfig.domain || "";
+    const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
+    if (domain)
+        safeConfig.domain = domain;
     const [runtimeStatus, activeOrder, shporContext] = await Promise.all([
         domain
             ? getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null)

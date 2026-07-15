@@ -6,14 +6,45 @@ const MENU_LINK_RESEND_TEXT_RE = /(send|sent|resend|again|new|lost|deleted|open|
 const MENU_LINK_MOJIBAKE_RE = /(меню|мәзір|сілтеме|ссылка|каталог|заказ|тапсырыс|корзин|себет)/iu;
 const LINK_JUST_NOW_RE = /(жаңа|жана)\s+ғана|только\s+что|just\s+now/iu;
 
+export function normalizeMenuDomain(domain: string): string | null {
+  let input = String(domain || "").trim();
+  if (!input) return null;
+
+  const urlMatch = input.match(/https?:\/\/[^\s<>"')\]]+/i);
+  if (urlMatch) input = urlMatch[0];
+
+  input = input
+    .replace(/^["'`<([{]+/g, "")
+    .replace(/["'`>)}\],;.\s]+$/g, "")
+    .trim();
+
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+
+    const hostname = parsed.hostname.replace(/\.+$/g, "").toLowerCase();
+    if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+      return null;
+    }
+    if (!hostname.includes(".") && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return null;
+
+    const port = parsed.port ? `:${parsed.port}` : "";
+    const path = parsed.pathname && parsed.pathname !== "/" ? parsed.pathname.replace(/\/+$/, "") : "";
+    return `${parsed.protocol}//${hostname}${port}${path}`;
+  } catch {
+    return null;
+  }
+}
+
 export function generateSecureMenuUrl(domain: string, phone: string): string | null {
   const secret = process.env.NOCODB_TOKEN || "secret";
-  if (!domain || !phone) return null;
-  const cleanDomain = String(domain).replace(/\/+$/, "");
+  const cleanDomain = normalizeMenuDomain(domain);
+  const cleanPhone = String(phone || "").replace(/\D/g, "");
+  if (!cleanDomain || !cleanPhone) return null;
   const timestamp = Date.now();
-  const hash = crypto.createHmac("sha256", secret).update(phone).digest("hex");
+  const hash = crypto.createHmac("sha256", secret).update(cleanPhone).digest("hex");
   const cb = Math.floor(Math.random() * 9999999);
-  return `${cleanDomain}/?phone=${phone}&hash=${hash}&t=${timestamp}&cb=${cb}`;
+  return `${cleanDomain}/?phone=${encodeURIComponent(cleanPhone)}&hash=${hash}&t=${timestamp}&cb=${cb}`;
 }
 
 export function isMenuLinkResendRequest(text = ""): boolean {

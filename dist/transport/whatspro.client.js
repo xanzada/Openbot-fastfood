@@ -54,17 +54,20 @@ function pushSized(chunks, value = "") {
         chunks.push(current.trim());
 }
 function normalizeUrlForSeparateMessage(url) {
-    const u = url.trim();
+    const u = url.trim().replace(/[.,!?;:]+$/g, "");
     if (u.startsWith("http://") || u.startsWith("https://"))
         return u;
     return u;
 }
+function normalizeMarkdownLinks(text) {
+    return String(text || "").replace(/\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi, (_match, label, url) => [String(label || "").trim(), String(url || "").trim()].filter(Boolean).join("\n"));
+}
 export function splitWhatsProResponse(text = "") {
-    const cleanText = String(text || "").trim();
+    const cleanText = normalizeMarkdownLinks(String(text || "").trim());
     if (!cleanText)
         return [];
     // Extract all URLs
-    const urls = Array.from(new Set(cleanText.match(URL_RE) || []));
+    const urls = Array.from(new Set((cleanText.match(URL_RE) || []).map(normalizeUrlForSeparateMessage).filter(Boolean)));
     // Remove URLs from text body
     const textOnly = cleanText.replace(URL_RE, "").replace(/[ \t]+\n/g, "\n").replace(/\s{2,}/g, " ").trim();
     const chunks = [];
@@ -78,7 +81,7 @@ export function splitWhatsProResponse(text = "") {
         // URLs will be appended as individual separate messages
     }
     for (const url of urls) {
-        chunks.push(normalizeUrlForSeparateMessage(url));
+        chunks.push(url);
     }
     return chunks.filter(Boolean);
 }
