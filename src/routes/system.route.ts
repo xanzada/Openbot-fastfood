@@ -1,12 +1,12 @@
 import type { Router } from "express";
 import { Router as createRouter } from "express";
-import { getPhoneCandidatesFromWebhook, getRuntimeStatus, normalizePhone, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
-import { deleteShiftNote, saveShiftNote } from "../services/redis.service.js";
-import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.service.js";
-import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
+import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
+import { handleKanbanWebhook } from "../controllers/kanban.js";
+import { sendWhatsProMessage } from "../transport/whatspro.client.js";
+import { normalizePhone } from "../services/dle.service.js";
 
 function verifySecret(channel = "webhook") {
   return async (req: any, res: any, next: any) => {
@@ -19,7 +19,7 @@ function verifySecret(channel = "webhook") {
   if (expected && safeCompare(got, expected)) return next();
 
   try {
-    const instanceId = getInstanceId(req.body || {});
+    const instanceId = String(req.body?.instanceId || req.body?.instance || req.body?.restaurant_id || "").trim();
     if (!instanceId) return res.status(401).json({ ok: false, error: "unauthorized" });
     const config = await getRestaurantConfig(instanceId);
     assertTenantSecret(req, config, channel);
@@ -28,24 +28,6 @@ function verifySecret(channel = "webhook") {
     return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
   }
   };
-}
-
-function getInstanceId(body: Record<string, any>) {
-  return String(body.instanceId || body.instance || body.restaurant_id || "").trim();
-}
-
-function getPhone(body: Record<string, any>) {
-  const eventData = body.data || body;
-  const key = eventData.key || body.key || {};
-  return normalizePhoneFromCandidates(getPhoneCandidatesFromWebhook(body, eventData, key));
-}
-
-function paymentDetailsText(details: any[]) {
-  if (!details.length) return "";
-  return details
-    .map((item) => `${String(item.label || "Реквизит").trim()}: ${String(item.value || "").trim()}`)
-    .filter(Boolean)
-    .join("\n");
 }
 
 function getDeveloperPhone(config: Record<string, any> = {}) {
@@ -62,7 +44,7 @@ async function notifyKanbanDeveloperSiren(req: any, error: any) {
       config = await getRestaurantConfig(String(instance)).catch(() => null);
     }
 
-    const devMsg = `🚨 *CRITICAL DLE KANBAN ERROR!* 🚨\n📍 *Instance:* ${instance}\n📦 *Заказ №:* ${orderId}\n⚠️ *Қате:* ${error?.message || error}\n🛠 *Орны:* kanbanController.js\n\nЧек немесе статус клиентке бармай қалды!`;
+    const devMsg = `🚨 *CRITICAL DLE KANBAN ERROR!* 🚨\n📍 *Instance:* ${instance}\n📦 *Заказ №:* ${orderId}\n⚠️ *Қате:* ${error?.message || error}\n🛠 *Орны:* kanban.ts\n\nЧек немесе статус клиентке бармай қалды!`;
     const developerPhone = getDeveloperPhone(config || {});
     if (instance !== "Белгісіз") {
       if (developerPhone) {
@@ -74,18 +56,6 @@ async function notifyKanbanDeveloperSiren(req: any, error: any) {
   } catch (devError: any) {
     console.error("[DEV SIREN FAILED]:", devError?.message || devError);
   }
-}
-
-function emitPrintNewOrder(req: any, orderData: Record<string, any>) {
-  const io = req.app.get("io");
-  if (!io) {
-    console.error("[SOCKET] Error: Socket.io (io) not found.");
-    return false;
-  }
-
-  io.emit("print_new_order", orderData);
-  console.log(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
-  return true;
 }
 
 export function systemRoute(): Router {
@@ -113,65 +83,11 @@ export function systemRoute(): Router {
 
   router.post("/kanban-webhook", verifySecret("kanban"), async (req, res) => {
     try {
-      const body = req.body || {};
-      const instanceId = getInstanceId(body);
-      const action = String(body.action || body.event || "").trim();
-      const phone = getPhone(body);
-      const kanbanStatus = String(body?.status || body?.new_status || body?.order_status || "").trim();
-
-      if (!instanceId) return res.status(400).json({ ok: false, error: "instance is required" });
-
-      if (kanbanStatus === "paid") {
-        emitPrintNewOrder(req, body);
-      }
-
-      if (action === "shift_note_created") {
-        await saveShiftNote(instanceId, body.id || body.note_id || body.key, body.text || body.note, body.expires_at || body.expiresAt);
-        return res.json({ ok: true, action, saved: true });
-      }
-
-      if (action === "shift_note_deleted") {
-        await deleteShiftNote(instanceId, body.id || body.note_id || body.key, body.text || body.note || "");
-        return res.json({ ok: true, action, deleted: true });
-      }
-
-      if (action === "request_payment" && phone) {
-        const config = await getRestaurantConfig(instanceId);
-        const runtime = config?.domain ? await getRuntimeStatus(instanceId, config.domain, { forceFresh: true }) : null;
-        const runtimeDetails = Array.isArray(runtime?.payment_details) ? runtime.payment_details : [];
-        const fallback = !runtimeDetails.length && config?.kaspi_info
-          ? [{ label: "Kaspi", value: config.kaspi_info, source: "nocodb_fallback" }]
-          : [];
-        const text = paymentDetailsText(runtimeDetails.length ? runtimeDetails : fallback);
-        if (text) {
-          await sendWhatsProMessage({
-            instanceId,
-            phone,
-            text: `Төлем реквизиттері:\n${text}\n\nТөлеген соң чекті осы чатқа жіберіңіз.`,
-          });
-        }
-        return res.json({ ok: true, action, sent: Boolean(text) });
-      }
-
-      if (body.text || body.message) {
-        if (!phone) return res.status(400).json({ ok: false, error: "phone is required" });
-        const send = await sendWhatsProMessage({
-          instanceId,
-          phone,
-          text: String(body.text || body.message),
-        });
-        return res.json({ ok: true, action: action || "send_message", send });
-      }
-
-      const io = req.app.get("io");
-      if (io && (action === "new_order" || action === "print_order" || body.print)) {
-        emitPrintNewOrder(req, body);
-      }
-
-      return res.json({ ok: true, action: action || "noop" });
+      await handleKanbanWebhook(req, res);
     } catch (error: any) {
       await notifyKanbanDeveloperSiren(req, error);
-      await notifyDeveloperSystemFailure(getInstanceId(req.body || {}), error, {
+      const instanceId = String(req.body?.instanceId || req.body?.instance || req.body?.restaurant_id || "").trim();
+      await notifyDeveloperSystemFailure(instanceId, error, {
         scope: "kanban-webhook",
       }).catch(() => undefined);
       if (!res.headersSent) {
@@ -185,14 +101,16 @@ export function systemRoute(): Router {
       const io = req.app.get("io");
       const orderData = req.body || {};
       if (io) {
-        emitPrintNewOrder(req, orderData);
+        io.emit("print_new_order", orderData);
+        console.log(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
         res.status(200).send({ success: true, message: "Print signal sent to agent" });
       } else {
         console.error("[SOCKET] Error: Socket.io (io) not found.");
         res.status(500).send({ success: false, error: "Socket server error" });
       }
     } catch (error: any) {
-      void notifyDeveloperSystemFailure(getInstanceId(req.body || {}), error, {
+      const instanceId = String(req.body?.instanceId || req.body?.instance || req.body?.restaurant_id || "").trim();
+      void notifyDeveloperSystemFailure(instanceId, error, {
         scope: "print_trigger",
       }).catch(() => undefined);
       if (!res.headersSent) {
