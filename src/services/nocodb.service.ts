@@ -336,6 +336,7 @@ reason must be brief and in Kazakh.
       model: openrouter("openai/gpt-4o-mini"),
       system: systemPrompt,
       prompt: `[DIALOGUE]\nClient: ${question}\nBot: ${answer}`,
+      allowSystemInMessages: true,
       tools: {
         record_shpor_evaluation: tool({
           description: "Save the decision about whether a dialogue should be stored in the second brain.",

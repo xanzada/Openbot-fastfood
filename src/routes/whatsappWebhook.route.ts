@@ -226,7 +226,7 @@ export function whatsappWebhookRoute(): Router {
   router.post("/webhook/whatsapp", verifySecret, async (req, res) => {
     const started = Date.now();
     const body = req.body || {};
-    console.log(
+    console.info(
       `[OPENBOT:WEBHOOK] POST /webhook/whatsapp fromMe=${isOwnWhatsAppMessage(body)} instance=${getInstanceId(body) || "-"} phone=${maskPhone(getPhone(body))}`
     );
 

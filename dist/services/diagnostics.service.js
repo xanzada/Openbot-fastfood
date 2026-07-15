@@ -148,7 +148,7 @@ export async function runDependencyChecks() {
 }
 export async function logStartupDiagnostics() {
     console.log("[OPENBOT:BOOT] startup diagnostics begin");
-    console.log("[OPENBOT:BOOT] config", JSON.stringify(getConfigSummary()));
+    console.info("[OPENBOT:BOOT] config", JSON.stringify(getConfigSummary()));
     const checks = await runDependencyChecks();
     for (const check of checks) {
         const status = check.ok ? "OK" : "FAIL";
