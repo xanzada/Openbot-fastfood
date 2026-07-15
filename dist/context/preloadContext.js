@@ -1,5 +1,5 @@
 import { detectLangWithFallback } from "../utils/language.js";
-import { buildMagicLink, hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
+import { generateSecureMenuUrl, hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/nocodb.service.js";
 import { connectRedis, getActiveShiftNotes, getChatHistory, getUserLang, hasMagicLinkBeenSent, saveUserLang, } from "../services/redis.service.js";
@@ -84,6 +84,6 @@ export async function preloadContext(input) {
         shporContext,
         magicLinkAlreadySent,
         explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
-        magicLink: buildMagicLink(domain, phone),
+        magicLink: generateSecureMenuUrl(domain, phone),
     };
 }

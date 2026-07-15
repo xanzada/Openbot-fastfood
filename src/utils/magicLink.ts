@@ -6,12 +6,12 @@ const MENU_LINK_RESEND_TEXT_RE = /(send|sent|resend|again|new|lost|deleted|open|
 const MENU_LINK_MOJIBAKE_RE = /(меню|мәзір|сілтеме|ссылка|каталог|заказ|тапсырыс|корзин|себет)/iu;
 const LINK_JUST_NOW_RE = /(жаңа|жана)\s+ғана|только\s+что|just\s+now/iu;
 
-export function buildMagicLink(domain: string, phone: string): string | null {
-  const secret = process.env.CRM_SECRET_TOKEN;
-  if (!domain || !phone || !secret) return null;
+export function generateSecureMenuUrl(domain: string, phone: string): string | null {
+  const secret = process.env.NOCODB_TOKEN || "secret";
+  if (!domain || !phone) return null;
   const cleanDomain = String(domain).replace(/\/+$/, "");
   const timestamp = Date.now();
-  const hash = crypto.createHash("sha256").update(`${phone}${secret}${timestamp}`).digest("hex");
+  const hash = crypto.createHmac("sha256", secret).update(phone).digest("hex");
   const cb = Math.floor(Math.random() * 9999999);
   return `${cleanDomain}/?phone=${phone}&hash=${hash}&t=${timestamp}&cb=${cb}`;
 }
