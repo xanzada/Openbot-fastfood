@@ -2,19 +2,20 @@ FROM node:20-bullseye-slim
 
 WORKDIR /app
 
-# 1. Тек package файлдарын көшіру (Docker кэшін тиімді қолдану үшін)
+# Copy package files first for Docker layer caching
 COPY package*.json ./
 
-# 2. БАРЛЫҚ кітапханаларды (dev қоса) таза орнату
+# Install ALL dependencies (including devDependencies needed for build)
 RUN npm ci
 
-# 3. Басқа конфигурациялар мен кодты көшіру
+# Copy config and source
 COPY tsconfig.json ./
 COPY src ./src
 
+# Compile TypeScript to dist/
+RUN npm run build
 
-
-# 5. Продакшнға керек емес (dev) кітапханаларды өшіріп, контейнерді жеңілдету
+# Remove dev dependencies — only production deps remain in the image
 RUN npm prune --omit=dev
 
 ENV NODE_ENV=production
