@@ -1,4 +1,4 @@
-import { getPhoneCandidatesFromWebhook, getRuntimeStatus, normalizePhoneFromCandidates } from "../services/dle.service.js";
+import { getPhoneCandidatesFromWebhook, getRuntimeStatus, normalizePhone, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { deleteShiftNote, saveShiftNote } from "../services/redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
@@ -61,6 +61,7 @@ export async function handleKanbanWebhook(req, res) {
     if (!instanceId)
         return res.status(400).json({ ok: false, error: "instance is required" });
     const io = req.app.get("io");
+    // Sync Shift Notes (Redis)
     if (action === "shift_note_created") {
         await saveShiftNote(instanceId, body.id || body.note_id || body.key, body.text || body.note, body.expires_at || body.expiresAt);
         return res.json({ ok: true, action, saved: true });
@@ -69,6 +70,17 @@ export async function handleKanbanWebhook(req, res) {
         await deleteShiftNote(instanceId, body.id || body.note_id || body.key, body.text || body.note || "");
         return res.json({ ok: true, action, deleted: true });
     }
+    // Kitchen Status Update (Pass-through for metrics/tracking or forcing local cache clears if needed in the future)
+    if (action === "update_kitchen_status") {
+        // In a more complex integration, we might push this to Redis immediately to bypass NocoDB caching,
+        // but the current architecture relies on DLE and getRuntimeStatus fetching it.
+        // We will acknowledge the hook here to maintain feature parity.
+        return res.json({ ok: true, action: "update_kitchen_status_acknowledged", status: body.status || {} });
+    }
+    if (action === "get_kitchen_status") {
+        return res.json({ ok: true, action: "get_kitchen_status_acknowledged" });
+    }
+    // DLE Order Flow
     if (action === "new_order" && phone) {
         if (io)
             emitPrintNewOrder(req, body);
@@ -145,6 +157,20 @@ export async function handleKanbanWebhook(req, res) {
             text: message
         });
         return res.json({ ok: true, action, sent: true });
+    }
+    // Developer Alerts / Complaint routing
+    if (action === "developer_alert" || action === "complaint") {
+        const config = await getRestaurantConfig(instanceId);
+        const developerPhone = normalizePhone(config?.developer || config?.developer_phone || config?.dev_phone || process.env.DEVELOPER_PHONE || "");
+        if (developerPhone) {
+            const alertMessage = body.text || body.message || `🚨 Тұтынушы шағымы / Системалық қате (Instance: ${instanceId})`;
+            await sendWhatsProMessage({
+                instanceId,
+                phone: developerPhone,
+                text: `[SYSTEM ALERT]: ${alertMessage}`
+            });
+        }
+        return res.json({ ok: true, action: "alert_sent" });
     }
     if (body.text || body.message) {
         if (!phone)
