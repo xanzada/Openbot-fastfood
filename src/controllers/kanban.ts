@@ -231,7 +231,7 @@ function extractShiftNotePayload(body: Record<string, unknown>) {
 }
 
 function getDeveloperPhone(config: Record<string, unknown>) {
-  return normalizePhone(config.developer || config.developer_phone || config.dev_phone || process.env.DEVELOPER_PHONE || "");
+  return normalizePhone(config.dev_phone || "");
 }
 
 function getAdminPhone(config: Record<string, unknown>) {

@@ -141,6 +141,13 @@ async function processWhatsAppWebhook(body: any, started: number) {
   );
 
   try {
+    if (!String(text || "").trim() && !mediaContext) {
+      console.log(
+        `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=empty_message elapsed=${Date.now() - started}ms`
+      );
+      return;
+    }
+
     const guard = await guardIncomingMessage({
       instanceId,
       phone,
@@ -404,6 +411,19 @@ export function whatsappWebhookRoute(): Router {
       }
       console.log(`[OPENBOT:INBOUND:SKIP] fromMe=true elapsed=${Date.now() - started}ms`);
       return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
+    }
+
+    const mediaContext = extractInboundMedia(body);
+    const text =
+      extractInboundText(body) ||
+      mediaContext?.caption ||
+      mediaContext?.historyLabel ||
+      (mediaContext ? "[Media sent]" : "");
+    if (!String(text || "").trim() && !mediaContext) {
+      console.log(
+        `[OPENBOT:INBOUND:SKIP] instance=${getInstanceId(body) || "-"} phone=${maskPhone(getPhone(body))} reason=empty_message elapsed=${Date.now() - started}ms`
+      );
+      return res.status(200).send("ok");
     }
 
     setImmediate(() => {

@@ -199,7 +199,7 @@ function extractShiftNotePayload(body) {
     return { noteId, text, expiresAt, shiftKey, stableLockId };
 }
 function getDeveloperPhone(config) {
-    return normalizePhone(config.developer || config.developer_phone || config.dev_phone || process.env.DEVELOPER_PHONE || "");
+    return normalizePhone(config.dev_phone || "");
 }
 function getAdminPhone(config) {
     return normalizePhone(config.admin_phone || "");

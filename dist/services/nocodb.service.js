@@ -32,6 +32,18 @@ function cleanString(value, fallback = "") {
     const text = String(value ?? fallback ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
     return text || fallback;
 }
+function normalizePhone(value) {
+    return String(value || "").replace(/\D/g, "");
+}
+function normalizeRestaurantConfig(record) {
+    if (!record)
+        return null;
+    const devPhone = normalizePhone(record.dev_phone || record.developer_phone || record.developer || record.devPhone);
+    return {
+        ...record,
+        dev_phone: devPhone,
+    };
+}
 function cleanPromptLine(value, max = 240) {
     return cleanString(value).slice(0, max);
 }
@@ -97,7 +109,7 @@ export async function getRestaurantConfig(instanceId) {
             timeout: 10000,
         });
         const records = Array.isArray(response.data?.list) ? response.data.list : [];
-        const config = records[0] || null;
+        const config = normalizeRestaurantConfig(records[0] || null);
         if (config) {
             await setJsonCache(key, 300, config);
             await setJsonCache(backupKey, 604800, config);
@@ -122,7 +134,10 @@ export async function getAllRestaurantConfigs() {
             timeout: 10000,
         });
         const records = Array.isArray(response.data?.list)
-            ? response.data.list.filter((record) => String(record?.instance_id || "").trim())
+            ? response.data.list
+                .filter((record) => String(record?.instance_id || "").trim())
+                .map((record) => normalizeRestaurantConfig(record))
+                .filter(Boolean)
             : [];
         await setJsonCache(cacheKey, 300, records);
         await setJsonCache(backupKey, 604800, records);

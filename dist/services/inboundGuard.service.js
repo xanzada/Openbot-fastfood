@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
+import { getRestaurantConfig } from "./nocodb.service.js";
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const PHONE_RE = /^\d{10,15}$/;
 const SPAM_WINDOW_SECONDS = 60;
@@ -13,39 +14,7 @@ const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS |
 const OPERATOR_ACTIVE_SECONDS = Number(process.env.OPERATOR_ACTIVE_SECONDS || 60);
 const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
-const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || [
-    "мама",
-    "мам",
-    "папа",
-    "пап",
-    "ана",
-    "әке",
-    "аке",
-    "апа",
-    "ата",
-    "әже",
-    "аже",
-    "нағашы",
-    "нагашы",
-    "аға",
-    "ага",
-    "әпке",
-    "апке",
-    "тәте",
-    "тате",
-    "көке",
-    "коке",
-    "брат",
-    "сестра",
-    "жена",
-    "муж",
-    "дос",
-    "бауырым",
-    "карындас",
-    "қарындас",
-    "сіңлі",
-    "синли",
-].join(","))
+const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
@@ -102,15 +71,6 @@ function hasPrivateKeyword(values) {
             return false;
         return tokenText.includes(` ${keywordTokens.join(" ")} `);
     });
-}
-function envBool(name, fallback = false) {
-    const value = String(process.env[name] ?? "").trim().toLowerCase();
-    if (!value)
-        return fallback;
-    return ["1", "true", "yes", "on"].includes(value);
-}
-function getTestModeAllowedPhone() {
-    return String(process.env.TEST_MODE_ALLOWED_PHONE || "").replace(/\D/g, "");
 }
 function defaultMimeForKind(kind, rawMedia) {
     if (kind === "image")
@@ -326,6 +286,10 @@ async function getFreshOperatorActive(instanceId, phone) {
     }
     return value;
 }
+async function getTestModeDevPhone(instanceId) {
+    const config = await getRestaurantConfig(instanceId).catch(() => null);
+    return String(config?.dev_phone || "").replace(/\D/g, "");
+}
 export async function setOperatorAutoMute(instanceId, phone) {
     const safeInstanceId = String(instanceId || "").trim();
     const safePhone = String(phone || "").replace(/\D/g, "");
@@ -351,9 +315,9 @@ export async function guardIncomingMessage(input) {
         return { blocked: true, reason: "bad_instance" };
     if (!PHONE_RE.test(phone))
         return { blocked: true, reason: "bad_phone" };
-    if (envBool("TEST_MODE_ENABLED", false)) {
-        const allowedPhone = getTestModeAllowedPhone();
-        if (!allowedPhone || phone !== allowedPhone) {
+    if (process.env.TEST_MODE_ENABLED === "true") {
+        const devPhone = await getTestModeDevPhone(instanceId);
+        if (!devPhone || phone !== devPhone) {
             return { blocked: true, reason: "test_mode_blocked" };
         }
     }
