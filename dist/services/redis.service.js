@@ -75,6 +75,72 @@ const MAGIC_LINK_SENT_TTL_SECONDS = 2592000;
 const USER_LANG_TTL_SECONDS = 43200;
 const COMPLAINT_MEDIA_TTL_SECONDS = 300;
 const DAILY_LOG_TTL_SECONDS = 172800;
+const KITCHEN_STATUS_TTL_SECONDS = 604800;
+function kitchenStatusKey(instanceId) {
+    return `${instanceId}:kitchen_status`;
+}
+function toBool(value, fallback = false) {
+    if (typeof value === "boolean")
+        return value;
+    if (typeof value === "number")
+        return value !== 0;
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["1", "true", "yes", "on"].includes(normalized))
+            return true;
+        if (["0", "false", "no", "off"].includes(normalized))
+            return false;
+    }
+    return fallback;
+}
+function parseJsonArray(value) {
+    if (Array.isArray(value))
+        return value;
+    if (typeof value !== "string" || !value.trim())
+        return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    }
+    catch {
+        return [];
+    }
+}
+function normalizePaymentDetails(value) {
+    return parseJsonArray(value)
+        .map((item) => {
+        const source = item && typeof item === "object" ? item : {};
+        return {
+            label: String(source.label || source.name || source.title || "Реквизит").trim().slice(0, 60),
+            value: String(source.value || source.number || source.url || source.link || "").trim().slice(0, 250),
+            source: source.source ? String(source.source).trim().slice(0, 40) : undefined,
+        };
+    })
+        .filter((item) => item.value)
+        .slice(0, 12);
+}
+function normalizeKitchenStatus(value = {}, previousPaymentDetails = []) {
+    const paymentDetails = normalizePaymentDetails(value.payment_details).length
+        ? normalizePaymentDetails(value.payment_details)
+        : previousPaymentDetails;
+    const hoursValid = Number(value.hours_valid || value.hoursValid || 0) || 0;
+    const preserveReset = toBool(value.preserve_reset ?? value.preserveReset, false);
+    const resetAt = preserveReset
+        ? Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0)
+        : hoursValid > 0
+            ? Math.floor(Date.now() / 1000 + hoursValid * 3600)
+            : Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0);
+    return {
+        wait_time: Math.max(0, Math.floor(Number(value.wait_time ?? value.waitTime ?? 40) || 0)),
+        is_emergency: toBool(value.is_emergency ?? value.isEmergency, false),
+        delivery: toBool(value.delivery, true),
+        pickup: toBool(value.pickup, true),
+        reset_at: resetAt,
+        payment_details: paymentDetails,
+        source: String(value.source || "redis_kitchen_status").trim(),
+        synced_at: new Date().toISOString(),
+    };
+}
 export async function getChatHistory(instanceId, phone) {
     return safeRedis([], async () => {
         const raw = await redisClient.lRange(historyKey(instanceId, phone), 0, -1);
@@ -150,6 +216,37 @@ export async function saveDailyLog(instanceId, logData) {
         }
     });
 }
+export async function saveKitchenStatus(instanceId, value) {
+    const previous = await getKitchenStatus(instanceId).catch(() => null);
+    const status = normalizeKitchenStatus(value, previous?.payment_details || []);
+    await safeRedis(undefined, async () => {
+        await redisClient.setEx(kitchenStatusKey(instanceId), KITCHEN_STATUS_TTL_SECONDS, JSON.stringify(status));
+    });
+    return status;
+}
+export async function getKitchenStatus(instanceId) {
+    return safeRedis(null, async () => {
+        const raw = await redisClient.get(kitchenStatusKey(instanceId));
+        if (!raw)
+            return null;
+        const parsed = JSON.parse(raw);
+        const current = normalizeKitchenStatus(parsed && typeof parsed === "object" ? parsed : {});
+        if (current.reset_at > 0 && current.reset_at <= Math.floor(Date.now() / 1000)) {
+            const reset = normalizeKitchenStatus({
+                wait_time: 40,
+                is_emergency: false,
+                delivery: true,
+                pickup: true,
+                reset_at: 0,
+                payment_details: current.payment_details,
+                source: "redis_kitchen_status_reset",
+            });
+            await redisClient.setEx(kitchenStatusKey(instanceId), KITCHEN_STATUS_TTL_SECONDS, JSON.stringify(reset));
+            return reset;
+        }
+        return current;
+    });
+}
 export async function hasMagicLinkBeenSent(instanceId, phone) {
     return safeRedis(false, async () => Boolean(await redisClient.get(magicLinkKey(instanceId, phone))));
 }
@@ -176,6 +273,73 @@ function parseShiftNoteRecord(raw = "") {
     catch {
         return { text, plain: true, expired: false, expiresAt: 0 };
     }
+}
+function normalizeShiftNoteText(value) {
+    return String(value || "")
+        .toLowerCase()
+        .replace(/[\r\n\t]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+function shiftNoteTextMatches(currentText, expectedText) {
+    const current = normalizeShiftNoteText(currentText);
+    const expected = normalizeShiftNoteText(expectedText);
+    if (!current || !expected)
+        return false;
+    if (current === expected)
+        return true;
+    return (expected.length >= 8 && current.includes(expected)) || (current.length >= 8 && expected.includes(current));
+}
+const SHIFT_NOTE_DERIVED_RE = /(уақытша|уакытша|қабылдай алмай|кабылдай алмай|кідіріс|кедіріс|кешігу|задерж|временно|не можем принять|нет в наличии|ас үй|ас уй|кухн|минут|мин|суши|ролл|донер|пицц|свет|жарық|жарык|демалыс|курьер)/iu;
+function isDerivedShiftNoteHistory(historyText, noteText) {
+    const history = normalizeShiftNoteText(historyText);
+    const note = normalizeShiftNoteText(noteText);
+    if (!history || !note)
+        return false;
+    if (shiftNoteTextMatches(history, note))
+        return true;
+    if (!SHIFT_NOTE_DERIVED_RE.test(history))
+        return false;
+    const noteTokens = note
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((token) => token.length >= 3 && !/^(мин|минут|бар|жок|жоқ|нет|есть|қазір|казир|сейчас)$/iu.test(token));
+    return !noteTokens.length || noteTokens.some((token) => history.includes(token));
+}
+async function purgeShiftNoteTextFromHistory(instanceId, noteText) {
+    if (!normalizeShiftNoteText(noteText))
+        return 0;
+    let removedTotal = 0;
+    const keys = await scanKeys(`history:${instanceId}:*`);
+    for (const key of keys) {
+        const ttlBefore = await redisClient.ttl(key).catch(() => -1);
+        const rawHistory = await redisClient.lRange(key, 0, -1).catch(() => []);
+        const kept = [];
+        let removedFromKey = 0;
+        for (const raw of rawHistory) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (isDerivedShiftNoteHistory(parsed?.text, noteText)) {
+                    removedFromKey += 1;
+                    continue;
+                }
+            }
+            catch {
+                // Keep malformed entries rather than risking customer history loss.
+            }
+            kept.push(raw);
+        }
+        if (!removedFromKey)
+            continue;
+        const multi = redisClient.multi().del(key);
+        for (const item of kept) {
+            multi.rPush(key, item);
+        }
+        await multi.exec();
+        if (kept.length && ttlBefore > 0)
+            await redisClient.expire(key, ttlBefore);
+        removedTotal += removedFromKey;
+    }
+    return removedTotal;
 }
 async function scanKeys(pattern) {
     await connectRedis();
@@ -204,17 +368,47 @@ export async function saveShiftNote(instanceId, noteId, text, expiresAtString) {
         return true;
     });
 }
-export async function deleteShiftNote(instanceId, noteId, _text = "") {
+export async function deleteShiftNote(instanceId, noteId, text = "") {
     await safeRedis(undefined, async () => {
         const safeNoteId = String(noteId || "").trim();
+        const expectedText = String(text || "").trim();
+        const deletedKeys = [];
+        const purgeTexts = new Set();
+        if (expectedText)
+            purgeTexts.add(expectedText);
         if (safeNoteId && safeNoteId !== "0") {
-            await redisClient.del(`shift_note:${instanceId}:${safeNoteId}`);
+            const key = `shift_note:${instanceId}:${safeNoteId}`;
+            const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
+            if (stored.text)
+                purgeTexts.add(stored.text);
+            if (await redisClient.del(key))
+                deletedKeys.push(key);
         }
-        else {
+        if (!deletedKeys.length) {
             const keys = await scanKeys(`shift_note:${instanceId}:*`);
-            for (const key of keys) {
-                await redisClient.del(key);
+            if (expectedText) {
+                for (const key of keys) {
+                    const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
+                    if (!shiftNoteTextMatches(stored.text, expectedText))
+                        continue;
+                    if (stored.text)
+                        purgeTexts.add(stored.text);
+                    await redisClient.del(key);
+                    deletedKeys.push(key);
+                }
             }
+            else if (!safeNoteId || safeNoteId === "0") {
+                for (const key of keys) {
+                    const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
+                    if (stored.text)
+                        purgeTexts.add(stored.text);
+                    await redisClient.del(key);
+                    deletedKeys.push(key);
+                }
+            }
+        }
+        for (const purgeText of purgeTexts) {
+            await purgeShiftNoteTextFromHistory(instanceId, purgeText);
         }
     });
 }

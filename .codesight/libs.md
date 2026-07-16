@@ -1,34 +1,43 @@
 # Libraries
 
 - `src\agent\fastfoodAgent.ts` — function runFastFoodAgent: (ctx) => void
-- `src\agent\finalValidator.ts` — function validateFinalText: (rawText, ctx) => string
+- `src\agent\finalValidator.ts` — function validateFinalText: (rawText, ctx) => void
+- `src\agent\modelRouter.ts` — function resolveModel: (ctx) => void
 - `src\context\buildFactsPrompt.ts` — function buildFactsPrompt: (ctx) => string
-- `src\context\preloadContext.ts` — function preloadContext: (input) => Promise<FastFoodContext>, interface InboundMessage
+- `src\context\preloadContext.ts`
+  - function preloadContext: (input) => Promise<FastFoodContext>
+  - interface InboundMessage
+  - interface ContextHealth
+- `src\cron\statsCron.ts` — function processDailyAnalytics: () => void, function startDailyCron: () => void
 - `src\services\developerNotify.service.ts` — function notifyDeveloperSystemFailure: (instanceId, error, meta, unknown>) => Promise<boolean>
 - `src\services\diagnostics.service.ts`
   - function getConfigSummary: () => void
   - function runDependencyChecks: () => void
   - function logStartupDiagnostics: () => void
 - `src\services\dle.service.ts`
+  - function isPrivateIp: (ipValue) => void
+  - function normalizeKazakhstanPhone: (digits) => void
+  - function isGroupOrStatusJid: (value) => void
+  - function extractPhoneCandidate: (rawValue) => void
   - function normalizePhone: (value) => void
-  - function normalizeRuntimeStatus: (data, any>) => void
-  - function getRuntimeStatus: (instanceId, domain, options) => Promise<Record<string, any> | null>
-  - function getOrderStatus: (instanceId, phone, domain) => void
-  - function getMenuContext: (instanceId, domain, userLang) => void
-  - function updateCrmAction: (actionType, instanceId, phone, data, any>) => void
+  - function normalizePhoneFromCandidates: (candidates) => void
+  - _...10 more_
 - `src\services\inboundGuard.service.ts`
   - function extractMessageId: (body) => string
   - function extractInboundText: (body) => string
+  - function extractSenderMeta: (body) => void
   - function extractInboundMedia: (body) => InboundMediaContext | null
-  - function guardIncomingMessage: (input) => Promise<GuardResult>
-  - function markInboundDone: (instanceId, messageId?) => Promise<void>
-  - function clearInboundProcessing: (instanceId, messageId?) => Promise<void>
-  - _...4 more_
+  - function getBase64Media: (body, mediaContext) => void
+  - function hydrateInboundMedia: (body, mediaContext) => Promise<InboundMediaContext | null>
+  - _...8 more_
 - `src\services\kanbanSync.service.ts` — function syncKanbanEvent: (ctx, event, any>) => Promise<
+- `src\services\mediaAnalysis.service.ts` — function analyzeMedia: (base64Media, mimeType, caption, userLang, isPdf) => void
 - `src\services\nocodb.service.ts`
   - function getRestaurantConfig: (instanceId) => Promise<Record<string, any> | null>
+  - function getAllRestaurantConfigs: () => Promise<Record<string, any>[]>
   - function getShporContext: (instanceId, query) => Promise<any[]>
-  - function saveToShpor: (instanceId, question, answer, category) => Promise<void>
+  - function saveToShpor: (instanceId, question, answer, category, memoryPayload, any> | null) => Promise<void>
+  - function evaluateForShpor: (question, answer) => Promise<
 - `src\services\redis.service.ts`
   - function getRedisTarget: () => void
   - function connectRedis: () => Promise<void>
@@ -36,17 +45,31 @@
   - function getChatHistory: (instanceId, phone) => Promise<any[]>
   - function saveToHistory: (instanceId, phone, role, text, meta, unknown>) => Promise<void>
   - function getUserLang: (instanceId, phone) => Promise<"kk" | "ru" | null>
-  - _...10 more_
+  - _...14 more_
+- `src\services\tenantAuth.service.ts`
+  - function safeCompare: (a, b) => boolean
+  - function getIncomingTenantSecret: (req) => void
+  - function getTenantSecret: (config, any> | null | undefined, channel) => void
+  - function assertTenantSecret: (req, config, any> | null | undefined, channel) => void
+- `src\skills\checkOrderStatus.skill.ts` — function createCheckOrderStatusSkill: (ctx) => void
 - `src\skills\crm.skill.ts` — function createUpdateCrmLeadSkill: (ctx) => void
 - `src\skills\escalation.skill.ts` — function createEscalateToAdminSkill: (ctx) => void
 - `src\skills\index.ts` — function createFastFoodSkills: (ctx) => void
 - `src\skills\menuLink.skill.ts` — function createSendMenuLinkSkill: (ctx) => void
 - `src\skills\payment.skill.ts` — function createGetPaymentDetailsSkill: (ctx) => void, function createRegisterPaymentReceiptSkill: (ctx) => void
 - `src\skills\searchMenu.skill.ts` — function createSearchMenuSkill: (ctx) => void
+- `src\skills\tavilySearch.skill.ts` — function searchWeb: (query, options) => void, function createTavilySearchSkill: (_ctx) => void
 - `src\transport\whatspro.client.ts`
   - function splitWhatsProResponse: (text) => string[]
   - function sendWhatsProMessage: (payload) => void
   - function sendWhatsProPresence: (payload) => void
   - function sendWhatsProResponseSequence: (payload) => void
-- `src\utils\language.ts` — function detectLang: (text, storedLang?) => "kk" | "ru"
-- `src\utils\magicLink.ts` — function buildMagicLink: (domain, phone) => string | null, function hasExplicitMenuLinkIntent: (text) => boolean
+- `src\utils\language.ts`
+  - function detectLang: (text, storedLang?) => "kk" | "ru"
+  - function detectLanguageWithAI: (text) => Promise<"kk" | "ru">
+  - function detectLangWithFallback: (text, storedLang?) => Promise<"kk" | "ru">
+- `src\utils\magicLink.ts`
+  - function normalizeMenuDomain: (domain) => string | null
+  - function generateSecureMenuUrl: (domain, phone) => string | null
+  - function isMenuLinkResendRequest: (text) => boolean
+  - function hasExplicitMenuLinkIntent: (text) => boolean

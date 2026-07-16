@@ -1,17 +1,7 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import type { FastFoodContext } from "../context/types.js";
-import { getRestaurantConfig } from "../services/nocodb.service.js";
-import { clearComplaintMedia, getComplaintMedia } from "../services/redis.service.js";
-import { sendWhatsProMessage } from "../transport/whatspro.client.js";
-
-function normalizePhone(value = "") {
-  return String(value || "").replace(/\D/g, "");
-}
-
-function getAdminPhone(config: Record<string, any> = {}) {
-  return normalizePhone(config.admin_phone);
-}
+import { routeComplaintToAdmin } from "../services/complaintRouting.service.js";
 
 export function createEscalateToAdminSkill(ctx: FastFoodContext) {
   return createTool({
@@ -23,47 +13,28 @@ export function createEscalateToAdminSkill(ctx: FastFoodContext) {
       urgency: z.enum(["low", "normal", "high"]).default("normal"),
     }),
     execute: async ({ reason, customerReply, urgency }) => {
-      const liveConfig = (await getRestaurantConfig(ctx.instanceId).catch(() => null)) || {};
-      const adminPhone = getAdminPhone(liveConfig);
-      const complaintMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
-      const orderInfo = ctx.activeOrder?.order_id || ctx.activeOrder?.id || "Табылмады";
-      const restaurantLabel = liveConfig.name || liveConfig.restaurant_name || ctx.config.name || ctx.instanceId;
-      const adminMsg = `${urgency === "high" ? "🚨 *ЖАҢА ШАҒЫМ*" : "⚠️ *ОПЕРАТОР КӨМЕГІ ҚАЖЕТ*"}\n🏪 *Ресторан:* ${restaurantLabel}\n📞 *Клиент:* +${ctx.phone}\n📌 *Тапсырыс №:* ${orderInfo}\n\n🧠 *AI Анализі:* ${reason}`;
-      const media = complaintMedia?.base64
-        ? {
-            base64: complaintMedia.base64,
-            mimeType: complaintMedia.mediaType || complaintMedia.mimeType || "image/jpeg",
-            type: String(complaintMedia.mediaType || complaintMedia.mimeType || "image").includes("image")
-              ? "image"
-              : "document",
-          }
-        : null;
-      let sent: any = null;
-      if (adminPhone) {
-        sent = await sendWhatsProMessage({
-          instanceId: ctx.instanceId,
-          phone: adminPhone,
-          text: adminMsg,
-          media,
-        });
-        if (media) await clearComplaintMedia(ctx.instanceId, ctx.phone).catch(() => undefined);
-      }
+      const routing = await routeComplaintToAdmin(ctx, {
+        summary: reason,
+        customerReply,
+        urgency,
+        source: "ai_tool_escalate_to_admin",
+      });
 
       return {
         action: "escalate_to_admin",
         instanceId: ctx.instanceId,
         phone: ctx.phone,
-        adminPhone: adminPhone || null,
-        escalationAvailable: Boolean(adminPhone),
-        sent,
+        adminPhone: routing.adminPhone,
+        escalationAvailable: routing.escalationAvailable,
+        sent: routing.sent,
         adminPayload: {
-          phone: adminPhone || null,
-          text: adminMsg,
-          media,
+          phone: routing.adminPhone,
+          text: routing.adminText,
+          mediaAttached: routing.mediaAttached,
         },
         reason,
         urgency,
-        customerReply,
+        customerReply: routing.customerReply,
       };
     },
   });

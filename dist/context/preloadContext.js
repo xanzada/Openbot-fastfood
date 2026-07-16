@@ -27,9 +27,7 @@ export async function preloadContext(input) {
     if (domain)
         safeConfig.domain = domain;
     const [runtimeStatus, activeOrder, shporContext] = await Promise.all([
-        domain
-            ? getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null)
-            : Promise.resolve(null),
+        getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
         domain
             ? getOrderStatus(instanceId, phone, domain).catch(() => null)
             : Promise.resolve(null),
@@ -57,6 +55,7 @@ export async function preloadContext(input) {
         pickup: runtimeStatus?.pickup ?? runtimeStatus?.kitchen_status?.pickup ?? null,
         is_emergency: fetchedSettings.is_emergency,
         reset_at: Number(runtimeStatus?.reset_at || runtimeStatus?.kitchen_status?.reset_at || 0) || 0,
+        payment_details: Array.isArray(runtimeStatus?.payment_details) ? runtimeStatus.payment_details : [],
         active_shift_notes: activeShiftNotes,
         stale: Boolean(runtimeStatus?.stale || runtimeStatus?.is_stale || runtimeStatus?.stale_runtime_backup),
         runtime_available: runtimeAvailable,

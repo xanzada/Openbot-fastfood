@@ -4,7 +4,15 @@ import net from "node:net";
 import * as dnsCallback from "node:dns";
 import dns from "node:dns/promises";
 import axios from "axios";
-import { deleteCache, getJsonCache, saveDailyLog, setJsonCache } from "./redis.service.js";
+import {
+  deleteCache,
+  getJsonCache,
+  getKitchenStatus,
+  saveDailyLog,
+  saveKitchenStatus,
+  setJsonCache,
+  type KitchenStatusState,
+} from "./redis.service.js";
 
 const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
 const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;
@@ -240,14 +248,57 @@ export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
   };
 }
 
+function runtimeFromKitchenStatus(instanceId: string, status: KitchenStatusState): Record<string, any> {
+  const isAcceptingOrders = !status.is_emergency && (status.delivery || status.pickup);
+  const closedReason = status.is_emergency
+    ? "emergency_stop"
+    : !status.delivery && !status.pickup
+      ? "service_channels_disabled"
+      : "";
+
+  return {
+    is_accepting_orders: isAcceptingOrders,
+    within_work_hours: true,
+    closed_reason: closedReason,
+    delivery: status.delivery,
+    pickup: status.pickup,
+    wait_time: status.wait_time,
+    reset_at: status.reset_at,
+    is_emergency: status.is_emergency,
+    kitchen_status: {
+      wait_time: status.wait_time,
+      reset_at: status.reset_at,
+      delivery: status.delivery,
+      pickup: status.pickup,
+      is_emergency: status.is_emergency,
+      source: status.source,
+      synced_at: status.synced_at,
+    },
+    fetched_settings: {
+      wait_time: status.wait_time,
+      is_emergency: status.is_emergency,
+      source: status.source || "redis_kitchen_status",
+    },
+    payment_details: status.payment_details,
+    source: status.source || "redis_kitchen_status",
+    restaurant_id: instanceId,
+    fetched_at: status.synced_at,
+    redis_runtime_fallback: true,
+  };
+}
+
 export async function getRuntimeStatus(
   instanceId: string,
   domain: string,
   options: { forceFresh?: boolean } = {}
 ): Promise<Record<string, any> | null> {
-  if (!domain) return null;
   const cacheKey = `runtime_status:${instanceId}`;
   const backupKey = `runtime_status_backup:${instanceId}`;
+
+  if (!domain) {
+    const redisKitchen = await getKitchenStatus(instanceId);
+    return redisKitchen ? runtimeFromKitchenStatus(instanceId, redisKitchen) : null;
+  }
 
   if (!options.forceFresh) {
     const cached = await getJsonCache<Record<string, any>>(cacheKey);
@@ -259,9 +310,24 @@ export async function getRuntimeStatus(
     const status = normalizeRuntimeStatus(data || {});
     await setJsonCache(cacheKey, 5, status);
     await setJsonCache(backupKey, 600, status);
+    await saveKitchenStatus(instanceId, {
+      ...(status.kitchen_status || {}),
+      payment_details: status.payment_details || [],
+      source: "dle_runtime_status",
+      preserve_reset: true,
+    }).catch((syncError: any) => {
+      console.warn(`[RUNTIME] Redis kitchen sync skipped (${instanceId}):`, syncError?.message || syncError);
+    });
     return status;
   } catch (error: any) {
     console.error(`[RUNTIME] DLE read failed (${instanceId}):`, error?.message || error);
+    const redisKitchen = await getKitchenStatus(instanceId);
+    if (redisKitchen) {
+      const redisRuntime = runtimeFromKitchenStatus(instanceId, redisKitchen);
+      await setJsonCache(cacheKey, 5, redisRuntime).catch(() => undefined);
+      return redisRuntime;
+    }
+
     const backup = await getJsonCache<Record<string, any>>(backupKey);
     if (!backup) return null;
     return {

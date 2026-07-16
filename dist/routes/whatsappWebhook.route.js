@@ -2,6 +2,7 @@ import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
 import { saveComplaintMedia, saveToHistory } from "../services/redis.service.js";
+import { buildComplaintAckReply, buildComplaintClarificationReply, hasEscalateAdminSignal, hasEscalateDeveloperSignal, hasPendingComplaintMedia, isLikelyComplaintText, routeComplaintToAdmin, stripEscalationSignals, } from "../services/complaintRouting.service.js";
 import { clearInboundProcessing, extractInboundMedia, extractSenderMeta, extractInboundText, extractMessageId, guardIncomingMessage, hydrateInboundMedia, markInboundDone, saveMediaContext, setOperatorAutoMute, } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
@@ -60,6 +61,29 @@ function runtimeUnavailableReply(ctx) {
         ? "Қазір асүй статусын тексере алмаймын. Кейін қайталап жазыңыз."
         : "Не могу проверить статус кухни. Напишите позже.";
 }
+function hasMeaningfulMediaDescription(text = "", mediaContext = null) {
+    const clean = stripEscalationSignals(text).trim();
+    if (!clean || clean === "[Media sent]")
+        return false;
+    const historyLabel = String(mediaContext?.historyLabel || "").trim();
+    if (historyLabel && clean === historyLabel)
+        return false;
+    return clean.length >= 2;
+}
+async function sendCustomerReplyAndFinish(ctx, messageId, reply, source) {
+    const cleanReply = stripEscalationSignals(reply);
+    if (cleanReply) {
+        await saveToHistory(ctx.instanceId, ctx.phone, "assistant", cleanReply, {
+            source,
+        });
+        await sendWhatsProResponseSequence({
+            instanceId: ctx.instanceId,
+            phone: ctx.phone,
+            text: cleanReply,
+        });
+    }
+    await markInboundDone(ctx.instanceId, messageId);
+}
 async function processWhatsAppWebhook(body, started) {
     const instanceId = getInstanceId(body);
     const phone = getPhone(body);
@@ -100,13 +124,46 @@ async function processWhatsAppWebhook(body, started) {
             await markInboundDone(ctx.instanceId, messageId);
             return;
         }
+        let mediaPreemptiveReply = "";
+        let mediaPreemptiveSource = "";
+        let mediaDeveloperError = "";
+        let immediateComplaintSummary = "";
+        let immediateComplaintMedia = null;
+        let immediateComplaintUrgency = "normal";
         if (mediaContext?.base64 && mediaContext.valid) {
             const mediaAnalysis = await analyzeMedia(mediaContext.base64, mediaContext.mimeType || mediaContext.mediaType || "application/octet-stream", text, ctx.language, (mediaContext.mimeType || "").includes("pdf"));
             if (mediaAnalysis) {
                 mediaContext = { ...mediaContext, analysis: mediaAnalysis };
                 ctx.mediaContext = mediaContext;
+                if (mediaAnalysis.type === "technical_error") {
+                    mediaDeveloperError = mediaAnalysis.analysis || "media_analysis_failed";
+                    mediaPreemptiveReply =
+                        mediaAnalysis.reply_to_customer ||
+                            stripEscalationSignals(mediaAnalysis.analysis) ||
+                            (ctx.language === "ru"
+                                ? "Не получилось обработать файл. Попробуйте отправить его еще раз чуть позже."
+                                : "Файлды өңдей алмадым. Сәлден соң қайта жіберіп көріңіз.");
+                    mediaPreemptiveSource = "media_technical_error";
+                }
                 if (mediaAnalysis.type === "complaint" && mediaContext.base64) {
                     await saveComplaintMedia(ctx.instanceId, ctx.phone, mediaContext.base64, mediaContext.mimeType || mediaContext.mediaType || "image/jpeg");
+                    if (!hasMeaningfulMediaDescription(text, mediaContext)) {
+                        mediaPreemptiveReply = buildComplaintClarificationReply(ctx.language);
+                        mediaPreemptiveSource = "complaint_media_needs_text";
+                    }
+                    else {
+                        immediateComplaintSummary = mediaAnalysis.admin_summary || mediaAnalysis.analysis || text;
+                        immediateComplaintMedia = {
+                            base64: mediaContext.base64,
+                            mimeType: mediaContext.mimeType || mediaContext.mediaType || "image/jpeg",
+                        };
+                        immediateComplaintUrgency = "high";
+                        mediaPreemptiveReply =
+                            mediaAnalysis.reply_to_customer ||
+                                stripEscalationSignals(mediaAnalysis.analysis) ||
+                                buildComplaintAckReply(ctx.language);
+                        mediaPreemptiveSource = "media_complaint";
+                    }
                 }
             }
         }
@@ -123,6 +180,43 @@ async function processWhatsAppWebhook(body, started) {
             source: "openbot-agent",
             media: mediaContext,
         });
+        if (mediaDeveloperError) {
+            await notifyDeveloperSystemFailure(ctx.instanceId, new Error(mediaDeveloperError), {
+                scope: "media_analysis",
+                messageId,
+                customerPhone: maskPhone(ctx.phone),
+            }).catch(() => undefined);
+            await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource);
+            return;
+        }
+        if (immediateComplaintSummary) {
+            const routing = await routeComplaintToAdmin(ctx, {
+                summary: immediateComplaintSummary,
+                customerText: text,
+                customerReply: mediaPreemptiveReply,
+                urgency: immediateComplaintUrgency,
+                media: immediateComplaintMedia,
+                source: "media_analysis",
+            });
+            await saveToHistory(ctx.instanceId, ctx.phone, "system", "complaint routed to admin", {
+                source: "complaint-routing",
+                adminPhone: routing.adminPhone,
+                mediaAttached: routing.mediaAttached,
+            });
+            if (!routing.escalationAvailable) {
+                await notifyDeveloperSystemFailure(ctx.instanceId, new Error("ADMIN_PHONE_NOT_CONFIGURED_FOR_COMPLAINT"), {
+                    scope: "complaint-routing",
+                    messageId,
+                    customerPhone: maskPhone(ctx.phone),
+                }).catch(() => undefined);
+            }
+            await sendCustomerReplyAndFinish(ctx, messageId, routing.customerReply, mediaPreemptiveSource || "media_complaint");
+            return;
+        }
+        if (mediaPreemptiveReply) {
+            await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource || "media_preemptive_reply");
+            return;
+        }
         // Pre-LLM short-circuit: if runtime is unavailable and customer asks about kitchen
         const runtimeReply = runtimeUnavailableReply(ctx);
         if (runtimeReply) {
@@ -141,13 +235,47 @@ async function processWhatsAppWebhook(body, started) {
         console.log(`[OPENBOT:AI] generating model=${process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash"}`);
         const result = await runFastFoodAgent(ctx);
         console.log(`[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"} link=${result.hasLink}`);
-        await saveToHistory(ctx.instanceId, ctx.phone, "assistant", result.text, {
+        const rawAiText = String(result.rawText || result.text || "");
+        const needsDeveloperEscalation = hasEscalateDeveloperSignal(rawAiText) || hasEscalateDeveloperSignal(result.text);
+        const needsAdminEscalation = hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text);
+        const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
+        const shouldRouteComplaint = needsAdminEscalation || pendingComplaintMedia || isLikelyComplaintText(ctx.text);
+        const finalText = stripEscalationSignals(result.text) || (shouldRouteComplaint ? buildComplaintAckReply(ctx.language) : result.text);
+        if (needsDeveloperEscalation) {
+            await notifyDeveloperSystemFailure(ctx.instanceId, new Error("AI requested developer escalation"), {
+                scope: "ai-router",
+                messageId,
+                customerPhone: maskPhone(ctx.phone),
+            }).catch(() => undefined);
+        }
+        if (shouldRouteComplaint) {
+            const routing = await routeComplaintToAdmin(ctx, {
+                summary: stripEscalationSignals(rawAiText || finalText || ctx.text),
+                customerText: ctx.text,
+                customerReply: finalText,
+                urgency: needsAdminEscalation ? "high" : "normal",
+                source: needsAdminEscalation ? "ai_escalation_signal" : pendingComplaintMedia ? "pending_complaint_media" : "complaint_text",
+            });
+            await saveToHistory(ctx.instanceId, ctx.phone, "system", "complaint routed to admin", {
+                source: "complaint-routing",
+                adminPhone: routing.adminPhone,
+                mediaAttached: routing.mediaAttached,
+            });
+            if (!routing.escalationAvailable) {
+                await notifyDeveloperSystemFailure(ctx.instanceId, new Error("ADMIN_PHONE_NOT_CONFIGURED_FOR_COMPLAINT"), {
+                    scope: "complaint-routing",
+                    messageId,
+                    customerPhone: maskPhone(ctx.phone),
+                }).catch(() => undefined);
+            }
+        }
+        await saveToHistory(ctx.instanceId, ctx.phone, "assistant", finalText, {
             source: "openbot-agent",
         });
-        void evaluateForShpor(ctx.text, result.text)
+        void evaluateForShpor(ctx.text, finalText)
             .then((evaluation) => {
             if (evaluation.save) {
-                return saveToShpor(ctx.instanceId, ctx.text, result.text, evaluation.category || "faq", evaluation.memory || null);
+                return saveToShpor(ctx.instanceId, ctx.text, finalText, evaluation.category || "faq", evaluation.memory || null);
             }
             return undefined;
         })
@@ -158,7 +286,7 @@ async function processWhatsAppWebhook(body, started) {
         const sendResult = await sendWhatsProResponseSequence({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
-            text: result.text,
+            text: finalText,
         });
         await markInboundDone(ctx.instanceId, messageId);
         console.log(`[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_in_text=${result.hasLink} elapsed=${Date.now() - started}ms`);
