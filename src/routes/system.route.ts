@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { handleKanbanWebhook } from "../controllers/kanban.js";
+import { normalizeDlePayload } from "./dleWebhook.route.js";
 import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
@@ -8,12 +9,15 @@ import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.
 
 function getRequestInstanceId(req: Request) {
   return String(
-    req.body?.instanceId ||
+      req.body?.instanceId ||
       req.body?.instance ||
       req.body?.restaurant_id ||
+      req.body?.restaurant_instance ||
+      req.body?.restaurantInstance ||
       req.query?.instanceId ||
       req.query?.instance ||
       req.query?.restaurant_id ||
+      req.query?.restaurant_instance ||
       ""
   ).trim();
 }
@@ -23,8 +27,38 @@ function getBearerToken(req: Request) {
   return authorization.replace(/^Bearer\s+/i, "");
 }
 
+function envBool(name: string, fallback = false) {
+  const value = String(process.env[name] ?? "").trim().toLowerCase();
+  if (!value) return fallback;
+  return ["1", "true", "yes", "on"].includes(value);
+}
+
+function isLegacyDleAction(value: unknown) {
+  return new Set([
+    "new_order",
+    "status_changed",
+    "request_payment",
+    "order_rejected",
+    "shift_note_created",
+    "shift_note_deleted",
+    "create_order",
+    "order_created",
+    "update_status",
+    "change_status",
+    "payment_request",
+    "reject_order",
+    "rejected_order",
+    "create_shift_note",
+    "delete_shift_note",
+  ]).has(String(value || "").trim());
+}
+
 function verifySecret(channel = "webhook") {
   return async (req: Request, res: Response, next: NextFunction) => {
+    if (channel === "kanban" && !envBool("DLE_WEBHOOK_AUTH_REQUIRED", false) && isLegacyDleAction(req.body?.action || req.body?.ajax_action)) {
+      return next();
+    }
+
     const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
     const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.query?.token;
 
@@ -72,6 +106,7 @@ export function systemRoute(): Router {
 
   router.post("/kanban-webhook", verifySecret("kanban"), async (req, res) => {
     try {
+      normalizeDlePayload(req);
       await handleKanbanWebhook(req, res);
     } catch (error: any) {
       const instanceId = getRequestInstanceId(req);
