@@ -77,6 +77,18 @@ function isOwnWhatsAppMessage(body: any): boolean {
   return body?.fromMe === true || body?.isFromMe === true || body?.data?.key?.fromMe === true;
 }
 
+function isGroupMessage(body: any): boolean {
+  const eventData = body?.data || body || {};
+  const key = eventData?.key || body?.key || {};
+  return Boolean(
+    body?.isGroup === true ||
+      eventData?.isGroup === true ||
+      key?.remoteJid?.endsWith?.("@g.us") ||
+      key?.participant?.endsWith?.("@g.us") ||
+      String(body?.sender || eventData?.sender || body?.from || eventData?.from || "").endsWith("@g.us")
+  );
+}
+
 function isStatusQuestion(text = ""): boolean {
   return STATUS_CONTEXT_RE.test(String(text || ""));
 }
@@ -116,7 +128,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
   const instanceId = getInstanceId(body);
   const phone = getPhone(body);
   const messageId = extractMessageId(body);
-  let mediaContext = await hydrateInboundMedia(body, extractInboundMedia(body));
+  let mediaContext = extractInboundMedia(body);
   const senderMeta = extractSenderMeta(body);
   const text =
     extractInboundText(body) ||
@@ -135,6 +147,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       text,
       messageId,
       fromMe: isOwnWhatsAppMessage(body),
+      isGroup: isGroupMessage(body),
       senderMeta,
     });
     if (guard.blocked) {
@@ -150,6 +163,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
+    mediaContext = await hydrateInboundMedia(body, mediaContext);
     const ctx = await preloadContext({ instanceId, phone, text, mediaContext, senderMeta });
     console.log(
       `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`

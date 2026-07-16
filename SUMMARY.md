@@ -1,156 +1,127 @@
-# Migration Summary
+# WhatsPro / Openbot Redis Decoupling Summary
 
 Date: 2026-07-16
 
-Source of truth: `C:\Users\Аз\Desktop\fastfood-old\codex үшін\ggg`
+WhatsPro gateway: `C:\Users\Аз\Desktop\fastfood-old\fastfood-gateway`
 
-Target repository: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\Openbot-fastfood`
+Openbot agent: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\Openbot-fastfood`
 
-## 1. EOS Guards Applied
+Legacy reference snapshot: `C:\Users\Аз\Desktop\fastfood-old\codex үшін\ggg`
 
-- Consulted `.bekzat-ai-eos` before code changes and applied its separation-of-concerns rules:
-  - business logic belongs in TypeScript services/controllers, not only in prompts;
-  - Redis state must stay tenant-scoped;
-  - critical operational errors must notify the developer;
-  - NodeNext TypeScript imports must include `.js`;
-  - the core AI model routing layer is treated as immutable.
-- `src/agent/modelRouter.ts` was not modified.
-- No base64 writers, builder scripts, or generated binary patching were used. All TypeScript was written directly.
+## 1. Architecture Outcome
 
-## 2. Broken Code Fixed
+WhatsPro and Openbot remain separate services. No Openbot code is imported into WhatsPro, and no WhatsPro code is imported into Openbot.
 
-- Replaced the corrupted `src/controllers/kanban.ts` with a clean TypeScript controller.
-- Replaced the broken `src/routes/system.route.ts` implementation and removed the invalid `config || 2{}` syntax.
-- Removed duplicated inline developer-siren logic from `system.route.ts` and delegated failures to `notifyDeveloperSystemFailure`.
-- Scrubbed real-looking Redis/NocoDB credentials from `.env.example` while preserving required env keys.
+The AI-human handoff is now Redis-only:
 
-## 3. Legacy Kanban / DLE Webhook Migration
+```text
+operator_active:{instanceId}:{phone}
+TTL: 60 seconds
+```
 
-`src/controllers/kanban.ts` now handles the legacy webhook actions:
+WhatsPro writes this key when a human operator replies. Openbot reads this key before context loading, media hydration, or AI generation and silently ignores customer webhooks while the key exists.
 
-- `new_order`
-- `status_changed`
-- `request_payment`
-- `order_rejected`
-- `shift_note_created`
-- `shift_note_deleted`
-- `update_kitchen_status`
-- `get_kitchen_status`
-- `developer_alert`
-- `complaint`
+## 2. WhatsApp Auto-Restore
 
-Implemented parity behaviors:
+Updated `fastfood-gateway/services/whatsappManager.js`:
 
-- idempotency locks via Redis;
-- customer phone normalization;
-- deterministic Kazakh/Russian customer messages;
-- paid-status print socket emit;
-- order lifecycle cleanup for terminal statuses;
-- shift note create/delete sync;
-- payment request fallback through runtime/config data;
-- developer alert route for critical Kanban failures;
-- admin complaint route for webhook-originated complaints.
+- detects an existing `LocalAuth` session folder via `WHATSAPP_AUTH_PATH`;
+- marks startup state as `restoring_session` when a stored session exists;
+- keeps the existing session folder intact on restore timeout/restart paths;
+- exposes `hasStoredSession` in `getInstanceStatus`;
+- keeps QR state only for genuinely unauthenticated sessions.
 
-## 4. Redis Kitchen Status Sync
+Updated `fastfood-gateway/server.js`:
 
-Added Redis kitchen status state in `src/services/redis.service.ts`:
+- `/api/wa/status/:instanceId` now auto-starts restoration when a stored session exists but the client is not running;
+- this removes the Dokploy post-deploy manual QR/start click for already-authenticated instances.
 
-- `KitchenStatusState`
-- `saveKitchenStatus`
-- `getKitchenStatus`
-- payment detail preservation
-- `hours_valid` / `reset_at` support
-- expired `reset_at` auto-reset to default open kitchen state
+## 3. Operator Chat Interface
 
-Integrated DLE runtime with Redis in `src/services/dle.service.ts`:
+Updated `fastfood-gateway/public/chat.html`:
 
-- successful DLE `get_runtime_status` reads sync `kitchen_status` into Redis;
-- Redis kitchen status is used as fallback when DLE is unavailable;
-- Redis kitchen status is also available when the restaurant domain is missing.
+- Redis history entries with role `assistant` now render as AI/bot messages instead of customer messages;
+- existing Socket.IO chat flows continue to provide active chats, full history, operator send, close, restore, and delete actions.
 
-Updated `src/context/preloadContext.ts` so Redis runtime fallback reaches `FACTS_CONTEXT` and includes payment details in `hard_realtime_context`.
+Updated `fastfood-gateway/server.js`:
 
-## 5. Shift Notes Parity
+- operator panel sends still save `operator` history;
+- operator panel sends now also set `operator_active:{instanceId}:{phone}` with `EX 60`;
+- chat delete clears `operator_active:{instanceId}:{phone}` together with legacy mute/spam/history keys.
 
-Expanded Redis shift note deletion behavior:
+## 4. Direct WhatsApp-App Handoff
 
-- delete by exact note id;
-- fallback delete by matching note text;
-- delete all notes for explicit empty/id-zero deletion payloads;
-- purge stale note-derived assistant history entries after note deletion.
+Updated `fastfood-gateway/services/whatsappManager.js`:
 
-This matches the legacy behavior where deleted operational notes should stop influencing future AI replies.
+- added a `message_create` listener for direct WhatsApp app messages sent by the connected account;
+- ignores bot echoes using the existing `bot_sending:{instanceId}:{phone}` marker;
+- saves direct human replies as `operator` history with `source=whatsapp_app_from_me`;
+- emits `operator_message` to the operator chat room;
+- sets both legacy `mute:{instanceId}:{phone}` and new `operator_active:{instanceId}:{phone}` locks.
 
-## 6. Complaint Routing / Жалобы
+Added `fastfood-gateway/services/operatorLock.js`:
 
-Added `src/services/complaintRouting.service.ts`:
+- centralizes `operator_active` key naming and TTL;
+- exposes `markOperatorActive(instanceId, phone, source)`;
+- defaults `OPERATOR_ACTIVE_SECONDS=60`.
 
-- shared complaint-to-admin routing;
-- admin phone alias resolution (`admin_phone`, `admin`, `manager_phone`, `operator_phone`, `complaint_phone`, env fallback);
-- pending complaint media attach/clear;
-- escalation marker helpers;
-- complaint text detection;
-- Kazakh/Russian complaint clarification and acknowledgement replies.
+## 5. Openbot Filtering And Test Mode
 
-Updated `src/routes/whatsappWebhook.route.ts`:
+Updated `Openbot-fastfood/src/services/inboundGuard.service.ts`:
 
-- complaint media with no text now asks the customer for a short description;
-- complaint media with text routes to admin immediately and replies to the customer;
-- pending complaint media after AI is routed to admin;
-- `[ESCALATE_ADMIN]` routes admin escalation and is stripped from customer-visible text;
-- `[ESCALATE_DEVELOPER]` notifies the developer and is stripped from customer-visible text;
-- if admin phone is missing during complaint routing, the developer is notified.
+- added strict `TEST_MODE_ENABLED` / `TEST_MODE_ALLOWED_PHONE` filtering;
+- added `operator_active:{instanceId}:{phone}` lookup before duplicate locks, spam counters, context loading, and AI;
+- extended `setOperatorAutoMute` to write both `mute:*` and `operator_active:*`;
+- retained existing saved-contact and private-keyword filtering.
 
-Updated `src/skills/escalation.skill.ts` so the AI tool uses the same complaint routing service.
+Updated `Openbot-fastfood/src/routes/whatsappWebhook.route.ts`:
 
-## 7. Developer Alerting
+- detects group messages from `isGroup=true` and `@g.us` JIDs;
+- passes group state into `guardIncomingMessage`;
+- moved media hydration until after the guard, so ignored messages do not trigger media download or AI work.
 
-Developer notification is now wired through:
+Filtering order before AI:
 
-- Kanban controller failures and explicit `developer_alert`;
-- `/kanban-webhook` and `/api/print_trigger` failures;
-- WhatsApp webhook exceptions;
-- media analysis technical failures;
-- AI raw-text `[ESCALATE_DEVELOPER]` marker;
-- complaint routing misconfiguration when admin phone is absent.
+1. `fromMe`
+2. group messages
+3. invalid instance or phone
+4. strict test mode
+5. private/saved contacts
+6. `operator_active:{instanceId}:{phone}`
+7. duplicate/spam protection
 
-Developer alerting uses existing restaurant config and `DEVELOPER_PHONE` fallback through `notifyDeveloperSystemFailure`.
+## 6. Environment Documentation
 
-## 8. Prompt / AI Brain Synchronization
+Updated `Openbot-fastfood/.env.example`:
 
-Rewrote `Бот промп.txt` into a structured operational prompt covering:
+```env
+REDIS_URL=redis://redis:6379
+BOT_IGNORE_SAVED_CONTACTS=false
+PRIVATE_CONTACT_KEYWORDS=мама,мам,папа,пап,ана,әке,аке,апа,ата,әже,аже,нағашы,нагашы,аға,ага,әпке,апке,тәте,тате,көке,коке,брат,сестра,жена,муж,дос,бауырым,карындас,қарындас,сіңлі,синли
+TEST_MODE_ENABLED=false
+TEST_MODE_ALLOWED_PHONE=
+OPERATOR_ACTIVE_SECONDS=60
+```
 
-- architecture contract and separation of concerns;
-- language lock;
-- FACTS_CONTEXT truth rules;
-- Redis/DLE kitchen status fields;
-- shift note handling;
-- complaint routing;
-- developer alerting;
-- webhook/Kanban parity;
-- payment and order status guardrails;
-- validation mindset.
+Updated `fastfood-gateway/.env.example`:
 
-Updated `src/agent/instructions.ts` with runtime instructions for:
+```env
+REDIS_URL=redis://redis:6379
+OPERATOR_ACTIVE_SECONDS=60
+```
 
-- kitchen status;
-- complaints / жалобы;
-- developer alerts;
-- escalation markers.
+Updated `Openbot-fastfood/README.md` with the Redis handoff contract and Dokploy baseline variables.
 
-## 9. Verification
+## 7. Verification
 
-Commands executed successfully:
+Commands passed:
 
-- `npm run build` -> exit code `0`
-- `npm run check` -> exit code `0`
+- `fastfood-gateway`: `npm run check` -> exit code `0`
+- `Openbot-fastfood`: `npm run build` -> exit code `0`
+- `Openbot-fastfood`: `npm run check` -> exit code `0`
 
-Additional verification:
+Temporary verification logs were removed after execution.
 
-- targeted source scan found no remaining `config || 2{}` corruption;
-- targeted source scan found no `TS1490` / `TS1005` signatures;
-- core AI Gemini/OpenRouter routing file was left unchanged.
+## 8. Final State
 
-## 10. Final State
-
-The migration is complete in the target TypeScript system. The build passes, the originally corrupted files are repaired, and the missing legacy features are now represented as typed controllers/services instead of prompt-only behavior.
+WhatsPro can auto-restore persisted sessions, operator chat history renders correctly, human replies create a Redis 60-second handoff lock, and Openbot drops filtered/operator-active messages before AI execution.

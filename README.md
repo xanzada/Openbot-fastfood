@@ -36,3 +36,34 @@ Payload:
 ## Architecture rule
 
 `kitchen_status`, `wait_time`, `delivery`, `pickup`, `payment_details`, `active_order`, and `shift_notes` are deterministic facts. They are loaded before the model call and injected into the agent context. Tools are reserved for actions such as menu search, CRM update, payment receipt registration, escalation, and menu link sending.
+
+## WhatsPro / Openbot Redis handoff
+
+WhatsPro remains an independent microservice. Openbot must not import WhatsPro code. The only handoff channel for human override is Redis:
+
+```text
+operator_active:{instanceId}:{phone}
+TTL: 60 seconds
+```
+
+When this key exists, `POST /webhook/whatsapp` silently ignores the inbound customer message before context loading or AI generation.
+
+Dokploy environment baseline:
+
+```env
+REDIS_URL=redis://redis:6379
+BOT_IGNORE_SAVED_CONTACTS=false
+PRIVATE_CONTACT_KEYWORDS=мама, мам, папа, пап, ана, әке, аға
+TEST_MODE_ENABLED=false
+TEST_MODE_ALLOWED_PHONE=
+OPERATOR_ACTIVE_SECONDS=60
+```
+
+Filtering order before AI:
+
+1. Drop `fromMe`.
+2. Drop groups (`isGroup=true` or `@g.us` sender/remote JID).
+3. Drop invalid instance/phone.
+4. If `TEST_MODE_ENABLED=true`, allow only `TEST_MODE_ALLOWED_PHONE`.
+5. Drop saved/private contacts when configured.
+6. Drop if `operator_active:{instanceId}:{phone}` exists.

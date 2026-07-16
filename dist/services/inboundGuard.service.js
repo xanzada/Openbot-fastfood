@@ -10,6 +10,7 @@ const PROCESSING_LOCK_SECONDS = 180;
 const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
 const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS || 300);
+const OPERATOR_ACTIVE_SECONDS = Number(process.env.OPERATOR_ACTIVE_SECONDS || 60);
 const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
 const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || [
@@ -101,6 +102,15 @@ function hasPrivateKeyword(values) {
             return false;
         return tokenText.includes(` ${keywordTokens.join(" ")} `);
     });
+}
+function envBool(name, fallback = false) {
+    const value = String(process.env[name] ?? "").trim().toLowerCase();
+    if (!value)
+        return fallback;
+    return ["1", "true", "yes", "on"].includes(value);
+}
+function getTestModeAllowedPhone() {
+    return String(process.env.TEST_MODE_ALLOWED_PHONE || "").replace(/\D/g, "");
 }
 function defaultMimeForKind(kind, rawMedia) {
     if (kind === "image")
@@ -301,13 +311,32 @@ async function getFreshOperatorMute(instanceId, phone) {
     }
     return value;
 }
+async function getFreshOperatorActive(instanceId, phone) {
+    if (!redisClient.isOpen)
+        return "";
+    const key = `operator_active:${instanceId}:${phone}`;
+    const value = String((await redisClient.get(key).catch(() => "")) || "");
+    if (!value)
+        return "";
+    const ttl = await redisClient.ttl(key).catch(() => -2);
+    if (ttl < 0 || ttl > Math.max(OPERATOR_ACTIVE_SECONDS, OPERATOR_MUTE_MAX_SECONDS)) {
+        await redisClient.del(key).catch(() => undefined);
+        console.warn(`[OPERATOR ACTIVE] stale lock cleared: ${key}, ttl=${ttl}`);
+        return "";
+    }
+    return value;
+}
 export async function setOperatorAutoMute(instanceId, phone) {
     const safeInstanceId = String(instanceId || "").trim();
     const safePhone = String(phone || "").replace(/\D/g, "");
     if (!safeInstanceId || !safePhone)
         return;
     await connectRedis();
-    await redisClient.setEx(`mute:${safeInstanceId}:${safePhone}`, OPERATOR_MUTE_MAX_SECONDS, "muted_by_agent");
+    await redisClient
+        .multi()
+        .setEx(`mute:${safeInstanceId}:${safePhone}`, OPERATOR_MUTE_MAX_SECONDS, "muted_by_agent")
+        .setEx(`operator_active:${safeInstanceId}:${safePhone}`, OPERATOR_ACTIVE_SECONDS, "openbot_from_me")
+        .exec();
 }
 export async function guardIncomingMessage(input) {
     const instanceId = String(input.instanceId || "").trim();
@@ -316,10 +345,18 @@ export async function guardIncomingMessage(input) {
     const messageId = String(input.messageId || "").trim();
     if (input.fromMe)
         return { blocked: true, reason: "fromMe" };
+    if (input.isGroup)
+        return { blocked: true, reason: "group_message" };
     if (!INSTANCE_RE.test(instanceId))
         return { blocked: true, reason: "bad_instance" };
     if (!PHONE_RE.test(phone))
         return { blocked: true, reason: "bad_phone" };
+    if (envBool("TEST_MODE_ENABLED", false)) {
+        const allowedPhone = getTestModeAllowedPhone();
+        if (!allowedPhone || phone !== allowedPhone) {
+            return { blocked: true, reason: "test_mode_blocked" };
+        }
+    }
     const privateNames = [
         input.senderMeta?.contactName,
         input.senderMeta?.contactShortName,
@@ -333,6 +370,11 @@ export async function guardIncomingMessage(input) {
     if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact))
         return { blocked: true, reason: "private_saved_contact" };
     await connectRedis();
+    const operatorActive = await getFreshOperatorActive(instanceId, phone);
+    if (operatorActive) {
+        await markInboundDone(instanceId, messageId);
+        return { blocked: true, reason: "operator_active", source: "operator_override" };
+    }
     if (messageId) {
         if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
             return { blocked: true, reason: "duplicate_done" };
