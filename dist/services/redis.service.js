@@ -117,21 +117,26 @@ function normalizePaymentDetails(value) {
         };
     })
         .filter((item) => item.value)
-        .slice(0, 12);
+        .slice(0, 6);
+}
+function normalizeKitchenWaitTime(value) {
+    const waitTime = Math.min(720, Math.max(0, Math.floor(Number(value ?? 0) || 0)));
+    return waitTime <= 40 ? 0 : waitTime;
 }
 function normalizeKitchenStatus(value = {}, previousPaymentDetails = []) {
     const paymentDetails = normalizePaymentDetails(value.payment_details).length
         ? normalizePaymentDetails(value.payment_details)
         : previousPaymentDetails;
-    const hoursValid = Number(value.hours_valid || value.hoursValid || 0) || 0;
+    const hoursValid = Math.min(24, Math.max(0, Number(value.hours_valid || value.hoursValid || 0) || 0));
     const preserveReset = toBool(value.preserve_reset ?? value.preserveReset, false);
+    const now = Math.floor(Date.now() / 1000);
     const resetAt = preserveReset
-        ? Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0)
+        ? Math.min(now + 86400, Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0))
         : hoursValid > 0
-            ? Math.floor(Date.now() / 1000 + hoursValid * 3600)
+            ? Math.floor(now + hoursValid * 3600)
             : Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0);
     return {
-        wait_time: Math.max(0, Math.floor(Number(value.wait_time ?? value.waitTime ?? 40) || 0)),
+        wait_time: normalizeKitchenWaitTime(value.wait_time ?? value.waitTime),
         is_emergency: toBool(value.is_emergency ?? value.isEmergency, false),
         delivery: toBool(value.delivery, true),
         pickup: toBool(value.pickup, true),
@@ -233,7 +238,7 @@ export async function getKitchenStatus(instanceId) {
         const current = normalizeKitchenStatus(parsed && typeof parsed === "object" ? parsed : {});
         if (current.reset_at > 0 && current.reset_at <= Math.floor(Date.now() / 1000)) {
             const reset = normalizeKitchenStatus({
-                wait_time: 40,
+                wait_time: 0,
                 is_emergency: false,
                 delivery: true,
                 pickup: true,

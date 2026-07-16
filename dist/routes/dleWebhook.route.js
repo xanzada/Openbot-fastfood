@@ -22,13 +22,16 @@ function envBool(name, fallback = false) {
 function getRequestInstanceId(req) {
     return String(req.body?.instance ||
         req.body?.instanceId ||
+        req.body?.instance_id ||
         req.body?.restaurant_id ||
         req.body?.restaurant_instance ||
         req.body?.restaurantInstance ||
         req.query?.instance ||
         req.query?.instanceId ||
+        req.query?.instance_id ||
         req.query?.restaurant_id ||
         req.query?.restaurant_instance ||
+        req.query?.restaurantInstance ||
         "").trim();
 }
 function getBearerToken(req) {
@@ -48,9 +51,12 @@ function normalizeAction(value) {
         order_created: "new_order",
         update_status: "status_changed",
         change_status: "status_changed",
+        status_update: "status_changed",
         payment_request: "request_payment",
+        request_pay: "request_payment",
         reject_order: "order_rejected",
         rejected_order: "order_rejected",
+        cancel_order: "order_rejected",
         create_shift_note: "shift_note_created",
         delete_shift_note: "shift_note_deleted",
     };
@@ -64,8 +70,8 @@ export function normalizeDlePayload(req) {
     const normalized = {
         ...source,
         action,
-        instance: firstValue(source.instance, source.instanceId, source.restaurant_id, source.restaurant_instance, source.restaurantInstance, req.query.instance, req.query.restaurant_id),
-        phone: firstValue(source.phone, source.client_phone, source.customer_phone, source.customerPhone, source.senderPhone, order.phone, req.query.phone),
+        instance: firstValue(source.instance, source.instanceId, source.instance_id, source.restaurant_id, source.restaurant_instance, source.restaurantInstance, req.query.instance, req.query.instanceId, req.query.instance_id, req.query.restaurant_id, req.query.restaurant_instance, req.query.restaurantInstance),
+        phone: firstValue(source.phone, source.client_phone, source.clientPhone, source.customer_phone, source.customerPhone, source.recipient, source.senderPhone, order.phone, req.query.phone),
         order_id: firstValue(source.order_id, source.orderId, source.id, order.order_id, order.id, req.query.order_id),
         new_status: firstValue(source.new_status, source.status, source.order_status, source.orderStatus, order.status),
         total_price: firstValue(source.total_price, source.total, source.amount, source.sum, order.total_price, order.total),
@@ -73,7 +79,7 @@ export function normalizeDlePayload(req) {
         comment: firstValue(source.comment, source.info, order.comment),
         items: firstValue(source.items, source.goods, source.products, order.items),
         lang: firstValue(source.lang, source.language, source.lang_code, source.locale),
-        is_pickup: firstValue(source.is_pickup, source.pickup, source.delivery_type, source.deliveryType, order.is_pickup),
+        is_pickup: firstValue(source.is_pickup, source.isPickup, source.pickup, source.delivery_type, source.deliveryType, order.is_pickup),
         reason: firstValue(source.reason, source.cancel_reason, source.reject_reason),
         note_id: firstValue(source.note_id, source.noteId, note.note_id, note.id),
         shift_key: firstValue(source.shift_key, source.shiftKey, note.shift_key),
@@ -93,7 +99,7 @@ async function verifyDleWebhook(req, res, next) {
     if (!envBool("DLE_WEBHOOK_AUTH_REQUIRED", false))
         return next();
     const expected = process.env.DLE_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN || process.env.OPENBOT_WEBHOOK_SECRET;
-    const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.query?.token;
+    const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.body?.secret_token || req.query?.token || req.query?.secret_token;
     if (expected && safeCompare(got, expected))
         return next();
     try {

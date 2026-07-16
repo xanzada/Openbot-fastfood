@@ -2,6 +2,47 @@
 
 Date: 2026-07-16
 
+## 2026-07-16 New DLE Module Sync
+
+Analyzed the updated legacy source files:
+
+- `spa-internet-magazin - new.xml`
+- `api_bot new.php`
+
+Confirmed the updated module emits these website actions:
+
+- `new_order`
+- `status_changed`
+- `request_payment`
+- `order_rejected`
+- `shift_note_created`
+- `shift_note_deleted`
+
+Synchronized the Openbot receiver with the updated schema:
+
+- accepted `instance_id`, `restaurant_instance`, and `restaurantInstance` aliases;
+- accepted `client_phone`, `clientPhone`, `customer_phone`, `customerPhone`, and `recipient` phone aliases;
+- accepted `is_pickup` and `isPickup`;
+- preserved the exact DLE action names and existing alias compatibility;
+- accepted `secret_token` in request body/query for the new DLE `confirm_payment_and_print` / `/api/print_trigger` flow.
+
+Synchronized kitchen runtime status behavior with the new DLE module:
+
+- `wait_time <= 40` now normalizes to `0`;
+- `wait_time` is capped to `720`;
+- `hours_valid` is capped to `24`;
+- preserved `reset_at` is capped to 24 hours from now;
+- expired kitchen status resets to `wait_time: 0`;
+- `payment_details` is capped to 6 records.
+
+Verification:
+
+```text
+npm run build
+tsc -p tsconfig.json
+passed
+```
+
 Target: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\Openbot-fastfood`
 
 Legacy reference: `C:\Users\Аз\Desktop\fastfood-old\codex үшін\ggg`

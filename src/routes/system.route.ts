@@ -10,14 +10,17 @@ import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.
 function getRequestInstanceId(req: Request) {
   return String(
       req.body?.instanceId ||
+      req.body?.instance_id ||
       req.body?.instance ||
       req.body?.restaurant_id ||
       req.body?.restaurant_instance ||
       req.body?.restaurantInstance ||
       req.query?.instanceId ||
+      req.query?.instance_id ||
       req.query?.instance ||
       req.query?.restaurant_id ||
       req.query?.restaurant_instance ||
+      req.query?.restaurantInstance ||
       ""
   ).trim();
 }
@@ -45,9 +48,12 @@ function isLegacyDleAction(value: unknown) {
     "order_created",
     "update_status",
     "change_status",
+    "status_update",
     "payment_request",
+    "request_pay",
     "reject_order",
     "rejected_order",
+    "cancel_order",
     "create_shift_note",
     "delete_shift_note",
   ]).has(String(value || "").trim());
@@ -60,7 +66,7 @@ function verifySecret(channel = "webhook") {
     }
 
     const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
-    const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.query?.token;
+    const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.body?.secret_token || req.query?.token || req.query?.secret_token;
 
     if (expected && safeCompare(got, expected)) {
       return next();
