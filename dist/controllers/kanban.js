@@ -4,6 +4,7 @@ import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { connectRedis, deleteShiftNote, getKitchenStatus, redisClient, saveKitchenStatus, saveShiftNote, saveToHistory, } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
+import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const ORDER_ID_RE = /^\d{1,12}$/;
 const VALID_ACTIONS = new Set([
@@ -122,7 +123,7 @@ async function getLiveRuntimeStatus(instance, config) {
     if (!domain)
         return null;
     return getRuntimeStatus(instance, domain, { forceFresh: true }).catch((error) => {
-        console.warn(`[KANBAN] ${instance}: runtime read failed:`, error instanceof Error ? error.message : error);
+        auditError("Runtime status read failed", error, { instance, domain });
         return null;
     });
 }
@@ -294,7 +295,11 @@ async function buildLegacyPaymentMessage(body, config, lang, instance) {
     const liveRuntimeStatus = await getLiveRuntimeStatus(instance, config || {});
     const paymentDetails = legacyPaymentDetailsFromPayloadRuntimeOrConfig(body, liveRuntimeStatus, config || {});
     const paymentInfo = paymentDetailsText(paymentDetails, lang);
-    console.log(`[KANBAN PAYMENT] ${instance}: details source=${legacyPaymentDetailsSource(body, liveRuntimeStatus, config || {})} count=${paymentDetails.length}`);
+    auditDecision("Payment details resolved", {
+        instance,
+        source: legacyPaymentDetailsSource(body, liveRuntimeStatus, config || {}),
+        count: paymentDetails.length,
+    });
     if (lang === "ru") {
         return `вњ… *Р’СЃС‘ РІ РЅР°Р»РёС‡РёРё!*\nрџ’° РЎСѓРјРјР° Рє РѕРїР»Р°С‚Рµ: *${totalAmount} в‚ё*\n\nрџ’і *РћРїР»Р°С‚Р°:*\n${paymentInfo}\n\nрџ§ѕ _РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РѕС‚РїСЂР°РІСЊС‚Рµ С‡РµРє РѕР± РѕРїР»Р°С‚Рµ РІ СЌС‚РѕС‚ С‡Р°С‚ рџ‘‡_`;
     }
@@ -345,8 +350,10 @@ async function notifyDeveloper(instance, error, meta) {
 }
 async function notifyComplaint(body, config, instance) {
     const adminPhone = getAdminPhone(config);
-    if (!adminPhone)
+    if (!adminPhone) {
+        auditDecision("Complaint notification skipped: admin phone missing", { instance });
         return false;
+    }
     const phone = normalizePhone(body.phone || body.customer_phone || "");
     const orderId = cleanInline(body.order_id || body.orderId || "Табылмады", 40);
     const restaurant = cleanInline(config.name || config.restaurant_name || instance, 120);
@@ -359,63 +366,143 @@ async function notifyComplaint(body, config, instance) {
         "",
         `AI анализі: ${summary || "Клиент шағым қалдырды."}`,
     ].filter(Boolean).join("\n");
+    auditOutbound("Triggering WhatsApp complaint notification", {
+        instance,
+        phone: adminPhone,
+        text: message,
+    });
     await sendWhatsProMessage({ instanceId: instance, phone: adminPhone, text: message });
     return true;
 }
 async function emitPrintOnPaid(req, body, status) {
-    if (status !== "paid")
+    if (status !== "paid") {
+        auditDecision("Print trigger skipped: status is not paid", {
+            orderId: body.order_id,
+            status,
+        });
         return;
+    }
     const io = req.app.get("io");
     if (io && typeof io.emit === "function") {
+        auditDecision("Print trigger emitted for paid status", {
+            orderId: body.order_id,
+            status,
+        });
         io.emit("print_new_order", body);
+    }
+    else {
+        auditDecision("Print trigger skipped: socket server unavailable", {
+            orderId: body.order_id,
+            status,
+        });
     }
 }
 async function emitPrintOnNewOrder(req, body, action) {
-    if (action !== "new_order")
+    if (action !== "new_order") {
+        auditDecision("Print trigger skipped: action is not new_order", {
+            orderId: body.order_id,
+            action,
+        });
         return;
+    }
     const io = req.app.get("io");
     if (io && typeof io.emit === "function") {
+        auditDecision("Print trigger emitted for new order", {
+            orderId: body.order_id,
+            action,
+        });
         io.emit("print_new_order", body);
+    }
+    else {
+        auditDecision("Print trigger skipped: socket server unavailable", {
+            orderId: body.order_id,
+            action,
+        });
     }
 }
 async function sendAndRemember(instance, phone, text) {
+    auditOutbound("Triggering WhatsApp customer notification", {
+        instance,
+        phone,
+        text,
+    });
     await sendWhatsProMessage({ instanceId: instance, phone, text });
+    auditDecision("Saving bot notification to Redis history", {
+        instance,
+        phone,
+        textLength: text.length,
+    });
     await saveToHistory(instance, phone, "model", `<bot_notification>\n${text}\n</bot_notification>`);
 }
 export async function handleKanbanWebhook(req, res) {
     const body = (req.body || {});
     const instance = cleanInline(body.instance || body.instanceId || body.restaurant_id, 80);
     const action = cleanInline(body.action, 80);
+    const rawOrderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
     let lockKey = "";
     let lockAcquired = false;
+    auditProcessing("Kanban webhook processing started", {
+        orderId: rawOrderId,
+        stage: action,
+        action,
+        instance,
+        phone: body.phone,
+        new_status: body.new_status || body.status || body.order_status,
+        total_price: body.total_price || body.total,
+        is_pickup: body.is_pickup || body.isPickup,
+        source: body.source,
+        event_time: body.event_time,
+    });
     try {
         if (!INSTANCE_RE.test(instance)) {
+            auditDecision("Rejected webhook: invalid instance", { orderId: rawOrderId, action, instance });
             res.status(400).json({ ok: false, error: "BAD_INSTANCE" });
             return;
         }
         if (!VALID_ACTIONS.has(action)) {
+            auditDecision("Rejected webhook: invalid action", { orderId: rawOrderId, action, instance });
             res.status(400).json({ ok: false, error: "BAD_ACTION" });
             return;
         }
         if (action === "update_kitchen_status") {
+            auditDecision("Updating kitchen status in Redis", {
+                instance,
+                wait_time: body.wait_time,
+                hours_valid: body.hours_valid || body.hoursValid,
+                reset_at: body.reset_at || body.resetAt,
+            });
             const status = await saveKitchenStatus(instance, body);
+            auditDecision("Kitchen status updated", { instance, status });
             res.status(200).json({ success: true, status });
             return;
         }
         if (action === "get_kitchen_status") {
+            auditDecision("Reading kitchen status from Redis", { instance });
             const status = await getKitchenStatus(instance);
+            auditDecision("Kitchen status read complete", { instance, found: Boolean(status), status });
             res.status(200).json({ success: true, status });
             return;
         }
+        auditDecision("Loading restaurant config", { instance, action, orderId: rawOrderId });
         const config = (await getRestaurantConfig(instance)) || {};
+        auditDecision("Restaurant config loaded", {
+            instance,
+            action,
+            orderId: rawOrderId,
+            hasDeveloperPhone: Boolean(getDeveloperPhone(config)),
+            hasAdminPhone: Boolean(getAdminPhone(config)),
+        });
         if (action === "developer_alert") {
             const message = cleanInline(body.error || body.message || body.reason || "developer_alert", 600);
+            auditDecision("Triggering developer alert", { instance, orderId: body.order_id, message });
             await notifyDeveloper(instance, new Error(message), { source: "developer_alert", orderId: body.order_id });
             res.status(200).json({ success: true, message: "Developer notified" });
             return;
         }
         if (action === "complaint") {
+            auditDecision("Routing complaint to admin", { instance, orderId: rawOrderId, phone: body.phone });
             const sent = await notifyComplaint(body, config, instance);
+            auditDecision("Complaint routing complete", { instance, orderId: rawOrderId, admin_notified: sent });
             res.status(200).json({ success: true, admin_notified: sent });
             return;
         }
@@ -426,34 +513,48 @@ export async function handleKanbanWebhook(req, res) {
         const isPickup = boolValue(body.is_pickup, false);
         if (!isShiftNoteAction) {
             if (!ORDER_ID_RE.test(orderId) || orderId === "0") {
+                auditDecision("Rejected webhook: invalid order id", { orderId, action, instance });
                 res.status(400).json({ ok: false, error: "BAD_ORDER_ID" });
                 return;
             }
             if (!phone) {
+                auditDecision("Rejected webhook: invalid phone", { orderId, action, instance, rawPhone: body.phone });
                 res.status(400).json({ ok: false, error: "BAD_PHONE" });
                 return;
             }
+            auditDecision("Order payload validated", { orderId, action, instance, phone, newStatus, isPickup });
         }
+        else {
+            auditDecision("Shift note payload detected", { action, instance });
+        }
+        auditDecision("Connecting Redis for lock and memory operations", { orderId, action, instance });
         await connectRedis();
         const shiftNotePayload = isShiftNoteAction ? extractShiftNotePayload(body) : null;
         const lockId = shiftNotePayload?.stableLockId || orderId;
         const lockScope = action === "status_changed" ? `${action}:${newStatus || "unknown"}` : action;
         lockKey = `kanban_lock:${instance}:${lockId}:${lockScope}`;
+        auditDecision("Attempting idempotency lock", { orderId, action, instance, lockKey, lockScope });
         const locked = await redisClient.set(lockKey, "1", { NX: true, EX: isShiftNoteAction ? 5 : 86400 });
         if (!locked) {
+            auditDecision("Found existing order/signal lock; ignoring duplicate", { orderId, action, instance, lockKey });
             res.status(200).json({ success: true, message: "Ignored duplicate signal" });
             return;
         }
         lockAcquired = true;
+        auditDecision("Creating new processing record via Redis lock", { orderId, action, instance, lockKey });
         if (action === "shift_note_created" && shiftNotePayload) {
+            auditDecision("Saving shift note to AI memory", { instance, shiftNotePayload });
             const saved = await saveShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text, shiftNotePayload.expiresAt);
             if (!saved)
                 throw new Error("SHIFT_NOTE_SAVE_FAILED");
+            auditDecision("Shift note saved", { instance, shiftNotePayload });
             res.status(200).json({ success: true, message: "Note saved to AI memory" });
             return;
         }
         if (action === "shift_note_deleted" && shiftNotePayload) {
+            auditDecision("Deleting shift note from AI memory", { instance, shiftNotePayload });
             await deleteShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text);
+            auditDecision("Shift note deleted", { instance, shiftNotePayload });
             res.status(200).json({ success: true, message: "Note removed from AI memory" });
             return;
         }
@@ -461,30 +562,58 @@ export async function handleKanbanWebhook(req, res) {
         await emitPrintOnPaid(req, body, newStatus);
         const lang = getLanguage(body);
         let textMessage = "";
-        if (action === "new_order")
+        if (action === "new_order") {
+            auditDecision("Building new_order WhatsApp template", { orderId, action, instance, lang, isPickup });
             textMessage = buildLegacyNewOrderMessage(body, lang, orderId, isPickup);
-        if (action === "request_payment")
+        }
+        if (action === "request_payment") {
+            auditDecision("Building request_payment WhatsApp template", { orderId, action, instance, lang });
             textMessage = await buildLegacyPaymentMessage(body, config, lang, instance);
-        if (action === "order_rejected")
+        }
+        if (action === "order_rejected") {
+            auditDecision("Building order_rejected WhatsApp template", { orderId, action, instance, lang });
             textMessage = buildLegacyRejectedMessage(body, lang);
+        }
         if (action === "status_changed") {
             const effectiveStatus = newStatus === "completed" && isPickup ? "pickup_ready" : newStatus;
+            auditDecision("Resolving status_changed template", { orderId, action, instance, lang, newStatus, effectiveStatus });
             textMessage = legacyStatusTemplates[lang][effectiveStatus] || "";
             if (!textMessage) {
+                auditDecision("Status ignored: no client template configured", { orderId, action, instance, lang, newStatus, effectiveStatus });
                 res.status(200).json({ success: true, message: "Ignored status not intended for client" });
                 return;
             }
         }
         if (textMessage) {
+            auditDecision("Triggering WhatsApp notification path", {
+                orderId,
+                action,
+                instance,
+                phone,
+                textLength: textMessage.length,
+            });
             await sendAndRemember(instance, phone, textMessage);
             if (newStatus === "completed" || newStatus === "cancelled" || action === "order_rejected") {
+                auditDecision("Cleaning completed/cancelled order Redis history", { orderId, action, instance, phone, newStatus });
                 await redisClient.del([`history:${instance}:${phone}`, `last_order:${instance}:${phone}`]).catch(() => undefined);
             }
         }
+        else {
+            auditDecision("No outbound WhatsApp template produced", { orderId, action, instance, newStatus });
+        }
+        auditDecision("Kanban webhook processed successfully", { orderId, action, instance });
         res.status(200).json({ success: true, message: "Processed" });
     }
     catch (error) {
+        auditError("Kanban webhook failed", error, {
+            orderId: body.order_id || rawOrderId,
+            action,
+            instance,
+            lockKey,
+            lockAcquired,
+        });
         if (lockAcquired && lockKey) {
+            auditDecision("Releasing idempotency lock after failure", { orderId: body.order_id || rawOrderId, action, instance, lockKey });
             await redisClient.del(lockKey).catch(() => undefined);
         }
         await notifyDeveloper(instance, error, {

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { auditDecision, auditError, auditOutbound } from "../services/auditLogger.service.js";
 const RESPONSE_CHUNK_MAX = Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 650);
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 function maskPhone(phone = "") {
@@ -102,12 +103,26 @@ export async function sendWhatsProMessage(payload) {
         url = baseUrl ? `${baseUrl}/api/send` : "";
     }
     if (!url) {
-        console.warn("[OPENBOT:WHATSPRO:SKIP] WHATSPRO_SEND_URL or WHATSPRO_BASE_URL is not configured");
+        auditDecision("WhatsPro outbound skipped: send URL not configured", {
+            instance: payload.instanceId,
+            phone: payload.phone,
+            textLength: payload.text?.length || 0,
+            media: Boolean(payload.media),
+        });
         return { skipped: true, reason: "WHATSPRO_SEND_URL or WHATSPRO_BASE_URL is not configured" };
     }
     const headers = whatsproHeaders();
     const started = Date.now();
-    console.log(`[OPENBOT:WHATSPRO] send begin host=${hostFromUrl(url)} instance=${payload.instanceId} phone=${maskPhone(payload.phone)} text_len=${payload.text?.length || 0} media=${payload.media ? "yes" : "no"}`);
+    auditOutbound("WhatsPro send begin", {
+        to: payload.phone,
+        phone: payload.phone,
+        maskedPhone: maskPhone(payload.phone),
+        text: payload.text,
+        textLength: payload.text?.length || 0,
+        instance: payload.instanceId,
+        host: hostFromUrl(url),
+        media: Boolean(payload.media),
+    });
     try {
         const response = await axios.post(url, {
             instanceId: payload.instanceId,
@@ -115,11 +130,32 @@ export async function sendWhatsProMessage(payload) {
             text: payload.text,
             media: payload.media,
         }, { timeout: 10000, headers });
-        console.log(`[OPENBOT:WHATSPRO:OK] status=${response.status} elapsed=${Date.now() - started}ms instance=${payload.instanceId} phone=${maskPhone(payload.phone)}`);
+        auditOutbound("WhatsPro send success", {
+            to: payload.phone,
+            phone: payload.phone,
+            maskedPhone: maskPhone(payload.phone),
+            text: payload.text,
+            status: response.status,
+            elapsedMs: Date.now() - started,
+            instance: payload.instanceId,
+            host: hostFromUrl(url),
+            response: response.data,
+        });
         return response.data;
     }
     catch (error) {
-        console.error(`[OPENBOT:WHATSPRO:FAIL] elapsed=${Date.now() - started}ms instance=${payload.instanceId} phone=${maskPhone(payload.phone)} status=${error?.response?.status || "-"} error=${error?.message || error}`);
+        auditError("WhatsPro send failed", error, {
+            failedStep: "whatspro_send_message",
+            to: payload.phone,
+            phone: payload.phone,
+            maskedPhone: maskPhone(payload.phone),
+            text: payload.text,
+            status: error?.response?.status || "-",
+            response: error?.response?.data,
+            elapsedMs: Date.now() - started,
+            instance: payload.instanceId,
+            host: hostFromUrl(url),
+        });
         throw error;
     }
 }
@@ -150,7 +186,15 @@ export async function sendWhatsProPresence(payload) {
         return response.data;
     }
     catch (error) {
-        console.warn(`[OPENBOT:WHATSPRO:PRESENCE:SKIP] host=${hostFromUrl(url)} instance=${payload.instanceId} phone=${maskPhone(payload.phone)} status=${error?.response?.status || "-"} error=${error?.message || error}`);
+        auditError("WhatsPro presence skipped", error, {
+            failedStep: "whatspro_presence",
+            host: hostFromUrl(url),
+            instance: payload.instanceId,
+            phone: payload.phone,
+            maskedPhone: maskPhone(payload.phone),
+            status: error?.response?.status || "-",
+            response: error?.response?.data,
+        });
         return { skipped: true, reason: error?.message || "presence_failed" };
     }
 }

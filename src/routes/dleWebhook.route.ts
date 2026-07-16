@@ -4,6 +4,7 @@ import { handleKanbanWebhook } from "../controllers/kanban.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
+import { auditError, auditInbound, auditProcessing, isNewDleAction } from "../services/auditLogger.service.js";
 
 const DLE_WEBHOOK_PATHS = [
   "/dle-webhook",
@@ -128,29 +129,80 @@ export function normalizeDlePayload(req: Request) {
 }
 
 async function verifyDleWebhook(req: Request, res: Response, next: NextFunction) {
-  if (!envBool("DLE_WEBHOOK_AUTH_REQUIRED", false)) return next();
+  if (!envBool("DLE_WEBHOOK_AUTH_REQUIRED", false)) {
+    auditProcessing("DLE webhook auth bypassed", {
+      action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
+      authRequired: false,
+      matchesNewDleLogic: isNewDleAction(req.body?.action || req.body?.ajax_action || req.query?.action),
+    });
+    return next();
+  }
 
   const expected = process.env.DLE_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN || process.env.OPENBOT_WEBHOOK_SECRET;
   const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.body?.secret_token || req.query?.token || req.query?.secret_token;
-  if (expected && safeCompare(got, expected)) return next();
+  if (expected && safeCompare(got, expected)) {
+    auditProcessing("DLE webhook static secret accepted", {
+      action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
+      tokenSource: req.body?.secret_token || req.query?.secret_token ? "secret_token" : "token_or_header",
+      matchesNewDleLogic: isNewDleAction(req.body?.action || req.body?.ajax_action || req.query?.action),
+    });
+    return next();
+  }
 
   try {
     const instanceId = getRequestInstanceId(req);
     if (!instanceId) return res.status(401).json({ ok: false, error: "unauthorized" });
     const config = await getRestaurantConfig(instanceId);
     assertTenantSecret(req, config, "kanban");
+    auditProcessing("DLE webhook tenant secret accepted", {
+      action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
+      instanceId,
+      matchesNewDleLogic: isNewDleAction(req.body?.action || req.body?.ajax_action || req.query?.action),
+    });
     return next();
   } catch (error: any) {
+    auditError("DLE webhook auth failed", error, {
+      action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
+      instanceId: getRequestInstanceId(req),
+    });
     return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
   }
 }
 
 async function handleDleWebhook(req: Request, res: Response) {
   try {
+    const rawAction = req.body?.action || req.body?.ajax_action || req.query?.action || "";
+    auditInbound("Raw DLE webhook received", {
+      action: rawAction,
+      matchesNewDleLogic: isNewDleAction(rawAction),
+      sourceFiles: ["spa-internet-magazin - new.xml", "api_bot new.php"],
+      payload: req.body,
+    });
     normalizeDlePayload(req);
+    auditInbound("DLE webhook normalized", {
+      action: req.body?.action,
+      matchesNewDleLogic: isNewDleAction(req.body?.action),
+      instance: req.body?.instance,
+      phone: req.body?.phone,
+      order_id: req.body?.order_id,
+      total_price: req.body?.total_price,
+      new_status: req.body?.new_status,
+      is_pickup: req.body?.is_pickup,
+      wait_time: req.body?.wait_time,
+      note_id: req.body?.note_id,
+      shift_key: req.body?.shift_key,
+      source: req.body?.source,
+      event_time: req.body?.event_time,
+      payload: req.body,
+    });
     await handleKanbanWebhook(req, res);
   } catch (error: any) {
     const instanceId = getRequestInstanceId(req);
+    auditError("DLE webhook processing failed", error, {
+      action: req.body?.action || "",
+      instanceId,
+      orderId: req.body?.order_id || req.body?.orderId || req.body?.id || "",
+    });
     await notifyDeveloperSystemFailure(instanceId, error, {
       scope: "dle-website-webhook",
       action: req.body?.action || "",
