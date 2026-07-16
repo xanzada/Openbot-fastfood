@@ -234,6 +234,14 @@ async function emitPrintOnPaid(req, body, status) {
         io.emit("print_new_order", body);
     }
 }
+async function emitPrintOnNewOrder(req, body, action) {
+    if (action !== "new_order")
+        return;
+    const io = req.app.get("io");
+    if (io && typeof io.emit === "function") {
+        io.emit("print_new_order", body);
+    }
+}
 async function sendAndRemember(instance, phone, text) {
     await sendWhatsProMessage({ instanceId: instance, phone, text });
     await saveToHistory(instance, phone, "model", `<bot_notification>\n${text}\n</bot_notification>`);
@@ -313,6 +321,7 @@ export async function handleKanbanWebhook(req, res) {
             res.status(200).json({ success: true, message: "Note removed from AI memory" });
             return;
         }
+        await emitPrintOnNewOrder(req, body, action);
         await emitPrintOnPaid(req, body, newStatus);
         const lang = getLanguage(body);
         let textMessage = "";

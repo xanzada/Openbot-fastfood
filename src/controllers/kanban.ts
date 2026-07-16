@@ -270,6 +270,14 @@ async function emitPrintOnPaid(req: Request, body: Record<string, unknown>, stat
   }
 }
 
+async function emitPrintOnNewOrder(req: Request, body: Record<string, unknown>, action: string) {
+  if (action !== "new_order") return;
+  const io = req.app.get("io");
+  if (io && typeof io.emit === "function") {
+    io.emit("print_new_order", body);
+  }
+}
+
 async function sendAndRemember(instance: string, phone: string, text: string): Promise<void> {
   await sendWhatsProMessage({ instanceId: instance, phone, text });
   await saveToHistory(instance, phone, "model", `<bot_notification>\n${text}\n</bot_notification>`);
@@ -361,6 +369,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       return;
     }
 
+    await emitPrintOnNewOrder(req, body, action);
     await emitPrintOnPaid(req, body, newStatus);
 
     const lang = getLanguage(body);

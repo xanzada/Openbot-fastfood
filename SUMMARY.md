@@ -1,115 +1,82 @@
-# WhatsPro / Openbot Redis Decoupling Summary
+# DLE Website Webhook Integration Summary
 
 Date: 2026-07-16
 
-WhatsPro gateway: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\whatspro-gateway`
+Target: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\Openbot-fastfood`
 
-Openbot agent: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\Openbot-fastfood`
+Legacy reference: `C:\Users\Аз\Desktop\fastfood-old\codex үшін\ggg`
 
-Legacy reference only: `C:\Users\Аз\Desktop\fastfood-old\codex үшін\ggg`
+## Integrated Legacy Actions
 
-## 1. Architecture Outcome
+The legacy DLE website webhook actions are now received by Openbot:
 
-WhatsPro and Openbot remain independent services. The handoff contract is Redis-only:
+- `new_order`
+- `status_changed`
+- `request_payment`
+- `order_rejected`
+- `shift_note_created`
+- `shift_note_deleted`
 
-```text
-operator_active:{instanceId}:{phone}
-TTL: 60 seconds
-```
+The existing `src/controllers/kanban.ts` remains the single processing controller for these actions, preserving Redis locks, WhatsPro delivery, order-history writes, shift-note memory, kitchen/payment runtime lookup, and developer failure alerts.
 
-WhatsPro writes the key when a human operator replies from `chat.html` or from the connected WhatsApp app. Openbot reads the key before AI execution and silently ignores the webhook while a human is active.
+## Added Dedicated DLE Receiver
 
-## 2. WhatsPro Gateway Changes
+Added `src/routes/dleWebhook.route.ts`.
 
-Updated `whatspro-gateway/services/operatorLock.js`:
+The route registers legacy-compatible POST aliases:
 
-- Added a central `operator_active:{instanceId}:{phone}` helper.
-- Normalizes phone numbers before key writes.
-- Uses `OPERATOR_ACTIVE_SECONDS=60` by default.
+- `/dle-webhook`
+- `/website-webhook`
+- `/api/dle-webhook`
+- `/api/website-webhook`
+- `/api/kanban-webhook`
+- `/webhook/dle`
+- `/webhook/kanban`
+- `/webhook/website`
 
-Updated `whatspro-gateway/services/whatsappManager.js`:
+This catches the DLE SPA JSON payloads that previously went to the old webhook receiver, without changing the WhatsApp webhook route.
 
-- Detects existing `LocalAuth` folders under `WHATSAPP_AUTH_PATH`.
-- Marks startup as `restoring_session` when stored auth data exists.
-- Exposes `hasStoredSession` in status responses.
-- Treats `restoring_session` as an active startup state.
-- Adds a `message_create` listener for direct replies sent from the WhatsApp app.
-- Ignores bot echoes via `bot_sending:{instanceId}:{phone}`.
-- Saves direct operator replies into Redis chat history.
-- Sets `operator_active:{instanceId}:{phone}` and a short legacy `mute:*` lock for direct operator replies.
+## Server Wiring
 
-Updated `whatspro-gateway/src/server.js`:
+Updated `src/server.ts`:
 
-- `/api/wa/status/:instanceId` auto-starts session restoration when a stored session exists but the client is not running.
-- Added `POST /api/chat/send/:instanceId/:phone` for operator replies from `chat.html`.
-- Operator chat replies now send through WhatsApp, save to Redis chat history, and set the Redis handoff lock.
-- Chat history now merges gateway inbox history (`chatwoot:history:*`) with Openbot assistant history (`history:*`) so customer, AI, and operator messages render together.
-- `/api/send` now mirrors successful outbound bot text into chat history for operator visibility.
+- imports `dleWebhookRoute`;
+- mounts it after WhatsApp webhooks and before system routes;
+- keeps the existing `/kanban-webhook` route intact.
 
-Updated `whatspro-gateway/public/chat.html`:
+## Auth Compatibility
 
-- Added an operator reply composer.
-- Added POST send flow to the new chat send endpoint.
-- Renders `assistant`, `model`, and `operator` roles as outgoing messages.
-- Keeps customer messages as incoming messages.
-
-Updated `whatspro-gateway/package.json`:
-
-- Extended `npm run check` to validate `services/operatorLock.js`.
-
-Added `whatspro-gateway/.env.example`:
+Added env-controlled auth for legacy DLE payloads:
 
 ```env
-REDIS_URL=redis://redis:6379
-OPENBOT_WEBHOOK_URL=http://openbot-fastfood:4100/webhook/whatsapp
-OPERATOR_ACTIVE_SECONDS=60
-WHATSAPP_AUTH_PATH=/app/whatsapp_auth
-WHATSAPP_RESTORE_TIMEOUT_MS=120000
+DLE_WEBHOOK_AUTH_REQUIRED=false
+DLE_WEBHOOK_SECRET=
 ```
 
-## 3. Openbot Agent Status
+Default is `false` because the legacy DLE module posts JSON without auth headers. When enabled, the route accepts:
 
-Verified `Openbot-fastfood/src/services/inboundGuard.service.ts` contains the required guard behavior:
+- `DLE_WEBHOOK_SECRET`
+- `CRM_SECRET_TOKEN`
+- `OPENBOT_WEBHOOK_SECRET`
+- tenant secrets from NocoDB
 
-- Drops `fromMe` messages.
-- Drops group messages passed in from the webhook route.
-- Enforces `TEST_MODE_ENABLED` / `TEST_MODE_ALLOWED_PHONE`.
-- Applies private keyword filtering via `PRIVATE_CONTACT_KEYWORDS`.
-- Applies saved-contact filtering via `BOT_IGNORE_SAVED_CONTACTS`.
-- Checks `operator_active:{instanceId}:{phone}` before duplicate locks, spam counters, media hydration, context loading, or AI.
-- Keeps legacy `mute:*` compatibility.
+## Printer Signal Parity
 
-Verified `Openbot-fastfood/src/routes/whatsappWebhook.route.ts`:
+Updated `src/controllers/kanban.ts`:
 
-- Detects groups from `isGroup=true` and `@g.us` JIDs.
-- Passes group state into `guardIncomingMessage`.
-- Runs media hydration only after the guard passes.
+- `new_order` now emits `print_new_order` to connected socket clients;
+- `status_changed` with `paid` still emits `print_new_order`;
+- customer notifications and bot memory writes remain unchanged.
 
-Verified `Openbot-fastfood/.env.example` includes:
+## Environment Documentation
 
-```env
-REDIS_URL=redis://redis:6379
-BOT_IGNORE_SAVED_CONTACTS=false
-PRIVATE_CONTACT_KEYWORDS=мама,мам,папа,пап,ана,әке,аке,апа,ата,әже,аже,нағашы,нагашы,аға,ага,әпке,апке,тәте,тате,көке,коке,брат,сестра,жена,муж,дос,бауырым,карындас,қарындас,сіңлі,синли
-TEST_MODE_ENABLED=false
-TEST_MODE_ALLOWED_PHONE=
-OPERATOR_ACTIVE_SECONDS=60
-```
+Updated `.env.example` with the DLE webhook compatibility settings.
 
-## 4. Verification
+## Verification
 
-Passed in `whatspro-gateway`:
-
-```text
-npm run check
-exit code: 0
-```
-
-Passed in `Openbot-fastfood`:
+Passed:
 
 ```text
 npm run build
 exit code: 0
 ```
-
-No obsolete `fastfood-gateway` directory was modified during this corrected pass.
