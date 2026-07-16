@@ -30,7 +30,7 @@ import {
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
-import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
+import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates, updateCrmAction } from "../services/dle.service.js";
 import { evaluateForShpor, getRestaurantConfig, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { analyzeMedia } from "../services/mediaAnalysis.service.js";
@@ -204,6 +204,25 @@ async function processWhatsAppWebhook(body: any, started: number) {
       if (mediaAnalysis) {
         mediaContext = { ...mediaContext, analysis: mediaAnalysis };
         ctx.mediaContext = mediaContext;
+        if (mediaAnalysis.type === "receipt") {
+          await updateCrmAction("receipt", ctx.instanceId, ctx.phone, {
+            config: ctx.config,
+            amount: mediaAnalysis.amount,
+            amount_paid: mediaAnalysis.amount,
+            sender_name: mediaAnalysis.sender_name,
+            sender: mediaAnalysis.sender_name,
+            bank_name: mediaAnalysis.bank_name,
+            order_id: mediaAnalysis.order_id,
+            date_time: mediaAnalysis.date_time,
+          }).catch(() => null);
+
+          const receiptReply =
+            ctx.language === "ru"
+              ? "🧾 Большое спасибо за оплату! Чек отправлен оператору на проверку. Пожалуйста, немного подождите ⏳"
+              : "🧾 Төлеміңіз үшін көп рақмет! Чек операторға тексеруге жіберілді. Кішкене күте тұрыңыз ⏳";
+          await sendCustomerReplyAndFinish(ctx, messageId, receiptReply, "payment_receipt");
+          return;
+        }
         if (mediaAnalysis.type === "technical_error") {
           mediaDeveloperError = mediaAnalysis.analysis || "media_analysis_failed";
           mediaPreemptiveReply =

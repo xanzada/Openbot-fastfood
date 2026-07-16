@@ -93,6 +93,7 @@ function fallbackTechnicalError(error, userLang) {
         reply_to_customer: reply,
         amount: 0,
         bank_name: "",
+        sender_name: "",
         order_id: "0",
         date_time: "0",
     };
