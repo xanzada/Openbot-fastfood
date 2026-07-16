@@ -2,97 +2,90 @@
 
 Date: 2026-07-16
 
-WhatsPro gateway: `C:\Users\Аз\Desktop\fastfood-old\fastfood-gateway`
+WhatsPro gateway: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\whatspro-gateway`
 
 Openbot agent: `C:\Users\Аз\Desktop\fastfood-old\Новая папка\Openbot-fastfood`
 
-Legacy reference snapshot: `C:\Users\Аз\Desktop\fastfood-old\codex үшін\ggg`
+Legacy reference only: `C:\Users\Аз\Desktop\fastfood-old\codex үшін\ggg`
 
 ## 1. Architecture Outcome
 
-WhatsPro and Openbot remain separate services. No Openbot code is imported into WhatsPro, and no WhatsPro code is imported into Openbot.
-
-The AI-human handoff is now Redis-only:
+WhatsPro and Openbot remain independent services. The handoff contract is Redis-only:
 
 ```text
 operator_active:{instanceId}:{phone}
 TTL: 60 seconds
 ```
 
-WhatsPro writes this key when a human operator replies. Openbot reads this key before context loading, media hydration, or AI generation and silently ignores customer webhooks while the key exists.
+WhatsPro writes the key when a human operator replies from `chat.html` or from the connected WhatsApp app. Openbot reads the key before AI execution and silently ignores the webhook while a human is active.
 
-## 2. WhatsApp Auto-Restore
+## 2. WhatsPro Gateway Changes
 
-Updated `fastfood-gateway/services/whatsappManager.js`:
+Updated `whatspro-gateway/services/operatorLock.js`:
 
-- detects an existing `LocalAuth` session folder via `WHATSAPP_AUTH_PATH`;
-- marks startup state as `restoring_session` when a stored session exists;
-- keeps the existing session folder intact on restore timeout/restart paths;
-- exposes `hasStoredSession` in `getInstanceStatus`;
-- keeps QR state only for genuinely unauthenticated sessions.
+- Added a central `operator_active:{instanceId}:{phone}` helper.
+- Normalizes phone numbers before key writes.
+- Uses `OPERATOR_ACTIVE_SECONDS=60` by default.
 
-Updated `fastfood-gateway/server.js`:
+Updated `whatspro-gateway/services/whatsappManager.js`:
 
-- `/api/wa/status/:instanceId` now auto-starts restoration when a stored session exists but the client is not running;
-- this removes the Dokploy post-deploy manual QR/start click for already-authenticated instances.
+- Detects existing `LocalAuth` folders under `WHATSAPP_AUTH_PATH`.
+- Marks startup as `restoring_session` when stored auth data exists.
+- Exposes `hasStoredSession` in status responses.
+- Treats `restoring_session` as an active startup state.
+- Adds a `message_create` listener for direct replies sent from the WhatsApp app.
+- Ignores bot echoes via `bot_sending:{instanceId}:{phone}`.
+- Saves direct operator replies into Redis chat history.
+- Sets `operator_active:{instanceId}:{phone}` and a short legacy `mute:*` lock for direct operator replies.
 
-## 3. Operator Chat Interface
+Updated `whatspro-gateway/src/server.js`:
 
-Updated `fastfood-gateway/public/chat.html`:
+- `/api/wa/status/:instanceId` auto-starts session restoration when a stored session exists but the client is not running.
+- Added `POST /api/chat/send/:instanceId/:phone` for operator replies from `chat.html`.
+- Operator chat replies now send through WhatsApp, save to Redis chat history, and set the Redis handoff lock.
+- Chat history now merges gateway inbox history (`chatwoot:history:*`) with Openbot assistant history (`history:*`) so customer, AI, and operator messages render together.
+- `/api/send` now mirrors successful outbound bot text into chat history for operator visibility.
 
-- Redis history entries with role `assistant` now render as AI/bot messages instead of customer messages;
-- existing Socket.IO chat flows continue to provide active chats, full history, operator send, close, restore, and delete actions.
+Updated `whatspro-gateway/public/chat.html`:
 
-Updated `fastfood-gateway/server.js`:
+- Added an operator reply composer.
+- Added POST send flow to the new chat send endpoint.
+- Renders `assistant`, `model`, and `operator` roles as outgoing messages.
+- Keeps customer messages as incoming messages.
 
-- operator panel sends still save `operator` history;
-- operator panel sends now also set `operator_active:{instanceId}:{phone}` with `EX 60`;
-- chat delete clears `operator_active:{instanceId}:{phone}` together with legacy mute/spam/history keys.
+Updated `whatspro-gateway/package.json`:
 
-## 4. Direct WhatsApp-App Handoff
+- Extended `npm run check` to validate `services/operatorLock.js`.
 
-Updated `fastfood-gateway/services/whatsappManager.js`:
+Added `whatspro-gateway/.env.example`:
 
-- added a `message_create` listener for direct WhatsApp app messages sent by the connected account;
-- ignores bot echoes using the existing `bot_sending:{instanceId}:{phone}` marker;
-- saves direct human replies as `operator` history with `source=whatsapp_app_from_me`;
-- emits `operator_message` to the operator chat room;
-- sets both legacy `mute:{instanceId}:{phone}` and new `operator_active:{instanceId}:{phone}` locks.
+```env
+REDIS_URL=redis://redis:6379
+OPENBOT_WEBHOOK_URL=http://openbot-fastfood:4100/webhook/whatsapp
+OPERATOR_ACTIVE_SECONDS=60
+WHATSAPP_AUTH_PATH=/app/whatsapp_auth
+WHATSAPP_RESTORE_TIMEOUT_MS=120000
+```
 
-Added `fastfood-gateway/services/operatorLock.js`:
+## 3. Openbot Agent Status
 
-- centralizes `operator_active` key naming and TTL;
-- exposes `markOperatorActive(instanceId, phone, source)`;
-- defaults `OPERATOR_ACTIVE_SECONDS=60`.
+Verified `Openbot-fastfood/src/services/inboundGuard.service.ts` contains the required guard behavior:
 
-## 5. Openbot Filtering And Test Mode
+- Drops `fromMe` messages.
+- Drops group messages passed in from the webhook route.
+- Enforces `TEST_MODE_ENABLED` / `TEST_MODE_ALLOWED_PHONE`.
+- Applies private keyword filtering via `PRIVATE_CONTACT_KEYWORDS`.
+- Applies saved-contact filtering via `BOT_IGNORE_SAVED_CONTACTS`.
+- Checks `operator_active:{instanceId}:{phone}` before duplicate locks, spam counters, media hydration, context loading, or AI.
+- Keeps legacy `mute:*` compatibility.
 
-Updated `Openbot-fastfood/src/services/inboundGuard.service.ts`:
+Verified `Openbot-fastfood/src/routes/whatsappWebhook.route.ts`:
 
-- added strict `TEST_MODE_ENABLED` / `TEST_MODE_ALLOWED_PHONE` filtering;
-- added `operator_active:{instanceId}:{phone}` lookup before duplicate locks, spam counters, context loading, and AI;
-- extended `setOperatorAutoMute` to write both `mute:*` and `operator_active:*`;
-- retained existing saved-contact and private-keyword filtering.
+- Detects groups from `isGroup=true` and `@g.us` JIDs.
+- Passes group state into `guardIncomingMessage`.
+- Runs media hydration only after the guard passes.
 
-Updated `Openbot-fastfood/src/routes/whatsappWebhook.route.ts`:
-
-- detects group messages from `isGroup=true` and `@g.us` JIDs;
-- passes group state into `guardIncomingMessage`;
-- moved media hydration until after the guard, so ignored messages do not trigger media download or AI work.
-
-Filtering order before AI:
-
-1. `fromMe`
-2. group messages
-3. invalid instance or phone
-4. strict test mode
-5. private/saved contacts
-6. `operator_active:{instanceId}:{phone}`
-7. duplicate/spam protection
-
-## 6. Environment Documentation
-
-Updated `Openbot-fastfood/.env.example`:
+Verified `Openbot-fastfood/.env.example` includes:
 
 ```env
 REDIS_URL=redis://redis:6379
@@ -103,25 +96,20 @@ TEST_MODE_ALLOWED_PHONE=
 OPERATOR_ACTIVE_SECONDS=60
 ```
 
-Updated `fastfood-gateway/.env.example`:
+## 4. Verification
 
-```env
-REDIS_URL=redis://redis:6379
-OPERATOR_ACTIVE_SECONDS=60
+Passed in `whatspro-gateway`:
+
+```text
+npm run check
+exit code: 0
 ```
 
-Updated `Openbot-fastfood/README.md` with the Redis handoff contract and Dokploy baseline variables.
+Passed in `Openbot-fastfood`:
 
-## 7. Verification
+```text
+npm run build
+exit code: 0
+```
 
-Commands passed:
-
-- `fastfood-gateway`: `npm run check` -> exit code `0`
-- `Openbot-fastfood`: `npm run build` -> exit code `0`
-- `Openbot-fastfood`: `npm run check` -> exit code `0`
-
-Temporary verification logs were removed after execution.
-
-## 8. Final State
-
-WhatsPro can auto-restore persisted sessions, operator chat history renders correctly, human replies create a Redis 60-second handoff lock, and Openbot drops filtered/operator-active messages before AI execution.
+No obsolete `fastfood-gateway` directory was modified during this corrected pass.
