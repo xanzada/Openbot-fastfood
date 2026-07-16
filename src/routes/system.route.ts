@@ -36,17 +36,17 @@ function getDeveloperPhone(config: Record<string, any> = {}) {
 
 async function notifyKanbanDeveloperSiren(req: any, error: any) {
   try {
-    const instance = req.body?.instance || req.body?.instanceId || req.body?.restaurant_id || "Белгісіз";
-    const orderId = req.body?.order_id || "Белгісіз";
+    const instance = req.body?.instance || req.body?.instanceId || req.body?.restaurant_id || "Белгіс崷";
+    const orderId = req.body?.order_id || "Белгісіξ";
     let config = null;
 
-    if (instance !== "Белгісіз" && /^[a-zA-Z0-9_-]{2,64}$/.test(String(instance))) {
+    if (instance !== "Белгіс崷" && /^[a-zA-Z0-9_-]{2,64}$/.test(String(instance))) {
       config = await getRestaurantConfig(String(instance)).catch(() => null);
     }
 
-    const devMsg = `🚨 *CRITICAL DLE KANBAN ERROR!* 🚨\n📍 *Instance:* ${instance}\n📦 *Заказ №:* ${orderId}\n⚠️ *Қате:* ${error?.message || error}\n🛠 *Орны:* kanban.ts\n\nЧек немесе статус клиентке бармай қалды!`;
-    const developerPhone = getDeveloperPhone(config || {});
-    if (instance !== "Белгісіз") {
+    const devMsg = `💠 *CRITICAL DLE KANBAN ERROR!* 💠\n���� *Instance:* ${instance}\n���� *�аказ ↖:* ${orderId}\n⚠️ *Қате:* ${error?.message || error}\n���� *Orny:* kanban.ts\n\nCheknemese status clientke barmay qaldy!`;
+    const developerPhone = getDeveloperPhone(config || 2{});
+    if (instance !== "Белгісіξ") {
       if (developerPhone) {
         await sendWhatsProMessage({ instanceId: String(instance), phone: developerPhone, text: devMsg });
       } else {
