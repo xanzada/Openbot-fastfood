@@ -4,26 +4,7 @@ import { createFastFoodSkills } from "../skills/index.js";
 import { FASTFOOD_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { validateFinalText } from "./finalValidator.js";
 import { resolveModel } from "./modelRouter.js";
-function firstConfigText(config, ...keys) {
-    for (const key of keys) {
-        const value = config?.[key];
-        if (value !== undefined && value !== null && String(value).trim())
-            return String(value).trim();
-    }
-    return "";
-}
-function buildTenantInstructions(ctx) {
-    const prompt = firstConfigText(ctx.config, "system_prompt", "systemPrompt", "bot_prompt", "botPrompt", "ai_prompt", "aiPrompt", "restaurant_prompt", "restaurantPrompt", "prompt");
-    if (!prompt)
-        return "";
-    return [
-        "TENANT_INSTRUCTIONS_START",
-        `instance_id: ${ctx.instanceId}`,
-        "These instructions come from the NocoDB Restaurants row for this exact instance only.",
-        prompt,
-        "TENANT_INSTRUCTIONS_END",
-    ].join("\n");
-}
+import { buildTenantInstructions } from "./persona.js";
 function enforceExplicitMagicLink(text, ctx) {
     if (!ctx.explicitMenuLinkIntent || !ctx.magicLink || text.includes(ctx.magicLink))
         return text;

@@ -1,70 +1,4 @@
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-function getAudioFormat(mimeType = "") {
-    const lower = String(mimeType).toLowerCase();
-    const match = lower.match(/audio\/([a-z0-9]+)/);
-    const rawFormat = match ? match[1] : "";
-    const map = {
-        mpeg: "mp3",
-        mp3: "mp3",
-        wav: "wav",
-        xwav: "wav",
-        ogg: "ogg",
-        opus: "ogg",
-        webm: "ogg",
-        mp4: "m4a",
-        m4a: "m4a",
-        aac: "aac",
-        flac: "flac",
-    };
-    return map[rawFormat] || rawFormat || "wav";
-}
-async function fetchWithTimeout(url, options = {}, ms = 20000) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ms);
-    try {
-        return await fetch(url, { ...options, signal: controller.signal });
-    }
-    finally {
-        clearTimeout(timer);
-    }
-}
-function getOpenRouterMediaPart(inlineData, filename = "media") {
-    if (!inlineData?.data)
-        return null;
-    const mimeType = inlineData.mimeType || "application/octet-stream";
-    const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-    if (mimeType.startsWith("image/")) {
-        return {
-            type: "image_url",
-            image_url: { url: dataUrl },
-        };
-    }
-    if (mimeType === "application/pdf") {
-        return {
-            type: "file",
-            file: {
-                filename: filename.endsWith(".pdf") ? filename : "document.pdf",
-                file_data: dataUrl,
-            },
-        };
-    }
-    if (mimeType.startsWith("audio/")) {
-        return {
-            type: "input_audio",
-            input_audio: {
-                data: inlineData.data,
-                format: getAudioFormat(mimeType),
-            },
-        };
-    }
-    return {
-        type: "file",
-        file: {
-            filename,
-            file_data: dataUrl,
-        },
-    };
-}
+import { generateMediaText } from "./llm.service.js";
 function stripDataUrl(base64Media = "") {
     return base64Media.includes(",") ? base64Media.split(",")[1] : base64Media;
 }
@@ -84,8 +18,8 @@ function extractJson(text = "") {
 function fallbackTechnicalError(error, userLang) {
     const message = error instanceof Error ? error.message : String(error || "media analysis failed");
     const reply = userLang === "ru"
-        ? "Извините, сейчас не получилось обработать файл. Попробуйте отправить его еще раз чуть позже."
-        : "Кешіріңіз, файлды қазір өңдей алмадым. Сәлден соң қайта жіберіп көріңізші.";
+        ? "РР·РІРёРЅРёС‚Рµ, СЃРµР№С‡Р°СЃ РЅРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ РѕР±СЂР°Р±РѕС‚Р°С‚СЊ С„Р°Р№Р». РџРѕРїСЂРѕР±СѓР№С‚Рµ РѕС‚РїСЂР°РІРёС‚СЊ РµРіРѕ РµС‰Рµ СЂР°Р· С‡СѓС‚СЊ РїРѕР·Р¶Рµ."
+        : "РљРµС€С–СЂС–ТЈС–Р·, С„Р°Р№Р»РґС‹ Т›Р°Р·С–СЂ У©ТЈРґРµР№ Р°Р»РјР°РґС‹Рј. РЎУ™Р»РґРµРЅ СЃРѕТЈ Т›Р°Р№С‚Р° Р¶С–Р±РµСЂС–Рї РєУ©СЂС–ТЈС–Р·С€С–.";
     return {
         type: "technical_error",
         analysis: `${reply} [System Analysis: Media analysis failed: ${message}] [ESCALATE_DEVELOPER]`,
@@ -98,18 +32,13 @@ function fallbackTechnicalError(error, userLang) {
         date_time: "0",
     };
 }
-export async function analyzeMedia(base64Media, mimeType, caption = "", userLang = "kk", isPdf = false) {
-    try {
-        if (!base64Media)
-            return null;
-        if (!OPENROUTER_API_KEY)
-            return fallbackTechnicalError(new Error("OPENROUTER_API_KEY_NOT_CONFIGURED"), userLang);
-        const pdfInstruction = isPdf
-            ? "This is a PDF document. It is usually a bank receipt or payment confirmation. Carefully extract the amount, bank name, and date."
-            : mimeType.startsWith("audio/")
-                ? "This is an audio/voice message. Transcribe the customer's intent and identify receipts, payment confirmations, complaints, or admin escalation needs."
-                : "This is an image. If it shows a bank transfer, Kaspi/Halyk/Jusan screenshot, or a receipt, treat it as a receipt. If it shows food defects, hair, dirt, or a wrong order, treat it as a complaint.";
-        const prompt = `
+function buildMediaPrompt(mimeType, caption, userLang, isPdf) {
+    const pdfInstruction = isPdf
+        ? "This is a PDF document. It is usually a bank receipt or payment confirmation. Carefully extract the amount, bank name, and date."
+        : mimeType.startsWith("audio/")
+            ? "This is an audio/voice message. Transcribe the customer's intent and identify receipts, payment confirmations, complaints, or admin escalation needs."
+            : "This is an image. If it shows a bank transfer, Kaspi/Halyk/Jusan screenshot, or a receipt, treat it as a receipt. If it shows food defects, hair, dirt, or a wrong order, treat it as a complaint.";
+    return `
 [MEDIA TOOL TASK]
 Analyze the photo/PDF/audio sent by the customer along with the accompanying text.
 ${pdfInstruction}
@@ -124,10 +53,10 @@ ${pdfInstruction}
 - amount: number only.
 - bank_name: Kaspi, Halyk, Jusan, or the visible bank.
 - date_time: visible date/time. Use "0" if missing.
-- sender_name: the full sender name visible on the receipt. Use "Белгісіз" only if no sender name is visible.
+- sender_name: the full sender name visible on the receipt. Use "Р‘РµР»РіС–СЃС–Р·" only if no sender name is visible.
 
 [COMPLAINT ESCALATION]
-- admin_summary: specific short summary in Kazakh. Example: "Клиент донерден шаш шықты деп шағымданды".
+- admin_summary: specific short summary in Kazakh.
 - reply_to_customer: polite apology in the customer's language, mentioning that the issue was passed to the admin.
 
 [CUSTOMER LANGUAGE]: ${userLang === "ru" ? "RUSSIAN" : "KAZAKH"}
@@ -145,27 +74,17 @@ Return STRICT JSON only:
   "date_time": string
 }
 `;
-        const cleanData = stripDataUrl(base64Media);
-        const mediaPart = getOpenRouterMediaPart({ data: cleanData, mimeType });
-        const content = mediaPart ? [{ type: "text", text: prompt }, mediaPart] : prompt;
-        const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                model: process.env.OPENROUTER_MEDIA_MODEL || process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash-lite",
-                temperature: 0,
-                messages: [{ role: "user", content }],
-            }),
-        }, 30000);
-        if (!response.ok) {
-            const errorText = await response.text().catch(() => "");
-            throw new Error(`OPENROUTER_MEDIA_${response.status}: ${errorText.slice(0, 200)}`);
-        }
-        const data = await response.json();
-        const rawText = String(data?.choices?.[0]?.message?.content || "").trim();
+}
+export async function analyzeMedia(base64Media, mimeType, caption = "", userLang = "kk", isPdf = false, systemPrompt = "") {
+    try {
+        if (!base64Media)
+            return null;
+        const rawText = await generateMediaText({
+            prompt: buildMediaPrompt(mimeType, caption, userLang, isPdf),
+            base64: stripDataUrl(base64Media),
+            mimeType,
+            systemPrompt,
+        });
         const parsed = extractJson(rawText) || {};
         return {
             type: ["receipt", "complaint", "reply", "technical_error"].includes(parsed.type) ? parsed.type : "reply",

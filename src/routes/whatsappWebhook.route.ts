@@ -34,6 +34,8 @@ import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates, updateCrmA
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { analyzeMedia } from "../services/mediaAnalysis.service.js";
+import { buildTenantInstructions } from "../agent/persona.js";
+import { getTextModels } from "../services/llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
@@ -296,7 +298,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
         mediaContext.mimeType || mediaContext.mediaType || "application/octet-stream",
         text,
         ctx.language,
-        (mediaContext.mimeType || "").includes("pdf")
+        (mediaContext.mimeType || "").includes("pdf"),
+        buildTenantInstructions(ctx)
       );
       if (mediaAnalysis) {
         mediaContext = { ...mediaContext, analysis: mediaAnalysis };
@@ -424,7 +427,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
-    console.log(`[OPENBOT:AI] generating model=${process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash"}`);
+    const textModels = getTextModels();
+    console.log(`[OPENBOT:AI] generating provider=openrouter primary=${textModels.primary} fallback=${textModels.fallback}`);
     const result = await runFastFoodAgent(ctx);
     console.log(`[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"} link=${result.hasLink}`);
 

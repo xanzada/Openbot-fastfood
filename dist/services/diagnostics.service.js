@@ -1,5 +1,6 @@
 import axios from "axios";
 import { getRedisTarget, pingRedis } from "./redis.service.js";
+import { getMediaFallbackModel, getMediaPrimaryKeys, getMediaPrimaryModel, getTextModels } from "./llm.service.js";
 function now() {
     return Date.now();
 }
@@ -113,10 +114,18 @@ async function checkNocoDB() {
 }
 export function getConfigSummary() {
     const redis = getRedisTarget();
+    const textModels = getTextModels();
     return {
         port: Number(process.env.PORT || 4100),
         redis: `${redis.host}:${redis.port}`,
-        openrouter_model: process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash",
+        text_models: textModels,
+        media_models: {
+            primary_provider: "gemini_free_key_rotation",
+            primary_model: getMediaPrimaryModel(),
+            primary_keys: getMediaPrimaryKeys().length,
+            fallback_provider: "openrouter",
+            fallback_model: getMediaFallbackModel(),
+        },
         openrouter_key: envPresent("OPENROUTER_API_KEY") ? "present" : "missing",
         openbot_webhook_secret: envPresent("OPENBOT_WEBHOOK_SECRET") ? "present" : "missing",
         nocodb: {

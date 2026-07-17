@@ -1,5 +1,4 @@
 import { createOpenAI } from "@ai-sdk/openai";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import type { FastFoodContext } from "../context/types.js";
 
 const openrouterProvider = createOpenAI({
@@ -7,10 +6,10 @@ const openrouterProvider = createOpenAI({
   apiKey: process.env.OPENROUTER_API_KEY,
 });
 
-const GEMINI_API_KEYS = (process.env.GEMINI_API_KEYS || "")
-  .split(",")
-  .map((k) => k.trim())
-  .filter(Boolean);
+function envText(name: string, fallback: string) {
+  const value = String(process.env[name] || "").trim();
+  return value || fallback;
+}
 
 function createFallbackModel(primary: any, secondary: any): any {
   const wrapped = { ...primary };
@@ -21,9 +20,7 @@ function createFallbackModel(primary: any, secondary: any): any {
       try {
         return await originalDoGenerate(options);
       } catch (error: any) {
-        console.warn(
-          `[MODEL] Primary "${primary.modelId}" failed: ${error?.message}. Falling back to "${secondary.modelId}".`
-        );
+        console.warn(`[MODEL:TEXT] primary=${primary.modelId} failed; fallback=${secondary.modelId}; error=${error?.message || error}`);
         return secondary.doGenerate.call(secondary, options);
       }
     };
@@ -35,9 +32,7 @@ function createFallbackModel(primary: any, secondary: any): any {
       try {
         return await originalDoStream(options);
       } catch (error: any) {
-        console.warn(
-          `[MODEL] Primary "${primary.modelId}" stream failed: ${error?.message}. Falling back to "${secondary.modelId}".`
-        );
+        console.warn(`[MODEL:TEXT] primary_stream=${primary.modelId} failed; fallback=${secondary.modelId}; error=${error?.message || error}`);
         return secondary.doStream.call(secondary, options);
       }
     };
@@ -46,35 +41,18 @@ function createFallbackModel(primary: any, secondary: any): any {
   return wrapped;
 }
 
-function createKeyRotationModel(
-  keys: string[],
-  modelId: string,
-  finalFallback: any,
-): any {
-  if (keys.length === 0) return finalFallback;
-
-  const provider = createGoogleGenerativeAI({ apiKey: keys[0] });
-  const current = provider(modelId);
-  const rest = createKeyRotationModel(keys.slice(1), modelId, finalFallback);
-  return createFallbackModel(current, rest);
-}
+const textPrimaryModel = envText("TEXT_PRIMARY_MODEL", "deepseek/deepseek-chat");
+const textFallbackModel = envText("TEXT_FALLBACK_MODEL", "deepseek/deepseek-chat-v3");
 
 const textModel = createFallbackModel(
-  openrouterProvider("deepseek/deepseek-chat"),
-  openrouterProvider("google/gemini-2.5-flash"),
+  openrouterProvider(textPrimaryModel),
+  openrouterProvider(textFallbackModel),
 );
 
-const multimodalModel = GEMINI_API_KEYS.length > 0
-  ? createKeyRotationModel(
-      GEMINI_API_KEYS,
-      "gemini-2.5-flash",
-      openrouterProvider("google/gemini-2.5-flash"),
-    )
-  : openrouterProvider("google/gemini-2.5-flash");
+export function getTextModelId() {
+  return { primary: textPrimaryModel, fallback: textFallbackModel };
+}
 
-export function resolveModel(ctx: FastFoodContext) {
-  const hasMedia = Boolean(
-    ctx.mediaContext?.base64 && ctx.mediaContext?.valid,
-  );
-  return hasMedia ? multimodalModel : textModel;
+export function resolveModel(_ctx: FastFoodContext) {
+  return textModel;
 }
