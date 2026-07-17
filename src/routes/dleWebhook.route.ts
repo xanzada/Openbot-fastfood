@@ -2,20 +2,9 @@ import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { handleKanbanWebhook } from "../controllers/kanban.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
-import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
+import { assertTenantSecret } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { auditError, auditInbound, auditProcessing, isNewDleAction } from "../services/auditLogger.service.js";
-
-const DLE_WEBHOOK_PATHS = [
-  "/dle-webhook",
-  "/website-webhook",
-  "/api/dle-webhook",
-  "/api/website-webhook",
-  "/api/kanban-webhook",
-  "/webhook/dle",
-  "/webhook/kanban",
-  "/webhook/website",
-];
 
 function envBool(name: string, fallback = false) {
   const value = String(process.env[name] ?? "").trim().toLowerCase();
@@ -24,25 +13,7 @@ function envBool(name: string, fallback = false) {
 }
 
 function getRequestInstanceId(req: Request) {
-  return String(
-      req.body?.instance ||
-      req.body?.instanceId ||
-      req.body?.instance_id ||
-      req.body?.restaurant_id ||
-      req.body?.restaurant_instance ||
-      req.body?.restaurantInstance ||
-      req.query?.instance ||
-      req.query?.instanceId ||
-      req.query?.instance_id ||
-      req.query?.restaurant_id ||
-      req.query?.restaurant_instance ||
-      req.query?.restaurantInstance ||
-      ""
-  ).trim();
-}
-
-function getBearerToken(req: Request) {
-  return String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  return String(req.body?.instance || req.query?.instance || "").trim();
 }
 
 function firstValue(...values: unknown[]) {
@@ -80,20 +51,7 @@ export function normalizeDlePayload(req: Request) {
   const normalized: Record<string, any> = {
     ...source,
     action,
-    instance: firstValue(
-      source.instance,
-      source.instanceId,
-      source.instance_id,
-      source.restaurant_id,
-      source.restaurant_instance,
-      source.restaurantInstance,
-      req.query.instance,
-      req.query.instanceId,
-      req.query.instance_id,
-      req.query.restaurant_id,
-      req.query.restaurant_instance,
-      req.query.restaurantInstance
-    ),
+    instance: firstValue(source.instance, req.query.instance),
     phone: firstValue(
       source.phone,
       source.client_phone,
@@ -138,17 +96,6 @@ async function verifyDleWebhook(req: Request, res: Response, next: NextFunction)
     return next();
   }
 
-  const expected = process.env.DLE_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN || process.env.OPENBOT_WEBHOOK_SECRET;
-  const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.body?.secret_token || req.query?.token || req.query?.secret_token;
-  if (expected && safeCompare(got, expected)) {
-    auditProcessing("DLE webhook static secret accepted", {
-      action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
-      tokenSource: req.body?.secret_token || req.query?.secret_token ? "secret_token" : "token_or_header",
-      matchesNewDleLogic: isNewDleAction(req.body?.action || req.body?.ajax_action || req.query?.action),
-    });
-    return next();
-  }
-
   try {
     const instanceId = getRequestInstanceId(req);
     if (!instanceId) return res.status(401).json({ ok: false, error: "unauthorized" });
@@ -179,6 +126,14 @@ async function handleDleWebhook(req: Request, res: Response) {
       payload: req.body,
     });
     normalizeDlePayload(req);
+    if (!req.body?.instance) {
+      auditError("DLE webhook rejected: missing strict body.instance", new Error("MISSING_INSTANCE"), {
+        action: req.body?.action || rawAction,
+        payload: req.body,
+      });
+      res.status(400).json({ success: false, error: "MISSING_INSTANCE" });
+      return;
+    }
     auditInbound("DLE webhook normalized", {
       action: req.body?.action,
       matchesNewDleLogic: isNewDleAction(req.body?.action),
@@ -218,9 +173,7 @@ async function handleDleWebhook(req: Request, res: Response) {
 export function dleWebhookRoute(): Router {
   const router = createRouter();
 
-  for (const path of DLE_WEBHOOK_PATHS) {
-    router.post(path, verifyDleWebhook, handleDleWebhook);
-  }
+  router.post("/", verifyDleWebhook, handleDleWebhook);
 
   return router;
 }

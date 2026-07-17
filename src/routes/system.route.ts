@@ -1,28 +1,12 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
-import { handleKanbanWebhook } from "../controllers/kanban.js";
-import { normalizeDlePayload } from "./dleWebhook.route.js";
 import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 
 function getRequestInstanceId(req: Request) {
-  return String(
-      req.body?.instanceId ||
-      req.body?.instance_id ||
-      req.body?.instance ||
-      req.body?.restaurant_id ||
-      req.body?.restaurant_instance ||
-      req.body?.restaurantInstance ||
-      req.query?.instanceId ||
-      req.query?.instance_id ||
-      req.query?.instance ||
-      req.query?.restaurant_id ||
-      req.query?.restaurant_instance ||
-      req.query?.restaurantInstance ||
-      ""
-  ).trim();
+  return String(req.body?.instance || "").trim();
 }
 
 function getBearerToken(req: Request) {
@@ -65,7 +49,7 @@ function verifySecret(channel = "webhook") {
       return next();
     }
 
-    const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
+    const expected = process.env.OPENBOT_WEBHOOK_SECRET;
     const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.body?.secret_token || req.query?.token || req.query?.secret_token;
 
     if (expected && safeCompare(got, expected)) {
@@ -108,23 +92,6 @@ export function systemRoute(): Router {
       config: getConfigSummary(),
       checks,
     });
-  });
-
-  router.post("/kanban-webhook", verifySecret("kanban"), async (req, res) => {
-    try {
-      normalizeDlePayload(req);
-      await handleKanbanWebhook(req, res);
-    } catch (error: any) {
-      const instanceId = getRequestInstanceId(req);
-      await notifyDeveloperSystemFailure(instanceId, error, {
-        scope: "kanban-webhook",
-        orderId: req.body?.order_id || req.body?.order?.id || req.body?.id || "",
-      }).catch(() => undefined);
-
-      if (!res.headersSent) {
-        res.status(500).json({ ok: false, error: error?.message || "kanban webhook failed" });
-      }
-    }
   });
 
   router.post("/api/print_trigger", verifySecret("kanban"), async (req, res) => {

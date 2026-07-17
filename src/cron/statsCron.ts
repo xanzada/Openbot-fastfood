@@ -30,6 +30,24 @@ function asText(value: unknown) {
   return JSON.stringify(value);
 }
 
+function firstValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value).trim();
+  }
+  return "";
+}
+
+function tenantSecret(config: Record<string, any>) {
+  return firstValue(
+    config.crm_secret_token,
+    config.crmSecretToken,
+    config.secret_token,
+    config.secretToken,
+    config.secret_key,
+    config.secretKey
+  );
+}
+
 function normalizeLeadRows(rows: any[] = []) {
   return (Array.isArray(rows) ? rows : [])
     .map((row) => ({
@@ -99,10 +117,12 @@ async function fetchTodayCrmLeads(config: Record<string, any>, reportDate: strin
   }
 
   const cleanDomain = await normalizePublicDomain(domain);
+  const token = tenantSecret(config);
+  if (!token) throw new Error("missing tenant CRM secret");
   const response = await axios.post(
     `${cleanDomain}/api_bot.php`,
     {
-      token: process.env.CRM_SECRET_TOKEN,
+      token,
       action: "get_today_crm",
       restaurant_id: instanceId,
       date: reportDate,
@@ -130,10 +150,12 @@ async function sendAnalyticsToSite(config: Record<string, any>, reportDate: stri
   }
 
   const cleanDomain = await normalizePublicDomain(domain);
+  const token = tenantSecret(config);
+  if (!token) throw new Error("missing tenant CRM secret");
   const response = await axios.post(
     `${cleanDomain}/api_bot.php`,
     {
-      token: process.env.CRM_SECRET_TOKEN,
+      token,
       action: "save_daily_analytics",
       restaurant_id: instanceId,
       report_date: reportDate,

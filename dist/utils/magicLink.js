@@ -33,8 +33,8 @@ export function normalizeMenuDomain(domain) {
         return null;
     }
 }
-export function generateSecureMenuUrl(domain, phone) {
-    const secret = String(process.env.CRM_SECRET_TOKEN || "").trim();
+export function generateSecureMenuUrl(domain, phone, tenantSecret = "") {
+    const secret = String(tenantSecret || "").trim();
     const cleanDomain = normalizeMenuDomain(domain);
     const cleanPhone = String(phone || "").replace(/\D/g, "");
     if (!cleanDomain || !cleanPhone || !secret)

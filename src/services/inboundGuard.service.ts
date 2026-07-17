@@ -273,11 +273,28 @@ function directMediaBase64(body: any) {
   );
 }
 
-function whatsproHeaders() {
+function webhookInstanceId(body: any) {
+  return firstString(
+    body?.instance,
+    body?.instanceId,
+    body?.instance_id,
+    body?.restaurant_id,
+    body?.restaurant_instance,
+    body?.data?.instance,
+    body?.data?.instanceId
+  );
+}
+
+async function whatsproHeaders(instanceId = "") {
   const headers: Record<string, string> = {};
-  if (process.env.WHATSPRO_API_TOKEN) {
-    headers.authorization = `Bearer ${process.env.WHATSPRO_API_TOKEN}`;
-    headers["x-api-key"] = process.env.WHATSPRO_API_TOKEN;
+  const config = instanceId ? await getRestaurantConfig(instanceId).catch(() => null) : null;
+  const token = firstString(
+    config?.whatspro_api_token,
+    config?.whatsproApiToken
+  );
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+    headers["x-api-key"] = token;
   }
   return headers;
 }
@@ -291,7 +308,7 @@ export async function getBase64Media(body: any, mediaContext: InboundMediaContex
   if (!url) return null;
 
   try {
-    const response = await fetch(url, { headers: whatsproHeaders() });
+    const response = await fetch(url, { headers: await whatsproHeaders(webhookInstanceId(body)) });
     if (!response.ok) throw new Error(`MEDIA_HTTP_${response.status}`);
 
     const arrayBuffer = await response.arrayBuffer();

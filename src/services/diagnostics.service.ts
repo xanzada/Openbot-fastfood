@@ -133,7 +133,6 @@ export function getConfigSummary() {
     redis: `${redis.host}:${redis.port}`,
     openrouter_model: process.env.OPENROUTER_AGENT_MODEL || "google/gemini-2.5-flash",
     openrouter_key: envPresent("OPENROUTER_API_KEY") ? "present" : "missing",
-    crm_secret: envPresent("CRM_SECRET_TOKEN") ? "present" : "missing",
     openbot_webhook_secret: envPresent("OPENBOT_WEBHOOK_SECRET") ? "present" : "missing",
     nocodb: {
       url: hostFromUrl(process.env.NOCODB_URL || ""),
@@ -142,8 +141,8 @@ export function getConfigSummary() {
       shpor_table: envPresent("NOCODB_SHPOR_TABLE_ID") ? "present" : "missing",
     },
     whatspro: {
-      base_url: hostFromUrl(process.env.WHATSPRO_BASE_URL || process.env.WHATSPRO_SEND_URL || ""),
-      api_token: envPresent("WHATSPRO_API_TOKEN") ? "present" : "missing",
+      source: "nocodb_tenant_config",
+      note: "whatspro_base_url, whatspro_send_url, and whatspro_api_token are loaded per instance",
     },
     chatwoot_adapter: {
       url: hostFromUrl(process.env.CHATWOOT_ADAPTER_URL || ""),
@@ -156,7 +155,6 @@ export async function runDependencyChecks() {
   const checks: CheckResult[] = [];
   checks.push(await checkRedis());
   checks.push(await checkNocoDB());
-  checks.push(await checkHttp("whatspro", endpointFromBase(process.env.WHATSPRO_BASE_URL || "", "/health")));
   if (process.env.CHATWOOT_ADAPTER_URL) {
     checks.push(await checkHttp("chatwoot_adapter", endpointFromBase(process.env.CHATWOOT_ADAPTER_URL, "/health")));
   }

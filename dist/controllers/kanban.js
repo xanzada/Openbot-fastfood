@@ -346,7 +346,7 @@ function getAdminPhone(config) {
     return normalizePhone(config.admin_phone || "");
 }
 async function notifyDeveloper(instance, error, meta) {
-    await notifyDeveloperSystemFailure(instance, error, { scope: "kanban-webhook", ...meta }).catch(() => undefined);
+    await notifyDeveloperSystemFailure(instance, error, { scope: "kanban_webhook", ...meta }).catch(() => undefined);
 }
 async function notifyComplaint(body, config, instance) {
     const adminPhone = getAdminPhone(config);
@@ -436,7 +436,7 @@ async function sendAndRemember(instance, phone, text) {
 }
 export async function handleKanbanWebhook(req, res) {
     const body = (req.body || {});
-    const instance = cleanInline(body.instance || body.instanceId || body.restaurant_id, 80);
+    const instance = cleanInline(body.instance, 80);
     const action = cleanInline(body.action, 80);
     const rawOrderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
     let lockKey = "";
@@ -508,7 +508,7 @@ export async function handleKanbanWebhook(req, res) {
         }
         const isShiftNoteAction = action.startsWith("shift_note_");
         const phone = normalizePhone(body.phone || "");
-        const orderId = cleanInline(body.order_id || "0", 40);
+        const orderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
         const newStatus = cleanInline(body.status || body.new_status || body.order_status, 80);
         const isPickup = boolValue(body.is_pickup, false);
         if (!isShiftNoteAction) {

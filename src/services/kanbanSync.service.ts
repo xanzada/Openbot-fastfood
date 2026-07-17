@@ -7,9 +7,15 @@ function pickWebhookUrl(config: Record<string, any> = {}) {
       config.n8nWebhookUrl ||
       config.kanban_webhook_url ||
       config.kanbanWebhookUrl ||
-      process.env.N8N_WEBHOOK_URL ||
       ""
   ).trim();
+}
+
+function firstValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value).trim();
+  }
+  return "";
 }
 
 export async function syncKanbanEvent(
@@ -20,7 +26,15 @@ export async function syncKanbanEvent(
   if (!url) return { skipped: true };
 
   const payload = {
-    token: process.env.N8N_WEBHOOK_TOKEN || process.env.CRM_SECRET_TOKEN,
+    token: firstValue(
+      ctx.config.n8n_webhook_token,
+      ctx.config.n8nWebhookToken,
+      ctx.config.crm_secret_token,
+      ctx.config.secret_token,
+      ctx.config.secret_key,
+      ctx.config.n8n_token,
+      ctx.config.n8nToken
+    ),
     instance: ctx.instanceId,
     instanceId: ctx.instanceId,
     phone: ctx.phone,

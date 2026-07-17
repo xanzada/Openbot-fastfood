@@ -1,4 +1,4 @@
-import type { Router } from "express";
+import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
@@ -31,7 +31,7 @@ import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates, updateCrmAction } from "../services/dle.service.js";
-import { evaluateForShpor, getRestaurantConfig, saveToShpor } from "../services/nocodb.service.js";
+import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { analyzeMedia } from "../services/mediaAnalysis.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -45,7 +45,19 @@ function maskPhone(phone = "") {
 }
 
 function getInstanceId(body: any) {
-  return String(body?.instanceId || body?.instance || body?.restaurant_id || "").trim();
+  return String(
+    body?.instance ||
+    body?.instanceId ||
+    body?.instance_id ||
+    body?.restaurant_id ||
+    body?.restaurant_instance ||
+    body?.restaurantInstance ||
+    body?.data?.instance ||
+    body?.data?.instanceId ||
+    body?.data?.instance_id ||
+    body?.data?.restaurant_id ||
+    ""
+  ).trim();
 }
 
 function getPhone(body: any) {
@@ -54,8 +66,93 @@ function getPhone(body: any) {
   return normalizePhoneFromCandidates(getPhoneCandidatesFromWebhook(body || {}, eventData, key));
 }
 
+function normalizeLocalPhone(value: unknown) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function firstPhoneCandidate(...values: unknown[]) {
+  for (const value of values) {
+    const phone = normalizeLocalPhone(value);
+    if (phone) return phone;
+  }
+  return "";
+}
+
+function getReceiverPhone(body: any) {
+  const eventData = body?.data || body || {};
+  const instance = body?.instanceData || body?.instance_data || eventData?.instanceData || eventData?.instance_data || {};
+  const me = body?.me || eventData?.me || body?.account || eventData?.account || {};
+  return firstPhoneCandidate(
+    body?.receiver_phone,
+    body?.receiverPhone,
+    body?.recipient_phone,
+    body?.recipientPhone,
+    body?.to_phone,
+    body?.toPhone,
+    body?.bot_phone,
+    body?.botPhone,
+    body?.instance_phone,
+    body?.instancePhone,
+    body?.whatsapp_phone,
+    body?.whatsappPhone,
+    body?.whatspro_phone,
+    body?.whatsproPhone,
+    body?.receiver,
+    body?.to,
+    body?.recipient,
+    eventData?.receiver_phone,
+    eventData?.receiverPhone,
+    eventData?.recipient_phone,
+    eventData?.recipientPhone,
+    eventData?.to_phone,
+    eventData?.toPhone,
+    eventData?.bot_phone,
+    eventData?.botPhone,
+    eventData?.instance_phone,
+    eventData?.instancePhone,
+    eventData?.whatsapp_phone,
+    eventData?.whatsappPhone,
+    eventData?.whatspro_phone,
+    eventData?.whatsproPhone,
+    eventData?.receiver,
+    eventData?.to,
+    eventData?.recipient,
+    instance?.phone,
+    instance?.number,
+    instance?.jid,
+    me?.phone,
+    me?.number,
+    me?.id,
+    me?.jid
+  );
+}
+
+async function resolveTenantInstance(req: Request, _res: Response, next: NextFunction) {
+  const body = req.body || {};
+  if (getInstanceId(body)) return next();
+
+  try {
+    const receiverPhone = getReceiverPhone(body);
+    if (!receiverPhone) return next();
+    const config = await getRestaurantConfigByWhatsAppPhone(receiverPhone);
+    const instanceId = String(config?.instance_id || config?.instance || "").trim();
+    if (instanceId) {
+      req.body = {
+        ...body,
+        instance: instanceId,
+        instance_id: instanceId,
+      };
+      console.info(`[OPENBOT:TENANT] resolved instance=${instanceId} by_receiver=${maskPhone(receiverPhone)}`);
+    }
+    return next();
+  } catch (error: any) {
+    console.warn("[OPENBOT:TENANT:RESOLVE:FAIL]", error?.message || error);
+    return next();
+  }
+}
+
 async function verifySecret(req: any, res: any, next: any) {
-  const expected = process.env.OPENBOT_WEBHOOK_SECRET || process.env.CRM_SECRET_TOKEN;
+  const expected = process.env.OPENBOT_WEBHOOK_SECRET;
   const got =
     req.headers.authorization?.replace(/^Bearer\s+/i, "") ||
     req.headers["x-api-key"] ||
@@ -409,11 +506,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
 export function whatsappWebhookRoute(): Router {
   const router = createRouter();
 
-  router.post("/webhook/whatsapp", verifySecret, async (req, res) => {
+  router.post("/", resolveTenantInstance, verifySecret, async (req, res) => {
     const started = Date.now();
     const body = req.body || {};
     console.info(
-      `[OPENBOT:WEBHOOK] POST /webhook/whatsapp fromMe=${isOwnWhatsAppMessage(body)} instance=${getInstanceId(body) || "-"} phone=${maskPhone(getPhone(body))}`
+      `[OPENBOT:WEBHOOK] fromMe=${isOwnWhatsAppMessage(body)} instance=${getInstanceId(body) || "-"} phone=${maskPhone(getPhone(body))}`
     );
 
     if (isOwnWhatsAppMessage(body)) {

@@ -30,6 +30,13 @@ export interface ContextHealth {
   shpor: boolean;
 }
 
+function firstValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value).trim();
+  }
+  return "";
+}
+
 export async function preloadContext(input: InboundMessage): Promise<FastFoodContext> {
   await connectRedis();
 
@@ -134,6 +141,17 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     shporContext,
     magicLinkAlreadySent,
     explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
-    magicLink: generateSecureMenuUrl(domain, phone),
+    magicLink: generateSecureMenuUrl(
+      domain,
+      phone,
+      firstValue(
+        safeConfig.crm_secret_token,
+        safeConfig.crmSecretToken,
+        safeConfig.secret_token,
+        safeConfig.secretToken,
+        safeConfig.secret_key,
+        safeConfig.secretKey
+      )
+    ),
   };
 }

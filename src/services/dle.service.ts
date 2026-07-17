@@ -14,6 +14,7 @@ import {
   type KitchenStatusState,
 } from "./redis.service.js";
 import { auditError } from "./auditLogger.service.js";
+import { getRestaurantConfig } from "./nocodb.service.js";
 
 const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
 const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;
@@ -50,6 +51,13 @@ function safeLookup(hostname: string, options: any, callback: any) {
 
 export const safeHttpAgent = new http.Agent({ keepAlive: false, lookup: safeLookup });
 export const safeHttpsAgent = new https.Agent({ keepAlive: false, lookup: safeLookup });
+
+function firstValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value).trim();
+  }
+  return "";
+}
 
 export function normalizeKazakhstanPhone(digits: unknown) {
   if (!digits) return "";
@@ -152,12 +160,23 @@ export async function normalizePublicDomain(rawDomain = "") {
 async function apiBot(domain: string, payload: Record<string, any>, timeout = 10000) {
   const safeDomain = await normalizePublicDomain(domain);
   if (!safeDomain) throw new Error("DLE domain is empty");
-  const token = process.env.CRM_SECRET_TOKEN;
+  const instanceId = String(payload.restaurant_id || payload.instance || payload.instanceId || "").trim();
+  const config = instanceId ? await getRestaurantConfig(instanceId).catch(() => null) : null;
+  const token = firstValue(
+    config?.crm_secret_token,
+    config?.crmSecretToken,
+    config?.secret_token,
+    config?.secretToken,
+    config?.secret_key,
+    config?.secretKey
+  );
   if (!token) {
-    auditError("DLE api_bot token missing", new Error("CRM_SECRET_TOKEN is not configured"), {
+    auditError("DLE api_bot tenant token missing", new Error("TENANT_CRM_SECRET_NOT_CONFIGURED"), {
       action: payload.action || "",
       domain: safeDomain,
+      instanceId,
     });
+    throw new Error("TENANT_CRM_SECRET_NOT_CONFIGURED");
   }
   const response = await axios.post(
     `${safeDomain}/api_bot.php`,

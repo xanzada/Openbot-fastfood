@@ -35,13 +35,30 @@ function cleanString(value, fallback = "") {
 function normalizePhone(value) {
     return String(value || "").replace(/\D/g, "");
 }
+function firstValue(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null && String(value).trim() !== "")
+            return value;
+    }
+    return "";
+}
 function normalizeRestaurantConfig(record) {
     if (!record)
         return null;
     const devPhone = normalizePhone(record.dev_phone || record.developer_phone || record.developer || record.devPhone);
+    const instanceId = String(firstValue(record.instance_id, record.instance, record.restaurant_instance, record.restaurantInstance)).trim();
+    const whatsAppPhone = normalizePhone(firstValue(record.whatsapp_phone, record.whatsappPhone, record.whatspro_phone, record.whatsproPhone, record.bot_phone, record.botPhone, record.receiver_phone, record.receiverPhone, record.instance_phone, record.instancePhone, record.phone));
     return {
         ...record,
+        instance_id: instanceId,
+        instance: instanceId,
         dev_phone: devPhone,
+        whatsapp_phone: whatsAppPhone,
+        whatspro_base_url: firstValue(record.whatspro_base_url, record.whatsproBaseUrl, record.WHATSPRO_BASE_URL),
+        whatspro_send_url: firstValue(record.whatspro_send_url, record.whatsproSendUrl, record.WHATSPRO_SEND_URL),
+        whatspro_presence_url: firstValue(record.whatspro_presence_url, record.whatsproPresenceUrl, record.WHATSPRO_PRESENCE_URL),
+        whatspro_api_token: firstValue(record.whatspro_api_token, record.whatsproApiToken, record.WHATSPRO_API_TOKEN),
+        crm_secret_token: firstValue(record.crm_secret_token, record.crmSecretToken, record.secret_token, record.secretToken, record.secret_key, record.secretKey),
     };
 }
 function cleanPromptLine(value, max = 240) {
@@ -97,19 +114,31 @@ function tableUrl(tableId) {
     return `${baseUrl()}/api/v2/tables/${tableId}/records`;
 }
 export async function getRestaurantConfig(instanceId) {
-    const key = `config:${instanceId}`;
-    const backupKey = `config_backup:${instanceId}`;
+    const safeInstanceId = String(instanceId || "").trim();
+    const key = `config:${safeInstanceId}`;
+    const backupKey = `config_backup:${safeInstanceId}`;
     const cached = await getJsonCache(key);
     if (cached)
         return cached;
     try {
-        const response = await axios.get(tableUrl(process.env.NOCODB_TABLE_ID || ""), {
-            headers: nocodbHeaders(),
-            params: { where: `(instance_id,eq,${instanceId})`, limit: 1 },
-            timeout: 10000,
-        });
-        const records = Array.isArray(response.data?.list) ? response.data.list : [];
-        const config = normalizeRestaurantConfig(records[0] || null);
+        let config = null;
+        const instanceColumns = ["instance_id", "instance", "restaurant_instance", "restaurantInstance"];
+        for (const column of instanceColumns) {
+            try {
+                const response = await axios.get(tableUrl(process.env.NOCODB_TABLE_ID || ""), {
+                    headers: nocodbHeaders(),
+                    params: { where: `(${column},eq,${safeInstanceId})`, limit: 1 },
+                    timeout: 10000,
+                });
+                const records = Array.isArray(response.data?.list) ? response.data.list : [];
+                config = normalizeRestaurantConfig(records[0] || null);
+                if (config)
+                    break;
+            }
+            catch {
+                continue;
+            }
+        }
         if (config) {
             await setJsonCache(key, 300, config);
             await setJsonCache(backupKey, 604800, config);
@@ -117,7 +146,7 @@ export async function getRestaurantConfig(instanceId) {
         return config;
     }
     catch (error) {
-        console.error(`[NOCODB] config read failed (${instanceId}):`, error?.message || error);
+        console.error(`[NOCODB] config read failed (${safeInstanceId}):`, error?.message || error);
         return getJsonCache(backupKey);
     }
 }
@@ -135,8 +164,8 @@ export async function getAllRestaurantConfigs() {
         });
         const records = Array.isArray(response.data?.list)
             ? response.data.list
-                .filter((record) => String(record?.instance_id || "").trim())
                 .map((record) => normalizeRestaurantConfig(record))
+                .filter((record) => String(record?.instance_id || record?.instance || "").trim())
                 .filter(Boolean)
             : [];
         await setJsonCache(cacheKey, 300, records);
@@ -147,6 +176,28 @@ export async function getAllRestaurantConfigs() {
         console.warn("[NOCODB] all restaurants read failed:", error?.message || error);
         return (await getJsonCache(backupKey)) || [];
     }
+}
+export async function getRestaurantConfigByWhatsAppPhone(phone) {
+    const normalized = normalizePhone(phone);
+    if (!normalized)
+        return null;
+    const configs = await getAllRestaurantConfigs();
+    return (configs.find((config) => {
+        const candidates = [
+            config.whatsapp_phone,
+            config.whatsappPhone,
+            config.whatspro_phone,
+            config.whatsproPhone,
+            config.bot_phone,
+            config.botPhone,
+            config.receiver_phone,
+            config.receiverPhone,
+            config.instance_phone,
+            config.instancePhone,
+            config.phone,
+        ].map((value) => normalizePhone(value));
+        return candidates.some((candidate) => candidate && candidate === normalized);
+    }) || null);
 }
 function extractShporSearchText(item) {
     const memory = safeJsonObject(item.ideal_answer, null);

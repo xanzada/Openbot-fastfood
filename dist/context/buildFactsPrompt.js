@@ -27,6 +27,34 @@ function compactOrder(order) {
         is_stale: Boolean(order.is_stale),
     };
 }
+function firstConfigText(config, ...keys) {
+    for (const key of keys) {
+        const value = config?.[key];
+        if (value !== undefined && value !== null && String(value).trim())
+            return String(value).trim();
+    }
+    return "";
+}
+function compactTenantConfig(config) {
+    const tenantPrompt = firstConfigText(config, "system_prompt", "systemPrompt", "bot_prompt", "botPrompt", "ai_prompt", "aiPrompt", "restaurant_prompt", "restaurantPrompt", "prompt");
+    return {
+        locale: firstConfigText(config, "locale", "language", "lang"),
+        timezone: firstConfigText(config, "timezone", "time_zone", "tz"),
+        currency: firstConfigText(config, "currency", "currency_code", "currencyCode"),
+        tenant_prompt_available: Boolean(tenantPrompt),
+        tenant_prompt: tenantPrompt,
+        whatspro: {
+            source: "nocodb_tenant_config",
+            has_base_url: Boolean(firstConfigText(config, "whatspro_base_url", "whatsproBaseUrl")),
+            has_send_url: Boolean(firstConfigText(config, "whatspro_send_url", "whatsproSendUrl")),
+            has_api_token: Boolean(firstConfigText(config, "whatspro_api_token", "whatsproApiToken")),
+        },
+        crm: {
+            source: "nocodb_tenant_config",
+            has_secret_token: Boolean(firstConfigText(config, "crm_secret_token", "crmSecretToken", "secret_token", "secretToken", "secret_key", "secretKey")),
+        },
+    };
+}
 export function buildFactsPrompt(ctx) {
     const runtime = compactRuntime(ctx.runtimeStatus);
     if (runtime) {
@@ -59,6 +87,12 @@ export function buildFactsPrompt(ctx) {
                 domain: ctx.config.domain,
                 work_hours: ctx.config.work_hours,
             },
+            tenant_isolation: {
+                rule: "All facts, tools, WhatsApp transport, menu/order lookups, prompts, and runtime state are scoped to this exact instance_id. Never use another restaurant's settings or assumptions.",
+                instance_id: ctx.instanceId,
+                config_source: "nocodb_restaurants_by_instance",
+            },
+            tenant_config: compactTenantConfig(ctx.config),
             sender_meta: {
                 pushName: ctx.senderMeta?.pushName || "",
                 contactName: ctx.senderMeta?.contactName || "",

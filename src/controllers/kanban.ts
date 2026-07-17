@@ -387,7 +387,7 @@ function getAdminPhone(config: Record<string, unknown>) {
 }
 
 async function notifyDeveloper(instance: string, error: unknown, meta: Record<string, unknown>) {
-  await notifyDeveloperSystemFailure(instance, error, { scope: "kanban-webhook", ...meta }).catch(() => undefined);
+  await notifyDeveloperSystemFailure(instance, error, { scope: "kanban_webhook", ...meta }).catch(() => undefined);
 }
 
 async function notifyComplaint(body: Record<string, unknown>, config: Record<string, unknown>, instance: string) {
@@ -481,7 +481,7 @@ async function sendAndRemember(instance: string, phone: string, text: string): P
 
 export async function handleKanbanWebhook(req: Request, res: Response): Promise<void> {
   const body = (req.body || {}) as Record<string, unknown>;
-  const instance = cleanInline(body.instance || body.instanceId || body.restaurant_id, 80);
+  const instance = cleanInline(body.instance, 80);
   const action = cleanInline(body.action, 80);
   const rawOrderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
   let lockKey = "";
@@ -561,7 +561,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
 
     const isShiftNoteAction = action.startsWith("shift_note_");
     const phone = normalizePhone(body.phone || "");
-    const orderId = cleanInline(body.order_id || "0", 40);
+    const orderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
     const newStatus = cleanInline(body.status || body.new_status || body.order_status, 80);
     const isPickup = boolValue(body.is_pickup, false);
 

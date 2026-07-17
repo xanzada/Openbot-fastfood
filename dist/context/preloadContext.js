@@ -3,6 +3,13 @@ import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain }
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/nocodb.service.js";
 import { connectRedis, getActiveShiftNotes, getChatHistory, getUserLang, hasMagicLinkBeenSent, saveUserLang, } from "../services/redis.service.js";
+function firstValue(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null && String(value).trim() !== "")
+            return String(value).trim();
+    }
+    return "";
+}
 export async function preloadContext(input) {
     await connectRedis();
     const instanceId = String(input.instanceId || "").trim();
@@ -95,6 +102,6 @@ export async function preloadContext(input) {
         shporContext,
         magicLinkAlreadySent,
         explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
-        magicLink: generateSecureMenuUrl(domain, phone),
+        magicLink: generateSecureMenuUrl(domain, phone, firstValue(safeConfig.crm_secret_token, safeConfig.crmSecretToken, safeConfig.secret_token, safeConfig.secretToken, safeConfig.secret_key, safeConfig.secretKey)),
     };
 }

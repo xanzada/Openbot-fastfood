@@ -205,11 +205,16 @@ function mediaDownloadUrl(body) {
 function directMediaBase64(body) {
     return firstString(body?.base64, body?.dataUrl, body?.media?.base64, body?.media?.data, body?.media?.dataUrl, body?.data?.base64, body?.data?.media?.base64, body?.message?.base64);
 }
-function whatsproHeaders() {
+function webhookInstanceId(body) {
+    return firstString(body?.instance, body?.instanceId, body?.instance_id, body?.restaurant_id, body?.restaurant_instance, body?.data?.instance, body?.data?.instanceId);
+}
+async function whatsproHeaders(instanceId = "") {
     const headers = {};
-    if (process.env.WHATSPRO_API_TOKEN) {
-        headers.authorization = `Bearer ${process.env.WHATSPRO_API_TOKEN}`;
-        headers["x-api-key"] = process.env.WHATSPRO_API_TOKEN;
+    const config = instanceId ? await getRestaurantConfig(instanceId).catch(() => null) : null;
+    const token = firstString(config?.whatspro_api_token, config?.whatsproApiToken);
+    if (token) {
+        headers.authorization = `Bearer ${token}`;
+        headers["x-api-key"] = token;
     }
     return headers;
 }
@@ -222,7 +227,7 @@ export async function getBase64Media(body, mediaContext = extractInboundMedia(bo
     if (!url)
         return null;
     try {
-        const response = await fetch(url, { headers: whatsproHeaders() });
+        const response = await fetch(url, { headers: await whatsproHeaders(webhookInstanceId(body)) });
         if (!response.ok)
             throw new Error(`MEDIA_HTTP_${response.status}`);
         const arrayBuffer = await response.arrayBuffer();

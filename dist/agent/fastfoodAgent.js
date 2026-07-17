@@ -4,6 +4,26 @@ import { createFastFoodSkills } from "../skills/index.js";
 import { FASTFOOD_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { validateFinalText } from "./finalValidator.js";
 import { resolveModel } from "./modelRouter.js";
+function firstConfigText(config, ...keys) {
+    for (const key of keys) {
+        const value = config?.[key];
+        if (value !== undefined && value !== null && String(value).trim())
+            return String(value).trim();
+    }
+    return "";
+}
+function buildTenantInstructions(ctx) {
+    const prompt = firstConfigText(ctx.config, "system_prompt", "systemPrompt", "bot_prompt", "botPrompt", "ai_prompt", "aiPrompt", "restaurant_prompt", "restaurantPrompt", "prompt");
+    if (!prompt)
+        return "";
+    return [
+        "TENANT_INSTRUCTIONS_START",
+        `instance_id: ${ctx.instanceId}`,
+        "These instructions come from the NocoDB Restaurants row for this exact instance only.",
+        prompt,
+        "TENANT_INSTRUCTIONS_END",
+    ].join("\n");
+}
 function enforceExplicitMagicLink(text, ctx) {
     if (!ctx.explicitMenuLinkIntent || !ctx.magicLink || text.includes(ctx.magicLink))
         return text;
@@ -11,7 +31,11 @@ function enforceExplicitMagicLink(text, ctx) {
     return `${intro}\n${ctx.magicLink}`;
 }
 export async function runFastFoodAgent(ctx) {
-    const instructions = `${FASTFOOD_AGENT_INSTRUCTIONS}\n\n${buildFactsPrompt(ctx)}`;
+    const instructions = [
+        FASTFOOD_AGENT_INSTRUCTIONS,
+        buildTenantInstructions(ctx),
+        buildFactsPrompt(ctx),
+    ].filter(Boolean).join("\n\n");
     const agent = new Agent({
         name: "FastFood OpenBot",
         instructions,

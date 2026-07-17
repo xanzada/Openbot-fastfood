@@ -27,6 +27,16 @@ function asText(value) {
         return String(value);
     return JSON.stringify(value);
 }
+function firstValue(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null && String(value).trim() !== "")
+            return String(value).trim();
+    }
+    return "";
+}
+function tenantSecret(config) {
+    return firstValue(config.crm_secret_token, config.crmSecretToken, config.secret_token, config.secretToken, config.secret_key, config.secretKey);
+}
 function normalizeLeadRows(rows = []) {
     return (Array.isArray(rows) ? rows : [])
         .map((row) => ({
@@ -89,8 +99,11 @@ async function fetchTodayCrmLeads(config, reportDate) {
         throw new Error("missing instance_id or domain");
     }
     const cleanDomain = await normalizePublicDomain(domain);
+    const token = tenantSecret(config);
+    if (!token)
+        throw new Error("missing tenant CRM secret");
     const response = await axios.post(`${cleanDomain}/api_bot.php`, {
-        token: process.env.CRM_SECRET_TOKEN,
+        token,
         action: "get_today_crm",
         restaurant_id: instanceId,
         date: reportDate,
@@ -112,8 +125,11 @@ async function sendAnalyticsToSite(config, reportDate, analytics) {
         throw new Error("missing instance_id or domain");
     }
     const cleanDomain = await normalizePublicDomain(domain);
+    const token = tenantSecret(config);
+    if (!token)
+        throw new Error("missing tenant CRM secret");
     const response = await axios.post(`${cleanDomain}/api_bot.php`, {
-        token: process.env.CRM_SECRET_TOKEN,
+        token,
         action: "save_daily_analytics",
         restaurant_id: instanceId,
         report_date: reportDate,

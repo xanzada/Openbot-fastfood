@@ -36,8 +36,8 @@ export function normalizeMenuDomain(domain: string): string | null {
   }
 }
 
-export function generateSecureMenuUrl(domain: string, phone: string): string | null {
-  const secret = String(process.env.CRM_SECRET_TOKEN || "").trim();
+export function generateSecureMenuUrl(domain: string, phone: string, tenantSecret = ""): string | null {
+  const secret = String(tenantSecret || "").trim();
   const cleanDomain = normalizeMenuDomain(domain);
   const cleanPhone = String(phone || "").replace(/\D/g, "");
   if (!cleanDomain || !cleanPhone || !secret) return null;
