@@ -35,10 +35,20 @@ export async function preloadContext(input) {
     ]);
     await saveUserLang(instanceId, phone, language).catch(() => undefined);
     const runtimeAvailable = Boolean(runtimeStatus);
+    const runtimeWaitTime = Number(runtimeStatus?.kitchen_status?.wait_time ??
+        runtimeStatus?.wait_time ??
+        runtimeStatus?.fetched_settings?.wait_time ??
+        0) || 0;
+    const runtimeEmergency = Boolean(runtimeStatus?.kitchen_status?.is_emergency ??
+        runtimeStatus?.is_emergency ??
+        runtimeStatus?.fetched_settings?.is_emergency);
     const fetchedSettings = {
-        wait_time: Number(runtimeStatus?.fetched_settings?.wait_time || 0) || 0,
-        is_emergency: Boolean(runtimeStatus?.fetched_settings?.is_emergency),
-        source: runtimeStatus?.fetched_settings?.source || "missing_settings.kitchen_status",
+        wait_time: runtimeWaitTime,
+        is_emergency: runtimeEmergency,
+        source: runtimeStatus?.kitchen_status?.source ||
+            runtimeStatus?.fetched_settings?.source ||
+            runtimeStatus?.source ||
+            "missing_settings.kitchen_status",
     };
     const hardRealtimeContext = {
         source: fetchedSettings.source,

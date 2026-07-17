@@ -2,6 +2,31 @@
 
 Date: 2026-07-16
 
+## 2026-07-17 AI Agent Skills Restored
+
+Restored code-backed AI tools from the legacy `api_bot new.php` behavior:
+
+- `searchMenu`: live DLE `get_menu_context` lookup with scored search across item name, category, label, description, composition, and prices.
+- `checkOrderStatus`: live DLE order lookup by current WhatsApp phone or explicit `orderId`, using both `check_status` and legacy `get_order_context`.
+- `getKitchenStatus`: live DLE runtime status with Redis fallback for wait time, emergency state, delivery/pickup flags, reset time, and payment details.
+- `getShiftNotes`: active Redis shift notes for temporary kitchen/operator instructions.
+
+Updated dynamic context injection:
+
+- `preloadContext` now derives wait time and emergency state from live runtime/kitchen fields first.
+- `FACTS_CONTEXT` now declares available code-backed tools.
+- Agent instructions now explicitly require these tools for menu, order status, kitchen status, and shift notes.
+- Exact `orderId` lookups now distinguish `found` from `active`, so completed/cancelled orders are visible without being presented as active.
+- DLE-backed tool failures now go through structured audit logging, including missing `CRM_SECRET_TOKEN`, menu lookup failures, order lookup failures, runtime status failures, and CRM update failures.
+
+Verification:
+
+```text
+npm run build
+tsc -p tsconfig.json
+passed
+```
+
 ## 2026-07-16 New DLE Module Sync
 
 Analyzed the updated legacy source files:

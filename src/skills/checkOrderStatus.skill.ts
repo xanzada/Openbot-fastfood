@@ -1,39 +1,52 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
-import { getOrderStatus } from "../services/dle.service.js";
+import { getOrderContext, getOrderStatus, normalizePhone } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
 export function createCheckOrderStatusSkill(ctx: FastFoodContext) {
   return createTool({
     name: "checkOrderStatus",
-    description: "Read the customer's current active order status from the DLE database. This is READ-ONLY — it never changes any order state. Call when the customer asks 'Where is my order?', 'Статус заказа', 'Тапсырыс қайда?', or similar status inquiries.",
-    parameters: z.object({}),
-    execute: async () => {
+    description:
+      "Read order status from the live DLE database. This is READ-ONLY and never changes order state. Use orderId when the customer gives a specific order number; otherwise use the current WhatsApp phone.",
+    parameters: z.object({
+      orderId: z.string().optional().describe("Specific DLE order id if the customer provided it"),
+      phone: z.string().optional().describe("Customer phone override. Defaults to the current WhatsApp phone."),
+    }),
+    execute: async ({ orderId, phone }) => {
       const domain = ctx.config?.domain || "";
       if (!domain) return { active: false, reason: "domain_not_configured" };
 
-      const order = await getOrderStatus(ctx.instanceId, ctx.phone, domain);
+      const cleanPhone = normalizePhone(phone || ctx.phone);
+      const order = orderId
+        ? await getOrderContext(ctx.instanceId, domain, { phone: cleanPhone, orderId })
+        : await getOrderStatus(ctx.instanceId, cleanPhone, domain);
+
       if (!order) {
         return {
           active: false,
           status: null,
-          message: ctx.language === "kk"
-            ? "Сізде белсенді тапсырыс жоқ."
-            : "У вас нет активного заказа.",
+          message: ctx.language === "kk" ? "Сізде белсенді тапсырыс жоқ." : "У вас нет активного заказа.",
         };
       }
 
       const data = order as Record<string, any>;
+      const orderData = data.order || data.active_order || null;
+      const isActive = Boolean(data.active ?? true);
       return {
-        active: true,
-        order_id: data.order_id,
-        status: data.status,
-        payment_status: data.payment_status,
-        total_price: data.total_price,
-        items: data.items || [],
-        address: data.address || null,
-        is_pickup: data.is_pickup || false,
+        found: Boolean(data.found ?? orderData),
+        active: isActive,
+        source: data.source || "dle_spa_orders",
+        order_id: data.order_id || orderData?.id || null,
+        status: data.status || orderData?.status || null,
+        payment_status: data.payment_status || orderData?.payment_status || null,
+        total_price: data.total_price || orderData?.total_price || 0,
+        items: data.items || orderData?.items || [],
+        address: data.address || orderData?.address || null,
+        comment: data.comment || orderData?.comment || null,
+        is_pickup: Boolean(data.is_pickup || orderData?.is_pickup),
         is_stale: Boolean(data.is_stale),
+        order: orderData,
+        active_order: isActive ? data.active_order || orderData : null,
         recent_orders: data.recent_orders || [],
       };
     },

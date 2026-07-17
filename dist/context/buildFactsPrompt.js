@@ -69,6 +69,12 @@ export function buildFactsPrompt(ctx) {
                 rule: "These facts are authoritative for this turn. Do not invent wait times, kitchen status, delivery status, pickup status, or shift notes outside this object.",
                 ...ctx.hardRealtimeContext,
             },
+            tools_available: {
+                searchMenu: "Live DLE menu lookup for exact items, categories, ingredients, labels, and prices.",
+                checkOrderStatus: "Live DLE order lookup by current phone or provided orderId.",
+                getKitchenStatus: "Live DLE/Redis kitchen status, wait time, emergency state, delivery/pickup flags, and payment details.",
+                getShiftNotes: "Redis active shift notes and temporary operator instructions.",
+            },
             runtime_status: runtime,
             active_order: activeOrder,
             active_shift_notes: notes,

@@ -5,6 +5,7 @@ import * as dnsCallback from "node:dns";
 import dns from "node:dns/promises";
 import axios from "axios";
 import { deleteCache, getJsonCache, getKitchenStatus, saveDailyLog, saveKitchenStatus, setJsonCache, } from "./redis.service.js";
+import { auditError } from "./auditLogger.service.js";
 const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
 const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;
 const LID_JID_RE = /@lid$/i;
@@ -138,7 +139,10 @@ async function apiBot(domain, payload, timeout = 10000) {
         throw new Error("DLE domain is empty");
     const token = process.env.CRM_SECRET_TOKEN;
     if (!token) {
-        console.warn("[DLE] CRM_SECRET_TOKEN is not configured — api_bot requests will fail with 403");
+        auditError("DLE api_bot token missing", new Error("CRM_SECRET_TOKEN is not configured"), {
+            action: payload.action || "",
+            domain: safeDomain,
+        });
     }
     const response = await axios.post(`${safeDomain}/api_bot.php`, {
         token,
@@ -289,12 +293,12 @@ export async function getRuntimeStatus(instanceId, domain, options = {}) {
             source: "dle_runtime_status",
             preserve_reset: true,
         }).catch((syncError) => {
-            console.warn(`[RUNTIME] Redis kitchen sync skipped (${instanceId}):`, syncError?.message || syncError);
+            auditError("Runtime Redis kitchen sync skipped", syncError, { instanceId });
         });
         return status;
     }
     catch (error) {
-        console.error(`[RUNTIME] DLE read failed (${instanceId}):`, error?.message || error);
+        auditError("DLE runtime status read failed", error, { instanceId, domain });
         const redisKitchen = await getKitchenStatus(instanceId);
         if (redisKitchen) {
             const redisRuntime = runtimeFromKitchenStatus(instanceId, redisKitchen);
@@ -357,6 +361,18 @@ function normalizeOrderPayload(order = {}) {
         items,
     };
 }
+function normalizeOrderContextPayload(data = {}) {
+    const activeOrder = normalizeOrderPayload(data.order || data.active_order || {});
+    const hasActiveOrder = Boolean(activeOrder.id);
+    return {
+        source: data.source || "dle_spa_orders",
+        order_id: hasActiveOrder ? activeOrder.id : String(data.order_id || "0"),
+        status: hasActiveOrder ? activeOrder.status || data.status || "status_unknown" : data.status || null,
+        order: hasActiveOrder ? activeOrder : null,
+        active_order: hasActiveOrder ? activeOrder : null,
+        recent_orders: Array.isArray(data.recent_orders) ? data.recent_orders.map(normalizeOrderPayload) : [],
+    };
+}
 const inactiveStatuses = new Set(["completed", "done", "finished", "closed", "cancelled", "canceled", "refunded"]);
 function isInactiveOrderStatus(status = "") {
     return inactiveStatuses.has(String(status || "").trim().toLowerCase().replace(/\s+/g, "_"));
@@ -394,7 +410,60 @@ export async function getOrderStatus(instanceId, phone, domain) {
         return null;
     }
     catch (error) {
-        console.error(`[ORDER] DLE status read failed (${instanceId}/${cleanPhone}):`, error?.message || error);
+        auditError("DLE order status read failed", error, { instanceId, phone: cleanPhone });
+        const backup = await getJsonCache(key);
+        return backup ? { ...backup, is_stale: true, status: backup.status || "last_known_order_offline" } : null;
+    }
+}
+export async function getOrderContext(instanceId, domain, options = {}) {
+    const cleanPhone = normalizePhone(options.phone || "");
+    const orderId = Number(String(options.orderId || "0").replace(/\D/g, "")) || 0;
+    if (!domain || (!cleanPhone && !orderId))
+        return null;
+    const key = orderId > 0
+        ? `order_context:${instanceId}:id:${orderId}`
+        : `order_context:${instanceId}:phone:${cleanPhone}`;
+    try {
+        const data = await apiBot(domain, {
+            action: "get_order_context",
+            phone: cleanPhone,
+            order_id: orderId,
+            restaurant_id: instanceId,
+        }, 10000);
+        const context = normalizeOrderContextPayload(data || {});
+        const activeOrder = context.active_order;
+        if (!activeOrder || isInactiveOrderStatus(activeOrder.status)) {
+            await deleteCache(key);
+            const exactOrder = activeOrder && orderId > 0 ? activeOrder : null;
+            return {
+                ...context,
+                found: Boolean(exactOrder),
+                active: false,
+                active_order: null,
+                order: exactOrder,
+                items: exactOrder?.items || [],
+                total_price: exactOrder?.total_price || 0,
+                address: exactOrder?.address || "",
+                comment: exactOrder?.comment || "",
+                is_pickup: exactOrder?.is_pickup || false,
+                payment_status: exactOrder?.payment_status || "",
+            };
+        }
+        const result = {
+            ...context,
+            active: true,
+            items: activeOrder.items,
+            total_price: activeOrder.total_price,
+            address: activeOrder.address,
+            comment: activeOrder.comment,
+            is_pickup: activeOrder.is_pickup,
+            payment_status: activeOrder.payment_status,
+        };
+        await setJsonCache(key, 86400, result);
+        return result;
+    }
+    catch (error) {
+        auditError("DLE order context read failed", error, { instanceId, phone: cleanPhone, orderId });
         const backup = await getJsonCache(key);
         return backup ? { ...backup, is_stale: true, status: backup.status || "last_known_order_offline" } : null;
     }
@@ -424,10 +493,13 @@ export async function getMenuContext(instanceId, domain, userLang = "kk") {
     try {
         const data = await apiBot(domain, { action: "get_menu_context", restaurant_id: instanceId, lang }, 10000);
         const rawItems = Array.isArray(data?.items) ? data.items : [];
+        const categories = Array.isArray(data?.categories) ? data.categories : [];
         const menu = {
             source: "dle_spa_items",
             lang,
+            count: Number(data?.count || rawItems.length) || rawItems.length,
             fetched_at: new Date().toISOString(),
+            categories,
             items: rawItems.map(normalizeMenuItem).filter((item) => item.name),
         };
         await setJsonCache(cacheKey, 300, menu);
@@ -435,7 +507,7 @@ export async function getMenuContext(instanceId, domain, userLang = "kk") {
         return menu;
     }
     catch (error) {
-        console.error(`[MENU] DLE menu read failed (${instanceId}):`, error?.message || error);
+        auditError("DLE menu context read failed", error, { instanceId, domain, lang });
         return (await getJsonCache(backupKey)) || { items: [], source: "menu_unavailable" };
     }
 }
@@ -482,12 +554,12 @@ export async function updateCrmAction(actionType, instanceId, phone, data) {
             phone: cleanPhone,
             ...data,
         }).catch((error) => {
-            console.error("[CRM] Daily log save error:", error?.message || error);
+            auditError("CRM daily log save failed", error, { instanceId, actionType, phone: cleanPhone });
         });
         return response;
     }
     catch (error) {
-        console.error(`[CRM] update failed (${actionType}/${instanceId}/${cleanPhone}):`, error?.message || error);
+        auditError("CRM update failed", error, { actionType, instanceId, phone: cleanPhone });
         return null;
     }
 }

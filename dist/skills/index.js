@@ -4,6 +4,7 @@ import { createUpdateCrmLeadSkill } from "./crm.skill.js";
 import { createEscalateToAdminSkill } from "./escalation.skill.js";
 import { createSendMenuLinkSkill } from "./menuLink.skill.js";
 import { createCheckOrderStatusSkill } from "./checkOrderStatus.skill.js";
+import { createGetKitchenStatusSkill, createGetShiftNotesSkill } from "./runtimeStatus.skill.js";
 export function createFastFoodSkills(ctx) {
     return [
         createSearchMenuSkill(ctx),
@@ -13,5 +14,7 @@ export function createFastFoodSkills(ctx) {
         createEscalateToAdminSkill(ctx),
         createSendMenuLinkSkill(ctx),
         createCheckOrderStatusSkill(ctx),
+        createGetKitchenStatusSkill(ctx),
+        createGetShiftNotesSkill(ctx),
     ];
 }
