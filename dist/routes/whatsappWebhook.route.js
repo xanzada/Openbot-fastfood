@@ -13,13 +13,16 @@ import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.
 import { analyzeMedia } from "../services/mediaAnalysis.service.js";
 import { buildTenantInstructions } from "../agent/persona.js";
 import { getTextModels } from "../services/llm.service.js";
+
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
+
 function maskPhone(phone = "") {
     const clean = String(phone || "").replace(/\D/g, "");
     if (clean.length <= 6)
         return clean || "-";
     return `${clean.slice(0, 3)}***${clean.slice(-3)}`;
 }
+
 function getInstanceId(body) {
     return String(body?.instance ||
         body?.instanceId ||
@@ -33,14 +36,17 @@ function getInstanceId(body) {
         body?.data?.restaurant_id ||
         "").trim();
 }
+
 function getPhone(body) {
     const eventData = body?.data || body || {};
     const key = eventData?.key || body?.key || {};
     return normalizePhoneFromCandidates(getPhoneCandidatesFromWebhook(body || {}, eventData, key));
 }
+
 function normalizeLocalPhone(value) {
     return String(value || "").replace(/\D/g, "");
 }
+
 function firstPhoneCandidate(...values) {
     for (const value of values) {
         const phone = normalizeLocalPhone(value);
@@ -49,12 +55,14 @@ function firstPhoneCandidate(...values) {
     }
     return "";
 }
+
 function getReceiverPhone(body) {
     const eventData = body?.data || body || {};
     const instance = body?.instanceData || body?.instance_data || eventData?.instanceData || eventData?.instance_data || {};
     const me = body?.me || eventData?.me || body?.account || eventData?.account || {};
     return firstPhoneCandidate(body?.receiver_phone, body?.receiverPhone, body?.recipient_phone, body?.recipientPhone, body?.to_phone, body?.toPhone, body?.bot_phone, body?.botPhone, body?.instance_phone, body?.instancePhone, body?.whatsapp_phone, body?.whatsappPhone, body?.whatspro_phone, body?.whatsproPhone, body?.receiver, body?.to, body?.recipient, eventData?.receiver_phone, eventData?.receiverPhone, eventData?.recipient_phone, eventData?.recipientPhone, eventData?.to_phone, eventData?.toPhone, eventData?.bot_phone, eventData?.botPhone, eventData?.instance_phone, eventData?.instancePhone, eventData?.whatsapp_phone, eventData?.whatsappPhone, eventData?.whatspro_phone, eventData?.whatsproPhone, eventData?.receiver, eventData?.to, eventData?.recipient, instance?.phone, instance?.number, instance?.jid, me?.phone, me?.number, me?.id, me?.jid);
 }
+
 async function resolveTenantInstance(req, _res, next) {
     const body = req.body || {};
     if (getInstanceId(body))
@@ -80,6 +88,7 @@ async function resolveTenantInstance(req, _res, next) {
         return next();
     }
 }
+
 async function verifySecret(req, res, next) {
     const expected = process.env.OPENBOT_WEBHOOK_SECRET;
     const got = req.headers.authorization?.replace(/^Bearer\s+/i, "") ||
@@ -100,9 +109,11 @@ async function verifySecret(req, res, next) {
         return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
     }
 }
+
 function isOwnWhatsAppMessage(body) {
     return body?.fromMe === true || body?.isFromMe === true || body?.data?.key?.fromMe === true;
 }
+
 function isGroupMessage(body) {
     const eventData = body?.data || body || {};
     const key = eventData?.key || body?.key || {};
@@ -112,9 +123,11 @@ function isGroupMessage(body) {
         key?.participant?.endsWith?.("@g.us") ||
         String(body?.sender || eventData?.sender || body?.from || eventData?.from || "").endsWith("@g.us"));
 }
+
 function isStatusQuestion(text = "") {
     return STATUS_CONTEXT_RE.test(String(text || ""));
 }
+
 function runtimeUnavailableReply(ctx) {
     if (!isStatusQuestion(ctx.text))
         return null;
@@ -124,6 +137,7 @@ function runtimeUnavailableReply(ctx) {
         ? "Қазір асүй статусын тексере алмаймын. Кейін қайталап жазыңыз."
         : "Не могу проверить статус кухни. Напишите позже.";
 }
+
 function hasMeaningfulMediaDescription(text = "", mediaContext = null) {
     const clean = stripEscalationSignals(text).trim();
     if (!clean || clean === "[Media sent]")
@@ -133,6 +147,7 @@ function hasMeaningfulMediaDescription(text = "", mediaContext = null) {
         return false;
     return clean.length >= 2;
 }
+
 async function sendCustomerReplyAndFinish(ctx, messageId, reply, source) {
     const cleanReply = stripEscalationSignals(reply);
     if (cleanReply) {
@@ -147,6 +162,7 @@ async function sendCustomerReplyAndFinish(ctx, messageId, reply, source) {
     }
     await markInboundDone(ctx.instanceId, messageId);
 }
+
 async function processWhatsAppWebhook(body, started) {
     const instanceId = getInstanceId(body);
     const phone = getPhone(body);
@@ -303,7 +319,6 @@ async function processWhatsAppWebhook(body, started) {
             await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource || "media_preemptive_reply");
             return;
         }
-        // Pre-LLM short-circuit: if runtime is unavailable and customer asks about kitchen
         const runtimeReply = runtimeUnavailableReply(ctx);
         if (runtimeReply) {
             console.log(`[OPENBOT:PREEMPT] runtime unavailable, using fallback`);
@@ -369,7 +384,6 @@ async function processWhatsAppWebhook(body, started) {
             .catch((error) => {
             console.warn("[SHPOR:EVAL] async save skipped:", error?.message || error);
         });
-        // Send main text response
         const sendResult = await sendWhatsProResponseSequence({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
@@ -388,6 +402,7 @@ async function processWhatsAppWebhook(body, started) {
         throw error;
     }
 }
+
 export function whatsappWebhookRoute() {
     const router = createRouter();
     router.post("/", resolveTenantInstance, verifySecret, async (req, res) => {
@@ -407,7 +422,7 @@ export function whatsappWebhookRoute() {
                 });
             }
             console.log(`[OPENBOT:INBOUND:SKIP] fromMe=true elapsed=${Date.now() - started}ms`);
-            return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
+            return res.status(200).json({ ok: true, skipped: true, reason: "fromMe" });
         }
         const mediaContext = extractInboundMedia(body);
         const text = extractInboundText(body) ||
@@ -423,7 +438,7 @@ export function whatsappWebhookRoute() {
                 console.error(`[OPENBOT:INBOUND:FAIL] elapsed=${Date.now() - started}ms:`, error?.stack || error?.message || error);
             });
         });
-        return res.status(202).json({ ok: true, accepted: true });
+        return res.status(200).json({ ok: true, accepted: true });
     });
     return router;
 }
