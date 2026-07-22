@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { USER_LANG_TTL_SECONDS, languageKey, languageSetOptions, receiptFingerprintKey } from "../src/services/redis.service.js";
-import { resolveLockedLanguage } from "../src/utils/language.js";
+import { detectLang, resolveLockedLanguage } from "../src/utils/language.js";
 import {
   receiptFilterEnabled,
   validateReceiptAnalysis,
@@ -14,6 +14,8 @@ test("language is tenant scoped and locked for exactly six hours", () => {
   assert.notEqual(languageKey("prestige", "77470000000"), languageKey("other", "77470000000"));
   assert.equal(resolveLockedLanguage("ru", "kk"), "ru");
   assert.equal(resolveLockedLanguage(null, "kk"), "kk");
+  assert.equal(detectLang("Сәлем, тапсырыс қашан дайын болады?"), "kk");
+  assert.equal(detectLang("Здравствуйте, когда будет готов заказ?"), "ru");
   assert.deepEqual(languageSetOptions(), { EX: 21600, NX: true });
 });
 
