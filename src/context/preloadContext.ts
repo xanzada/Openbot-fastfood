@@ -58,7 +58,11 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     ]);
 
   const safeConfig = { ...(config || {}) };
-  const language = await detectLangWithFallback(text, storedLang);
+  let language = await detectLangWithFallback(text, storedLang);
+  if (!storedLang) {
+    const claimed = await saveUserLang(instanceId, phone, language).catch(() => false);
+    if (!claimed) language = (await getUserLang(instanceId, phone).catch(() => null)) || language;
+  }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
   if (domain) safeConfig.domain = domain;
 
@@ -69,8 +73,6 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       : Promise.resolve(null),
     getShporContext(instanceId, text).catch(() => []),
   ]);
-
-  await saveUserLang(instanceId, phone, language).catch(() => undefined);
 
   const runtimeAvailable = Boolean(runtimeStatus);
   const runtimeWaitTime = Number(

@@ -589,6 +589,16 @@ function normalizeReceiptSenderName(value = "") {
   return text;
 }
 
+export function buildReceiptCrmPayload(data: Record<string, any>) {
+  const bank = String(data.bank_name || "Белгісіз банк").trim().slice(0, 40) || "Белгісіз банк";
+  return {
+    action: "add_payment_comment",
+    order_id: String(data.order_id || "0").trim(),
+    amount_paid: Number(data.amount || data.amount_paid || 0),
+    sender_name: `${normalizeReceiptSenderName(data.sender_name || data.sender)} (${bank})`,
+  };
+}
+
 export async function updateCrmAction(
   actionType: "update_crm" | "receipt",
   instanceId: string,
@@ -612,14 +622,7 @@ export async function updateCrmAction(
       psycho_analysis: data.psycho_analysis || "мәлімет жоқ",
     });
   } else {
-    Object.assign(payload, {
-      action: "add_payment_comment",
-      order_id: String(data.order_id || "0").trim(),
-      amount_paid: Number(data.amount || data.amount_paid || 0),
-      sender_name: `${normalizeReceiptSenderName(data.sender || data.sender_name)} (${String(data.bank_name || "KASPI")
-        .trim()
-        .slice(0, 40)})`,
-    });
+    Object.assign(payload, buildReceiptCrmPayload(data));
   }
 
   try {

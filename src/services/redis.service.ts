@@ -79,7 +79,8 @@ function magicLinkKey(instanceId: string, phone: string) {
 const CHAT_HISTORY_TTL_SECONDS = 604800;
 const CHAT_HISTORY_MAX_ITEMS = 120;
 const MAGIC_LINK_SENT_TTL_SECONDS = 2592000;
-const USER_LANG_TTL_SECONDS = 43200;
+export const USER_LANG_TTL_SECONDS = 21600;
+const RECEIPT_FINGERPRINT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const COMPLAINT_MEDIA_TTL_SECONDS = 300;
 const DAILY_LOG_TTL_SECONDS = 172800;
 const KITCHEN_STATUS_TTL_SECONDS = 604800;
@@ -207,16 +208,44 @@ export async function saveToHistory(
   });
 }
 
+export function languageKey(instanceId: string, phone: string) {
+  return `lang:${instanceId}:${phone}`;
+}
+
+export function receiptFingerprintKey(instanceId: string, fingerprint: string) {
+  return `receipt_seen:${instanceId}:${fingerprint}`;
+}
+
 export async function getUserLang(instanceId: string, phone: string): Promise<"kk" | "ru" | null> {
   return safeRedis(null, async () => {
-    const value = await redisClient.get(`lang:${instanceId}:${phone}`);
+    const value = await redisClient.get(languageKey(instanceId, phone));
     return value === "kk" || value === "ru" ? value : null;
   });
 }
 
-export async function saveUserLang(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<void> {
+export async function saveUserLang(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<boolean> {
+  return safeRedis(false, async () => {
+    const result = await redisClient.set(languageKey(instanceId, phone), lang, {
+      EX: USER_LANG_TTL_SECONDS,
+      NX: true,
+    });
+    return result === "OK";
+  });
+}
+
+export async function claimReceiptFingerprint(instanceId: string, fingerprint: string): Promise<boolean> {
+  return safeRedis(false, async () => {
+    const result = await redisClient.set(receiptFingerprintKey(instanceId, fingerprint), "1", {
+      EX: RECEIPT_FINGERPRINT_TTL_SECONDS,
+      NX: true,
+    });
+    return result === "OK";
+  });
+}
+
+export async function releaseReceiptFingerprint(instanceId: string, fingerprint: string): Promise<void> {
   await safeRedis(undefined, async () => {
-    await redisClient.setEx(`lang:${instanceId}:${phone}`, USER_LANG_TTL_SECONDS, lang);
+    await redisClient.del(receiptFingerprintKey(instanceId, fingerprint));
   });
 }
 

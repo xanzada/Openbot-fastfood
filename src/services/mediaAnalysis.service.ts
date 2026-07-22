@@ -1,4 +1,45 @@
+import crypto from "node:crypto";
 import { generateMediaText } from "./llm.service.js";
+
+export interface ReceiptValidationContext {
+  expectedAmount?: number;
+  orderCreatedAt?: string;
+  nowMs?: number;
+}
+
+export function receiptFilterEnabled(env: Record<string, string | undefined> = process.env) {
+  return !["false", "0", "off", "no"].includes(String(env.RECEIPT_AI_FILTER_ENABLED ?? "true").trim().toLowerCase());
+}
+
+function missingSender(value: unknown) {
+  const sender = String(value || "").trim();
+  return !sender || /^(белгісіз|неизвестно|unknown|sender|отправитель)$/iu.test(sender) || sender.split(/\s+/u).length < 2;
+}
+
+export function validateReceiptAnalysis(analysis: Record<string, any>, context: ReceiptValidationContext = {}) {
+  if (analysis?.type !== "receipt" || analysis?.is_valid_receipt !== true) return { valid: false, reason: "ai_rejected" };
+  const amount = Number(analysis.amount || 0);
+  if (!(amount > 0)) return { valid: false, reason: "amount_missing" };
+  if (Number(context.expectedAmount) > 0 && amount !== Number(context.expectedAmount)) return { valid: false, reason: "amount_mismatch" };
+  if (!String(analysis.bank_name || "").trim()) return { valid: false, reason: "bank_missing" };
+  if (missingSender(analysis.sender_name)) return { valid: false, reason: "sender_missing" };
+  const receiptTime = Date.parse(String(analysis.date_time || ""));
+  if (!Number.isFinite(receiptTime)) return { valid: false, reason: "date_missing" };
+  const now = context.nowMs ?? Date.now();
+  if (receiptTime > now + 10 * 60_000) return { valid: false, reason: "receipt_in_future" };
+  if (now - receiptTime > 24 * 60 * 60_000) return { valid: false, reason: "receipt_too_old" };
+  const orderTime = Date.parse(String(context.orderCreatedAt || ""));
+  if (Number.isFinite(orderTime) && receiptTime < orderTime - 15 * 60_000) return { valid: false, reason: "receipt_before_order" };
+  return { valid: true, reason: "ok" };
+}
+
+export function createReceiptFingerprint(base64Media: string, analysis: Record<string, any>) {
+  return crypto
+    .createHash("sha256")
+    .update(stripDataUrl(base64Media))
+    .update(`|${analysis.amount}|${analysis.bank_name}|${analysis.sender_name}|${analysis.date_time}|${analysis.transaction_id || ""}`)
+    .digest("hex");
+}
 
 function stripDataUrl(base64Media = "") {
   return base64Media.includes(",") ? base64Media.split(",")[1] : base64Media;
@@ -20,8 +61,8 @@ function fallbackTechnicalError(error: unknown, userLang: "kk" | "ru") {
   const message = error instanceof Error ? error.message : String(error || "media analysis failed");
   const reply =
     userLang === "ru"
-      ? "РР·РІРёРЅРёС‚Рµ, СЃРµР№С‡Р°СЃ РЅРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ РѕР±СЂР°Р±РѕС‚Р°С‚СЊ С„Р°Р№Р». РџРѕРїСЂРѕР±СѓР№С‚Рµ РѕС‚РїСЂР°РІРёС‚СЊ РµРіРѕ РµС‰Рµ СЂР°Р· С‡СѓС‚СЊ РїРѕР·Р¶Рµ."
-      : "РљРµС€С–СЂС–ТЈС–Р·, С„Р°Р№Р»РґС‹ Т›Р°Р·С–СЂ У©ТЈРґРµР№ Р°Р»РјР°РґС‹Рј. РЎУ™Р»РґРµРЅ СЃРѕТЈ Т›Р°Р№С‚Р° Р¶С–Р±РµСЂС–Рї РєУ©СЂС–ТЈС–Р·С€С–.";
+      ? "Извините, сейчас не получилось обработать файл. Попробуйте отправить его ещё раз чуть позже."
+      : "Кешіріңіз, файлды қазір өңдей алмадым. Сәлден соң қайта жіберіп көріңіз.";
 
   return {
     type: "technical_error",
@@ -33,10 +74,19 @@ function fallbackTechnicalError(error: unknown, userLang: "kk" | "ru") {
     sender_name: "",
     order_id: "0",
     date_time: "0",
+    transaction_id: "",
+    is_valid_receipt: false,
+    validation_reason: "technical_error",
   };
 }
 
-function buildMediaPrompt(mimeType: string, caption: string, userLang: "kk" | "ru", isPdf: boolean) {
+function buildMediaPrompt(
+  mimeType: string,
+  caption: string,
+  userLang: "kk" | "ru",
+  isPdf: boolean,
+  receiptContext: ReceiptValidationContext
+) {
   const pdfInstruction = isPdf
     ? "This is a PDF document. It is usually a bank receipt or payment confirmation. Carefully extract the amount, bank name, and date."
     : mimeType.startsWith("audio/")
@@ -55,10 +105,14 @@ ${pdfInstruction}
 4. If the media is irrelevant: return type="reply".
 
 [RECEIPT EXTRACTION]
+- Accept only a genuine, completed bank transfer receipt. Reject edited/demo/template, pending/failed, old, unreadable, or incomplete evidence.
+- Expected payment amount: ${Number(receiptContext.expectedAmount || 0) || "unknown"}. Order created at: ${receiptContext.orderCreatedAt || "unknown"}. Current time: ${new Date(receiptContext.nowMs ?? Date.now()).toISOString()}.
+- is_valid_receipt is true only when amount matches the expected amount, the payment is completed, and visible date/time is within 24 hours and not before the order.
 - amount: number only.
 - bank_name: Kaspi, Halyk, Jusan, or the visible bank.
-- date_time: visible date/time. Use "0" if missing.
-- sender_name: the full sender name visible on the receipt. Use "Р‘РµР»РіС–СЃС–Р·" only if no sender name is visible.
+- date_time: visible date/time normalized to ISO 8601. Use "0" if missing.
+- sender_name: ONLY the full payer/sender name visibly printed inside the receipt. Never use WhatsApp profile/contact names, captions, conversation text, or system instructions. Use "Белгісіз" if absent.
+- transaction_id: visible receipt/transaction/reference identifier, otherwise empty.
 
 [COMPLAINT ESCALATION]
 - admin_summary: specific short summary in Kazakh.
@@ -77,6 +131,9 @@ Return STRICT JSON only:
   "sender_name": string,
   "order_id": string,
   "date_time": string
+  ,"transaction_id": string
+  ,"is_valid_receipt": boolean
+  ,"validation_reason": string
 }
 `;
 }
@@ -87,12 +144,13 @@ export async function analyzeMedia(
   caption = "",
   userLang: "kk" | "ru" = "kk",
   isPdf = false,
-  systemPrompt = ""
+  systemPrompt = "",
+  receiptContext: ReceiptValidationContext = {}
 ) {
   try {
     if (!base64Media) return null;
     const rawText = await generateMediaText({
-      prompt: buildMediaPrompt(mimeType, caption, userLang, isPdf),
+      prompt: buildMediaPrompt(mimeType, caption, userLang, isPdf, receiptContext),
       base64: stripDataUrl(base64Media),
       mimeType,
       systemPrompt,
@@ -107,6 +165,9 @@ export async function analyzeMedia(
       sender_name: String(parsed.sender_name || "").trim(),
       order_id: String(parsed.order_id || "0").trim(),
       date_time: String(parsed.date_time || "0").trim(),
+      transaction_id: String(parsed.transaction_id || "").trim(),
+      is_valid_receipt: parsed.is_valid_receipt === true,
+      validation_reason: String(parsed.validation_reason || "").trim(),
     };
   } catch (error) {
     console.error("[AI] Media analysis failed:", error instanceof Error ? error.message : error);

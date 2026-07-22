@@ -2,7 +2,12 @@ import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
-import { saveComplaintMedia, saveToHistory } from "../services/redis.service.js";
+import {
+  claimReceiptFingerprint,
+  releaseReceiptFingerprint,
+  saveComplaintMedia,
+  saveToHistory,
+} from "../services/redis.service.js";
 import {
   buildComplaintAckReply,
   buildComplaintClarificationReply,
@@ -33,7 +38,12 @@ import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates, updateCrmAction } from "../services/dle.service.js";
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
-import { analyzeMedia } from "../services/mediaAnalysis.service.js";
+import {
+  analyzeMedia,
+  createReceiptFingerprint,
+  receiptFilterEnabled,
+  validateReceiptAnalysis,
+} from "../services/mediaAnalysis.service.js";
 import { buildTenantInstructions } from "../agent/persona.js";
 import { getTextModels } from "../services/llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -44,6 +54,17 @@ function maskPhone(phone = "") {
   const clean = String(phone || "").replace(/\D/g, "");
   if (clean.length <= 6) return clean || "-";
   return `${clean.slice(0, 3)}***${clean.slice(-3)}`;
+}
+
+function rejectedReceiptReply(language: "kk" | "ru", reason: string) {
+  if (language === "ru") {
+    if (reason === "amount_mismatch") return "Сумма в чеке не совпадает с суммой заказа. Отправьте, пожалуйста, правильный чек.";
+    if (["receipt_too_old", "receipt_before_order"].includes(reason)) return "Этот чек старый или был создан до заказа. Отправьте новый чек по текущему заказу.";
+    return "Не удалось подтвердить подлинность чека. Отправьте, пожалуйста, свежий полный чек, где видны имя отправителя, банк, сумма и дата.";
+  }
+  if (reason === "amount_mismatch") return "Чектегі сома тапсырыс сомасына сәйкес емес. Дұрыс чекті жіберіңіз.";
+  if (["receipt_too_old", "receipt_before_order"].includes(reason)) return "Бұл чек ескі немесе тапсырыстан бұрын жасалған. Осы тапсырысқа арналған жаңа чекті жіберіңіз.";
+  return "Чектің дұрыстығын растай алмадым. Жіберушінің аты, банк, сома және күні анық көрінетін толық жаңа чекті жіберіңіз.";
 }
 
 function getInstanceId(body: any) {
@@ -293,28 +314,68 @@ async function processWhatsAppWebhook(body: any, started: number) {
     let immediateComplaintUrgency: ComplaintUrgency = "normal";
 
     if (mediaContext?.base64 && mediaContext.valid) {
+      const activeOrder = ctx.activeOrder?.order || ctx.activeOrder || {};
+      const receiptContext = {
+        expectedAmount: Number(ctx.activeOrder?.total_price || activeOrder.total_price || activeOrder.total || 0),
+        orderCreatedAt: String(activeOrder.created_at || activeOrder.createdAt || ""),
+        nowMs: Date.now(),
+      };
       const mediaAnalysis = await analyzeMedia(
         mediaContext.base64,
         mediaContext.mimeType || mediaContext.mediaType || "application/octet-stream",
         text,
         ctx.language,
         (mediaContext.mimeType || "").includes("pdf"),
-        buildTenantInstructions(ctx)
+        buildTenantInstructions(ctx),
+        receiptContext
       );
       if (mediaAnalysis) {
         mediaContext = { ...mediaContext, analysis: mediaAnalysis };
         ctx.mediaContext = mediaContext;
         if (mediaAnalysis.type === "receipt") {
-          await updateCrmAction("receipt", ctx.instanceId, ctx.phone, {
+          const strictFilter = receiptFilterEnabled();
+          const validation = validateReceiptAnalysis(mediaAnalysis, receiptContext);
+          if (strictFilter && !validation.valid) {
+            await sendCustomerReplyAndFinish(
+              ctx,
+              messageId,
+              rejectedReceiptReply(ctx.language, validation.reason),
+              `payment_receipt_rejected:${validation.reason}`
+            );
+            return;
+          }
+
+          const fingerprint = createReceiptFingerprint(String(mediaContext.base64 || ""), mediaAnalysis);
+          if (strictFilter && !(await claimReceiptFingerprint(ctx.instanceId, fingerprint))) {
+            const duplicateReply =
+              ctx.language === "ru"
+                ? "Этот чек уже был отправлен. Пожалуйста, не отправляйте один чек повторно."
+                : "Бұл чек бұрын жіберілген. Бір чекті қайта жібермеңіз.";
+            await sendCustomerReplyAndFinish(ctx, messageId, duplicateReply, "payment_receipt_duplicate");
+            return;
+          }
+
+          const crmResponse = await updateCrmAction("receipt", ctx.instanceId, ctx.phone, {
             config: ctx.config,
             amount: mediaAnalysis.amount,
             amount_paid: mediaAnalysis.amount,
             sender_name: mediaAnalysis.sender_name,
             sender: mediaAnalysis.sender_name,
             bank_name: mediaAnalysis.bank_name,
-            order_id: mediaAnalysis.order_id,
+            order_id: mediaAnalysis.order_id !== "0" ? mediaAnalysis.order_id : String(activeOrder.id || activeOrder.order_id || "0"),
             date_time: mediaAnalysis.date_time,
+            transaction_id: mediaAnalysis.transaction_id,
           }).catch(() => null);
+
+          if (!crmResponse) {
+            if (strictFilter) await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+            const retryReply =
+              ctx.language === "ru"
+                ? "Не удалось передать чек оператору. Пожалуйста, отправьте его ещё раз чуть позже."
+                : "Чекті операторға жібере алмадым. Сәлден кейін қайта жіберіңіз.";
+            await sendCustomerReplyAndFinish(ctx, messageId, retryReply, "payment_receipt_crm_failed");
+            return;
+          }
 
           const receiptReply =
             ctx.language === "ru"

@@ -91,15 +91,16 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, ms = 300
 }
 
 function geminiPayload(request: MediaRequest) {
+  const parts: Array<Record<string, unknown>> = [{ text: request.prompt }];
+  if (request.base64) {
+    parts.push({ inlineData: { mimeType: request.mimeType, data: request.base64 } });
+  }
   return {
     systemInstruction: request.systemPrompt ? { parts: [{ text: request.systemPrompt }] } : undefined,
     contents: [
       {
         role: "user",
-        parts: [
-          { text: request.prompt },
-          { inlineData: { mimeType: request.mimeType, data: request.base64 } },
-        ],
+        parts,
       },
     ],
     generationConfig: {

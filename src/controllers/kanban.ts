@@ -6,6 +6,7 @@ import {
   connectRedis,
   deleteShiftNote,
   getKitchenStatus,
+  getUserLang,
   redisClient,
   saveKitchenStatus,
   saveShiftNote,
@@ -622,7 +623,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     await emitPrintOnNewOrder(req, body, action);
     await emitPrintOnPaid(req, body, newStatus);
 
-    const lang = getLanguage(body);
+    const lang = (await getUserLang(instance, phone).catch(() => null)) || getLanguage(body);
     let textMessage = "";
     if (action === "new_order") {
       auditDecision("Building new_order WhatsApp template", { orderId, action, instance, lang, isPickup });

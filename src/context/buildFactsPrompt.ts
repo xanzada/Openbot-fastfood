@@ -93,9 +93,9 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         language_policy: ctx.languagePolicy,
         language_persistence: {
           locked_language: ctx.language,
-          cache_ttl_hours: 12,
+          cache_ttl_hours: 6,
           cached_from_previous_message: Boolean(ctx.languagePolicy?.cached),
-          rule: "This language is locked for 12 hours from the first detected message. You MUST reply ONLY in this language regardless of the customer's current message language or any system data in other languages.",
+          rule: "This language is locked for 6 hours from the first detected message. You MUST reply ONLY in this language regardless of the customer's current message language or any system data in other languages.",
         },
         restaurant: {
           instance_id: ctx.instanceId,
