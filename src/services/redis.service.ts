@@ -216,6 +216,10 @@ export function receiptFingerprintKey(instanceId: string, fingerprint: string) {
   return `receipt_seen:${instanceId}:${fingerprint}`;
 }
 
+export function languageSetOptions() {
+  return { EX: USER_LANG_TTL_SECONDS, NX: true as const };
+}
+
 export async function getUserLang(instanceId: string, phone: string): Promise<"kk" | "ru" | null> {
   return safeRedis(null, async () => {
     const value = await redisClient.get(languageKey(instanceId, phone));
@@ -225,10 +229,7 @@ export async function getUserLang(instanceId: string, phone: string): Promise<"k
 
 export async function saveUserLang(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<boolean> {
   return safeRedis(false, async () => {
-    const result = await redisClient.set(languageKey(instanceId, phone), lang, {
-      EX: USER_LANG_TTL_SECONDS,
-      NX: true,
-    });
+    const result = await redisClient.set(languageKey(instanceId, phone), lang, languageSetOptions());
     return result === "OK";
   });
 }

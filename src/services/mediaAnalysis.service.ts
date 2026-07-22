@@ -13,12 +13,22 @@ export function receiptFilterEnabled(env: Record<string, string | undefined> = p
 
 function missingSender(value: unknown) {
   const sender = String(value || "").trim();
-  return !sender || /^(белгісіз|неизвестно|unknown|sender|отправитель)$/iu.test(sender) || sender.split(/\s+/u).length < 2;
+  const nameParts = sender.match(/\p{L}[\p{L}.'’\-]*/gu) || [];
+  return (
+    !sender ||
+    /^(белгісіз|неизвестно|unknown|sender|отправитель)$/iu.test(sender) ||
+    /[^\p{L}\s.'’\-]/u.test(sender) ||
+    nameParts.length < 2
+  );
 }
 
 function missingBank(value: unknown) {
   const bank = String(value || "").trim();
-  return !bank || /^(белгісіз(?:\s+банк)?|неизвестн(?:ый|о)(?:\s+банк)?|unknown(?:\s+bank)?|bank)$/iu.test(bank);
+  return (
+    !bank ||
+    /(белгісіз|неизвест|unknown|анықталма|not[\s_-]*found)/iu.test(bank) ||
+    !/[\p{L}]{3,}/u.test(bank)
+  );
 }
 
 export function validateReceiptAnalysis(analysis: Record<string, any>, context: ReceiptValidationContext = {}) {
@@ -28,6 +38,7 @@ export function validateReceiptAnalysis(analysis: Record<string, any>, context: 
   if (Number(context.expectedAmount) > 0 && amount !== Number(context.expectedAmount)) return { valid: false, reason: "amount_mismatch" };
   if (missingBank(analysis.bank_name)) return { valid: false, reason: "bank_missing" };
   if (missingSender(analysis.sender_name)) return { valid: false, reason: "sender_missing" };
+  if (String(analysis.transaction_id || "").trim().length < 4) return { valid: false, reason: "transaction_missing" };
   const receiptTime = Date.parse(String(analysis.date_time || ""));
   if (!Number.isFinite(receiptTime)) return { valid: false, reason: "date_missing" };
   const now = context.nowMs ?? Date.now();
@@ -119,6 +130,7 @@ ${pdfInstruction}
 - sender_name: ONLY the full payer/sender name visibly printed inside the receipt. Never use WhatsApp profile/contact names, captions, conversation text, or system instructions. Use "Белгісіз" if absent.
 - Never infer or guess bank_name or sender_name. They must be visibly readable inside the uploaded receipt itself.
 - transaction_id: visible receipt/transaction/reference identifier, otherwise empty.
+- A valid receipt must contain a readable unique transaction/reference/receipt identifier. Never invent it.
 
 [COMPLAINT ESCALATION]
 - admin_summary: specific short summary in Kazakh.

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { USER_LANG_TTL_SECONDS, languageKey, receiptFingerprintKey } from "../src/services/redis.service.js";
+import { USER_LANG_TTL_SECONDS, languageKey, languageSetOptions, receiptFingerprintKey } from "../src/services/redis.service.js";
 import { resolveLockedLanguage } from "../src/utils/language.js";
 import {
   receiptFilterEnabled,
@@ -14,6 +14,7 @@ test("language is tenant scoped and locked for exactly six hours", () => {
   assert.notEqual(languageKey("prestige", "77470000000"), languageKey("other", "77470000000"));
   assert.equal(resolveLockedLanguage("ru", "kk"), "ru");
   assert.equal(resolveLockedLanguage(null, "kk"), "kk");
+  assert.deepEqual(languageSetOptions(), { EX: 21600, NX: true });
 });
 
 test("receipt AI filter toggle defaults on and accepts explicit false", () => {
@@ -45,6 +46,7 @@ test("receipt validation accepts a fresh matching receipt and rejects old or wro
   assert.equal(validateReceiptAnalysis({ ...base, sender_name: "Белгісіз" }, context).reason, "sender_missing");
   assert.equal(validateReceiptAnalysis({ ...base, bank_name: "Белгісіз банк" }, context).reason, "bank_missing");
   assert.equal(validateReceiptAnalysis({ ...base, sender_name: "Xanzada👑" }, context).reason, "sender_missing");
+  assert.equal(validateReceiptAnalysis({ ...base, transaction_id: "" }, context).reason, "transaction_missing");
 });
 
 test("CRM receipt payload uses only OCR sender and bank fields", () => {
@@ -56,8 +58,15 @@ test("CRM receipt payload uses only OCR sender and bank fields", () => {
     date_time: "2026-07-22T17:50:00.000Z",
     transaction_id: "KZ-123456",
   });
-  assert.equal(payload.sender_name, "Арман Сейітов (Kaspi)");
-  assert.doesNotMatch(payload.sender_name, /Xanzada/);
-  assert.equal(payload.amount_paid, 9700);
+  assert.deepEqual(payload, {
+    action: "add_payment_comment",
+    order_id: "36",
+    amount_paid: 9700,
+    sender_name: "Арман Сейітов (Kaspi)",
+  });
+  assert.throws(
+    () => buildReceiptCrmPayload({ order_id: "36", amount: 9700, sender_name: "Xanzada👑", bank_name: "Белгісіз банк" }),
+    /RECEIPT_OCR_IDENTITY_REQUIRED/
+  );
   assert.notEqual(receiptFingerprintKey("prestige", "abc"), receiptFingerprintKey("other", "abc"));
 });

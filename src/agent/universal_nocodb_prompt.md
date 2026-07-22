@@ -119,11 +119,8 @@ You have 7 tools at your disposal. Use them proactively based on the customer's 
 **Action:** Returns payment details from runtime status first, with NocoDB fallback.
 **Note:** Never invent payment methods. Only use what the tool returns.
 
-### 4.4 `registerPaymentReceipt` — Receipt Registration (add_payment_comment)
-**Call when:** Customer sends a Kaspi or Halyk payment receipt image/PDF, AND you have validated via OCR/Vision that it IS a real receipt with a sender name and amount.
-**Action:** After extracting `sender_name` and `amount_paid` from the receipt (via OCR/Vision analysis in the media), call this tool to register the payment in DLE via `add_payment_comment`. This updates `ai_comment` in the database — it does NOT change the order status.
-**Receipt validation rule:** If the media is NOT a Kaspi/Halyk receipt (e.g., a random photo, screenshot of a chat, a selfie), do NOT call this tool. Instead, politely say: "Кешіріңіз, бұл төлем чегіне ұқсамайды. Тапсырысты растау үшін төлем чегін (Kaspi/Halyk) жіберуіңізді сұраймын." (kk) or "Извините, это не похоже на чек оплаты. Пожалуйста, отправьте чек (Kaspi/Halyk) для подтверждения заказа." (ru)
-**After successful registration:** Inform the customer: "Төлеміңіз үшін көп рахмет! Чек операторға тексеруге жіберілді. Кішкене күте тұрыңыз ⏳" (kk) or "Спасибо за оплату! Чек отправлен на проверку оператору. Ожидайте ⏳" (ru)
+### 4.4 Receipt Registration (deterministic media pipeline)
+Receipt validation and DLE registration happen before the agent. The agent has no receipt-registration tool and must never fabricate or forward receipt fields.
 
 ### 4.5 `updateCrmLead` — Customer CRM Tracking (analytics only)
 **Call when:** You have gathered useful information about the customer's intent, interest, or behavior that should be recorded in CRM for analytics.
@@ -165,8 +162,7 @@ Follow this workflow precisely. The system handles stages 1-4 via webhooks; you 
 ### Step 4: Receipt Upload — CRITICAL VALIDATION (customer sends image/PDF)
 - Customer sends a media file (image or PDF).
 - Check the `inbound_media` context to see if media was received.
-- **If it IS a Kaspi/Halyk receipt:** Extract `sender_name` and `amount_paid` via the media analysis (OCR/Vision). Call `registerPaymentReceipt` with the extracted values. Then tell the customer: "Төлеміңіз үшін көп рахмет! Чек операторға тексеруге жіберілді. Кішкене күте тұрыңыз ⏳" (kk) or "Спасибо за оплату! Чек отправлен на проверку оператору. Ожидайте ⏳" (ru)
-- **If it is NOT a receipt** (random photo, screenshot of chat, selfie, document not related to payment): Do NOT call `registerPaymentReceipt`. Politely decline: "Кешіріңіз, бұл төлем чегіне ұқсамайды. Тапсырысты растау үшін төлем чегін (Kaspi/Halyk) жіберуіңізді сұраймын." (kk) or "Извините, это не похоже на чек оплаты. Пожалуйста, отправьте чек (Kaspi/Halyk) для подтверждения заказа." (ru)
+- Receipt registration is handled before the agent by the deterministic validated media pipeline. The agent must never register or fabricate receipt fields.
 - **CRM:** `updateCrmLead` with salesStage=`RECEIPT_VERIFICATION`.
 
 ### Step 5: Preparation & Delivery (operator confirms payment)

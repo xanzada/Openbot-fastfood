@@ -359,11 +359,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
             amount: mediaAnalysis.amount,
             amount_paid: mediaAnalysis.amount,
             sender_name: mediaAnalysis.sender_name,
-            sender: mediaAnalysis.sender_name,
             bank_name: mediaAnalysis.bank_name,
             order_id: mediaAnalysis.order_id !== "0" ? mediaAnalysis.order_id : String(activeOrder.id || activeOrder.order_id || "0"),
-            date_time: mediaAnalysis.date_time,
-            transaction_id: mediaAnalysis.transaction_id,
           }).catch(() => null);
 
           if (!crmResponse) {

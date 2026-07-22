@@ -578,8 +578,11 @@ export async function getMenuContext(instanceId: string, domain: string, userLan
 function normalizeReceiptSenderName(value = "") {
   const text = String(value || "").trim().replace(/\s+/g, " ").slice(0, 120);
   const normalized = text.toLowerCase();
+  const nameParts = text.match(/\p{L}[\p{L}.'’\-]*/gu) || [];
   if (
     !text ||
+    /[^\p{L}\s.'’\-]/u.test(text) ||
+    nameParts.length < 2 ||
     /^(payment\s*link|pay\s*link|qr|kaspi|halyk|unknown|sender|жіберуші|жіберуші аты|белгісіз|отправитель)$/iu.test(
       normalized
     )
@@ -589,13 +592,23 @@ function normalizeReceiptSenderName(value = "") {
   return text;
 }
 
+function normalizeReceiptBankName(value = "") {
+  const bank = String(value || "").trim().replace(/\s+/g, " ").slice(0, 40);
+  if (!bank || /(белгісіз|неизвест|unknown|анықталма|not[\s_-]*found)/iu.test(bank) || !/[\p{L}]{3,}/u.test(bank)) {
+    return "";
+  }
+  return bank;
+}
+
 export function buildReceiptCrmPayload(data: Record<string, any>) {
-  const bank = String(data.bank_name || "Белгісіз банк").trim().slice(0, 40) || "Белгісіз банк";
+  const sender = normalizeReceiptSenderName(data.sender_name);
+  const bank = normalizeReceiptBankName(data.bank_name);
+  if (sender === "Белгісіз" || !bank) throw new Error("RECEIPT_OCR_IDENTITY_REQUIRED");
   return {
     action: "add_payment_comment",
     order_id: String(data.order_id || "0").trim(),
     amount_paid: Number(data.amount || data.amount_paid || 0),
-    sender_name: `${normalizeReceiptSenderName(data.sender_name || data.sender)} (${bank})`,
+    sender_name: `${sender} (${bank})`,
   };
 }
 
