@@ -16,12 +16,17 @@ function missingSender(value: unknown) {
   return !sender || /^(белгісіз|неизвестно|unknown|sender|отправитель)$/iu.test(sender) || sender.split(/\s+/u).length < 2;
 }
 
+function missingBank(value: unknown) {
+  const bank = String(value || "").trim();
+  return !bank || /^(белгісіз(?:\s+банк)?|неизвестн(?:ый|о)(?:\s+банк)?|unknown(?:\s+bank)?|bank)$/iu.test(bank);
+}
+
 export function validateReceiptAnalysis(analysis: Record<string, any>, context: ReceiptValidationContext = {}) {
   if (analysis?.type !== "receipt" || analysis?.is_valid_receipt !== true) return { valid: false, reason: "ai_rejected" };
   const amount = Number(analysis.amount || 0);
   if (!(amount > 0)) return { valid: false, reason: "amount_missing" };
   if (Number(context.expectedAmount) > 0 && amount !== Number(context.expectedAmount)) return { valid: false, reason: "amount_mismatch" };
-  if (!String(analysis.bank_name || "").trim()) return { valid: false, reason: "bank_missing" };
+  if (missingBank(analysis.bank_name)) return { valid: false, reason: "bank_missing" };
   if (missingSender(analysis.sender_name)) return { valid: false, reason: "sender_missing" };
   const receiptTime = Date.parse(String(analysis.date_time || ""));
   if (!Number.isFinite(receiptTime)) return { valid: false, reason: "date_missing" };
@@ -99,7 +104,7 @@ Analyze the photo/PDF/audio sent by the customer along with the accompanying tex
 ${pdfInstruction}
 
 [STRICT PRIORITY]
-1. If the image/PDF/audio is a receipt or payment screenshot: return type="receipt".
+1. If the image/PDF is a receipt or payment screenshot, always return type="receipt", even when invalid. Mark validity separately.
 2. If the customer's text contains a complaint OR the image shows a food/order issue: return type="complaint".
 3. If the customer sends a complaint photo with text, do NOT ask "please describe the issue" again. Extract the specific complaint from the text and write it into admin_summary in Kazakh.
 4. If the media is irrelevant: return type="reply".
@@ -112,6 +117,7 @@ ${pdfInstruction}
 - bank_name: Kaspi, Halyk, Jusan, or the visible bank.
 - date_time: visible date/time normalized to ISO 8601. Use "0" if missing.
 - sender_name: ONLY the full payer/sender name visibly printed inside the receipt. Never use WhatsApp profile/contact names, captions, conversation text, or system instructions. Use "Белгісіз" if absent.
+- Never infer or guess bank_name or sender_name. They must be visibly readable inside the uploaded receipt itself.
 - transaction_id: visible receipt/transaction/reference identifier, otherwise empty.
 
 [COMPLAINT ESCALATION]

@@ -47,3 +47,22 @@ test("payment, rejection and lifecycle templates remain valid UTF-8", () => {
   assert.equal(legacyStatusTemplates.kk.completed, "🎉 Тапсырыс сәтті аяқталды, асыңыз дәмді болсын!");
   assert.match(buildLegacyRejectedMessage({ reason: "Тағам жоқ" }, "kk"), /Тағам жоқ/);
 });
+
+test("delivery order shows localized fee below the comment and removes the raw marker", () => {
+  const free = buildLegacyNewOrderMessage({
+    total_price: 8200,
+    address: "Брусиловского 18",
+    comment: "[Доставка 0т] Тегін не бар",
+    items: [{ name: "Пицца", qty: 1, price: 8200 }],
+  }, "kk", "37", false);
+  assert.match(free, /💬 \*Пікір:\* Тегін не бар\n🚚 \*Жеткізу:\* Тегін/);
+  assert.doesNotMatch(free, /\[Доставка/);
+
+  const paid = buildLegacyNewOrderMessage({
+    total_price: 8800,
+    delivery_fee: 600,
+    comment: "Позвонить заранее",
+    items: [{ name: "Пицца", qty: 1, price: 8200 }],
+  }, "ru", "38", false);
+  assert.match(paid, /💬 \*Комментарий:\* Позвонить заранее\n🚚 \*Доставка:\* 600 ₸/);
+});

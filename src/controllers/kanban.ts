@@ -253,6 +253,14 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
   let rawComment = String(body.comment || body.info || "");
   let extractedBonus = 0;
   let extractedPersons = 0;
+  const deliveryMatch = rawComment.match(/\[(?:Доставка|Жеткізу)\s*:?[\s]*(\d+(?:[.,]\d+)?)\s*(?:т|₸)?\]/iu);
+  const explicitDelivery =
+    body.delivery_fee ?? body.delivery_price ?? body.delivery_cost ?? body.shipping_cost ?? body.delivery_amount;
+  const deliveryFee = Math.max(
+    0,
+    numberValue(explicitDelivery ?? deliveryMatch?.[1]?.replace(",", ".") ?? 0, 0)
+  );
+  if (deliveryMatch) rawComment = rawComment.replace(deliveryMatch[0], "");
 
   const bonusMatch = rawComment.match(/\[(?:Списано|Бонус|Шегерілді)\s*:?\s*(\d+)\s*(?:Б|₸)?[^\]]*\]/iu);
   if (bonusMatch) {
@@ -304,6 +312,7 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
     if (bonusNum > 0) textMessage += `🎁 *Потраченный бонус:* ${bonusNum} ₸\n`;
     if (persons > 0) textMessage += `🍴 *Количество персон:* ${persons}\n`;
     if (comment) textMessage += `💬 *Комментарий:* ${comment}\n`;
+    if (!isPickup) textMessage += `🚚 *Доставка:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : "Бесплатно"}\n`;
     textMessage += `\n🛒 *Состав заказа:*\n${cartText}\n`;
     textMessage += `➖➖➖➖➖➖➖\n💰 *ИТОГО: ${totalAmount} ₸*\n➖➖➖➖➖➖➖\n\n`;
     textMessage += "⏳ *Внимание:* Мы проверяем наличие на кухне, пожалуйста, ожидайте 1-2 минуты...";
@@ -314,6 +323,7 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
     if (bonusNum > 0) textMessage += `🎁 *Жұмсалған бонус:* ${bonusNum} ₸\n`;
     if (persons > 0) textMessage += `🍴 *Адам саны:* ${persons}\n`;
     if (comment) textMessage += `💬 *Пікір:* ${comment}\n`;
+    if (!isPickup) textMessage += `🚚 *Жеткізу:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : "Тегін"}\n`;
     textMessage += `\n🛒 *Тапсырыс құрамы:*\n${cartText}\n`;
     textMessage += `➖➖➖➖➖➖➖\n💰 *БАРЛЫҒЫ: ${totalAmount} ₸*\n➖➖➖➖➖➖➖\n\n`;
     textMessage += "⏳ *Назарыңызға:* Біз ас үйде бар-жоғын тексеріп жатырмыз, 1-2 минут күте тұрыңыз...";

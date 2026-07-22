@@ -44,7 +44,6 @@ import {
   receiptFilterEnabled,
   validateReceiptAnalysis,
 } from "../services/mediaAnalysis.service.js";
-import { buildTenantInstructions } from "../agent/persona.js";
 import { getTextModels } from "../services/llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
@@ -326,7 +325,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
         text,
         ctx.language,
         (mediaContext.mimeType || "").includes("pdf"),
-        buildTenantInstructions(ctx),
+        "",
         receiptContext
       );
       if (mediaAnalysis) {
