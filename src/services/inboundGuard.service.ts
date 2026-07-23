@@ -15,6 +15,19 @@ const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS |
 const OPERATOR_ACTIVE_SECONDS = Number(process.env.OPERATOR_ACTIVE_SECONDS || 60);
 const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
+const ALLOWED_AUDIO_MIME_BASES = new Set([
+  "audio/ogg",
+  "audio/opus",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/webm",
+  "audio/mp4",
+  "audio/m4a",
+  "audio/aac",
+  "audio/flac",
+]);
 const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
   .split(",")
   .map((item) => item.trim().toLowerCase())
@@ -81,6 +94,24 @@ function getDeclaredMediaBytes(mediaMessage: any) {
 
 function normalizeMimeBase(mimeType = "") {
   return String(mimeType || "").split(";")[0].trim().toLowerCase();
+}
+
+function evaluateMediaValidity(kind: InboundMediaContext["kind"], mimeType: string, sizeBytes: number) {
+  const flags: string[] = [];
+  const mimeBase = normalizeMimeBase(mimeType);
+
+  if (!mimeBase) flags.push("missing_mime_type");
+  if (kind === "document" && mimeBase !== "application/pdf") flags.push("unsupported_document");
+  if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType)) flags.push("unsupported_mime_type");
+  if (sizeBytes > MAX_MEDIA_BYTES) flags.push("media_too_large");
+  if (kind === "audio" && !ALLOWED_AUDIO_MIME_BASES.has(mimeBase)) flags.push("unsupported_audio_mime");
+  if (kind === "unknown") flags.push("unknown_media_type");
+
+  return {
+    flags,
+    reason: flags[0] || undefined,
+    valid: flags.length === 0,
+  };
 }
 
 function normalizeContactText(value: unknown) {
@@ -169,35 +200,11 @@ export function extractInboundMedia(body: any): InboundMediaContext | null {
           ? "audio"
           : "unknown";
   const mimeType = firstString(body?.mimeType, body?.mediaType, defaultMimeForKind(kind, rawMedia));
-  const mimeBase = normalizeMimeBase(mimeType);
   const sizeBytes =
     firstNumber(body?.fileLength, body?.sizeBytes, body?.mediaSize) || getDeclaredMediaBytes(rawMedia);
   const caption = firstString(body?.caption, rawMedia?.caption);
-  const flags: string[] = [];
 
-  if (!mimeBase) flags.push("missing_mime_type");
-  if (kind === "document" && mimeBase !== "application/pdf") flags.push("unsupported_document");
-  if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType)) flags.push("unsupported_mime_type");
-  if (sizeBytes > MAX_MEDIA_BYTES) flags.push("media_too_large");
-  if (
-    kind === "audio" &&
-    ![
-      "audio/ogg",
-      "audio/opus",
-      "audio/mpeg",
-      "audio/mp3",
-      "audio/wav",
-      "audio/x-wav",
-      "audio/webm",
-      "audio/mp4",
-      "audio/m4a",
-      "audio/aac",
-      "audio/flac",
-    ].includes(mimeBase)
-  ) {
-    flags.push("unsupported_audio_mime");
-  }
-  if (kind === "unknown") flags.push("unknown_media_type");
+  const validity = evaluateMediaValidity(kind, mimeType, sizeBytes);
 
   const historyLabel =
     kind === "audio"
@@ -215,9 +222,9 @@ export function extractInboundMedia(body: any): InboundMediaContext | null {
     kind,
     mimeType,
     sizeBytes,
-    valid: flags.length === 0,
-    reason: flags[0] || undefined,
-    flags,
+    valid: validity.valid,
+    reason: validity.reason,
+    flags: validity.flags,
     caption,
     messageId: extractMessageId(body) || undefined,
     mediaType: mimeType,
@@ -330,13 +337,18 @@ export async function hydrateInboundMedia(body: any, mediaContext: InboundMediaC
   if (!mediaContext) return null;
   const downloaded = await getBase64Media(body, mediaContext);
   if (!downloaded?.base64) return mediaContext;
-  return {
+  const updated = {
     ...mediaContext,
     mimeType: downloaded.mimeType || mediaContext.mimeType,
     mediaType: downloaded.mimeType || mediaContext.mediaType,
     sizeBytes: Math.floor(downloaded.base64.length * 0.75),
     base64: downloaded.dataUrl,
     dataUrl: downloaded.dataUrl,
+  };
+  const validity = evaluateMediaValidity(updated.kind, updated.mimeType, updated.sizeBytes);
+  return {
+    ...updated,
+    ...validity,
   };
 }
 
