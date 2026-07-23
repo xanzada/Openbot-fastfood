@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
-import { connectRedis, deleteShiftNote, getKitchenStatus, redisClient, saveKitchenStatus, saveShiftNote, saveToHistory, } from "../services/redis.service.js";
+import { connectRedis, deleteShiftNote, getKitchenStatus, getUserLang, redisClient, saveKitchenStatus, saveShiftNote, saveToHistory, } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
@@ -45,7 +45,7 @@ function cleanInline(value, max = 200) {
 }
 function cleanCommentPrefix(value) {
     const s = cleanInline(value, 220);
-    const regex = /(РєРѕРјРјРµРЅС‚Р°СЂРёР№|РєРѕРјРјРµРЅС‚|РїРѕР¶РµР»Р°РЅРёРµ|РїСЂРёРјРµС‡Р°РЅРёРµ|РїС–РєС–СЂ|РµСЃРєРµСЂС‚Сѓ|С‚ТЇСЃС–РЅС–РєС‚РµРјРµ)\s*[:\-]?\s*/gi;
+    const regex = /(комментарий|коммент|пожелание|примечание|пікір|ескерту|түсініктеме)\s*[:\-]?\s*/giu;
     return s.replace(regex, "").trim();
 }
 function numberValue(value, fallback = 0) {
@@ -212,21 +212,26 @@ function legacyPaymentDetailsSource(body, runtimeStatus, config) {
         return "nocodb_fallback";
     return "not_configured";
 }
-function buildLegacyNewOrderMessage(body, lang, orderId, isPickup) {
+export function buildLegacyNewOrderMessage(body, lang, orderId, isPickup) {
     let rawComment = String(body.comment || body.info || "");
     let extractedBonus = 0;
     let extractedPersons = 0;
-    const bonusMatch = rawComment.match(/\[(?:РЎРїРёСЃР°РЅРѕ|Р‘РѕРЅСѓСЃ)\s*(\d+).*?\]/i);
+    const deliveryMatch = rawComment.match(/\[(?:Доставка|Жеткізу)\s*:?[\s]*(\d+(?:[.,]\d+)?)\s*(?:т|₸)?\]/iu);
+    const explicitDelivery = body.delivery_fee ?? body.delivery_price ?? body.delivery_cost ?? body.shipping_cost ?? body.delivery_amount;
+    const deliveryFee = Math.max(0, numberValue(explicitDelivery ?? deliveryMatch?.[1]?.replace(",", ".") ?? 0, 0));
+    if (deliveryMatch)
+        rawComment = rawComment.replace(deliveryMatch[0], "");
+    const bonusMatch = rawComment.match(/\[(?:Списано|Бонус|Шегерілді)\s*:?\s*(\d+)\s*(?:Б|₸)?[^\]]*\]/iu);
     if (bonusMatch) {
         extractedBonus = Number(bonusMatch[1]);
         rawComment = rawComment.replace(bonusMatch[0], "");
     }
-    const personsMatch = rawComment.match(/(?:РџСЂРёР±РѕСЂС‹|РђРґР°Рј СЃР°РЅС‹):\s*(\d+)/i);
+    const personsMatch = rawComment.match(/(?:Приборы|Персон|Адам саны)\s*:\s*(\d+)/iu);
     if (personsMatch) {
         extractedPersons = Number(personsMatch[1]);
-        rawComment = rawComment.replace(/(?:РџСЂРёР±РѕСЂС‹|РђРґР°Рј СЃР°РЅС‹):\s*\d+\s*(С€С‚)?/i, "");
+        rawComment = rawComment.replace(/(?:Приборы|Персон|Адам саны)\s*:\s*\d+\s*(?:шт)?/iu, "");
     }
-    rawComment = rawComment.replace(/\|\s*(РљРѕРјРјРµРЅС‚|РљРѕРјРјРµРЅС‚Р°СЂРёР№|РџС–РєС–СЂ)?\s*:?/gi, "").replace(/^[\s\|]+|[\s\|]+$/g, "").trim();
+    rawComment = rawComment.replace(/\|\s*(?:Коммент|Комментарий|Пікір)?\s*:?/giu, "").replace(/^[\s|]+|[\s|]+$/g, "").trim();
     const comment = cleanCommentPrefix(rawComment);
     const bonusNum = Number(body.bonus) || extractedBonus;
     const totalAmount = cleanInline(body.total_price || body.total || 0, 40);
@@ -243,50 +248,55 @@ function buildLegacyNewOrderMessage(body, lang, orderId, isPickup) {
     }
     if (Array.isArray(items) && items.length > 0) {
         cartText = items.slice(0, 50).map((item) => {
-            const name = cleanInline(item?.name || item?.title || "РўР°СѓР°СЂ", 80);
+            const name = cleanInline(item?.name || item?.title || (lang === "ru" ? "Товар" : "Тауар"), 80);
             const qty = Math.min(99, Math.max(1, Number(item?.qty || item?.count || item?.quantity || 1)));
             const price = Math.max(0, Number(item?.price || 0));
-            return `в–ЄпёЏ ${name} x${qty} = ${price * qty} в‚ё`;
+            const total = Math.max(0, Number(item?.total || item?.sum || price * qty));
+            return `▪️ ${name} x${qty} = ${total} ₸`;
         }).join("\n");
     }
     else if (typeof body.cart_list === "string" && body.cart_list.length > 2) {
         cartText = body.cart_list.slice(0, 3000);
     }
     else {
-        cartText = "в–ЄпёЏ (РўР°РїСЃС‹СЂС‹СЃ С‚С–Р·С–РјС– С‚Р°Р±С‹Р»РјР°РґС‹)";
+        cartText = lang === "ru" ? "▪️ (Состав заказа не найден)" : "▪️ (Тапсырыс тізімі табылмады)";
     }
     let textMessage = "";
     if (lang === "ru") {
-        textMessage = `рџ›Ѝ*Р’Р°С€ Р·Р°РєР°Р· в„–${orderId} РїСЂРёРЅСЏС‚!*\n`;
+        textMessage = `🛍 *Ваш заказ №${orderId} принят!*\n`;
         if (isPickup)
-            textMessage += "рџЏѓ *РўРёРї:* РЎР°РјРѕРІС‹РІРѕР·\n";
+            textMessage += "🏃 *Тип:* Самовывоз\n";
         else
-            textMessage += `рџ“Ќ *РђРґСЂРµСЃ:* ${cleanInline(body.address || "РќРµ СѓРєР°Р·Р°РЅ", 200)}\n`;
+            textMessage += `📍 *Адрес:* ${cleanInline(body.address || "Не указан", 200)}\n`;
         if (bonusNum > 0)
-            textMessage += `рџЋЃ *РџРѕС‚СЂР°С‡РµРЅРЅС‹Р№ Р‘РѕРЅСѓСЃ:*_${bonusNum} в‚ё_\n`;
+            textMessage += `🎁 *Потраченный бонус:* ${bonusNum} ₸\n`;
         if (persons > 0)
-            textMessage += `рџЌґ *РљРѕР»-РІРѕ РїРµСЂСЃРѕРЅ:* _${persons}_\n`;
+            textMessage += `🍴 *Количество персон:* ${persons}\n`;
         if (comment)
-            textMessage += `рџ’¬ *РљРѕРјРјРµРЅС‚Р°СЂРёР№:* _${comment}_\n`;
-        textMessage += `\nрџ›’ *РЎРѕСЃС‚Р°РІ Р·Р°РєР°Р·Р°:*\n${cartText}\n`;
-        textMessage += `вћ–вћ–вћ–вћ–вћ–вћ–вћ–\nрџ’° *РРўРћР“Рћ: ${totalAmount} в‚ё*\nвћ–вћ–вћ–вћ–вћ–вћ–вћ–\n\n`;
-        textMessage += "вЏі *Р’РЅРёРјР°РЅРёРµ:* РњС‹ РїСЂРѕРІРµСЂСЏРµРј РЅР°Р»РёС‡РёРµ РЅР° РєСѓС…РЅРµ, РїРѕР¶Р°Р»СѓР№СЃС‚Р°, РѕР¶РёРґР°Р№С‚Рµ 1-2 РјРёРЅСѓС‚С‹...";
+            textMessage += `💬 *Комментарий:* ${comment}\n`;
+        if (!isPickup)
+            textMessage += `🚚 *Доставка:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : "Бесплатно"}\n`;
+        textMessage += `\n🛒 *Состав заказа:*\n${cartText}\n`;
+        textMessage += `➖➖➖➖➖➖➖\n💰 *ИТОГО: ${totalAmount} ₸*\n➖➖➖➖➖➖➖\n\n`;
+        textMessage += "⏳ *Внимание:* Мы проверяем наличие на кухне, пожалуйста, ожидайте 1-2 минуты...";
     }
     else {
-        textMessage = `рџ›Ѝ*в„–${orderId} С‚Р°РїСЃС‹СЂС‹СЃС‹ТЈС‹Р· Т›Р°Р±С‹Р»РґР°РЅРґС‹!*\n`;
+        textMessage = `🛍 *№${orderId} тапсырысыңыз қабылданды!*\n`;
         if (isPickup)
-            textMessage += "рџЏѓ *РўТЇСЂС–:* РђР»С‹Рї РєРµС‚Сѓ (РЎР°РјРѕРІС‹РІРѕР·)\n";
+            textMessage += "🏃 *Түрі:* Алып кету (Самовывоз)\n";
         else
-            textMessage += `рџ“Ќ *РњРµРєРµРЅ-Р¶Р°Р№:* ${cleanInline(body.address || "РљУ©СЂСЃРµС‚С–Р»РјРµРіРµРЅ", 200)}\n`;
+            textMessage += `📍 *Мекенжай:* ${cleanInline(body.address || "Көрсетілмеген", 200)}\n`;
         if (bonusNum > 0)
-            textMessage += `рџЋЃ *Р–Т±РјСЃР°Р»Т“Р°РЅ Р‘РѕРЅСѓСЃ:*_${bonusNum} в‚ё_\n`;
+            textMessage += `🎁 *Жұмсалған бонус:* ${bonusNum} ₸\n`;
         if (persons > 0)
-            textMessage += `рџЌґ *РђРґР°Рј СЃР°РЅС‹:* _${persons}_\n`;
+            textMessage += `🍴 *Адам саны:* ${persons}\n`;
         if (comment)
-            textMessage += `рџ’¬ *РџС–РєС–СЂ:* _${comment}_\n`;
-        textMessage += `\nрџ›’ *РўР°РїСЃС‹СЂС‹СЃ Т›Т±СЂР°РјС‹:*\n${cartText}\n`;
-        textMessage += `вћ–вћ–вћ–вћ–вћ–вћ–вћ–\nрџ’° *Р‘РђР Р›Р«Т’Р«: ${totalAmount} в‚ё*\nвћ–вћ–вћ–вћ–вћ–вћ–вћ–\n\n`;
-        textMessage += "вЏі *РќР°Р·Р°СЂС‹ТЈС‹Р·Т“Р°:* Р‘С–Р· Р°СЃ ТЇР№РґРµ Р±Р°СЂ-Р¶РѕТ“С‹РЅ С‚РµРєСЃРµСЂС–Рї Р¶Р°С‚С‹СЂРјС‹Р·, 1-2 РјРёРЅСѓС‚ РєТЇС‚Рµ С‚Т±СЂС‹ТЈС‹Р·...";
+            textMessage += `💬 *Пікір:* ${comment}\n`;
+        if (!isPickup)
+            textMessage += `🚚 *Жеткізу:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : "Тегін"}\n`;
+        textMessage += `\n🛒 *Тапсырыс құрамы:*\n${cartText}\n`;
+        textMessage += `➖➖➖➖➖➖➖\n💰 *БАРЛЫҒЫ: ${totalAmount} ₸*\n➖➖➖➖➖➖➖\n\n`;
+        textMessage += "⏳ *Назарыңызға:* Біз ас үйде бар-жоғын тексеріп жатырмыз, 1-2 минут күте тұрыңыз...";
     }
     return textMessage;
 }
@@ -300,33 +310,36 @@ async function buildLegacyPaymentMessage(body, config, lang, instance) {
         source: legacyPaymentDetailsSource(body, liveRuntimeStatus, config || {}),
         count: paymentDetails.length,
     });
+    return formatLegacyPaymentMessage(totalAmount, paymentInfo, lang);
+}
+export function formatLegacyPaymentMessage(totalAmount, paymentInfo, lang) {
     if (lang === "ru") {
-        return `вњ… *Р’СЃС‘ РІ РЅР°Р»РёС‡РёРё!*\nрџ’° РЎСѓРјРјР° Рє РѕРїР»Р°С‚Рµ: *${totalAmount} в‚ё*\n\nрџ’і *РћРїР»Р°С‚Р°:*\n${paymentInfo}\n\nрџ§ѕ _РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РѕС‚РїСЂР°РІСЊС‚Рµ С‡РµРє РѕР± РѕРїР»Р°С‚Рµ РІ СЌС‚РѕС‚ С‡Р°С‚ рџ‘‡_`;
+        return `✅ *Всё в наличии!*\n💰 Сумма к оплате: *${totalAmount} ₸*\n\n💳 *Оплата:*\n${paymentInfo}\n\n🧾 *После оплаты отправьте чек в этот чат 👇*`;
     }
-    return `вњ… *Р‘У™СЂС– Р±Р°СЂ!*\nрџ’° РўУ©Р»РµРј СЃРѕРјР°СЃС‹: *${totalAmount} в‚ё*\n\nрџ’і *РўУ©Р»РµРј Р¶Р°СЃР°Сѓ:*\n${paymentInfo}\n\nрџ§ѕ _РўУ©Р»РµРј Р¶Р°СЃР°Т“Р°РЅРЅР°РЅ РєРµР№С–РЅ С‡РµРєС‚С– РѕСЃС‹ С‡Р°С‚Т›Р° Р¶С–Р±РµСЂС–ТЈС–Р· рџ‘‡_`;
+    return `✅ *Бәрі бар!*\n💰 Төлем сомасы: *${totalAmount} ₸*\n\n💳 *Төлем жасау:*\n${paymentInfo}\n\n🧾 *Төлем жасағаннан кейін чекті осы чатқа жіберіңіз 👇*`;
 }
-function buildLegacyRejectedMessage(body, lang) {
-    const reason = cleanInline(body.reason || "Р‘РµР»РіС–СЃС–Р· СЃРµР±РµРї", 200);
+export function buildLegacyRejectedMessage(body, lang) {
+    const reason = cleanInline(body.reason || (lang === "ru" ? "Неизвестная причина" : "Белгісіз себеп"), 200);
     return lang === "ru"
-        ? `вќЊ Рљ СЃРѕР¶Р°Р»РµРЅРёСЋ, РјС‹ РЅРµ СЃРјРѕР¶РµРј РїСЂРёРіРѕС‚РѕРІРёС‚СЊ Р·Р°РєР°Р·.\nРџСЂРёС‡РёРЅР°: *${reason}*.\nРџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІС‹Р±РµСЂРёС‚Рµ РґСЂСѓРіРѕРµ Р±Р»СЋРґРѕ.`
-        : `вќЊ УЁРєС–РЅС–С€РєРµ РѕСЂР°Р№, С‚Р°РїСЃС‹СЂС‹СЃС‚С‹ РґР°Р№С‹РЅРґР°Р№ Р°Р»РјР°Р№РјС‹Р·.\nРЎРµР±РµР±С–: *${reason}*.\nР‘Р°СЃТ›Р° С‚Р°Т“Р°Рј С‚Р°ТЈРґР°СѓС‹ТЈС‹Р·РґС‹ СЃТ±СЂР°Р№РјС‹Р·.`;
+        ? `❌ К сожалению, мы не сможем приготовить заказ.\nПричина: *${reason}*.\nПожалуйста, выберите другое блюдо.`
+        : `❌ Өкінішке қарай, тапсырысты дайындай алмаймыз.\nСебебі: *${reason}*.\nБасқа тағам таңдауыңызды сұраймыз.`;
 }
-const legacyStatusTemplates = {
+export const legacyStatusTemplates = {
     kk: {
-        review: "вЏі Р§РµРє С‚РµРєСЃРµСЂС–Р»СѓРґРµ. РћРїРµСЂР°С‚РѕСЂ СЂР°СЃС‚Р°Т“Р°РЅ СЃРѕТЈ РґР°Р№С‹РЅРґР°Р№РјС‹Р·.",
-        paid: "вњ… РўУ©Р»РµРј СЂР°СЃС‚Р°Р»РґС‹, С‚Р°РїСЃС‹СЂС‹СЃС‹ТЈС‹Р· Т›Р°Р±С‹Р»РґР°РЅРґС‹. Р”Р°Р№С‹РЅРґР°Р»СѓРґР°! рџЌі",
-        delivery: "рџ›µ РўР°РїСЃС‹СЂС‹СЃС‹ТЈС‹Р· РєСѓСЂСЊРµСЂРіРµ Р±РµСЂС–Р»РґС–, Р¶РµС‚РєС–Р·Сѓ Р¶РѕР»С‹РЅРґР°.",
-        completed: "рџЋ‰ РўР°РїСЃС‹СЂС‹СЃ СЃУ™С‚С‚С– Р°СЏТ›С‚Р°Р»РґС‹, Р°СЃС‹ТЈС‹Р· РґУ™РјРґС– Р±РѕР»СЃС‹РЅ!",
-        pickup_ready: "вњ… РўР°РїСЃС‹СЂС‹СЃС‹ТЈС‹Р· РґР°Р№С‹РЅ! РљРµР»С–Рї Р°Р»С‹Рї РєРµС‚СѓС–ТЈС–Р·РіРµ Р±РѕР»Р°РґС‹.",
-        cancelled: "вќЊ РўР°РїСЃС‹СЂС‹СЃС‹ТЈС‹Р·РґР°РЅ Р±Р°СЃ С‚Р°СЂС‚С‹Р»РґС‹. ТљР°Р¶РµС‚ Р±РѕР»СЃР°, РјУ™Р·С–СЂ Р°СЂТ›С‹Р»С‹ Р¶Р°ТЈР° С‚Р°РїСЃС‹СЂС‹СЃ СЂУ™СЃС–РјРґРµР№ Р°Р»Р°СЃС‹Р·.",
+        review: "⏳ Чек тексерілуде. Оператор растаған соң дайындаймыз.",
+        paid: "✅ Төлем расталды, тапсырысыңыз қабылданды. Дайындалуда! 🍳",
+        delivery: "🛵 Тапсырысыңыз курьерге берілді, жеткізу жолында.",
+        completed: "🎉 Тапсырыс сәтті аяқталды, асыңыз дәмді болсын!",
+        pickup_ready: "✅ Тапсырысыңыз дайын! Келіп алып кетуіңізге болады.",
+        cancelled: "❌ Тапсырысыңыздан бас тартылды. Қажет болса, мәзір арқылы жаңа тапсырыс бере аласыз.",
     },
     ru: {
-        review: "вЏі Р§РµРє РїСЂРѕРІРµСЂСЏРµС‚СЃСЏ. РљР°Рє С‚РѕР»СЊРєРѕ РѕРїРµСЂР°С‚РѕСЂ РїРѕРґС‚РІРµСЂРґРёС‚, РЅР°С‡РЅРµРј РіРѕС‚РѕРІРёС‚СЊ.",
-        paid: "вњ… РћРїР»Р°С‚Р° РїРѕРґС‚РІРµСЂР¶РґРµРЅР°, Р·Р°РєР°Р· РїСЂРёРЅСЏС‚. Р“РѕС‚РѕРІРёРј! рџЌі",
-        delivery: "рџ›µ Р’Р°С€ Р·Р°РєР°Р· РїРµСЂРµРґР°РЅ РєСѓСЂСЊРµСЂСѓ Рё СѓР¶Рµ РІ РїСѓС‚Рё.",
-        completed: "рџЋ‰ Р—Р°РєР°Р· СѓСЃРїРµС€РЅРѕ РґРѕСЃС‚Р°РІР»РµРЅ, РїСЂРёСЏС‚РЅРѕРіРѕ Р°РїРїРµС‚РёС‚Р°!",
-        pickup_ready: "вњ… Р’Р°С€ Р·Р°РєР°Р· РіРѕС‚РѕРІ! РњРѕР¶РµС‚Рµ Р·Р°Р±РёСЂР°С‚СЊ.",
-        cancelled: "вќЊ Р’Р°С€ Р·Р°РєР°Р· РѕС‚РјРµРЅРµРЅ. РџСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РІС‹ РјРѕР¶РµС‚Рµ РѕС„РѕСЂРјРёС‚СЊ РЅРѕРІС‹Р№ Р·Р°РєР°Р· С‡РµСЂРµР· РјРµРЅСЋ.",
+        review: "⏳ Чек проверяется. Как только оператор подтвердит, начнём готовить.",
+        paid: "✅ Оплата подтверждена, заказ принят. Готовим! 🍳",
+        delivery: "🛵 Ваш заказ передан курьеру и уже в пути.",
+        completed: "🎉 Заказ успешно завершён, приятного аппетита!",
+        pickup_ready: "✅ Ваш заказ готов! Можете забирать.",
+        cancelled: "❌ Ваш заказ отменён. При необходимости можете оформить новый заказ через меню.",
     },
 };
 function extractShiftNotePayload(body) {
@@ -560,7 +573,7 @@ export async function handleKanbanWebhook(req, res) {
         }
         await emitPrintOnNewOrder(req, body, action);
         await emitPrintOnPaid(req, body, newStatus);
-        const lang = getLanguage(body);
+        const lang = (await getUserLang(instance, phone).catch(() => null)) || getLanguage(body);
         let textMessage = "";
         if (action === "new_order") {
             auditDecision("Building new_order WhatsApp template", { orderId, action, instance, lang, isPickup });

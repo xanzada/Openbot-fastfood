@@ -40,54 +40,49 @@ function scoreMenuItem(item, tokens, query) {
     }
     return score;
 }
+export function selectPublicMenuItems(items, query = "", category = "", limit = 12) {
+    const normalizedQuery = normalizeText(query);
+    const normalizedCategory = normalizeText(category);
+    const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+    const max = Math.min(50, Math.max(1, Number(limit) || 12));
+    return items
+        .map((item) => ({ item, score: scoreMenuItem(item, tokens, normalizedQuery) }))
+        .filter((entry) => {
+        const itemCategory = normalizeText(entry.item.category_name || entry.item.category);
+        return (!normalizedCategory || itemCategory.includes(normalizedCategory)) && (!normalizedQuery || entry.score > 0);
+    })
+        .sort((left, right) => right.score - left.score || Number(left.item.price || 0) - Number(right.item.price || 0))
+        .slice(0, max)
+        .map((entry) => ({
+        name: entry.item.name,
+        category: entry.item.category_name,
+        ingredients: entry.item.composition || entry.item.description || "",
+        price: entry.item.price,
+        available: typeof entry.item.available === "boolean" ? entry.item.available : undefined,
+    }));
+}
 export function createSearchMenuSkill(ctx) {
     return createTool({
         name: "searchMenu",
-        description: "Search the live DLE menu for food names, categories, ingredients, availability, labels and prices. Always use this before answering about exact menu items or prices.",
+        description: "Read customer-facing menu items, prices, ingredients, categories, and public availability from the live menu.",
         parameters: z.object({
-            query: z.string().min(1).describe("Food, category, ingredient, or phrase to search, e.g. sushi, pizza, сет, ролл"),
-            limit: z.number().int().min(1).max(15).optional().describe("Maximum number of menu items to return"),
+            query: z.string().max(80).optional().describe("Food name or ingredient to search"),
+            category: z.string().max(80).optional().describe("Customer-facing menu category to filter"),
+            limit: z.number().int().min(1).max(50).optional().describe("Maximum number of menu items to return"),
         }),
-        execute: async ({ query, limit }) => {
+        execute: async ({ query, category, limit }) => {
             const domain = ctx.config?.domain || "";
             if (!domain) {
                 return {
                     source: "domain_not_configured",
-                    query,
-                    count: 0,
-                    matches: [],
+                    items: [],
                 };
             }
             const menu = await getMenuContext(ctx.instanceId, domain, ctx.language);
             const items = Array.isArray(menu?.items) ? menu.items : [];
-            const normalizedQuery = normalizeText(query);
-            const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-            const max = Math.min(15, Math.max(1, Number(limit || 8) || 8));
-            const matches = items
-                .map((item) => ({ item, score: scoreMenuItem(item, tokens, normalizedQuery) }))
-                .filter((entry) => entry.score > 0)
-                .sort((a, b) => b.score - a.score || Number(a.item.price || 0) - Number(b.item.price || 0))
-                .slice(0, max)
-                .map((entry) => ({
-                id: entry.item.id,
-                name: entry.item.name,
-                category_id: entry.item.category_id,
-                category_name: entry.item.category_name,
-                description: entry.item.description,
-                composition: entry.item.composition,
-                price: entry.item.price,
-                promo_price: entry.item.promo_price,
-                label: entry.item.label,
-                score: entry.score,
-            }));
+            const matches = selectPublicMenuItems(items, query, category, limit || 12);
             return {
-                source: menu?.source || "dle_spa_items",
-                lang: menu?.lang,
-                fetched_at: menu?.fetched_at,
-                query,
-                total_items: items.length,
-                count: matches.length,
-                matches,
+                items: matches,
             };
         },
     });

@@ -61,15 +61,16 @@ async function fetchWithTimeout(url, options = {}, ms = 30000) {
     }
 }
 function geminiPayload(request) {
+    const parts = [{ text: request.prompt }];
+    if (request.base64) {
+        parts.push({ inlineData: { mimeType: request.mimeType, data: request.base64 } });
+    }
     return {
         systemInstruction: request.systemPrompt ? { parts: [{ text: request.systemPrompt }] } : undefined,
         contents: [
             {
                 role: "user",
-                parts: [
-                    { text: request.prompt },
-                    { inlineData: { mimeType: request.mimeType, data: request.base64 } },
-                ],
+                parts,
             },
         ],
         generationConfig: {

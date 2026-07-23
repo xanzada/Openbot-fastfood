@@ -526,11 +526,33 @@ export async function getMenuContext(instanceId, domain, userLang = "kk") {
 function normalizeReceiptSenderName(value = "") {
     const text = String(value || "").trim().replace(/\s+/g, " ").slice(0, 120);
     const normalized = text.toLowerCase();
+    const nameParts = text.match(/\p{L}[\p{L}.'’\-]*/gu) || [];
     if (!text ||
+        /[^\p{L}\s.'’\-]/u.test(text) ||
+        nameParts.length < 2 ||
         /^(payment\s*link|pay\s*link|qr|kaspi|halyk|unknown|sender|жіберуші|жіберуші аты|белгісіз|отправитель)$/iu.test(normalized)) {
         return "Белгісіз";
     }
     return text;
+}
+function normalizeReceiptBankName(value = "") {
+    const bank = String(value || "").trim().replace(/\s+/g, " ").slice(0, 40);
+    if (!bank || /(белгісіз|неизвест|unknown|анықталма|not[\s_-]*found)/iu.test(bank) || !/[\p{L}]{3,}/u.test(bank)) {
+        return "";
+    }
+    return bank;
+}
+export function buildReceiptCrmPayload(data) {
+    const sender = normalizeReceiptSenderName(data.sender_name);
+    const bank = normalizeReceiptBankName(data.bank_name);
+    if (sender === "Белгісіз" || !bank)
+        throw new Error("RECEIPT_OCR_IDENTITY_REQUIRED");
+    return {
+        action: "add_payment_comment",
+        order_id: String(data.order_id || "0").trim(),
+        amount_paid: Number(data.amount || data.amount_paid || 0),
+        sender_name: `${sender} (${bank})`,
+    };
 }
 export async function updateCrmAction(actionType, instanceId, phone, data) {
     const domain = data?.config?.domain || "";
@@ -550,14 +572,7 @@ export async function updateCrmAction(actionType, instanceId, phone, data) {
         });
     }
     else {
-        Object.assign(payload, {
-            action: "add_payment_comment",
-            order_id: String(data.order_id || "0").trim(),
-            amount_paid: Number(data.amount || data.amount_paid || 0),
-            sender_name: `${normalizeReceiptSenderName(data.sender || data.sender_name)} (${String(data.bank_name || "KASPI")
-                .trim()
-                .slice(0, 40)})`,
-        });
+        Object.assign(payload, buildReceiptCrmPayload(data));
     }
     try {
         const response = await apiBot(domain, payload, 10000);

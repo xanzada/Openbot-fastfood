@@ -1,6 +1,5 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
-import { updateCrmAction } from "../services/dle.service.js";
 export function createGetPaymentDetailsSkill(ctx) {
     return createTool({
         name: "getPaymentDetails",
@@ -25,23 +24,6 @@ export function createGetPaymentDetailsSkill(ctx) {
                 source: runtimeDetails.length ? "runtime_status" : "nocodb_fallback",
                 details: filtered.length ? filtered : all,
             };
-        },
-    });
-}
-export function createRegisterPaymentReceiptSkill(ctx) {
-    return createTool({
-        name: "registerPaymentReceipt",
-        description: "Register a customer's Kaspi/Halyk payment receipt in the DLE CRM. This calls add_payment_comment in DLE which updates ai_comment — it does NOT change order status. Call ONLY after validating the media IS a real payment receipt.",
-        parameters: z.object({
-            amountPaid: z.number().min(1).describe("Amount paid in tenge from the receipt"),
-            senderName: z.string().min(1).max(80).describe("Sender name extracted from the receipt via OCR/Vision"),
-        }),
-        execute: async ({ amountPaid, senderName }) => {
-            return updateCrmAction("receipt", ctx.instanceId, ctx.phone, {
-                config: ctx.config,
-                amount_paid: amountPaid,
-                sender_name: senderName,
-            });
         },
     });
 }

@@ -1,28 +1,42 @@
 import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
-import { saveComplaintMedia, saveToHistory } from "../services/redis.service.js";
+import { claimReceiptFingerprint, releaseReceiptFingerprint, saveComplaintMedia, saveToHistory, } from "../services/redis.service.js";
 import { buildComplaintAckReply, buildComplaintClarificationReply, hasEscalateAdminSignal, hasEscalateDeveloperSignal, hasPendingComplaintMedia, isLikelyComplaintText, routeComplaintToAdmin, stripEscalationSignals, } from "../services/complaintRouting.service.js";
 import { clearInboundProcessing, extractInboundMedia, extractSenderMeta, extractInboundText, extractMessageId, guardIncomingMessage, hydrateInboundMedia, markInboundDone, saveMediaContext, setOperatorAutoMute, } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
-import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates, updateCrmAction } from "../services/dle.service.js";
+import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
+import { customerOrderFromRecord, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
+import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
-import { analyzeMedia } from "../services/mediaAnalysis.service.js";
-import { buildTenantInstructions } from "../agent/persona.js";
+import { analyzeMedia, createReceiptFingerprint, receiptFilterEnabled, validateReceiptAnalysis, } from "../services/mediaAnalysis.service.js";
 import { getTextModels } from "../services/llm.service.js";
-
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
-
+const ORDER_STATUS_QUESTION_RE = /(тапсырыс|заказ|order|статус|status|где.*заказ|қайда.*тапсырыс|қашан.*дайын|когда.*готов)/iu;
+const ORDER_NUMBER_RE = /(?:№|#|order\s*|заказ\s*|тапсырыс\s*)(\d{1,12})/iu;
 function maskPhone(phone = "") {
     const clean = String(phone || "").replace(/\D/g, "");
     if (clean.length <= 6)
         return clean || "-";
     return `${clean.slice(0, 3)}***${clean.slice(-3)}`;
 }
-
+function rejectedReceiptReply(language, reason) {
+    if (language === "ru") {
+        if (reason === "amount_mismatch")
+            return "Сумма в чеке не совпадает с суммой заказа. Отправьте, пожалуйста, правильный чек.";
+        if (["receipt_too_old", "receipt_before_order"].includes(reason))
+            return "Этот чек старый или был создан до заказа. Отправьте новый чек по текущему заказу.";
+        return "Не удалось подтвердить подлинность чека. Отправьте, пожалуйста, свежий полный чек, где видны имя отправителя, банк, сумма и дата.";
+    }
+    if (reason === "amount_mismatch")
+        return "Чектегі сома тапсырыс сомасына сәйкес емес. Дұрыс чекті жіберіңіз.";
+    if (["receipt_too_old", "receipt_before_order"].includes(reason))
+        return "Бұл чек ескі немесе тапсырыстан бұрын жасалған. Осы тапсырысқа арналған жаңа чекті жіберіңіз.";
+    return "Чектің дұрыстығын растай алмадым. Жіберушінің аты, банк, сома және күні анық көрінетін толық жаңа чекті жіберіңіз.";
+}
 function getInstanceId(body) {
     return String(body?.instance ||
         body?.instanceId ||
@@ -36,17 +50,14 @@ function getInstanceId(body) {
         body?.data?.restaurant_id ||
         "").trim();
 }
-
 function getPhone(body) {
     const eventData = body?.data || body || {};
     const key = eventData?.key || body?.key || {};
     return normalizePhoneFromCandidates(getPhoneCandidatesFromWebhook(body || {}, eventData, key));
 }
-
 function normalizeLocalPhone(value) {
     return String(value || "").replace(/\D/g, "");
 }
-
 function firstPhoneCandidate(...values) {
     for (const value of values) {
         const phone = normalizeLocalPhone(value);
@@ -55,14 +66,12 @@ function firstPhoneCandidate(...values) {
     }
     return "";
 }
-
 function getReceiverPhone(body) {
     const eventData = body?.data || body || {};
     const instance = body?.instanceData || body?.instance_data || eventData?.instanceData || eventData?.instance_data || {};
     const me = body?.me || eventData?.me || body?.account || eventData?.account || {};
     return firstPhoneCandidate(body?.receiver_phone, body?.receiverPhone, body?.recipient_phone, body?.recipientPhone, body?.to_phone, body?.toPhone, body?.bot_phone, body?.botPhone, body?.instance_phone, body?.instancePhone, body?.whatsapp_phone, body?.whatsappPhone, body?.whatspro_phone, body?.whatsproPhone, body?.receiver, body?.to, body?.recipient, eventData?.receiver_phone, eventData?.receiverPhone, eventData?.recipient_phone, eventData?.recipientPhone, eventData?.to_phone, eventData?.toPhone, eventData?.bot_phone, eventData?.botPhone, eventData?.instance_phone, eventData?.instancePhone, eventData?.whatsapp_phone, eventData?.whatsappPhone, eventData?.whatspro_phone, eventData?.whatsproPhone, eventData?.receiver, eventData?.to, eventData?.recipient, instance?.phone, instance?.number, instance?.jid, me?.phone, me?.number, me?.id, me?.jid);
 }
-
 async function resolveTenantInstance(req, _res, next) {
     const body = req.body || {};
     if (getInstanceId(body))
@@ -88,7 +97,6 @@ async function resolveTenantInstance(req, _res, next) {
         return next();
     }
 }
-
 async function verifySecret(req, res, next) {
     const expected = process.env.OPENBOT_WEBHOOK_SECRET;
     const got = req.headers.authorization?.replace(/^Bearer\s+/i, "") ||
@@ -109,11 +117,9 @@ async function verifySecret(req, res, next) {
         return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
     }
 }
-
 function isOwnWhatsAppMessage(body) {
     return body?.fromMe === true || body?.isFromMe === true || body?.data?.key?.fromMe === true;
 }
-
 function isGroupMessage(body) {
     const eventData = body?.data || body || {};
     const key = eventData?.key || body?.key || {};
@@ -123,11 +129,9 @@ function isGroupMessage(body) {
         key?.participant?.endsWith?.("@g.us") ||
         String(body?.sender || eventData?.sender || body?.from || eventData?.from || "").endsWith("@g.us"));
 }
-
 function isStatusQuestion(text = "") {
     return STATUS_CONTEXT_RE.test(String(text || ""));
 }
-
 function runtimeUnavailableReply(ctx) {
     if (!isStatusQuestion(ctx.text))
         return null;
@@ -137,7 +141,37 @@ function runtimeUnavailableReply(ctx) {
         ? "Қазір асүй статусын тексере алмаймын. Кейін қайталап жазыңыз."
         : "Не могу проверить статус кухни. Напишите позже.";
 }
-
+function isCustomerOrderQuestion(text = "") {
+    return ORDER_STATUS_QUESTION_RE.test(String(text || ""));
+}
+function requestedOrderNumber(text = "") {
+    return String(String(text || "").match(ORDER_NUMBER_RE)?.[1] || "");
+}
+function unavailableOrderReply(language) {
+    return language === "ru"
+        ? "Не удалось получить актуальный статус заказа. Попробуйте немного позже."
+        : "Тапсырыстың өзекті статусын ала алмадым. Сәл кейінірек қайталап көріңіз.";
+}
+function missingOrderReply(language) {
+    return language === "ru"
+        ? "Активный заказ по этому номеру не найден. Отправьте номер заказа."
+        : "Бұл нөмір бойынша белсенді тапсырыс табылмады. Тапсырыс нөмірін жіберіңіз.";
+}
+async function customerOrderReply(ctx) {
+    if (!isCustomerOrderQuestion(ctx.text))
+        return null;
+    const orderNumber = requestedOrderNumber(ctx.text);
+    const lookup = orderNumber
+        ? await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, orderNumber)
+        : ctx.activeOrder?.is_stale
+            ? { state: "unavailable" }
+            : customerOrderFromRecord(ctx.activeOrder, ctx.phone, ctx.language);
+    if (lookup.state === "found")
+        return formatCustomerOrderStatus(lookup.order, ctx.language);
+    if (lookup.state === "unavailable")
+        return unavailableOrderReply(ctx.language);
+    return missingOrderReply(ctx.language);
+}
 function hasMeaningfulMediaDescription(text = "", mediaContext = null) {
     const clean = stripEscalationSignals(text).trim();
     if (!clean || clean === "[Media sent]")
@@ -147,7 +181,6 @@ function hasMeaningfulMediaDescription(text = "", mediaContext = null) {
         return false;
     return clean.length >= 2;
 }
-
 async function sendCustomerReplyAndFinish(ctx, messageId, reply, source) {
     const cleanReply = stripEscalationSignals(reply);
     if (cleanReply) {
@@ -162,7 +195,6 @@ async function sendCustomerReplyAndFinish(ctx, messageId, reply, source) {
     }
     await markInboundDone(ctx.instanceId, messageId);
 }
-
 async function processWhatsAppWebhook(body, started) {
     const instanceId = getInstanceId(body);
     const phone = getPhone(body);
@@ -216,21 +248,59 @@ async function processWhatsAppWebhook(body, started) {
         let immediateComplaintMedia = null;
         let immediateComplaintUrgency = "normal";
         if (mediaContext?.base64 && mediaContext.valid) {
-            const mediaAnalysis = await analyzeMedia(mediaContext.base64, mediaContext.mimeType || mediaContext.mediaType || "application/octet-stream", text, ctx.language, (mediaContext.mimeType || "").includes("pdf"), buildTenantInstructions(ctx));
+            const activeOrder = ctx.activeOrder?.order || ctx.activeOrder || {};
+            const receiptContext = {
+                expectedAmount: Number(ctx.activeOrder?.total_price || activeOrder.total_price || activeOrder.total || 0),
+                orderCreatedAt: String(activeOrder.created_at || activeOrder.createdAt || ""),
+                nowMs: Date.now(),
+            };
+            const mediaAnalysis = await analyzeMedia(mediaContext.base64, mediaContext.mimeType || mediaContext.mediaType || "application/octet-stream", text, ctx.language, (mediaContext.mimeType || "").includes("pdf"), "", receiptContext);
             if (mediaAnalysis) {
                 mediaContext = { ...mediaContext, analysis: mediaAnalysis };
                 ctx.mediaContext = mediaContext;
                 if (mediaAnalysis.type === "receipt") {
-                    await updateCrmAction("receipt", ctx.instanceId, ctx.phone, {
+                    const strictFilter = receiptFilterEnabled();
+                    const validation = validateReceiptAnalysis(mediaAnalysis, receiptContext);
+                    if (strictFilter && !validation.valid) {
+                        await sendCustomerReplyAndFinish(ctx, messageId, rejectedReceiptReply(ctx.language, validation.reason), `payment_receipt_rejected:${validation.reason}`);
+                        return;
+                    }
+                    const fingerprint = createReceiptFingerprint(String(mediaContext.base64 || ""), mediaAnalysis);
+                    if (!(await claimReceiptFingerprint(ctx.instanceId, fingerprint))) {
+                        const duplicateReply = ctx.language === "ru"
+                            ? "Этот чек уже был отправлен. Пожалуйста, не отправляйте один чек повторно."
+                            : "Бұл чек бұрын жіберілген. Бір чекті қайта жібермеңіз.";
+                        await sendCustomerReplyAndFinish(ctx, messageId, duplicateReply, "payment_receipt_duplicate");
+                        return;
+                    }
+                    const receiptOrderNumber = mediaAnalysis.order_id !== "0"
+                        ? String(mediaAnalysis.order_id)
+                        : String(activeOrder.id || activeOrder.order_id || "");
+                    const receiptOrder = await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, receiptOrderNumber);
+                    if (receiptOrder.state !== "found") {
+                        await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+                        await sendCustomerReplyAndFinish(ctx, messageId, rejectedReceiptReply(ctx.language, "order_not_found"), "payment_receipt_order_not_found");
+                        return;
+                    }
+                    const delivery = await deliverReceiptToClient({
+                        instanceId: ctx.instanceId,
+                        phone: ctx.phone,
+                        orderNumber: receiptOrder.order.orderNumber,
                         config: ctx.config,
                         amount: mediaAnalysis.amount,
-                        amount_paid: mediaAnalysis.amount,
-                        sender_name: mediaAnalysis.sender_name,
-                        sender: mediaAnalysis.sender_name,
-                        bank_name: mediaAnalysis.bank_name,
-                        order_id: mediaAnalysis.order_id,
-                        date_time: mediaAnalysis.date_time,
-                    }).catch(() => null);
+                        senderName: mediaAnalysis.sender_name,
+                        bankName: mediaAnalysis.bank_name,
+                        transactionId: mediaAnalysis.transaction_id,
+                        paidAt: mediaAnalysis.date_time,
+                    });
+                    if (!delivery.success) {
+                        await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+                        const retryReply = ctx.language === "ru"
+                            ? "Не удалось передать чек оператору. Пожалуйста, отправьте его ещё раз чуть позже."
+                            : "Чекті операторға жібере алмадым. Сәлден кейін қайта жіберіңіз.";
+                        await sendCustomerReplyAndFinish(ctx, messageId, retryReply, "payment_receipt_crm_failed");
+                        return;
+                    }
                     const receiptReply = ctx.language === "ru"
                         ? "🧾 Большое спасибо за оплату! Чек отправлен оператору на проверку. Пожалуйста, немного подождите ⏳"
                         : "🧾 Төлеміңіз үшін көп рақмет! Чек операторға тексеруге жіберілді. Кішкене күте тұрыңыз ⏳";
@@ -319,6 +389,12 @@ async function processWhatsAppWebhook(body, started) {
             await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource || "media_preemptive_reply");
             return;
         }
+        const orderReply = await customerOrderReply(ctx);
+        if (orderReply) {
+            await sendCustomerReplyAndFinish(ctx, messageId, orderReply, "customer_order_status");
+            return;
+        }
+        // Pre-LLM short-circuit: if runtime is unavailable and customer asks about kitchen
         const runtimeReply = runtimeUnavailableReply(ctx);
         if (runtimeReply) {
             console.log(`[OPENBOT:PREEMPT] runtime unavailable, using fallback`);
@@ -384,6 +460,7 @@ async function processWhatsAppWebhook(body, started) {
             .catch((error) => {
             console.warn("[SHPOR:EVAL] async save skipped:", error?.message || error);
         });
+        // Send main text response
         const sendResult = await sendWhatsProResponseSequence({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
@@ -402,7 +479,6 @@ async function processWhatsAppWebhook(body, started) {
         throw error;
     }
 }
-
 export function whatsappWebhookRoute() {
     const router = createRouter();
     router.post("/", resolveTenantInstance, verifySecret, async (req, res) => {
@@ -422,7 +498,7 @@ export function whatsappWebhookRoute() {
                 });
             }
             console.log(`[OPENBOT:INBOUND:SKIP] fromMe=true elapsed=${Date.now() - started}ms`);
-            return res.status(200).json({ ok: true, skipped: true, reason: "fromMe" });
+            return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
         }
         const mediaContext = extractInboundMedia(body);
         const text = extractInboundText(body) ||
@@ -438,7 +514,7 @@ export function whatsappWebhookRoute() {
                 console.error(`[OPENBOT:INBOUND:FAIL] elapsed=${Date.now() - started}ms:`, error?.stack || error?.message || error);
             });
         });
-        return res.status(200).json({ ok: true, accepted: true });
+        return res.status(202).json({ ok: true, accepted: true });
     });
     return router;
 }
