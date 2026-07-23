@@ -1,3 +1,44 @@
 # Events & Queues
 
-- `print_new_order` [event] — `src/routes/system.route.ts`
+- `Payment details resolved` [event] — `src/controllers/kanban.ts`
+- `Complaint notification skipped: admin phone missing` [event] — `src/controllers/kanban.ts`
+- `Print trigger skipped: status is not paid` [event] — `src/controllers/kanban.ts`
+- `Print trigger emitted for paid status` [event] — `src/controllers/kanban.ts`
+- `print_new_order` [event] — `src/controllers/kanban.ts`
+- `Print trigger skipped: socket server unavailable` [event] — `src/controllers/kanban.ts`
+- `Print trigger skipped: action is not new_order` [event] — `src/controllers/kanban.ts`
+- `Print trigger emitted for new order` [event] — `src/controllers/kanban.ts`
+- `Saving bot notification to Redis history` [event] — `src/controllers/kanban.ts`
+- `Rejected webhook: invalid instance` [event] — `src/controllers/kanban.ts`
+- `Rejected webhook: invalid action` [event] — `src/controllers/kanban.ts`
+- `Updating kitchen status in Redis` [event] — `src/controllers/kanban.ts`
+- `Kitchen status updated` [event] — `src/controllers/kanban.ts`
+- `Reading kitchen status from Redis` [event] — `src/controllers/kanban.ts`
+- `Kitchen status read complete` [event] — `src/controllers/kanban.ts`
+- `Loading restaurant config` [event] — `src/controllers/kanban.ts`
+- `Restaurant config loaded` [event] — `src/controllers/kanban.ts`
+- `Triggering developer alert` [event] — `src/controllers/kanban.ts`
+- `Routing complaint to admin` [event] — `src/controllers/kanban.ts`
+- `Complaint routing complete` [event] — `src/controllers/kanban.ts`
+- `Rejected webhook: invalid order id` [event] — `src/controllers/kanban.ts`
+- `Rejected webhook: invalid phone` [event] — `src/controllers/kanban.ts`
+- `Order payload validated` [event] — `src/controllers/kanban.ts`
+- `Shift note payload detected` [event] — `src/controllers/kanban.ts`
+- `Connecting Redis for lock and memory operations` [event] — `src/controllers/kanban.ts`
+- `Attempting idempotency lock` [event] — `src/controllers/kanban.ts`
+- `Found existing order/signal lock; ignoring duplicate` [event] — `src/controllers/kanban.ts`
+- `Creating new processing record via Redis lock` [event] — `src/controllers/kanban.ts`
+- `Saving shift note to AI memory` [event] — `src/controllers/kanban.ts`
+- `Shift note saved` [event] — `src/controllers/kanban.ts`
+- `Deleting shift note from AI memory` [event] — `src/controllers/kanban.ts`
+- `Shift note deleted` [event] — `src/controllers/kanban.ts`
+- `Building new_order WhatsApp template` [event] — `src/controllers/kanban.ts`
+- `Building request_payment WhatsApp template` [event] — `src/controllers/kanban.ts`
+- `Building order_rejected WhatsApp template` [event] — `src/controllers/kanban.ts`
+- `Resolving status_changed template` [event] — `src/controllers/kanban.ts`
+- `Status ignored: no client template configured` [event] — `src/controllers/kanban.ts`
+- `Triggering WhatsApp notification path` [event] — `src/controllers/kanban.ts`
+- `Cleaning completed/cancelled order Redis history` [event] — `src/controllers/kanban.ts`
+- `No outbound WhatsApp template produced` [event] — `src/controllers/kanban.ts`
+- `Kanban webhook processed successfully` [event] — `src/controllers/kanban.ts`
+- `Releasing idempotency lock after failure` [event] — `src/controllers/kanban.ts`

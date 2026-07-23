@@ -2,13 +2,35 @@
 
 - `src\agent\fastfoodAgent.ts` — function runFastFoodAgent: (ctx) => void
 - `src\agent\finalValidator.ts` — function validateFinalText: (rawText, ctx) => void
-- `src\agent\modelRouter.ts` — function resolveModel: (ctx) => void
+- `src\agent\modelRouter.ts` — function getTextModelId: () => void, function resolveModel: (_ctx) => void
+- `src\agent\persona.ts` — function buildTenantInstructionsFromConfig: (config, any>, instanceId) => void, function buildTenantInstructions: (ctx) => void
 - `src\context\buildFactsPrompt.ts` — function buildFactsPrompt: (ctx) => string
 - `src\context\preloadContext.ts`
   - function preloadContext: (input) => Promise<FastFoodContext>
   - interface InboundMessage
   - interface ContextHealth
+- `src\controllers\kanban.ts`
+  - function buildLegacyNewOrderMessage: (body, unknown>, lang, orderId, isPickup) => string
+  - function formatLegacyPaymentMessage: (totalAmount, paymentInfo, lang) => string
+  - function buildLegacyRejectedMessage: (body, unknown>, lang) => string
+  - function handleKanbanWebhook: (req, res) => Promise<void>
+  - const legacyStatusTemplates: Record<Language, Record<string, string>>
 - `src\cron\statsCron.ts` — function processDailyAnalytics: () => void, function startDailyCron: () => void
+- `src\services\auditLogger.service.ts`
+  - function isNewDleAction: (action) => boolean
+  - function auditInbound: (message, fields, unknown>) => void
+  - function auditProcessing: (message, fields, unknown>) => void
+  - function auditDecision: (message, fields, unknown>) => void
+  - function auditOutbound: (message, fields, unknown>) => void
+  - function auditError: (message, error, fields, unknown>) => void
+- `src\services\complaintRouting.service.ts`
+  - function hasEscalateAdminSignal: (text) => void
+  - function hasEscalateDeveloperSignal: (text) => void
+  - function stripEscalationSignals: (text) => void
+  - function isLikelyComplaintText: (text) => void
+  - function buildComplaintClarificationReply: (language) => void
+  - function buildComplaintAckReply: (language) => void
+  - _...5 more_
 - `src\services\developerNotify.service.ts` — function notifyDeveloperSystemFailure: (instanceId, error, meta, unknown>) => Promise<boolean>
 - `src\services\diagnostics.service.ts`
   - function getConfigSummary: () => void
@@ -21,7 +43,7 @@
   - function extractPhoneCandidate: (rawValue) => void
   - function normalizePhone: (value) => void
   - function normalizePhoneFromCandidates: (candidates) => void
-  - _...10 more_
+  - _...12 more_
 - `src\services\inboundGuard.service.ts`
   - function extractMessageId: (body) => string
   - function extractInboundText: (body) => string
@@ -31,10 +53,24 @@
   - function hydrateInboundMedia: (body, mediaContext) => Promise<InboundMediaContext | null>
   - _...8 more_
 - `src\services\kanbanSync.service.ts` — function syncKanbanEvent: (ctx, event, any>) => Promise<
-- `src\services\mediaAnalysis.service.ts` — function analyzeMedia: (base64Media, mimeType, caption, userLang, isPdf) => void
+- `src\services\llm.service.ts`
+  - function getMediaPrimaryKeys: () => void
+  - function getTextModels: () => TextModelPair
+  - function getMediaPrimaryModel: () => void
+  - function getMediaFallbackModel: () => void
+  - function getOpenRouterProvider: () => void
+  - function callGemini: (request) => void
+  - _...6 more_
+- `src\services\mediaAnalysis.service.ts`
+  - function receiptFilterEnabled: (env, string | undefined>) => void
+  - function validateReceiptAnalysis: (analysis, any>, context) => void
+  - function createReceiptFingerprint: (base64Media, analysis, any>) => void
+  - function analyzeMedia: (base64Media, mimeType, caption, userLang, isPdf, systemPrompt, receiptContext) => void
+  - interface ReceiptValidationContext
 - `src\services\nocodb.service.ts`
   - function getRestaurantConfig: (instanceId) => Promise<Record<string, any> | null>
   - function getAllRestaurantConfigs: () => Promise<Record<string, any>[]>
+  - function getRestaurantConfigByWhatsAppPhone: (phone) => Promise<Record<string, any> | null>
   - function getShporContext: (instanceId, query) => Promise<any[]>
   - function saveToShpor: (instanceId, question, answer, category, memoryPayload, any> | null) => Promise<void>
   - function evaluateForShpor: (question, answer) => Promise<
@@ -44,8 +80,8 @@
   - function pingRedis: () => Promise<string>
   - function getChatHistory: (instanceId, phone) => Promise<any[]>
   - function saveToHistory: (instanceId, phone, role, text, meta, unknown>) => Promise<void>
-  - function getUserLang: (instanceId, phone) => Promise<"kk" | "ru" | null>
-  - _...14 more_
+  - function languageKey: (instanceId, phone) => void
+  - _...24 more_
 - `src\services\tenantAuth.service.ts`
   - function safeCompare: (a, b) => boolean
   - function getIncomingTenantSecret: (req) => void
@@ -56,7 +92,8 @@
 - `src\skills\escalation.skill.ts` — function createEscalateToAdminSkill: (ctx) => void
 - `src\skills\index.ts` — function createFastFoodSkills: (ctx) => void
 - `src\skills\menuLink.skill.ts` — function createSendMenuLinkSkill: (ctx) => void
-- `src\skills\payment.skill.ts` — function createGetPaymentDetailsSkill: (ctx) => void, function createRegisterPaymentReceiptSkill: (ctx) => void
+- `src\skills\payment.skill.ts` — function createGetPaymentDetailsSkill: (ctx) => void
+- `src\skills\runtimeStatus.skill.ts` — function createGetKitchenStatusSkill: (ctx) => void, function createGetShiftNotesSkill: (ctx) => void
 - `src\skills\searchMenu.skill.ts` — function createSearchMenuSkill: (ctx) => void
 - `src\skills\tavilySearch.skill.ts` — function searchWeb: (query, options) => void, function createTavilySearchSkill: (_ctx) => void
 - `src\transport\whatspro.client.ts`
@@ -66,10 +103,11 @@
   - function sendWhatsProResponseSequence: (payload) => void
 - `src\utils\language.ts`
   - function detectLang: (text, storedLang?) => "kk" | "ru"
+  - function resolveLockedLanguage: (storedLang, detected) => "kk" | "ru"
   - function detectLanguageWithAI: (text) => Promise<"kk" | "ru">
   - function detectLangWithFallback: (text, storedLang?) => Promise<"kk" | "ru">
 - `src\utils\magicLink.ts`
   - function normalizeMenuDomain: (domain) => string | null
-  - function generateSecureMenuUrl: (domain, phone) => string | null
+  - function generateSecureMenuUrl: (domain, phone, tenantSecret) => string | null
   - function isMenuLinkResendRequest: (text) => boolean
   - function hasExplicitMenuLinkIntent: (text) => boolean

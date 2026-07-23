@@ -35,7 +35,9 @@ import {
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProResponseSequence } from "../transport/whatspro.client.js";
-import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates, updateCrmAction } from "../services/dle.service.js";
+import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
+import { customerOrderFromRecord, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
+import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import {
@@ -48,6 +50,9 @@ import { getTextModels } from "../services/llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
+
+const ORDER_STATUS_QUESTION_RE = /(тапсырыс|заказ|order|статус|status|где.*заказ|қайда.*тапсырыс|қашан.*дайын|когда.*готов)/iu;
+const ORDER_NUMBER_RE = /(?:№|#|order\s*|заказ\s*|тапсырыс\s*)(\d{1,12})/iu;
 
 function maskPhone(phone = "") {
   const clean = String(phone || "").replace(/\D/g, "");
@@ -220,6 +225,39 @@ function runtimeUnavailableReply(ctx: FastFoodContext): string | null {
     : "Не могу проверить статус кухни. Напишите позже.";
 }
 
+function isCustomerOrderQuestion(text = "") {
+  return ORDER_STATUS_QUESTION_RE.test(String(text || ""));
+}
+
+function requestedOrderNumber(text = "") {
+  return String(String(text || "").match(ORDER_NUMBER_RE)?.[1] || "");
+}
+
+function unavailableOrderReply(language: "kk" | "ru") {
+  return language === "ru"
+    ? "Не удалось получить актуальный статус заказа. Попробуйте немного позже."
+    : "Тапсырыстың өзекті статусын ала алмадым. Сәл кейінірек қайталап көріңіз.";
+}
+
+function missingOrderReply(language: "kk" | "ru") {
+  return language === "ru"
+    ? "Активный заказ по этому номеру не найден. Отправьте номер заказа."
+    : "Бұл нөмір бойынша белсенді тапсырыс табылмады. Тапсырыс нөмірін жіберіңіз.";
+}
+
+async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> {
+  if (!isCustomerOrderQuestion(ctx.text)) return null;
+  const orderNumber = requestedOrderNumber(ctx.text);
+  const lookup = orderNumber
+    ? await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, orderNumber)
+    : ctx.activeOrder?.is_stale
+      ? { state: "unavailable" as const }
+      : customerOrderFromRecord(ctx.activeOrder, ctx.phone, ctx.language);
+  if (lookup.state === "found") return formatCustomerOrderStatus(lookup.order, ctx.language);
+  if (lookup.state === "unavailable") return unavailableOrderReply(ctx.language);
+  return missingOrderReply(ctx.language);
+}
+
 function hasMeaningfulMediaDescription(text = "", mediaContext: Record<string, any> | null = null) {
   const clean = stripEscalationSignals(text).trim();
   if (!clean || clean === "[Media sent]") return false;
@@ -345,7 +383,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
           }
 
           const fingerprint = createReceiptFingerprint(String(mediaContext.base64 || ""), mediaAnalysis);
-          if (strictFilter && !(await claimReceiptFingerprint(ctx.instanceId, fingerprint))) {
+          if (!(await claimReceiptFingerprint(ctx.instanceId, fingerprint))) {
             const duplicateReply =
               ctx.language === "ru"
                 ? "Этот чек уже был отправлен. Пожалуйста, не отправляйте один чек повторно."
@@ -354,17 +392,41 @@ async function processWhatsAppWebhook(body: any, started: number) {
             return;
           }
 
-          const crmResponse = await updateCrmAction("receipt", ctx.instanceId, ctx.phone, {
+          const receiptOrderNumber = mediaAnalysis.order_id !== "0"
+            ? String(mediaAnalysis.order_id)
+            : String(activeOrder.id || activeOrder.order_id || "");
+          const receiptOrder = await getCustomerOrder(
+            ctx.instanceId,
+            String(ctx.config?.domain || ""),
+            ctx.phone,
+            ctx.language,
+            receiptOrderNumber
+          );
+          if (receiptOrder.state !== "found") {
+            await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+            await sendCustomerReplyAndFinish(
+              ctx,
+              messageId,
+              rejectedReceiptReply(ctx.language, "order_not_found"),
+              "payment_receipt_order_not_found"
+            );
+            return;
+          }
+
+          const delivery = await deliverReceiptToClient({
+            instanceId: ctx.instanceId,
+            phone: ctx.phone,
+            orderNumber: receiptOrder.order.orderNumber,
             config: ctx.config,
             amount: mediaAnalysis.amount,
-            amount_paid: mediaAnalysis.amount,
-            sender_name: mediaAnalysis.sender_name,
-            bank_name: mediaAnalysis.bank_name,
-            order_id: mediaAnalysis.order_id !== "0" ? mediaAnalysis.order_id : String(activeOrder.id || activeOrder.order_id || "0"),
-          }).catch(() => null);
+            senderName: mediaAnalysis.sender_name,
+            bankName: mediaAnalysis.bank_name,
+            transactionId: mediaAnalysis.transaction_id,
+            paidAt: mediaAnalysis.date_time,
+          });
 
-          if (!crmResponse) {
-            if (strictFilter) await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+          if (!delivery.success) {
+            await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
             const retryReply =
               ctx.language === "ru"
                 ? "Не удалось передать чек оператору. Пожалуйста, отправьте его ещё раз чуть позже."
@@ -465,6 +527,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
     if (mediaPreemptiveReply) {
       await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource || "media_preemptive_reply");
+      return;
+    }
+
+    const orderReply = await customerOrderReply(ctx);
+    if (orderReply) {
+      await sendCustomerReplyAndFinish(ctx, messageId, orderReply, "customer_order_status");
       return;
     }
 

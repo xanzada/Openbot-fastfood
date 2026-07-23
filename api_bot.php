@@ -251,7 +251,8 @@ function spa_api_fetch_order_context($db, $phone, $order_id = 0, $limit = 5) {
 
     $active_order = null;
     if ($order_id > 0) {
-        $row = $db->super_query("SELECT {$select} FROM {$table} WHERE id = '{$order_id}' LIMIT 1");
+        $owner_condition = $safe_phone !== '' ? " AND {$phone_where}" : '';
+        $row = $db->super_query("SELECT {$select} FROM {$table} WHERE id = '{$order_id}'{$owner_condition} LIMIT 1");
         $active_order = spa_api_public_order_payload($row);
     } elseif ($safe_phone !== '') {
         $active_status_condition = spa_api_active_order_status_condition('status');
@@ -489,7 +490,8 @@ if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $i
         die();
     }
 
-    $order = $db->super_query("SELECT id, phone, status, comment FROM " . PREFIX . "_spa_orders WHERE id = '{$order_id}' LIMIT 1");
+    $receipt_owner_condition = $input_phone !== '' ? " AND " . spa_api_phone_where($db, 'phone', $input_phone) : '';
+    $order = $db->super_query("SELECT id, phone, status, comment FROM " . PREFIX . "_spa_orders WHERE id = '{$order_id}'{$receipt_owner_condition} LIMIT 1");
 
     if (!$order) {
         echo json_encode(['success' => false, 'error' => 'Заказ не найден'], JSON_UNESCAPED_UNICODE);
@@ -514,13 +516,21 @@ if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $i
     $ai_comment_safe = $db->safesql($ai_text);
 
     $db->query("UPDATE " . PREFIX . "_spa_orders SET ai_comment = '{$ai_comment_safe}' WHERE id = '{$order_id}'");
+    $delivery_check = $db->super_query("SELECT ai_comment FROM " . PREFIX . "_spa_orders WHERE id = '{$order_id}' LIMIT 1");
+    if (!$delivery_check || (string)($delivery_check['ai_comment'] ?? '') !== $ai_text) {
+        echo json_encode(['success' => false, 'error' => 'Receipt delivery was not confirmed'], JSON_UNESCAPED_UNICODE);
+        die();
+    }
+    $delivered_at = date('c');
 
     echo json_encode([
         'success' => true,
         'message' => "Комментарий о чеке добавлен к заказу #{$order_id}",
         'order_id' => $order_id,
         'status' => $order['status'],
-        'status_changed' => false
+        'status_changed' => false,
+        'delivery_id' => 'receipt:' . $order_id . ':' . time(),
+        'delivered_at' => $delivered_at
     ], JSON_UNESCAPED_UNICODE);
     die();
 }
