@@ -52,7 +52,23 @@ test("receipt validation accepts a fresh matching receipt and rejects old or wro
 });
 
 test("CRM receipt payload uses only OCR sender and bank fields", () => {
+  const receiptText = "payment_receipt amount=9700; sender=Арман Сейітов; bank=Kaspi; transaction=KZ-123456";
   const payload = buildReceiptCrmPayload({
+    order_id: "36",
+    amount: 9700,
+    sender_name: "Арман Сейітов",
+    bank_name: "Kaspi",
+    receipt_text: receiptText,
+  });
+  assert.deepEqual(payload, {
+    action: "add_payment_comment",
+    order_id: "36",
+    amount_paid: 9700,
+    sender_name: "Арман Сейітов (Kaspi)",
+    bank_name: "Kaspi",
+    receipt_text: receiptText,
+  });
+  const fallbackPayload = buildReceiptCrmPayload({
     order_id: "36",
     amount: 9700,
     sender_name: "Арман Сейітов",
@@ -60,12 +76,8 @@ test("CRM receipt payload uses only OCR sender and bank fields", () => {
     date_time: "2026-07-22T17:50:00.000Z",
     transaction_id: "KZ-123456",
   });
-  assert.deepEqual(payload, {
-    action: "add_payment_comment",
-    order_id: "36",
-    amount_paid: 9700,
-    sender_name: "Арман Сейітов (Kaspi)",
-  });
+  assert.match(fallbackPayload.receipt_text, /payment_receipt/);
+  assert.match(fallbackPayload.receipt_text, /transaction=KZ-123456/);
   assert.throws(
     () => buildReceiptCrmPayload({ order_id: "36", amount: 9700, sender_name: "Xanzada👑", bank_name: "Белгісіз банк" }),
     /RECEIPT_OCR_IDENTITY_REQUIRED/

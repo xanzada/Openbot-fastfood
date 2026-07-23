@@ -251,8 +251,11 @@ function spa_api_fetch_order_context($db, $phone, $order_id = 0, $limit = 5) {
 
     $active_order = null;
     if ($order_id > 0) {
-        $owner_condition = $safe_phone !== '' ? " AND {$phone_where}" : '';
-        $row = $db->super_query("SELECT {$select} FROM {$table} WHERE id = '{$order_id}'{$owner_condition} LIMIT 1");
+        $row = null;
+        if ($safe_phone !== '') {
+            $owner_condition = " AND {$phone_where}";
+            $row = $db->super_query("SELECT {$select} FROM {$table} WHERE id = '{$order_id}'{$owner_condition} LIMIT 1");
+        }
         $active_order = spa_api_public_order_payload($row);
     } elseif ($safe_phone !== '') {
         $active_status_condition = spa_api_active_order_status_condition('status');
@@ -465,6 +468,10 @@ if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $i
     $order_id = (int)($input['order_id'] ?? 0);
     $input_phone = isset($input['phone']) ? preg_replace('/[^0-9]/', '', (string)$input['phone']) : '';
     $amount_paid = isset($input['amount_paid']) ? (int)preg_replace('/[^0-9]/', '', (string)$input['amount_paid']) : 0;
+    if ($input_phone === '') {
+        echo json_encode(['success' => false, 'error' => 'Не указан номер телефона плательщика'], JSON_UNESCAPED_UNICODE);
+        die();
+    }
 
     // УМНАЯ CROSS-VALIDATION (Если n8n не смог точно определить номер заказа)
     if ($order_id <= 0 || strlen((string)$order_id) > 9) {
@@ -490,7 +497,7 @@ if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $i
         die();
     }
 
-    $receipt_owner_condition = $input_phone !== '' ? " AND " . spa_api_phone_where($db, 'phone', $input_phone) : '';
+    $receipt_owner_condition = " AND " . spa_api_phone_where($db, 'phone', $input_phone);
     $order = $db->super_query("SELECT id, phone, status, comment FROM " . PREFIX . "_spa_orders WHERE id = '{$order_id}'{$receipt_owner_condition} LIMIT 1");
 
     if (!$order) {
@@ -503,25 +510,38 @@ if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $i
     }
 
     $sender_name = isset($input['sender_name']) ? trim(strip_tags((string)$input['sender_name'])) : '';
+    $bank_name = isset($input['bank_name']) ? trim(strip_tags((string)$input['bank_name'])) : '';
+    if ($bank_name !== '') {
+        $bank_name = mb_substr($bank_name, 0, 80, 'UTF-8');
+    }
     $receipt_text = isset($input['receipt_text']) ? trim(strip_tags((string)$input['receipt_text'])) : '';
     $receipt_url = isset($input['receipt_url']) ? trim(strip_tags((string)$input['receipt_url'])) : '';
 
+    $identity_parts = [];
+    if ($sender_name !== '') $identity_parts[] = "отправитель: {$sender_name}";
+    if ($bank_name !== '') $identity_parts[] = "банк: {$bank_name}";
+
     $parts = [];
     if ($amount_paid > 0) $parts[] = "сумма: {$amount_paid}";
-    if ($sender_name !== '') $parts[] = "отправитель: {$sender_name}";
+    $parts = array_merge($parts, $identity_parts);
     if ($receipt_text !== '') $parts[] = "текст: {$receipt_text}";
     if ($receipt_url !== '') $parts[] = "файл: {$receipt_url}";
 
     $ai_text = $receipt_text !== '' ? $receipt_text : (!empty($parts) ? implode(', ', $parts) : 'Чек на проверку');
+    if ($receipt_text !== '' && !empty($identity_parts)) {
+        $ai_text = trim($ai_text . "\n" . implode(', ', $identity_parts));
+    }
     $ai_comment_safe = $db->safesql($ai_text);
 
     $db->query("UPDATE " . PREFIX . "_spa_orders SET ai_comment = '{$ai_comment_safe}' WHERE id = '{$order_id}'");
+
     $delivery_check = $db->super_query("SELECT ai_comment FROM " . PREFIX . "_spa_orders WHERE id = '{$order_id}' LIMIT 1");
     if (!$delivery_check || (string)($delivery_check['ai_comment'] ?? '') !== $ai_text) {
         echo json_encode(['success' => false, 'error' => 'Receipt delivery was not confirmed'], JSON_UNESCAPED_UNICODE);
         die();
     }
     $delivered_at = date('c');
+    $delivery_id = 'receipt:' . $order_id . ':' . time();
 
     echo json_encode([
         'success' => true,
@@ -529,7 +549,7 @@ if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $i
         'order_id' => $order_id,
         'status' => $order['status'],
         'status_changed' => false,
-        'delivery_id' => 'receipt:' . $order_id . ':' . time(),
+        'delivery_id' => $delivery_id,
         'delivered_at' => $delivered_at
     ], JSON_UNESCAPED_UNICODE);
     die();

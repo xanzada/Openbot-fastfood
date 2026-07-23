@@ -600,15 +600,34 @@ function normalizeReceiptBankName(value = "") {
   return bank;
 }
 
+function normalizeReceiptText(value = "", fallback = "") {
+  const raw = firstValue(value, fallback);
+  return raw ? raw.slice(0, 480) : "";
+}
+
 export function buildReceiptCrmPayload(data: Record<string, any>) {
   const sender = normalizeReceiptSenderName(data.sender_name);
   const bank = normalizeReceiptBankName(data.bank_name);
   if (sender === "Белгісіз" || !bank) throw new Error("RECEIPT_OCR_IDENTITY_REQUIRED");
+  const amountPaid = Number(data.amount || data.amount_paid || 0);
+  const transactionId = String(data.transaction_id || data.receipt_transaction_id || "").trim().slice(0, 120);
+  const paidAt = String(data.paid_at || data.date_time || data.payment_date || "").trim().slice(0, 80);
+  const fallbackReceiptParts = [
+    amountPaid > 0 ? `amount=${amountPaid}` : "",
+    sender ? `sender=${sender}` : "",
+    bank ? `bank=${bank}` : "",
+    transactionId ? `transaction=${transactionId}` : "",
+    paidAt ? `paid_at=${paidAt}` : "",
+  ].filter(Boolean);
+  const fallbackReceiptText = fallbackReceiptParts.length ? `payment_receipt ${fallbackReceiptParts.join("; ")}` : "";
+  const receiptText = normalizeReceiptText(data.receipt_text, fallbackReceiptText);
   return {
     action: "add_payment_comment",
     order_id: String(data.order_id || "0").trim(),
-    amount_paid: Number(data.amount || data.amount_paid || 0),
+    amount_paid: amountPaid,
     sender_name: `${sender} (${bank})`,
+    bank_name: bank,
+    receipt_text: receiptText,
   };
 }
 
