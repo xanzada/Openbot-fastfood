@@ -72,6 +72,10 @@ function historyKey(instanceId: string, phone: string) {
   return `history:${instanceId}:${phone}`;
 }
 
+function whatsProHistoryKey(instanceId: string, phone: string) {
+  return `chatwoot:history:${instanceId}:${phone}`;
+}
+
 function magicLinkKey(instanceId: string, phone: string) {
   return `has_sent_link:${instanceId}:${phone}`;
 }
@@ -79,7 +83,8 @@ function magicLinkKey(instanceId: string, phone: string) {
 const CHAT_HISTORY_TTL_SECONDS = 604800;
 const CHAT_HISTORY_MAX_ITEMS = 120;
 const MAGIC_LINK_SENT_TTL_SECONDS = 2592000;
-export const USER_LANG_TTL_SECONDS = 21600;
+export const USER_LANG_TTL_SECONDS = 24 * 60 * 60;
+export const SITE_LANG_HINT_TTL_SECONDS = 24 * 60 * 60;
 const RECEIPT_FINGERPRINT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const COMPLAINT_MEDIA_TTL_SECONDS = 300;
 const DAILY_LOG_TTL_SECONDS = 172800;
@@ -104,6 +109,70 @@ export interface KitchenStatusState {
 
 function kitchenStatusKey(instanceId: string) {
   return `${instanceId}:kitchen_status`;
+}
+
+const KITCHEN_CONSENT_TTL_SECONDS = 30 * 60;
+const KITCHEN_CHECKOUT_GRACE_TTL_SECONDS = 30 * 60;
+
+function kitchenConsentKey(instanceId: string, phone: string) {
+  return `kitchen_consent:${instanceId}:${phone}`;
+}
+
+function kitchenCheckoutGraceKey(instanceId: string, phone: string) {
+  return `kitchen_checkout_grace:${instanceId}:${phone}`;
+}
+
+export async function savePendingKitchenConsent(
+  instanceId: string,
+  phone: string,
+  policyFingerprint: string,
+  kind: "delay" | "channel" | "delay_and_channel" = "delay"
+): Promise<boolean> {
+  return safeRedis(false, async () => {
+    const result = await redisClient.set(
+      kitchenConsentKey(instanceId, phone),
+      JSON.stringify({ policyFingerprint, kind, createdAt: Date.now() }),
+      { EX: KITCHEN_CONSENT_TTL_SECONDS }
+    );
+    return result === "OK";
+  });
+}
+
+export async function getPendingKitchenConsent(instanceId: string, phone: string): Promise<{ policyFingerprint: string; kind: "delay" | "channel" | "delay_and_channel" } | null> {
+  return safeRedis(null, async () => {
+    const raw = await redisClient.get(kitchenConsentKey(instanceId, phone));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const kind = ["delay", "channel", "delay_and_channel"].includes(parsed?.kind) ? parsed.kind : "delay";
+      return parsed?.policyFingerprint ? { policyFingerprint: String(parsed.policyFingerprint), kind } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+export async function clearPendingKitchenConsent(instanceId: string, phone: string): Promise<void> {
+  await safeRedis(undefined, async () => {
+    await redisClient.del(kitchenConsentKey(instanceId, phone));
+  });
+}
+
+export async function markKitchenCheckoutStarted(instanceId: string, phone: string): Promise<boolean> {
+  return safeRedis(false, async () => {
+    const result = await redisClient.set(kitchenCheckoutGraceKey(instanceId, phone), String(Date.now()), { EX: KITCHEN_CHECKOUT_GRACE_TTL_SECONDS });
+    return result === "OK";
+  });
+}
+
+export async function hasActiveKitchenCheckout(instanceId: string, phone: string): Promise<boolean> {
+  return safeRedis(false, async () => Boolean(await redisClient.get(kitchenCheckoutGraceKey(instanceId, phone))));
+}
+
+export async function clearKitchenCheckoutState(instanceId: string, phone: string): Promise<void> {
+  await safeRedis(undefined, async () => {
+    await redisClient.del(kitchenCheckoutGraceKey(instanceId, phone), kitchenConsentKey(instanceId, phone));
+  });
 }
 
 function toBool(value: unknown, fallback = false): boolean {
@@ -154,12 +223,12 @@ function normalizeKitchenStatus(
   const paymentDetails = normalizePaymentDetails(value.payment_details).length
     ? normalizePaymentDetails(value.payment_details)
     : previousPaymentDetails;
-  const hoursValid = Math.min(24, Math.max(0, Number(value.hours_valid || value.hoursValid || 0) || 0));
+  const hoursValid = Math.min(120, Math.max(0, Number(value.hours_valid || value.hoursValid || 0) || 0));
   const preserveReset = toBool(value.preserve_reset ?? value.preserveReset, false);
   const now = Math.floor(Date.now() / 1000);
   const resetAt =
     preserveReset
-      ? Math.min(now + 86400, Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0))
+      ? Math.min(now + 5 * 86400, Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0))
       : hoursValid > 0
         ? Math.floor(now + hoursValid * 3600)
         : Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0);
@@ -176,18 +245,69 @@ function normalizeKitchenStatus(
   };
 }
 
+function parseHistoryRows(rows: string[], store: "openbot" | "whatspro") {
+  return rows.map((item: any, index) => {
+    try {
+      const entry = JSON.parse(item);
+      return { ...entry, __historyStore: store, __historyIndex: index };
+    } catch {
+      return null;
+    }
+  }).filter((entry: any) => Boolean(entry) && entry.source !== "openbot_operator_case");
+}
+
+function historyRole(entry: any) {
+  const role = String(entry?.role || "").trim().toLowerCase();
+  const source = String(entry?.source || "").trim().toLowerCase();
+  if (role === "operator" || source === "operator_panel" || source === "whatsapp_app") return "operator";
+  if (["assistant", "model", "bot", "ai"].includes(role) || entry?.direction === "outgoing" || entry?.fromMe === true) return "assistant";
+  if (role === "system") return "system";
+  return "user";
+}
+
+function mergeConversationHistory(openbotRows: string[], whatsProRows: string[]) {
+  const combined = [
+    ...parseHistoryRows(openbotRows, "openbot"),
+    ...parseHistoryRows(whatsProRows, "whatspro"),
+  ].sort((a: any, b: any) =>
+    (Number(a?.createdAt || a?.timestamp || 0) - Number(b?.createdAt || b?.timestamp || 0)) ||
+    (Number(a?.__historyIndex || 0) - Number(b?.__historyIndex || 0))
+  );
+
+  const result: any[] = [];
+  const ids = new Set<string>();
+  for (const entry of combined) {
+    const id = String(entry?.id || entry?.messageId || "").trim();
+    if (id && ids.has(id)) continue;
+
+    const role = historyRole(entry);
+    const text = String(entry?.text || entry?.body || "").replace(/\s+/g, " ").trim();
+    const createdAt = Number(entry?.createdAt || entry?.timestamp || 0) || 0;
+    const duplicateIndex = result.findIndex((current) => {
+      if (historyRole(current) !== role) return false;
+      const currentText = String(current?.text || current?.body || "").replace(/\s+/g, " ").trim();
+      const currentAt = Number(current?.createdAt || current?.timestamp || 0) || 0;
+      return Boolean(text && text === currentText && createdAt && currentAt && Math.abs(createdAt - currentAt) <= 15000);
+    });
+    if (duplicateIndex >= 0) {
+      if (role === "operator" && historyRole(result[duplicateIndex]) !== "operator") result[duplicateIndex] = entry;
+      if (id) ids.add(id);
+      continue;
+    }
+    if (id) ids.add(id);
+    result.push(entry);
+  }
+
+  return result.map(({ __historyStore, __historyIndex, ...entry }) => entry);
+}
+
 export async function getChatHistory(instanceId: string, phone: string): Promise<any[]> {
   return safeRedis([], async () => {
-    const raw = await redisClient.lRange(historyKey(instanceId, phone), 0, -1);
-    return raw
-      .map((item: any) => {
-        try {
-          return JSON.parse(item);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    const [openbotRows, whatsProRows] = await Promise.all([
+      redisClient.lRange(historyKey(instanceId, phone), 0, -1),
+      redisClient.lRange(whatsProHistoryKey(instanceId, phone), 0, -1),
+    ]);
+    return mergeConversationHistory(openbotRows, whatsProRows);
   });
 }
 
@@ -212,6 +332,10 @@ export function languageKey(instanceId: string, phone: string) {
   return `lang:${instanceId}:${phone}`;
 }
 
+export function siteLanguageHintKey(instanceId: string, phone: string) {
+  return `site_lang_hint:${instanceId}:${phone}`;
+}
+
 export function receiptFingerprintKey(instanceId: string, fingerprint: string) {
   return `receipt_seen:${instanceId}:${fingerprint}`;
 }
@@ -230,6 +354,20 @@ export async function getUserLang(instanceId: string, phone: string): Promise<"k
 export async function saveUserLang(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<boolean> {
   return safeRedis(false, async () => {
     const result = await redisClient.set(languageKey(instanceId, phone), lang, languageSetOptions());
+    return result === "OK";
+  });
+}
+
+export async function getSiteLanguageHint(instanceId: string, phone: string): Promise<"kk" | "ru" | null> {
+  return safeRedis(null, async () => {
+    const value = await redisClient.get(siteLanguageHintKey(instanceId, phone));
+    return value === "kk" || value === "ru" ? value : null;
+  });
+}
+
+export async function saveSiteLanguageHint(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<boolean> {
+  return safeRedis(false, async () => {
+    const result = await redisClient.set(siteLanguageHintKey(instanceId, phone), lang, { EX: SITE_LANG_HINT_TTL_SECONDS });
     return result === "OK";
   });
 }
@@ -356,72 +494,29 @@ function parseShiftNoteRecord(raw = "") {
   }
 }
 
-function normalizeShiftNoteText(value: unknown): string {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function shiftNoteTextMatches(currentText: unknown, expectedText: unknown): boolean {
-  const current = normalizeShiftNoteText(currentText);
-  const expected = normalizeShiftNoteText(expectedText);
-  if (!current || !expected) return false;
-  if (current === expected) return true;
-  return (expected.length >= 8 && current.includes(expected)) || (current.length >= 8 && expected.includes(current));
-}
-
-const SHIFT_NOTE_DERIVED_RE =
-  /(уақытша|уакытша|қабылдай алмай|кабылдай алмай|кідіріс|кедіріс|кешігу|задерж|временно|не можем принять|нет в наличии|ас үй|ас уй|кухн|минут|мин|суши|ролл|донер|пицц|свет|жарық|жарык|демалыс|курьер)/iu;
-
-function isDerivedShiftNoteHistory(historyText: unknown, noteText: unknown): boolean {
-  const history = normalizeShiftNoteText(historyText);
-  const note = normalizeShiftNoteText(noteText);
-  if (!history || !note) return false;
-  if (shiftNoteTextMatches(history, note)) return true;
-  if (!SHIFT_NOTE_DERIVED_RE.test(history)) return false;
-
-  const noteTokens = note
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((token) => token.length >= 3 && !/^(мин|минут|бар|жок|жоқ|нет|есть|қазір|казир|сейчас)$/iu.test(token));
-  return !noteTokens.length || noteTokens.some((token) => history.includes(token));
-}
-
-async function purgeShiftNoteTextFromHistory(instanceId: string, noteText: string): Promise<number> {
-  if (!normalizeShiftNoteText(noteText)) return 0;
+async function purgeShiftNoteIdsFromHistory(instanceId: string, noteIds: string[]): Promise<number> {
+  const ids = new Set(noteIds.map(String).filter(Boolean));
+  if (!ids.size) return 0;
   let removedTotal = 0;
   const keys = await scanKeys(`history:${instanceId}:*`);
-
   for (const key of keys) {
     const ttlBefore = await redisClient.ttl(key).catch(() => -1);
-    const rawHistory = await redisClient.lRange(key, 0, -1).catch(() => []);
-    const kept: string[] = [];
-    let removedFromKey = 0;
-
-    for (const raw of rawHistory) {
+    const rows = await redisClient.lRange(key, 0, -1).catch(() => []);
+    const kept = rows.filter((raw) => {
       try {
-        const parsed = JSON.parse(raw);
-        if (isDerivedShiftNoteHistory(parsed?.text, noteText)) {
-          removedFromKey += 1;
-          continue;
-        }
-      } catch {
-        // Keep malformed entries rather than risking customer history loss.
-      }
-      kept.push(raw);
-    }
-
-    if (!removedFromKey) continue;
+        const entry = JSON.parse(raw);
+        const sourceNoteIds = Array.isArray(entry?.sourceNoteIds) ? entry.sourceNoteIds.map(String) : [];
+        return !sourceNoteIds.some((id: string) => ids.has(id));
+      } catch { return true; }
+    });
+    const removed = rows.length - kept.length;
+    if (!removed) continue;
     const multi = redisClient.multi().del(key);
-    for (const item of kept) {
-      multi.rPush(key, item);
-    }
+    kept.forEach((row) => multi.rPush(key, row));
     await multi.exec();
     if (kept.length && ttlBefore > 0) await redisClient.expire(key, ttlBefore);
-    removedTotal += removedFromKey;
+    removedTotal += removed;
   }
-
   return removedTotal;
 }
 
@@ -470,45 +565,25 @@ export async function deleteShiftNote(
 ): Promise<void> {
   await safeRedis(undefined, async () => {
     const safeNoteId = String(noteId || "").trim();
-    const expectedText = String(text || "").trim();
-    const deletedKeys: string[] = [];
-    const purgeTexts = new Set<string>();
-    if (expectedText) purgeTexts.add(expectedText);
-
-    if (safeNoteId && safeNoteId !== "0") {
-      const key = `shift_note:${instanceId}:${safeNoteId}`;
-      const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
-      if (stored.text) purgeTexts.add(stored.text);
-      if (await redisClient.del(key)) deletedKeys.push(key);
-    }
-
-    if (!deletedKeys.length) {
+    const expectedText = String(text || "").trim().toLowerCase();
+    const deletedIds: string[] = [];
+    const deleteKey = async (key: string) => {
+      if (await redisClient.del(key)) deletedIds.push(key.split(":").pop() || "");
+    };
+    if (safeNoteId && safeNoteId !== "0") await deleteKey(`shift_note:${instanceId}:${safeNoteId}`);
+    if (!deletedIds.length) {
       const keys = await scanKeys(`shift_note:${instanceId}:*`);
-      if (expectedText) {
-        for (const key of keys) {
-          const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
-          if (!shiftNoteTextMatches(stored.text, expectedText)) continue;
-          if (stored.text) purgeTexts.add(stored.text);
-          await redisClient.del(key);
-          deletedKeys.push(key);
-        }
-      } else if (!safeNoteId || safeNoteId === "0") {
-        for (const key of keys) {
-          const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
-          if (stored.text) purgeTexts.add(stored.text);
-          await redisClient.del(key);
-          deletedKeys.push(key);
-        }
+      for (const key of keys) {
+        const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
+        const exactMatch = expectedText && stored.text.toLowerCase().trim() === expectedText;
+        if (exactMatch || ((!safeNoteId || safeNoteId === "0") && !expectedText)) await deleteKey(key);
       }
     }
-
-    for (const purgeText of purgeTexts) {
-      await purgeShiftNoteTextFromHistory(instanceId, purgeText);
-    }
+    await purgeShiftNoteIdsFromHistory(instanceId, deletedIds);
   });
 }
 
-export async function getActiveShiftNotes(instanceId: string): Promise<Array<{ text: string; expiresAt?: number }>> {
+export async function getActiveShiftNotes(instanceId: string): Promise<Array<{ noteId: string; text: string; expiresAt?: number }>> {
   return safeRedis([], async () => {
     const keys = await scanKeys(`shift_note:${instanceId}:*`);
     const notes = [];
@@ -518,7 +593,7 @@ export async function getActiveShiftNotes(instanceId: string): Promise<Array<{ t
         await redisClient.del(key).catch(() => undefined);
         continue;
       }
-      notes.push({ text: note.text, expiresAt: note.expiresAt || undefined });
+      notes.push({ noteId: key.split(":").pop() || "", text: note.text, expiresAt: note.expiresAt || undefined });
     }
     return notes;
   });

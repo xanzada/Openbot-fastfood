@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.env
+*.log
+*.7z
+*.zip
+coverage
+test
+api_bot.php
+spa-internet-magazin.xml

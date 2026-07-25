@@ -1,4 +1,5 @@
-import { detectLangWithFallback } from "../utils/language.js";
+import crypto from "node:crypto";
+import { detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
 import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/nocodb.service.js";
@@ -6,6 +7,7 @@ import {
   connectRedis,
   getActiveShiftNotes,
   getChatHistory,
+  getSiteLanguageHint,
   getUserLang,
   hasMagicLinkBeenSent,
   saveUserLang,
@@ -16,6 +18,7 @@ export interface InboundMessage {
   instanceId: string;
   phone: string;
   text: string;
+  languageCandidateText?: string;
   mediaContext?: Record<string, any> | null;
   senderMeta?: Record<string, any>;
 }
@@ -48,20 +51,37 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   if (!phone) throw new Error("phone is required");
   if (!text) throw new Error("text is required");
 
-  const [config, storedLang, chatHistory, activeShiftNotes, magicLinkAlreadySent] =
+  const [config, storedLang, siteLanguageHint, chatHistory, activeShiftNotes, magicLinkAlreadySent] =
     await Promise.all([
       getRestaurantConfig(instanceId),
       getUserLang(instanceId, phone).catch(() => null),
+      getSiteLanguageHint(instanceId, phone).catch(() => null),
       getChatHistory(instanceId, phone).catch(() => []),
       getActiveShiftNotes(instanceId).catch(() => []),
       hasMagicLinkBeenSent(instanceId, phone).catch(() => false),
     ]);
 
   const safeConfig = { ...(config || {}) };
-  let language = await detectLangWithFallback(text, storedLang);
-  if (!storedLang) {
-    const claimed = await saveUserLang(instanceId, phone, language).catch(() => false);
-    if (!claimed) language = (await getUserLang(instanceId, phone).catch(() => null)) || language;
+  const activeShiftNotesFingerprint = activeShiftNotes.length
+    ? crypto.createHash("sha256").update(activeShiftNotes.map((note) => `${String(note?.text || "").trim()}|${Number(note?.expiresAt || 0) || 0}`).sort().join("\n")).digest("hex")
+    : "";
+  const languageCandidateText = String(input.languageCandidateText ?? text).trim();
+  let language: "kk" | "ru" = storedLang || siteLanguageHint || "kk";
+  let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
+  let languageLocked = Boolean(storedLang);
+  if (!storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+    const decision = await detectLanguageDecision(languageCandidateText);
+    language = decision.language;
+    languageDetector = decision.detector;
+    { // Every first genuine customer text receives a deterministic 24-hour lock, including Gemini fallback.
+
+      const claimed = await saveUserLang(instanceId, phone, language).catch(() => false);
+      if (claimed) languageLocked = true;
+      else {
+        const concurrentLock = await getUserLang(instanceId, phone).catch(() => null);
+        if (concurrentLock) { language = concurrentLock; languageDetector = "redis_lock"; languageLocked = true; }
+      }
+    }
   }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
   if (domain) safeConfig.domain = domain;
@@ -111,7 +131,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     pickup: runtimeStatus?.pickup ?? runtimeStatus?.kitchen_status?.pickup ?? null,
     is_emergency: fetchedSettings.is_emergency,
     reset_at: Number(runtimeStatus?.reset_at || runtimeStatus?.kitchen_status?.reset_at || 0) || 0,
-    payment_details: Array.isArray(runtimeStatus?.payment_details) ? runtimeStatus.payment_details : [],
+    payment_details: Array.isArray(runtimeStatus?.payment_details) ? runtimeStatus.payment_details : Array.isArray(runtimeStatus?.kitchen_status?.payment_details) ? runtimeStatus.kitchen_status.payment_details : [],
     active_shift_notes: activeShiftNotes,
     stale: Boolean(runtimeStatus?.stale || runtimeStatus?.is_stale || runtimeStatus?.stale_runtime_backup),
     runtime_available: runtimeAvailable,
@@ -126,6 +146,8 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     language,
     languagePolicy: {
       cached: Boolean(storedLang),
+      locked: languageLocked,
+      detector: languageDetector,
       output: language === "ru" ? "pure_ru_only" : "pure_kk_only",
       rule:
         language === "ru"
@@ -139,6 +161,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     activeOrder,
     chatHistory,
     activeShiftNotes,
+    activeShiftNotesFingerprint,
     mediaContext: input.mediaContext || null,
     shporContext,
     magicLinkAlreadySent,

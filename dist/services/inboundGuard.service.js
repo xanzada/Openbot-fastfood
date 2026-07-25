@@ -7,14 +7,164 @@ const SPAM_WINDOW_SECONDS = 60;
 const SPAM_LIMIT = Number(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE || 15);
 const MUTE_SECONDS = Number(process.env.OPENBOT_SPAM_MUTE_SECONDS || 900);
 const DUPLICATE_TEXT_SECONDS = 5;
+const INBOUND_BUFFER_SECONDS = 5;
+const INBOUND_BUFFER_DELAY_MS = Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 1200);
+const INBOUND_BUFFER_MAX_ITEMS = 8;
+const INBOUND_BUFFER_MAX_CHARS = 2e3;
 const PROCESSING_LOCK_SECONDS = 180;
 const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
 const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS || 300);
 const OPERATOR_ACTIVE_SECONDS = Number(process.env.OPERATOR_ACTIVE_SECONDS || 60);
-const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
+const MAX_IMAGE_BYTES = Number(process.env.OPENBOT_MAX_IMAGE_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
+const MAX_DOCUMENT_BYTES = Number(process.env.OPENBOT_MAX_DOCUMENT_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
+const MAX_AUDIO_BYTES = Number(process.env.OPENBOT_MAX_AUDIO_BYTES || 8 * 1024 * 1024);
+const MAX_VOICE_SECONDS = Number(process.env.OPENBOT_MAX_VOICE_SECONDS || 180);
+const MEDIA_AI_LIMIT_PER_5_MINUTES = Number(process.env.OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES || 6);
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
-const ALLOWED_AUDIO_MIME_BASES = new Set([
+const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+function sha1(value = "") {
+  return crypto.createHash("sha1").update(value).digest("hex");
+}
+function nestedMessage(body) {
+  return body?.data?.message || body?.messageData?.message || body?.message || {};
+}
+function actualMessage(body) {
+  const msg = nestedMessage(body);
+  return msg?.ephemeralMessage?.message || msg || {};
+}
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+function firstNumber(...values) {
+  for (const value of values) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return num;
+    if (value && typeof value.toNumber === "function") {
+      const converted = Number(value.toNumber());
+      if (Number.isFinite(converted) && converted > 0) return converted;
+    }
+  }
+  return 0;
+}
+function getDeclaredMediaBytes(mediaMessage) {
+  return firstNumber(mediaMessage?.fileLength, mediaMessage?.fileSize, mediaMessage?.size);
+}
+function normalizeMimeBase(mimeType = "") {
+  return String(mimeType || "").split(";")[0].trim().toLowerCase();
+}
+function maxBytesForKind(kind) {
+  if (kind === "audio") return MAX_AUDIO_BYTES;
+  if (kind === "document") return MAX_DOCUMENT_BYTES;
+  return MAX_IMAGE_BYTES;
+}
+function mediaSignatureMatches(mimeType, base64) {
+  try {
+    const data = String(base64 || "").replace(/^data:[^;]+;base64,/i, "");
+    const b = Buffer.from(data.slice(0, 64), "base64");
+    const hex = b.toString("hex");
+    const ascii = b.toString("ascii");
+    const mime = normalizeMimeBase(mimeType);
+    if (["image/jpeg", "image/jpg"].includes(mime)) return hex.startsWith("ffd8ff");
+    if (mime === "image/png") return hex.startsWith("89504e470d0a1a0a");
+    if (mime === "image/webp") return ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP";
+    if (mime === "application/pdf") return ascii.startsWith("%PDF-");
+    if (["audio/ogg", "audio/opus"].includes(mime)) return ascii.startsWith("OggS");
+    if (["audio/wav", "audio/x-wav"].includes(mime)) return ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WAVE";
+    if (["audio/mpeg", "audio/mp3"].includes(mime)) return ascii.startsWith("ID3") || b[0] === 255 && (b[1] & 224) === 224;
+    if (["audio/webm"].includes(mime)) return hex.startsWith("1a45dfa3");
+    if (["audio/mp4", "audio/m4a"].includes(mime)) return ascii.slice(4, 8) === "ftyp";
+    if (mime === "audio/flac") return ascii.startsWith("fLaC");
+    if (mime === "audio/aac") return b[0] === 255 && (b[1] & 246) === 240;
+    return false;
+  } catch {
+    return false;
+  }
+}
+function normalizeContactText(value) {
+  return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+function tokenizeContactText(value) {
+  return normalizeContactText(value).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+function hasPrivateKeyword(values) {
+  const contactTokens = values.flatMap(tokenizeContactText);
+  if (!contactTokens.length) return false;
+  const tokenText = ` ${contactTokens.join(" ")} `;
+  return PRIVATE_CONTACT_KEYWORDS.some((keyword) => {
+    const keywordTokens = tokenizeContactText(keyword);
+    if (!keywordTokens.length) return false;
+    return tokenText.includes(` ${keywordTokens.join(" ")} `);
+  });
+}
+function defaultMimeForKind(kind, rawMedia) {
+  if (kind === "image") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "image/jpeg";
+  if (kind === "audio") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "audio/ogg";
+  if (kind === "video") return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "video/mp4";
+  if (kind === "document") return firstString(rawMedia?.mimetype, rawMedia?.mimeType);
+  return firstString(rawMedia?.mimetype, rawMedia?.mimeType);
+}
+function extractMessageId(body) {
+  const raw = body?.messageId || body?.id || body?.data?.key?.id || body?.key?.id || body?.message?.key?.id || "";
+  return String(raw || "").trim().slice(0, 160);
+}
+function extractInboundText(body) {
+  const msg = actualMessage(body);
+  return firstString(
+    body?.text,
+    body?.body,
+    typeof body?.message === "string" ? body.message : "",
+    body?.caption,
+    msg?.conversation,
+    msg?.extendedTextMessage?.text,
+    msg?.imageMessage?.caption,
+    msg?.videoMessage?.caption,
+    msg?.documentMessage?.caption
+  );
+}
+function extractSenderMeta(body) {
+  const eventData = body?.data || body || {};
+  return {
+    pushName: eventData.pushName || body?.pushName || "",
+    contactName: eventData.contactName || body?.contactName || eventData.contact?.name || body?.contact?.name || "",
+    contactShortName: eventData.contact?.shortName || body?.contact?.shortName || "",
+    contactPushName: eventData.contact?.pushName || eventData.contact?.pushname || body?.contact?.pushName || body?.contact?.pushname || "",
+    isMyContact: Boolean(eventData.isMyContact || body?.isMyContact || eventData.contact?.isMyContact || body?.contact?.isMyContact)
+  };
+}
+function extractInboundMedia(body) {
+  const msg = actualMessage(body);
+  const messageType = String(body?.type || body?.mediaKind || body?.data?.type || "").trim().toLowerCase();
+  const image = msg?.imageMessage || body?.imageMessage || body?.media?.imageMessage || (messageType === "image" ? body?.media || body : null);
+  const document = msg?.documentMessage || body?.documentMessage || body?.media?.documentMessage || (messageType === "document" ? body?.media || body : null);
+  const video = msg?.videoMessage || body?.videoMessage || body?.media?.videoMessage || (messageType === "video" ? body?.media || body : null);
+  const audio = msg?.audioMessage || body?.audioMessage || body?.media?.audioMessage || (["audio", "ptt"].includes(messageType) ? body?.media || body : null);
+  const sticker = msg?.stickerMessage || body?.stickerMessage || body?.media?.stickerMessage || (messageType === "sticker" ? body?.media || body : null);
+  const ptv = msg?.ptvMessage || body?.ptvMessage || body?.media?.ptvMessage;
+  const rawMedia = image || document || video || audio || sticker || ptv || body?.media || null;
+  const hasMedia = Boolean(body?.hasMedia || body?.media || image || document || video || audio || sticker || ptv);
+  if (!hasMedia) return null;
+  const kind = image ? "image" : document ? "document" : video || ptv ? "video" : audio ? "audio" : sticker ? "sticker" : "unknown";
+  const mimeType = firstString(body?.mimeType, body?.mediaType, defaultMimeForKind(kind, rawMedia));
+  const mimeBase = normalizeMimeBase(mimeType);
+  const sizeBytes = firstNumber(body?.fileLength, body?.sizeBytes, body?.mediaSize) || getDeclaredMediaBytes(rawMedia);
+  const caption = firstString(body?.caption, rawMedia?.caption);
+  const durationSeconds = firstNumber(body?.duration, body?.seconds, rawMedia?.seconds, rawMedia?.duration);
+  const isVoiceNote = kind === "audio" && Boolean(
+    messageType === "ptt" || String(body?.mediaKind || body?.data?.mediaKind || "").toLowerCase() === "ptt" || (rawMedia?.ptt ?? body?.ptt ?? body?.isPtt ?? body?.isVoiceNote ?? false)
+  );
+  const flags = [];
+  if (kind !== "sticker" && !mimeBase) flags.push("missing_mime_type");
+  if (kind === "document" && mimeBase !== "application/pdf") flags.push("unsupported_document");
+  if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType)) flags.push("unsupported_mime_type");
+  if (kind !== "sticker" && kind !== "video" && sizeBytes > maxBytesForKind(kind)) flags.push("media_too_large");
+  if (kind === "video") flags.push("video_unsupported");
+  if (kind === "audio" && !isVoiceNote) flags.push("music_audio_not_supported");
+  if (kind === "audio" && durationSeconds > MAX_VOICE_SECONDS) flags.push("voice_too_long");
+  if (kind === "audio" && ![
     "audio/ogg",
     "audio/opus",
     "audio/mpeg",
@@ -25,401 +175,385 @@ const ALLOWED_AUDIO_MIME_BASES = new Set([
     "audio/mp4",
     "audio/m4a",
     "audio/aac",
-    "audio/flac",
-]);
-const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
-    .split(",")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
-function sha1(value = "") {
-    return crypto.createHash("sha1").update(value).digest("hex");
+    "audio/flac"
+  ].includes(mimeBase)) {
+    flags.push("unsupported_audio_mime");
+  }
+  if (kind === "unknown") flags.push("unknown_media_type");
+  const historyLabel = kind === "audio" ? "[Audio sent]" : kind === "image" ? "[Photo sent]" : kind === "document" ? "[Document sent]" : kind === "video" ? "[Video sent]" : kind === "sticker" ? "[Sticker sent]" : "[Media sent]";
+  return {
+    hasMedia: true,
+    kind,
+    mimeType,
+    sizeBytes,
+    valid: flags.length === 0,
+    reason: flags[0] || void 0,
+    flags,
+    caption,
+    messageId: extractMessageId(body) || void 0,
+    mediaType: mimeType,
+    historyLabel,
+    durationSeconds: durationSeconds || void 0,
+    isVoiceNote
+  };
 }
-function nestedMessage(body) {
-    return body?.data?.message || body?.messageData?.message || body?.message || {};
+function safeMediaMetadata(mediaContext) {
+  if (!mediaContext) return null;
+  return {
+    hasMedia: true,
+    kind: mediaContext.kind,
+    mimeType: mediaContext.mimeType,
+    sizeBytes: mediaContext.sizeBytes,
+    valid: mediaContext.valid,
+    reason: mediaContext.reason,
+    flags: mediaContext.flags.slice(0, 8),
+    caption: String(mediaContext.caption || "").slice(0, 500),
+    messageId: mediaContext.messageId,
+    durationSeconds: mediaContext.durationSeconds,
+    isVoiceNote: mediaContext.isVoiceNote,
+    analysis: mediaContext.analysis ? {
+      type: String(mediaContext.analysis.type || "").slice(0, 40),
+      analysis: String(mediaContext.analysis.analysis || "").slice(0, 1e3),
+      admin_summary: String(mediaContext.analysis.admin_summary || "").slice(0, 1e3)
+    } : void 0,
+    historyLabel: mediaContext.historyLabel
+  };
 }
-function actualMessage(body) {
-    const msg = nestedMessage(body);
-    return msg?.ephemeralMessage?.message || msg || {};
-}
-function firstString(...values) {
-    for (const value of values) {
-        if (typeof value === "string" && value.trim())
-            return value.trim();
+function detectOggOpusDurationSeconds(base64Value = "") {
+  try {
+    const raw = String(base64Value || "").includes(",") ? String(base64Value).split(",").pop() || "" : String(base64Value || "");
+    const buffer = Buffer.from(raw, "base64");
+    if (buffer.length < 27 || buffer.subarray(0, 4).toString("ascii") !== "OggS") return 0;
+    let offset = 0;
+    let maxGranule = 0n;
+    while (offset + 27 <= buffer.length && buffer.subarray(offset, offset + 4).toString("ascii") === "OggS") {
+      const segmentCount = buffer[offset + 26];
+      if (offset + 27 + segmentCount > buffer.length) break;
+      let bodyLength = 0;
+      for (let index = 0; index < segmentCount; index += 1) bodyLength += buffer[offset + 27 + index];
+      const pageLength = 27 + segmentCount + bodyLength;
+      if (offset + pageLength > buffer.length) break;
+      const granule = buffer.readBigUInt64LE(offset + 6);
+      if (granule !== 0xffffffffffffffffn && granule > maxGranule) maxGranule = granule;
+      offset += pageLength;
     }
-    return "";
-}
-function firstNumber(...values) {
-    for (const value of values) {
-        const num = Number(value);
-        if (Number.isFinite(num) && num > 0)
-            return num;
-        if (value && typeof value.toNumber === "function") {
-            const converted = Number(value.toNumber());
-            if (Number.isFinite(converted) && converted > 0)
-                return converted;
-        }
-    }
+    return maxGranule > 0n ? Number(maxGranule) / 48e3 : 0;
+  } catch {
     return 0;
-}
-function getDeclaredMediaBytes(mediaMessage) {
-    return firstNumber(mediaMessage?.fileLength, mediaMessage?.fileSize, mediaMessage?.size);
-}
-function normalizeMimeBase(mimeType = "") {
-    return String(mimeType || "").split(";")[0].trim().toLowerCase();
-}
-function evaluateMediaValidity(kind, mimeType, sizeBytes) {
-    const flags = [];
-    const mimeBase = normalizeMimeBase(mimeType);
-    if (!mimeBase)
-        flags.push("missing_mime_type");
-    if (kind === "document" && mimeBase !== "application/pdf")
-        flags.push("unsupported_document");
-    if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType))
-        flags.push("unsupported_mime_type");
-    if (sizeBytes > MAX_MEDIA_BYTES)
-        flags.push("media_too_large");
-    if (kind === "audio" && !ALLOWED_AUDIO_MIME_BASES.has(mimeBase))
-        flags.push("unsupported_audio_mime");
-    if (kind === "unknown")
-        flags.push("unknown_media_type");
-    return {
-        flags,
-        reason: flags[0] || undefined,
-        valid: flags.length === 0,
-    };
-}
-function normalizeContactText(value) {
-    return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
-}
-function tokenizeContactText(value) {
-    return normalizeContactText(value).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-}
-function hasPrivateKeyword(values) {
-    const contactTokens = values.flatMap(tokenizeContactText);
-    if (!contactTokens.length)
-        return false;
-    const tokenText = ` ${contactTokens.join(" ")} `;
-    return PRIVATE_CONTACT_KEYWORDS.some((keyword) => {
-        const keywordTokens = tokenizeContactText(keyword);
-        if (!keywordTokens.length)
-            return false;
-        return tokenText.includes(` ${keywordTokens.join(" ")} `);
-    });
-}
-function defaultMimeForKind(kind, rawMedia) {
-    if (kind === "image")
-        return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "image/jpeg";
-    if (kind === "audio")
-        return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "audio/ogg";
-    if (kind === "video")
-        return firstString(rawMedia?.mimetype, rawMedia?.mimeType) || "video/mp4";
-    if (kind === "document")
-        return firstString(rawMedia?.mimetype, rawMedia?.mimeType);
-    return firstString(rawMedia?.mimetype, rawMedia?.mimeType);
-}
-export function extractMessageId(body) {
-    const raw = body?.messageId ||
-        body?.id ||
-        body?.data?.key?.id ||
-        body?.key?.id ||
-        body?.message?.key?.id ||
-        "";
-    return String(raw || "").trim().slice(0, 160);
-}
-export function extractInboundText(body) {
-    const msg = actualMessage(body);
-    return firstString(body?.text, body?.body, typeof body?.message === "string" ? body.message : "", body?.caption, msg?.conversation, msg?.extendedTextMessage?.text, msg?.imageMessage?.caption, msg?.videoMessage?.caption, msg?.documentMessage?.caption);
-}
-export function extractSenderMeta(body) {
-    const eventData = body?.data || body || {};
-    return {
-        pushName: eventData.pushName || body?.pushName || "",
-        contactName: eventData.contactName || body?.contactName || eventData.contact?.name || body?.contact?.name || "",
-        contactShortName: eventData.contact?.shortName || body?.contact?.shortName || "",
-        contactPushName: eventData.contact?.pushName || eventData.contact?.pushname || body?.contact?.pushName || body?.contact?.pushname || "",
-        isMyContact: Boolean(eventData.isMyContact || body?.isMyContact || eventData.contact?.isMyContact || body?.contact?.isMyContact),
-    };
-}
-export function extractInboundMedia(body) {
-    const msg = actualMessage(body);
-    const image = msg?.imageMessage || body?.imageMessage || body?.media?.imageMessage;
-    const document = msg?.documentMessage || body?.documentMessage || body?.media?.documentMessage;
-    const video = msg?.videoMessage || body?.videoMessage || body?.media?.videoMessage;
-    const audio = msg?.audioMessage || body?.audioMessage || body?.media?.audioMessage || (body?.type === "audio" ? body?.media || body : null);
-    const ptv = msg?.ptvMessage || body?.ptvMessage || body?.media?.ptvMessage;
-    const rawMedia = image || document || video || audio || ptv || body?.media || null;
-    const hasMedia = Boolean(body?.hasMedia || body?.media || image || document || video || audio || ptv);
-    if (!hasMedia)
-        return null;
-    const kind = image
-        ? "image"
-        : document
-            ? "document"
-            : video || ptv
-                ? "video"
-                : audio
-                    ? "audio"
-                    : "unknown";
-    const mimeType = firstString(body?.mimeType, body?.mediaType, defaultMimeForKind(kind, rawMedia));
-    const sizeBytes = firstNumber(body?.fileLength, body?.sizeBytes, body?.mediaSize) || getDeclaredMediaBytes(rawMedia);
-    const caption = firstString(body?.caption, rawMedia?.caption);
-    const validity = evaluateMediaValidity(kind, mimeType, sizeBytes);
-    const historyLabel = kind === "audio"
-        ? "[Audio sent]"
-        : kind === "image"
-            ? "[Photo sent]"
-            : kind === "document"
-                ? "[Document sent]"
-                : kind === "video"
-                    ? "[Video sent]"
-                    : "[Media sent]";
-    return {
-        hasMedia: true,
-        kind,
-        mimeType,
-        sizeBytes,
-        valid: validity.valid,
-        reason: validity.reason,
-        flags: validity.flags,
-        caption,
-        messageId: extractMessageId(body) || undefined,
-        mediaType: mimeType,
-        historyLabel,
-    };
+  }
 }
 function cleanDataUrlBase64(value = "", fallbackMimeType = "application/octet-stream") {
-    const raw = String(value || "").trim();
-    if (!raw)
-        return null;
-    if (raw.includes(";base64,")) {
-        const [prefix, data] = raw.split(";base64,");
-        const mimeType = prefix.replace(/^data:/i, "") || fallbackMimeType;
-        return { dataUrl: raw, base64: data || "", mimeType };
-    }
-    if (/^[A-Za-z0-9+/=\s]+$/.test(raw) && raw.length > 80) {
-        const cleanBase64 = raw.replace(/\s+/g, "");
-        return {
-            dataUrl: `data:${fallbackMimeType};base64,${cleanBase64}`,
-            base64: cleanBase64,
-            mimeType: fallbackMimeType,
-        };
-    }
-    return null;
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.includes(";base64,")) {
+    const [prefix, data] = raw.split(";base64,");
+    const mimeType = prefix.replace(/^data:/i, "") || fallbackMimeType;
+    return { dataUrl: raw, base64: data || "", mimeType };
+  }
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw) && raw.length > 80) {
+    const cleanBase64 = raw.replace(/\s+/g, "");
+    return {
+      dataUrl: `data:${fallbackMimeType};base64,${cleanBase64}`,
+      base64: cleanBase64,
+      mimeType: fallbackMimeType
+    };
+  }
+  return null;
 }
 function mediaDownloadUrl(body) {
-    return firstString(body?.mediaUrl, body?.downloadUrl, body?.url, body?.media?.url, body?.media?.downloadUrl, body?.media?.mediaUrl, body?.data?.mediaUrl, body?.data?.downloadUrl, body?.data?.media?.url, body?.message?.mediaUrl, body?.message?.downloadUrl);
+  return firstString(
+    body?.mediaUrl,
+    body?.downloadUrl,
+    body?.url,
+    body?.media?.url,
+    body?.media?.downloadUrl,
+    body?.media?.mediaUrl,
+    body?.data?.mediaUrl,
+    body?.data?.downloadUrl,
+    body?.data?.media?.url,
+    body?.message?.mediaUrl,
+    body?.message?.downloadUrl
+  );
 }
 function directMediaBase64(body) {
-    return firstString(body?.base64, body?.dataUrl, body?.media?.base64, body?.media?.data, body?.media?.dataUrl, body?.data?.base64, body?.data?.media?.base64, body?.message?.base64);
+  return firstString(
+    body?.base64,
+    body?.dataUrl,
+    body?.mediaData,
+    body?.media?.base64,
+    body?.media?.data,
+    body?.media?.dataUrl,
+    body?.data?.base64,
+    body?.data?.mediaData,
+    body?.data?.media?.base64,
+    body?.message?.base64
+  );
 }
 function webhookInstanceId(body) {
-    return firstString(body?.instance, body?.instanceId, body?.instance_id, body?.restaurant_id, body?.restaurant_instance, body?.data?.instance, body?.data?.instanceId);
+  return firstString(
+    body?.instance,
+    body?.instanceId,
+    body?.instance_id,
+    body?.restaurant_id,
+    body?.restaurant_instance,
+    body?.data?.instance,
+    body?.data?.instanceId
+  );
 }
 async function whatsproHeaders(instanceId = "") {
-    const headers = {};
-    const config = instanceId ? await getRestaurantConfig(instanceId).catch(() => null) : null;
-    const token = firstString(config?.whatspro_api_token, config?.whatsproApiToken);
-    if (token) {
-        headers.authorization = `Bearer ${token}`;
-        headers["x-api-key"] = token;
-    }
-    return headers;
+  const headers = {};
+  const config = instanceId ? await getRestaurantConfig(instanceId).catch(() => null) : null;
+  const token = firstString(
+    config?.whatspro_api_token,
+    config?.whatsproApiToken
+  );
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+    headers["x-api-key"] = token;
+  }
+  return headers;
 }
-export async function getBase64Media(body, mediaContext = extractInboundMedia(body)) {
-    const mimeType = mediaContext?.mimeType || firstString(body?.mimeType, body?.mediaType) || "application/octet-stream";
-    const direct = cleanDataUrlBase64(directMediaBase64(body), mimeType);
-    if (direct?.base64)
-        return direct;
-    const url = mediaDownloadUrl(body);
-    if (!url)
-        return null;
-    try {
-        const response = await fetch(url, { headers: await whatsproHeaders(webhookInstanceId(body)) });
-        if (!response.ok)
-            throw new Error(`MEDIA_HTTP_${response.status}`);
-        const arrayBuffer = await response.arrayBuffer();
-        if (arrayBuffer.byteLength > MAX_MEDIA_BYTES)
-            throw new Error("MEDIA_TOO_LARGE");
-        const responseMimeType = response.headers.get("content-type")?.split(";")[0] || mimeType;
-        const base64 = Buffer.from(arrayBuffer).toString("base64");
-        return {
-            dataUrl: `data:${responseMimeType};base64,${base64}`,
-            base64,
-            mimeType: responseMimeType,
-        };
-    }
-    catch (error) {
-        console.error("[DOWNLOAD MEDIA ERROR]:", error?.message || error);
-        return null;
-    }
-}
-export async function hydrateInboundMedia(body, mediaContext) {
-    if (!mediaContext)
-        return null;
-    const downloaded = await getBase64Media(body, mediaContext);
-    if (!downloaded?.base64)
-        return mediaContext;
-    const updated = {
-        ...mediaContext,
-        mimeType: downloaded.mimeType || mediaContext.mimeType,
-        mediaType: downloaded.mimeType || mediaContext.mediaType,
-        sizeBytes: Math.floor(downloaded.base64.length * 0.75),
-        base64: downloaded.dataUrl,
-        dataUrl: downloaded.dataUrl,
-    };
-    const validity = evaluateMediaValidity(updated.kind, updated.mimeType, updated.sizeBytes);
+async function getBase64Media(body, mediaContext = extractInboundMedia(body)) {
+  const mimeType = mediaContext?.mimeType || firstString(body?.mimeType, body?.mediaType) || "application/octet-stream";
+  const direct = cleanDataUrlBase64(directMediaBase64(body), mimeType);
+  const maxBytes = maxBytesForKind(mediaContext?.kind || "unknown");
+  if (direct?.base64) {
+    const estimatedBytes = Math.floor(direct.base64.length * 0.75);
+    if (estimatedBytes > maxBytes) return { error: "media_too_large" };
+    return direct;
+  }
+  const url = mediaDownloadUrl(body);
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { headers: await whatsproHeaders(webhookInstanceId(body)) });
+    if (!response.ok) throw new Error(`MEDIA_HTTP_${response.status}`);
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > maxBytes) throw new Error("MEDIA_TOO_LARGE");
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > maxBytes) throw new Error("MEDIA_TOO_LARGE");
+    const responseMimeType = response.headers.get("content-type")?.split(";")[0] || mimeType;
+    const base64 = Buffer.from(arrayBuffer).toString("base64");
     return {
-        ...updated,
-        ...validity,
+      dataUrl: `data:${responseMimeType};base64,${base64}`,
+      base64,
+      mimeType: responseMimeType
     };
+  } catch (error) {
+    console.error("[DOWNLOAD MEDIA ERROR]:", error?.message || error);
+    return { error: error?.message === "MEDIA_TOO_LARGE" ? "media_too_large" : "media_download_failed" };
+  }
+}
+async function hydrateInboundMedia(body, mediaContext) {
+  if (!mediaContext) return null;
+  if (!mediaContext.valid || mediaContext.kind === "sticker" || mediaContext.kind === "video") return mediaContext;
+  const downloaded = await getBase64Media(body, mediaContext);
+  if (!downloaded) return { ...mediaContext, valid: false, reason: "media_download_failed", flags: [...mediaContext.flags, "media_download_failed"] };
+  if ("error" in downloaded) return { ...mediaContext, valid: false, reason: downloaded.error, flags: Array.from(/* @__PURE__ */ new Set([...mediaContext.flags, downloaded.error])) };
+  if (!downloaded.base64) return { ...mediaContext, valid: false, reason: "media_download_failed", flags: [...mediaContext.flags, "media_download_failed"] };
+  const downloadedMime = normalizeMimeBase(downloaded.mimeType || mediaContext.mimeType);
+  if (!ALLOWED_MEDIA_MIME.test(downloadedMime)) return { ...mediaContext, valid: false, reason: "unsupported_mime_type", flags: [...mediaContext.flags, "unsupported_mime_type"] };
+  if (!mediaSignatureMatches(downloadedMime, downloaded.base64)) return { ...mediaContext, valid: false, reason: "media_signature_mismatch", flags: Array.from(/* @__PURE__ */ new Set([...mediaContext.flags, "media_signature_mismatch"])) };
+  if (mediaContext.kind === "audio" && mediaContext.isVoiceNote && !mediaContext.durationSeconds && !["audio/ogg", "audio/opus"].includes(downloadedMime)) return { ...mediaContext, valid: false, reason: "voice_duration_unverified", flags: Array.from(/* @__PURE__ */ new Set([...mediaContext.flags, "voice_duration_unverified"])) };
+  const measuredDuration = mediaContext.kind === "audio" && mediaContext.isVoiceNote && !mediaContext.durationSeconds ? detectOggOpusDurationSeconds(downloaded.base64) : Number(mediaContext.durationSeconds || 0);
+  if (mediaContext.kind === "audio" && mediaContext.isVoiceNote && measuredDuration > MAX_VOICE_SECONDS) {
+    return {
+      ...mediaContext,
+      valid: false,
+      reason: "voice_too_long",
+      flags: Array.from(/* @__PURE__ */ new Set([...mediaContext.flags, "voice_too_long"])),
+      durationSeconds: Math.ceil(measuredDuration)
+    };
+  }
+  return {
+    ...mediaContext,
+    mimeType: downloaded.mimeType || mediaContext.mimeType,
+    mediaType: downloaded.mimeType || mediaContext.mediaType,
+    sizeBytes: Math.floor(downloaded.base64.length * 0.75),
+    base64: downloaded.dataUrl,
+    dataUrl: downloaded.dataUrl,
+    durationSeconds: measuredDuration || mediaContext.durationSeconds
+  };
 }
 async function getFreshOperatorMute(instanceId, phone) {
-    if (!redisClient.isOpen)
-        return "";
-    const key = `mute:${instanceId}:${phone}`;
-    const value = String((await redisClient.get(key).catch(() => "")) || "");
-    if (!/^(muted|muted_by_agent)$/.test(value))
-        return "";
-    const ttl = await redisClient.ttl(key).catch(() => -2);
-    if (ttl < 0 || ttl > OPERATOR_MUTE_MAX_SECONDS) {
-        await redisClient.del(key).catch(() => undefined);
-        console.warn(`[OPERATOR MUTE] stale mute cleared: ${key}, ttl=${ttl}`);
-        return "";
-    }
-    return value;
+  if (!redisClient.isOpen) return "";
+  const key = `mute:${instanceId}:${phone}`;
+  const value = String(await redisClient.get(key).catch(() => "") || "");
+  if (!/^(muted|muted_by_agent)$/.test(value)) return "";
+  const ttl = await redisClient.ttl(key).catch(() => -2);
+  if (ttl < 0 || ttl > OPERATOR_MUTE_MAX_SECONDS) {
+    await redisClient.del(key).catch(() => void 0);
+    console.warn(`[OPERATOR MUTE] stale mute cleared: ${key}, ttl=${ttl}`);
+    return "";
+  }
+  return value;
 }
 async function getFreshOperatorActive(instanceId, phone) {
-    if (!redisClient.isOpen)
-        return "";
-    const key = `operator_active:${instanceId}:${phone}`;
-    const value = String((await redisClient.get(key).catch(() => "")) || "");
-    if (!value)
-        return "";
-    const ttl = await redisClient.ttl(key).catch(() => -2);
-    if (ttl < 0 || ttl > Math.max(OPERATOR_ACTIVE_SECONDS, OPERATOR_MUTE_MAX_SECONDS)) {
-        await redisClient.del(key).catch(() => undefined);
-        console.warn(`[OPERATOR ACTIVE] stale lock cleared: ${key}, ttl=${ttl}`);
-        return "";
-    }
-    return value;
+  if (!redisClient.isOpen) return "";
+  const key = `operator_active:${instanceId}:${phone}`;
+  const value = String(await redisClient.get(key).catch(() => "") || "");
+  if (!value) return "";
+  const ttl = await redisClient.ttl(key).catch(() => -2);
+  if (ttl < 0 || ttl > Math.max(OPERATOR_ACTIVE_SECONDS, OPERATOR_MUTE_MAX_SECONDS)) {
+    await redisClient.del(key).catch(() => void 0);
+    console.warn(`[OPERATOR ACTIVE] stale lock cleared: ${key}, ttl=${ttl}`);
+    return "";
+  }
+  return value;
 }
 async function getTestModeDevPhone(instanceId) {
-    const config = await getRestaurantConfig(instanceId).catch(() => null);
-    return String(config?.dev_phone || "").replace(/\D/g, "");
+  const config = await getRestaurantConfig(instanceId).catch(() => null);
+  return String(config?.dev_phone || "").replace(/\D/g, "");
 }
-export async function setOperatorAutoMute(instanceId, phone) {
-    const safeInstanceId = String(instanceId || "").trim();
-    const safePhone = String(phone || "").replace(/\D/g, "");
-    if (!safeInstanceId || !safePhone)
-        return;
-    await connectRedis();
-    await redisClient
-        .multi()
-        .setEx(`mute:${safeInstanceId}:${safePhone}`, OPERATOR_MUTE_MAX_SECONDS, "muted_by_agent")
-        .setEx(`operator_active:${safeInstanceId}:${safePhone}`, OPERATOR_ACTIVE_SECONDS, "openbot_from_me")
-        .exec();
+async function setOperatorAutoMute(instanceId, phone) {
+  const safeInstanceId = String(instanceId || "").trim();
+  const safePhone = String(phone || "").replace(/\D/g, "");
+  if (!safeInstanceId || !safePhone) return;
+  await connectRedis();
+  await redisClient.multi().setEx(`mute:${safeInstanceId}:${safePhone}`, OPERATOR_MUTE_MAX_SECONDS, "muted_by_agent").setEx(`operator_active:${safeInstanceId}:${safePhone}`, OPERATOR_ACTIVE_SECONDS, "openbot_from_me").exec();
 }
-export async function guardIncomingMessage(input) {
-    const instanceId = String(input.instanceId || "").trim();
-    const phone = String(input.phone || "").replace(/\D/g, "");
-    const text = String(input.text || "").trim();
-    const messageId = String(input.messageId || "").trim();
-    if (input.fromMe)
-        return { blocked: true, reason: "fromMe" };
-    if (input.isGroup)
-        return { blocked: true, reason: "group_message" };
-    if (!INSTANCE_RE.test(instanceId))
-        return { blocked: true, reason: "bad_instance" };
-    if (!PHONE_RE.test(phone))
-        return { blocked: true, reason: "bad_phone" };
-    if (process.env.TEST_MODE_ENABLED === "true") {
-        const devPhone = await getTestModeDevPhone(instanceId);
-        if (!devPhone || phone !== devPhone) {
-            return { blocked: true, reason: "test_mode_blocked" };
-        }
+async function guardIncomingMessage(input) {
+  const instanceId = String(input.instanceId || "").trim();
+  const phone = String(input.phone || "").replace(/\D/g, "");
+  const text = String(input.text || "").trim();
+  const messageId = String(input.messageId || "").trim();
+  if (input.fromMe) return { blocked: true, reason: "fromMe" };
+  if (input.isGroup) return { blocked: true, reason: "group_message" };
+  if (!INSTANCE_RE.test(instanceId)) return { blocked: true, reason: "bad_instance" };
+  if (!PHONE_RE.test(phone)) return { blocked: true, reason: "bad_phone" };
+  if (process.env.TEST_MODE_ENABLED === "true") {
+    const devPhone = await getTestModeDevPhone(instanceId);
+    if (!devPhone || phone !== devPhone) {
+      return { blocked: true, reason: "test_mode_blocked" };
     }
-    const privateNames = [
-        input.senderMeta?.contactName,
-        input.senderMeta?.contactShortName,
-        input.senderMeta?.contactPushName,
-        input.senderMeta?.pushName,
-        text,
-    ].filter(Boolean);
-    const ignoreSavedContacts = String(process.env.BOT_IGNORE_SAVED_CONTACTS || "false").trim().toLowerCase() === "true";
-    if (hasPrivateKeyword(privateNames))
-        return { blocked: true, reason: "private_contact_keyword" };
-    if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact))
-        return { blocked: true, reason: "private_saved_contact" };
-    await connectRedis();
-    const operatorActive = await getFreshOperatorActive(instanceId, phone);
-    if (operatorActive) {
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "operator_active", source: "operator_override" };
+  }
+  const privateNames = [
+    input.senderMeta?.contactName,
+    input.senderMeta?.contactShortName,
+    input.senderMeta?.contactPushName,
+    input.senderMeta?.pushName,
+    text
+  ].filter(Boolean);
+  const ignoreSavedContacts = String(process.env.BOT_IGNORE_SAVED_CONTACTS || "false").trim().toLowerCase() === "true";
+  if (hasPrivateKeyword(privateNames)) return { blocked: true, reason: "private_contact_keyword" };
+  if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact)) return { blocked: true, reason: "private_saved_contact" };
+  await connectRedis();
+  const operatorActive = await getFreshOperatorActive(instanceId, phone);
+  if (operatorActive) {
+    await markInboundDone(instanceId, messageId);
+    return { blocked: true, reason: "operator_active", source: "operator_override" };
+  }
+  if (messageId) {
+    if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
+      return { blocked: true, reason: "duplicate_done" };
     }
-    if (messageId) {
-        if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
-            return { blocked: true, reason: "duplicate_done" };
-        }
-        const lock = await redisClient.set(`msg_processing:${instanceId}:${messageId}`, "1", {
-            NX: true,
-            EX: PROCESSING_LOCK_SECONDS,
-        });
-        if (!lock)
-            return { blocked: true, reason: "duplicate_processing" };
+    const lock = await redisClient.set(`msg_processing:${instanceId}:${messageId}`, "1", {
+      NX: true,
+      EX: PROCESSING_LOCK_SECONDS
+    });
+    if (!lock) return { blocked: true, reason: "duplicate_processing" };
+  }
+  const operatorMute = await getFreshOperatorMute(instanceId, phone);
+  if (operatorMute) {
+    await markInboundDone(instanceId, messageId);
+    return { blocked: true, reason: "muted", source: "operator_override" };
+  }
+  if (await redisClient.get(`mute:${instanceId}:${phone}`)) {
+    await markInboundDone(instanceId, messageId);
+    return { blocked: true, reason: "muted" };
+  }
+  if (text) {
+    const duplicateKey = `anti_dup:${instanceId}:${phone}`;
+    const textHash = sha1(text.toLowerCase());
+    const previousHash = await redisClient.get(duplicateKey);
+    if (previousHash === textHash) {
+      await markInboundDone(instanceId, messageId);
+      return { blocked: true, reason: "duplicate_text" };
     }
-    const operatorMute = await getFreshOperatorMute(instanceId, phone);
-    if (operatorMute) {
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "muted", source: "operator_override" };
-    }
-    if (await redisClient.get(`mute:${instanceId}:${phone}`)) {
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "muted" };
-    }
-    if (text) {
-        const duplicateKey = `anti_dup:${instanceId}:${phone}`;
-        const textHash = sha1(text.toLowerCase());
-        const previousHash = await redisClient.get(duplicateKey);
-        if (previousHash === textHash) {
-            await markInboundDone(instanceId, messageId);
-            return { blocked: true, reason: "duplicate_text" };
-        }
-        await redisClient.setEx(duplicateKey, DUPLICATE_TEXT_SECONDS, textHash);
-    }
-    const spamKey = `spam:${instanceId}:${phone}`;
-    const count = await redisClient.incr(spamKey);
-    if (count === 1)
-        await redisClient.expire(spamKey, SPAM_WINDOW_SECONDS);
-    if (count > SPAM_LIMIT) {
-        await redisClient.setEx(`mute:${instanceId}:${phone}`, MUTE_SECONDS, "spam_blocked");
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "spam_limit_exceeded" };
-    }
-    return { blocked: false };
+    await redisClient.setEx(duplicateKey, DUPLICATE_TEXT_SECONDS, textHash);
+  }
+  const spamKey = `spam:${instanceId}:${phone}`;
+  const count = await redisClient.incr(spamKey);
+  if (count === 1) await redisClient.expire(spamKey, SPAM_WINDOW_SECONDS);
+  if (count > SPAM_LIMIT) {
+    await redisClient.setEx(`mute:${instanceId}:${phone}`, MUTE_SECONDS, "spam_blocked");
+    await markInboundDone(instanceId, messageId);
+    return { blocked: true, reason: "spam_limit_exceeded" };
+  }
+  return { blocked: false };
 }
-export async function markInboundDone(instanceId, messageId) {
-    const safeMessageId = String(messageId || "").trim();
-    if (!safeMessageId)
-        return;
-    await connectRedis();
-    await redisClient
-        .multi()
-        .setEx(`msg_done:${instanceId}:${safeMessageId}`, DONE_SECONDS, "1")
-        .del(`msg_processing:${instanceId}:${safeMessageId}`)
-        .exec();
+async function markInboundDone(instanceId, messageId) {
+  const safeMessageId = String(messageId || "").trim();
+  if (!safeMessageId) return;
+  await connectRedis();
+  await redisClient.multi().setEx(`msg_done:${instanceId}:${safeMessageId}`, DONE_SECONDS, "1").del(`msg_processing:${instanceId}:${safeMessageId}`).exec();
 }
-export async function clearInboundProcessing(instanceId, messageId) {
-    const safeMessageId = String(messageId || "").trim();
-    if (!safeMessageId)
-        return;
-    await connectRedis();
-    await redisClient.del(`msg_processing:${instanceId}:${safeMessageId}`);
+async function clearInboundProcessing(instanceId, messageId) {
+  const safeMessageId = String(messageId || "").trim();
+  if (!safeMessageId) return;
+  await connectRedis();
+  await redisClient.del(`msg_processing:${instanceId}:${safeMessageId}`);
 }
-export async function saveMediaContext(instanceId, phone, mediaContext) {
-    await connectRedis();
-    await redisClient.setEx(`media_context:${instanceId}:${phone}`, MEDIA_CONTEXT_SECONDS, JSON.stringify({ ...mediaContext, savedAt: Date.now() }));
+async function saveMediaContext(instanceId, phone, mediaContext) {
+  await connectRedis();
+  await redisClient.setEx(
+    `media_context:${instanceId}:${phone}`,
+    MEDIA_CONTEXT_SECONDS,
+    JSON.stringify({ ...safeMediaMetadata(mediaContext), savedAt: Date.now() })
+  );
 }
-export async function clearMediaContext(instanceId, phone) {
-    await connectRedis();
-    await redisClient.del(`media_context:${instanceId}:${phone}`);
+async function bufferInboundText(input) {
+  const instanceId = String(input.instanceId || "").trim();
+  const phone = String(input.phone || "").replace(/\D/g, "");
+  const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
+  const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
+  if (!instanceId || !phone || !text) return { leader: true, text };
+  await connectRedis();
+  const listKey = `inbound_buffer:${instanceId}:${phone}`;
+  const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
+  await redisClient.multi().rPush(listKey, JSON.stringify({ token, text })).lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1).expire(listKey, INBOUND_BUFFER_SECONDS).set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS }).exec();
+  await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+  if (await redisClient.get(latestKey) !== token) return { leader: false, text: "" };
+  const rows = await redisClient.lRange(listKey, 0, -1);
+  await redisClient.del([listKey, latestKey]);
+  const parts = rows.map((row) => {
+    try {
+      return String(JSON.parse(row)?.text || "").trim();
+    } catch {
+      return "";
+    }
+  }).filter(Boolean);
+  return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS) };
 }
+async function claimMediaAiQuota(instanceId, phone) {
+  await connectRedis();
+  const key = `media_ai_quota:${instanceId}:${phone}`;
+  const count = await redisClient.incr(key);
+  if (count === 1) await redisClient.expire(key, 5 * 60);
+  return count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
+}
+async function clearMediaContext(instanceId, phone) {
+  await connectRedis();
+  await redisClient.del(`media_context:${instanceId}:${phone}`);
+}
+export {
+  MAX_AUDIO_BYTES,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_VOICE_SECONDS,
+  bufferInboundText,
+  claimMediaAiQuota,
+  clearInboundProcessing,
+  clearMediaContext,
+  detectOggOpusDurationSeconds,
+  extractInboundMedia,
+  extractInboundText,
+  extractMessageId,
+  extractSenderMeta,
+  getBase64Media,
+  guardIncomingMessage,
+  hydrateInboundMedia,
+  markInboundDone,
+  safeMediaMetadata,
+  saveMediaContext,
+  setOperatorAutoMute
+};

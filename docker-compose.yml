@@ -1,34 +1,51 @@
-version: '3.8'
-
 services:
   bot:
     build: .
     restart: unless-stopped
+    init: true
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
     environment:
       REDIS_URL: redis://redis:6379
-      NOCODB_URL: ${NOCODB_URL}
-      NOCODB_TOKEN: ${NOCODB_TOKEN}
-      NOCODB_TABLE_ID: ${NOCODB_TABLE_ID}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      OPENROUTER_AGENT_MODEL: ${OPENROUTER_AGENT_MODEL}
-      OPENROUTER_MEDIA_MODEL: ${OPENROUTER_MEDIA_MODEL}
-      CRM_SECRET_TOKEN: ${CRM_SECRET_TOKEN}
-      WHATSPRO_BASE_URL: ${WHATSPRO_BASE_URL}
-      WHATSPRO_SEND_URL: ${WHATSPRO_SEND_URL}
-      WHATSPRO_PRESENCE_URL: ${WHATSPRO_PRESENCE_URL}
-      WHATSPRO_API_TOKEN: ${WHATSPRO_API_TOKEN}
-      OPENBOT_WEBHOOK_SECRET: ${OPENBOT_WEBHOOK_SECRET}
-      DEVELOPER_PHONE: ${DEVELOPER_PHONE}
       NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
 
   redis:
     image: redis:7-alpine
-    restart: always
-    command: redis-server --appendonly yes
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
       - openbot_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   openbot_redis_data:

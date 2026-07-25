@@ -1,6 +1,8 @@
 import axios from "axios";
 import { auditDecision, auditError, auditOutbound } from "../services/auditLogger.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
+import crypto from "node:crypto";
+import { connectRedis, redisClient } from "../services/redis.service.js";
 
 const RESPONSE_CHUNK_MAX = Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 650);
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
@@ -188,6 +190,13 @@ export async function sendWhatsProMessage(payload: {
       },
       { timeout: 10000, headers }
     );
+    const acknowledged = response.status >= 200 && response.status < 300 && response.data?.success === true;
+    if (!acknowledged) {
+      const error: any = new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
+      error.code = "WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED";
+      error.response = response;
+      throw error;
+    }
     auditOutbound("WhatsPro send success", {
       to: payload.phone,
       phone: payload.phone,
@@ -200,7 +209,7 @@ export async function sendWhatsProMessage(payload: {
       transportSource: transport.source,
       response: response.data,
     });
-    return response.data;
+    return { ...response.data, ok: true, acknowledged: true };
   } catch (error: any) {
     auditError("WhatsPro send failed", error, {
       failedStep: "whatspro_send_message",
@@ -251,21 +260,46 @@ export async function sendWhatsProPresence(payload: { instanceId: string; phone:
   }
 }
 
+export function startWhatsProTyping(payload: { instanceId: string; phone: string }) {
+  let stopped = false;
+  const pulse = () => {
+    if (!stopped) void sendWhatsProPresence(payload).catch(() => undefined);
+  };
+  pulse();
+  const timer = setInterval(pulse, 4000);
+  timer.unref?.();
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 export async function sendWhatsProResponseSequence(payload: { instanceId: string; phone: string; text: string }) {
   const chunks = splitWhatsProResponse(payload.text);
+  if (!chunks.length) throw new Error("WHATSPRO_EMPTY_RESPONSE");
   const sent: any[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
-    if (index > 0) {
-      await sendWhatsProPresence(payload);
-      await delay(randomTypingDelayMs());
+    await sendWhatsProPresence(payload);
+    if (index > 0) await delay(randomTypingDelayMs());
+    const outboundId = crypto.createHash("sha256").update(`${payload.instanceId}|${payload.phone}|${index}|${chunks[index]}`).digest("hex");
+    let result: any = null;
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        result = await sendWhatsProMessage({ instanceId: payload.instanceId, phone: payload.phone, text: chunks[index] });
+        if (result?.acknowledged === true) break;
+        throw new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
+      } catch (error) {
+        lastError = error; result = null;
+        if (attempt < 3) await delay(300 * 2 ** (attempt - 1));
+      }
     }
-    sent.push(
-      await sendWhatsProMessage({
-        instanceId: payload.instanceId,
-        phone: payload.phone,
-        text: chunks[index],
-      })
-    );
+    if (!result?.acknowledged) {
+      await connectRedis().then(() => redisClient.setEx(`outbox:whatspro:${outboundId}`, 24 * 60 * 60, JSON.stringify({ id: outboundId, instanceId: payload.instanceId, phone: payload.phone, text: chunks[index], attempts: 3, failedAt: Date.now(), error: String(lastError?.message || "delivery_not_acknowledged") }))).catch(() => undefined);
+      throw lastError || new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
+    }
+    await connectRedis().then(() => redisClient.del(`outbox:whatspro:${outboundId}`)).catch(() => undefined);
+    sent.push(result);
   }
-  return { ok: true, chunks: chunks.length, sent };
+  return { ok: sent.length === chunks.length, chunks: chunks.length, sent };
 }

@@ -71,6 +71,9 @@ function normalizeRestaurantConfig(record: Record<string, any> | null): Record<s
     instance: instanceId,
     dev_phone: devPhone,
     whatsapp_phone: whatsAppPhone,
+    work_hours: cleanString(firstValue(record.work_hours, record.workHours)),
+    brand: cleanString(firstValue(record.brand)),
+    address: cleanString(firstValue(record.address)),
     whatspro_base_url: firstValue(record.whatspro_base_url, record.whatsproBaseUrl, record.WHATSPRO_BASE_URL),
     whatspro_send_url: firstValue(record.whatspro_send_url, record.whatsproSendUrl, record.WHATSPRO_SEND_URL),
     whatspro_presence_url: firstValue(record.whatspro_presence_url, record.whatsproPresenceUrl, record.WHATSPRO_PRESENCE_URL),
@@ -165,8 +168,10 @@ export async function getRestaurantConfig(instanceId: string): Promise<Record<st
     if (config) {
       await setJsonCache(key, 300, config);
       await setJsonCache(backupKey, 604800, config);
+      return config;
     }
-    return config;
+    // Keep the tenant alive with the last known-good config if NocoDB is temporarily unavailable.
+    return getJsonCache<Record<string, any>>(backupKey);
   } catch (error: any) {
     console.error(`[NOCODB] config read failed (${safeInstanceId}):`, error?.message || error);
     return getJsonCache<Record<string, any>>(backupKey);

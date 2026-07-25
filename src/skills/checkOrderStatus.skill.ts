@@ -20,6 +20,8 @@ export function createCheckOrderStatusSkill(ctx: FastFoodContext) {
         lookup: "found",
         orderNumber: result.order.orderNumber,
         status: result.order.status,
+        stage: result.order.stage,
+        statusLabel: result.order.statusLabel,
         statusExplanation: result.order.statusExplanation,
         items: result.order.items,
       };

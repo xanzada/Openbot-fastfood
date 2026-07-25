@@ -20,8 +20,10 @@ test("delivery status keeps the exact status, order number, and ordered items", 
   assert.equal(lookup.state, "found");
   if (lookup.state !== "found") return;
   assert.equal(lookup.order.status, "delivery");
-  assert.equal(lookup.order.statusExplanation, "курьер в пути");
-  assert.match(formatCustomerOrderStatus(lookup.order, "ru"), /Заказ #1234.*delivery.*курьер в пути.*Burger.*Fries/u);
+  assert.equal(lookup.order.stage, "delivery");
+  assert.equal(lookup.order.statusLabel, "В пути");
+  assert.equal(lookup.order.statusExplanation, "заказ у курьера и едет к вам");
+  assert.match(formatCustomerOrderStatus(lookup.order, "ru"), /Заказ #1234.*В пути.*курьера.*Burger.*Fries/u);
   assert.doesNotMatch(formatCustomerOrderStatus(lookup.order, "ru"), /готовится/u);
 });
 
@@ -43,7 +45,7 @@ test("customer order projection excludes internal and private order fields", () 
   }, "77001234567", "kk");
 
   assert.equal(lookup.state, "found");
-  assert.deepEqual(Object.keys(lookup.state === "found" ? lookup.order : {}).sort(), ["items", "orderNumber", "status", "statusExplanation"]);
+  assert.deepEqual(Object.keys(lookup.state === "found" ? lookup.order : {}).sort(), ["items", "orderNumber", "stage", "status", "statusExplanation", "statusLabel"]);
   assert.ok(!FAST_FOOD_SKILL_NAMES.includes("getKitchenStatus" as never));
   assert.ok(!FAST_FOOD_SKILL_NAMES.includes("getShiftNotes" as never));
 });

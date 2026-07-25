@@ -8,15 +8,15 @@ import {
 } from "../src/services/mediaAnalysis.service.js";
 import { buildReceiptCrmPayload } from "../src/services/dle.service.js";
 
-test("language is tenant scoped and locked for exactly six hours", () => {
-  assert.equal(USER_LANG_TTL_SECONDS, 6 * 60 * 60);
+test("language is tenant scoped and locked for exactly 24 hours", () => {
+  assert.equal(USER_LANG_TTL_SECONDS, 24 * 60 * 60);
   assert.equal(languageKey("prestige", "77470000000"), "lang:prestige:77470000000");
   assert.notEqual(languageKey("prestige", "77470000000"), languageKey("other", "77470000000"));
   assert.equal(resolveLockedLanguage("ru", "kk"), "ru");
   assert.equal(resolveLockedLanguage(null, "kk"), "kk");
   assert.equal(detectLang("Сәлем, тапсырыс қашан дайын болады?"), "kk");
   assert.equal(detectLang("Здравствуйте, когда будет готов заказ?"), "ru");
-  assert.deepEqual(languageSetOptions(), { EX: 21600, NX: true });
+  assert.deepEqual(languageSetOptions(), { EX: 86400, NX: true });
 });
 
 test("receipt AI filter toggle defaults on and accepts explicit false", () => {

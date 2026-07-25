@@ -6,7 +6,7 @@ const ORDER_STATUS_RE =
   /(тапсырысыңыз|заказыңыз|заказ|order).*(дайындалып|әзірленіп|курьер|жолда|жеткіз|аяқтал|готов|едет|достав|дайын|әзір|даяр)/iu;
 const KITCHEN_STATUS_RE =
   /(асүй|ас үй|кухн|kitchen|повар|cook|дайындал|готов|жұмыс істеп|жабық|closed|работает)/iu;
-const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІУ™Т“Т›ТЈУ©Т±ТЇС–УТ’ТљТўУЁТ°Т®]/u;
+const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІ]/u;
 const RUSSIAN_SERVICE_WORD_RE =
   /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ)\b/iu;
 const FORBIDDEN_FOREIGN_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bengali}\p{Script=Devanagari}\p{Script=Thai}]/u;
@@ -45,12 +45,12 @@ function sentenceCount(text: string): number {
   return sentences ? sentences.length : 1;
 }
 
-function enforceMaxSentences(text: string, max = 2): string {
+function enforceMaxSentences(text: string, max = 3): string {
   const urls = uniqueUrls(text);
   const trimmed = textWithoutUrls(text);
   if (!trimmed) return text;
   const sentences = trimmed.match(/[^.!?]*[.!?]+/g);
-  const body = !sentences || sentences.length <= max ? trimmed : sentences.slice(0, max).join(" ").trim();
+  const body = !sentences || sentences.length <= max ? trimmed : sentences.slice(0, max).map((sentence) => sentence.trim()).join(" ");
   return [body, ...urls].filter(Boolean).join("\n");
 }
 
@@ -251,9 +251,9 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
 
   text = enforceExactMagicLink(text, ctx);
 
-  // 8. Enforce max 2 sentences
-  if (sentenceCount(text) > 2) {
-    text = enforceMaxSentences(text, 2);
+  // 8. Keep WhatsApp replies concise while allowing one natural clarification/detail sentence.
+  if (sentenceCount(text) > 3) {
+    text = enforceMaxSentences(text, 3);
   }
 
   return { text: text || fallback(ctx), hasLink: hasLinkInResponse(text) };

@@ -12,6 +12,7 @@ export interface FastFoodContext {
   activeOrder: Record<string, any> | null;
   chatHistory: any[];
   activeShiftNotes: any[];
+  activeShiftNotesFingerprint: string;
   mediaContext: Record<string, any> | null;
   shporContext: any[];
   magicLinkAlreadySent: boolean;

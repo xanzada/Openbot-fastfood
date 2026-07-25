@@ -9,10 +9,26 @@ const NEW_DLE_ACTIONS = new Set([
 
 type AuditStage = "INBOUND" | "PROCESSING" | "DECISION" | "OUTBOUND" | "ERROR";
 
+const SECRET_KEY_RE = /(token|secret|authorization|cookie|password|api[_-]?key|base64|mediaData|dataUrl)/i;
+const PII_KEY_RE = /^(phone|to|from|address|text|body|payload|response)$/i;
+function maskAuditPhone(value: unknown) { const v=String(value||"").replace(/\D/g,""); return v.length>6 ? `${v.slice(0,3)}***${v.slice(-3)}` : v; }
+function sanitizeAudit(value: unknown, key = "", depth = 0): unknown {
+  if (depth > 5) return "[Truncated]";
+  if (SECRET_KEY_RE.test(key)) return "[REDACTED]";
+  if (typeof value === "string") {
+    if (key.toLowerCase().includes("phone") || ["to","from"].includes(key.toLowerCase())) return maskAuditPhone(value);
+    if (PII_KEY_RE.test(key)) return `[REDACTED:${value.length}]`;
+    return value.length > 500 ? `${value.slice(0,500)}…` : value;
+  }
+  if (Array.isArray(value)) return value.slice(0,30).map((v)=>sanitizeAudit(v,key,depth+1));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string,unknown>).map(([k,v])=>[k,sanitizeAudit(v,k,depth+1)]));
+  return value;
+}
+
 function safeStringify(value: unknown): string {
   const seen = new WeakSet<object>();
   try {
-    return JSON.stringify(value, (_key, nestedValue) => {
+    return JSON.stringify(sanitizeAudit(value), (_key, nestedValue) => {
       if (typeof nestedValue === "object" && nestedValue !== null) {
         if (seen.has(nestedValue)) return "[Circular]";
         seen.add(nestedValue);
@@ -50,7 +66,7 @@ function emit(stage: AuditStage, message: string, fields: Record<string, unknown
     ts: new Date().toISOString(),
     stage,
     message,
-    ...fields,
+    ...(sanitizeAudit(fields) as Record<string, unknown>),
     ...(error === undefined ? {} : { error: normalizeError(error) }),
   };
   const line = `>>> [AUDIT: ${stage}] ${message} | ${safeStringify(entry)}`;

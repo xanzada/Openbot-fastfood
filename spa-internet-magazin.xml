@@ -2699,6 +2699,24 @@ if ($action === 'get_kitchen_status') {
     die();
 }
 
+if ($action === 'get_operator_sos') {
+    while (ob_get_level()) { ob_end_clean(); }
+    header('Content-Type: application/json; charset=utf-8');
+    $row = $db->super_query("SELECT setting_value FROM " . PREFIX . "_spa_settings WHERE setting_key = 'operator_sos_notifications'");
+    $items = $row ? json_decode((string)$row['setting_value'], true) : [];
+    if (!is_array($items)) $items = [];
+    $now = time();
+    $active = array_values(array_filter($items, function($item) use ($now) {
+        return is_array($item) && (int)($item['expires_at'] ?? 0) > $now;
+    }));
+    if (count($active) !== count($items)) {
+        $safe = $db->safesql(json_encode($active, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $db->query("REPLACE INTO " . PREFIX . "_spa_settings (setting_key, setting_value) VALUES ('operator_sos_notifications', '{$safe}')");
+    }
+    echo json_encode(['success' => true, 'items' => $active, 'server_time' => $now], JSON_UNESCAPED_UNICODE);
+    die();
+}
+
 if ($action === 'get_shift_notes') {
     while (ob_get_level()) { ob_end_clean(); }
     header('Content-Type: application/json; charset=utf-8');
@@ -3924,6 +3942,54 @@ if ($action === 'get_orders') {
         list.innerHTML = html;
     }
 
+    function operatorSosSeenSet() {
+        try { return new Set(JSON.parse(localStorage.getItem('spa_operator_sos_seen') || '[]')); } catch (e) { return new Set(); }
+    }
+    function saveOperatorSosSeen(seen) {
+        try { localStorage.setItem('spa_operator_sos_seen', JSON.stringify(Array.from(seen).slice(-200))); } catch (e) {}
+    }
+    function refreshOperatorSosBadge(count) {
+        const badge = document.getElementById('operatorSosSiteBadge');
+        if (!badge) return;
+        badge.textContent = count > 9 ? '9+' : String(count || '');
+        badge.classList.toggle('hidden', count <= 0);
+    }
+    function showOperatorSosNotice(item, seen) {
+        if (!item || !item.signal_id || document.getElementById('operator-sos-' + item.signal_id)) return;
+        const notice = document.createElement('button');
+        notice.type = 'button';
+        notice.id = 'operator-sos-' + item.signal_id;
+        notice.setAttribute('aria-label', 'SOS operator notification');
+        notice.style.cssText = 'position:fixed;top:max(16px,env(safe-area-inset-top));right:16px;z-index:5005;width:min(360px,calc(100vw - 32px));padding:13px 15px;border:1px solid rgba(248,113,113,.55);border-radius:16px;background:rgba(127,29,29,.96);color:#fff;box-shadow:0 18px 42px rgba(69,10,10,.36);text-align:left;font:700 13px/1.35 system-ui;white-space:normal;cursor:pointer;';
+        const title = document.createElement('strong');
+        title.style.cssText = 'display:block;margin-bottom:4px;color:#fecaca;font-size:12px;letter-spacing:.06em;text-transform:uppercase;';
+        title.textContent = 'SOS · Оператор қажет';
+        const text = document.createElement('span');
+        text.textContent = '+' + String(item.phone || '') + (item.summary ? ' — ' + String(item.summary) : '');
+        notice.appendChild(title); notice.appendChild(text);
+        notice.addEventListener('click', function() {
+            seen.add(String(item.signal_id)); saveOperatorSosSeen(seen); notice.remove(); refreshOperatorSosBadge(0);
+            if (typeof window.toggleChat === 'function') window.toggleChat();
+        });
+        document.body.appendChild(notice);
+        if (typeof playNotificationSound === 'function') playNotificationSound();
+        setTimeout(function(){ if (notice.isConnected) notice.remove(); }, 18000);
+    }
+    async function pollOperatorSos() {
+        if (document.hidden) return;
+        const formData = new FormData(); formData.append('ajax_action', 'get_operator_sos');
+        try {
+            const response = await fetch(window.location.href, { method: 'POST', body: formData, cache: 'no-store' });
+            if (!response.ok) return;
+            const data = await response.json();
+            const items = data.success && Array.isArray(data.items) ? data.items : [];
+            const seen = operatorSosSeenSet();
+            const unseen = items.filter(item => item && item.signal_id && !seen.has(String(item.signal_id)));
+            refreshOperatorSosBadge(unseen.length);
+            if (unseen.length) showOperatorSosNotice(unseen[unseen.length - 1], seen);
+        } catch (e) {}
+    }
+
     async function fetchOrders() {
         if (document.hidden) return;
         if (fetchOrdersInFlight) return;
@@ -4638,10 +4704,12 @@ if ($action === 'get_orders') {
         const kitchenReady = loadKitchenStatus();
         loadShiftNotes(false);
         const ordersReady = fetchOrders();
-        Promise.allSettled([kitchenReady, ordersReady]).then(() => {
+        const operatorSosReady = pollOperatorSos();
+        Promise.allSettled([kitchenReady, ordersReady, operatorSosReady]).then(() => {
             if (window.spaRevealPage) window.spaRevealPage();
         });
         setInterval(fetchOrders, 10000); 
+        setInterval(pollOperatorSos, 10000);
         setInterval(() => loadShiftNotes(false), 30000);
         setInterval(() => renderKitchenCountdown(currentKS), 1000);
         // Резервная сверка с сервером: гарантирует автосброс даже после сна
@@ -4655,12 +4723,14 @@ if ($action === 'get_orders') {
         if (!document.hidden) {
             unlockAudioFromGesture();
             fetchOrders();
+            pollOperatorSos();
             loadKitchenStatus();
         }
     });
     window.addEventListener('pageshow', () => {
         unlockAudioFromGesture();
         fetchOrders();
+        pollOperatorSos();
         loadKitchenStatus();
     });
     window.addEventListener('online', () => {
@@ -4711,8 +4781,9 @@ if ($cw_row && !empty(trim($cw_row['setting_value']))) {
     </style>
 
     <!-- Плавающая кнопка для вызова чата -->
-    <button type="button" onclick="toggleChat()" class="fixed bottom-6 right-6 w-14 h-14 bg-gradient-to-br from-emerald-400 to-emerald-600 hover:from-emerald-500 hover:to-emerald-700 text-white rounded-2xl shadow-[0_14px_34px_rgba(16,185,129,0.38)] flex items-center justify-center transition-transform hover:-translate-y-1 z-[3999] active:scale-95" title="<?= $L['ob_chat_btn'] ?>" aria-label="<?= $L['ob_chat_btn'] ?>">
+    <button id="operatorChatButton" type="button" onclick="toggleChat()" class="fixed bottom-6 right-6 w-14 h-14 bg-gradient-to-br from-emerald-400 to-emerald-600 hover:from-emerald-500 hover:to-emerald-700 text-white rounded-2xl shadow-[0_14px_34px_rgba(16,185,129,0.38)] flex items-center justify-center transition-transform hover:-translate-y-1 z-[3999] active:scale-95" title="<?= $L['ob_chat_btn'] ?>" aria-label="<?= $L['ob_chat_btn'] ?>">
         <?= spa_icon('chat') ?>
+        <span id="operatorSosSiteBadge" class="hidden absolute -top-2 -right-2 min-w-[22px] h-[22px] px-1 rounded-full bg-red-500 text-white text-[10px] font-black leading-[22px] text-center ring-2 ring-white dark:ring-slate-900 animate-pulse" aria-label="SOS"></span>
     </button>
 
     <!-- Затемняющий фон (Оверлей для закрытия по клику вне панели) -->

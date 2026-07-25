@@ -2,6 +2,7 @@ import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
+import { menuItemBlockedByNotes } from "../services/noteProvenance.service.js";
 
 function normalizeText(value: unknown) {
   return String(value || "")
@@ -65,8 +66,9 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       query: z.string().max(80).optional().describe("Food name or ingredient to search"),
       category: z.string().max(80).optional().describe("Customer-facing menu category to filter"),
       limit: z.number().int().min(1).max(50).optional().describe("Maximum number of menu items to return"),
+      offset: z.number().int().min(0).max(5000).optional().describe("Pagination offset"),
     }),
-    execute: async ({ query, category, limit }) => {
+    execute: async ({ query, category, limit, offset }) => {
       const domain = ctx.config?.domain || "";
       if (!domain) {
         return {
@@ -77,11 +79,12 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
 
       const menu = await getMenuContext(ctx.instanceId, domain, ctx.language);
       const items = Array.isArray(menu?.items) ? menu.items : [];
-      const matches = selectPublicMenuItems(items, query, category, limit || 12);
-
-      return {
-        items: matches,
-      };
+      const allowedItems = items.filter((item: any) => !menuItemBlockedByNotes(ctx.activeShiftNotes, item).blocked);
+      const requested = limit || 50;
+      const allMatches = selectPublicMenuItems(allowedItems, query, category, 50);
+      const start = Math.max(0, Number(offset || 0));
+      const matches = allMatches.slice(start, start + requested);
+      return { items: matches, offset: start, nextOffset: start + matches.length < allMatches.length ? start + matches.length : null, totalMatched: allMatches.length, noteRestrictionsApplied: items.length !== allowedItems.length };
     },
   });
 }

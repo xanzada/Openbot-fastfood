@@ -4,17 +4,21 @@ import { getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import {
   connectRedis,
+  clearKitchenCheckoutState,
   deleteShiftNote,
   getKitchenStatus,
+  getSiteLanguageHint,
   getUserLang,
   redisClient,
   saveKitchenStatus,
+  saveSiteLanguageHint,
   saveShiftNote,
   saveToHistory,
 } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
+import { normalizeSiteLanguage, resolveSiteOutboundLanguage } from "../services/languagePolicy.service.js";
 
 type Language = "kk" | "ru";
 type PaymentDetail = { label: string; value: string; source?: string };
@@ -106,19 +110,6 @@ function normalizePaymentDetails(value: unknown): PaymentDetail[] {
     .slice(0, 12);
 }
 
-function paymentDetailsFromConfig(config: Record<string, unknown>): PaymentDetail[] {
-  for (const key of ["payment_details", "paymentDetails", "requisites", "requisite_details", "payment_requisites"]) {
-    const details = normalizePaymentDetails(config[key]);
-    if (details.length) return details;
-  }
-
-  return normalizePaymentDetails([
-    { label: "Kaspi", value: config.kaspi_info || config.kaspi || config.kaspi_number || config.kaspi_phone },
-    { label: "Halyk", value: config.halyk_info || config.halyk || config.halyk_number || config.halyk_phone },
-    { label: "QR", value: config.payment_qr || config.qr || config.qr_link },
-  ]);
-}
-
 function paymentDetailsText(details: PaymentDetail[], lang: Language): string {
   if (!details.length) {
     return lang === "ru"
@@ -208,10 +199,8 @@ async function buildPaymentMessage(
 ): Promise<string> {
   const totalAmount = cleanInline(body.total_price || body.total || 0, 40);
   const runtimeStatus = await getLiveRuntimeStatus(instance, config);
-  const payloadDetails = normalizePaymentDetails(body.payment_details || body.paymentDetails || body.requisites);
   const runtimeDetails = paymentDetailsFromRuntime(runtimeStatus);
-  const configDetails = paymentDetailsFromConfig(config);
-  const paymentInfo = paymentDetailsText(payloadDetails.length ? payloadDetails : runtimeDetails.length ? runtimeDetails : configDetails, lang);
+  const paymentInfo = paymentDetailsText(runtimeDetails, lang);
 
   if (lang === "ru") {
     return `Все в наличии!\nСумма к оплате: ${totalAmount} ₸\n\nОплата:\n${paymentInfo}\n\nПожалуйста, отправьте чек об оплате в этот чат.`;
@@ -226,27 +215,12 @@ function buildRejectedMessage(body: Record<string, unknown>, lang: Language): st
     : `Өкінішке қарай, тапсырысты дайындай алмаймыз.\nСебебі: ${reason}.\nБасқа тағам таңдауыңызды сұраймыз.`;
 }
 
-function legacyPaymentDetailsFromPayloadRuntimeOrConfig(
-  body: Record<string, unknown>,
-  runtimeStatus: Record<string, unknown> | null,
-  config: Record<string, unknown>
-): PaymentDetail[] {
-  const payloadDetails = normalizePaymentDetails(body.payment_details || body.paymentDetails || body.requisites);
-  if (payloadDetails.length) return payloadDetails;
-  const runtimeDetails = paymentDetailsFromRuntime(runtimeStatus);
-  if (runtimeDetails.length) return runtimeDetails;
-  return paymentDetailsFromConfig(config);
+function paymentDetailsFromRuntimeOnly(runtimeStatus: Record<string, unknown> | null): PaymentDetail[] {
+  return paymentDetailsFromRuntime(runtimeStatus);
 }
 
-function legacyPaymentDetailsSource(
-  body: Record<string, unknown>,
-  runtimeStatus: Record<string, unknown> | null,
-  config: Record<string, unknown>
-): string {
-  if (normalizePaymentDetails(body.payment_details || body.paymentDetails || body.requisites).length) return "payload";
-  if (paymentDetailsFromRuntime(runtimeStatus).length) return "runtime";
-  if (paymentDetailsFromConfig(config).length) return "nocodb_fallback";
-  return "not_configured";
+function paymentDetailsRuntimeSource(runtimeStatus: Record<string, unknown> | null): string {
+  return paymentDetailsFromRuntime(runtimeStatus).length ? "site_kitchen_settings" : "not_configured";
 }
 
 export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: Language, orderId: string, isPickup: boolean): string {
@@ -339,11 +313,11 @@ async function buildLegacyPaymentMessage(
 ): Promise<string> {
   const totalAmount = cleanInline(body.total_price || body.total || 0, 40);
   const liveRuntimeStatus = await getLiveRuntimeStatus(instance, config || {});
-  const paymentDetails = legacyPaymentDetailsFromPayloadRuntimeOrConfig(body, liveRuntimeStatus, config || {});
+  const paymentDetails = paymentDetailsFromRuntimeOnly(liveRuntimeStatus);
   const paymentInfo = paymentDetailsText(paymentDetails, lang);
   auditDecision("Payment details resolved", {
     instance,
-    source: legacyPaymentDetailsSource(body, liveRuntimeStatus, config || {}),
+    source: paymentDetailsRuntimeSource(liveRuntimeStatus),
     count: paymentDetails.length,
   });
   return formatLegacyPaymentMessage(totalAmount, paymentInfo, lang);
@@ -633,9 +607,17 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     await emitPrintOnNewOrder(req, body, action);
     await emitPrintOnPaid(req, body, newStatus);
 
-    const lang = (await getUserLang(instance, phone).catch(() => null)) || getLanguage(body);
+    const lockedLanguage = await getUserLang(instance, phone).catch(() => null);
+    const payloadLanguage = normalizeSiteLanguage(body.lang || body.language);
+    let siteLanguageHint = await getSiteLanguageHint(instance, phone).catch(() => null);
+    if (!lockedLanguage && action === "new_order" && payloadLanguage) {
+      await saveSiteLanguageHint(instance, phone, payloadLanguage).catch(() => false);
+      siteLanguageHint = payloadLanguage;
+    }
+    const lang = resolveSiteOutboundLanguage(lockedLanguage, payloadLanguage, siteLanguageHint);
     let textMessage = "";
     if (action === "new_order") {
+      await clearKitchenCheckoutState(instance, phone).catch(() => undefined);
       auditDecision("Building new_order WhatsApp template", { orderId, action, instance, lang, isPickup });
       textMessage = buildLegacyNewOrderMessage(body, lang, orderId, isPickup);
     }

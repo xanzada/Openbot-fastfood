@@ -4,106 +4,106 @@ import { notifyDeveloperSystemFailure } from "../services/developerNotify.servic
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 function getRequestInstanceId(req) {
-    return String(req.body?.instance || "").trim();
+  return String(req.body?.instance || "").trim();
 }
 function getBearerToken(req) {
-    const authorization = req.headers.authorization || "";
-    return authorization.replace(/^Bearer\s+/i, "");
+  const authorization = req.headers.authorization || "";
+  return authorization.replace(/^Bearer\s+/i, "");
 }
 function envBool(name, fallback = false) {
-    const value = String(process.env[name] ?? "").trim().toLowerCase();
-    if (!value)
-        return fallback;
-    return ["1", "true", "yes", "on"].includes(value);
+  const value = String(process.env[name] ?? "").trim().toLowerCase();
+  if (!value) return fallback;
+  return ["1", "true", "yes", "on"].includes(value);
 }
 function isLegacyDleAction(value) {
-    return new Set([
-        "new_order",
-        "status_changed",
-        "request_payment",
-        "order_rejected",
-        "shift_note_created",
-        "shift_note_deleted",
-        "create_order",
-        "order_created",
-        "update_status",
-        "change_status",
-        "status_update",
-        "payment_request",
-        "request_pay",
-        "reject_order",
-        "rejected_order",
-        "cancel_order",
-        "create_shift_note",
-        "delete_shift_note",
-    ]).has(String(value || "").trim());
+  return (/* @__PURE__ */ new Set([
+    "new_order",
+    "status_changed",
+    "request_payment",
+    "order_rejected",
+    "shift_note_created",
+    "shift_note_deleted",
+    "create_order",
+    "order_created",
+    "update_status",
+    "change_status",
+    "status_update",
+    "payment_request",
+    "request_pay",
+    "reject_order",
+    "rejected_order",
+    "cancel_order",
+    "create_shift_note",
+    "delete_shift_note"
+  ])).has(String(value || "").trim());
 }
 function verifySecret(channel = "webhook") {
-    return async (req, res, next) => {
-        if (channel === "kanban" && !envBool("DLE_WEBHOOK_AUTH_REQUIRED", false) && isLegacyDleAction(req.body?.action || req.body?.ajax_action)) {
-            return next();
-        }
-        const expected = process.env.OPENBOT_WEBHOOK_SECRET;
-        const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.body?.secret_token || req.query?.token || req.query?.secret_token;
-        if (expected && safeCompare(got, expected)) {
-            return next();
-        }
-        try {
-            const instanceId = getRequestInstanceId(req);
-            if (!instanceId) {
-                return res.status(401).json({ ok: false, error: "unauthorized" });
-            }
-            const config = await getRestaurantConfig(instanceId);
-            assertTenantSecret(req, config, channel);
-            return next();
-        }
-        catch (error) {
-            return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
-        }
-    };
+  return async (req, res, next) => {
+    if (channel === "kanban" && !envBool("DLE_WEBHOOK_AUTH_REQUIRED", false) && isLegacyDleAction(req.body?.action || req.body?.ajax_action)) {
+      return next();
+    }
+    const expected = process.env.OPENBOT_WEBHOOK_SECRET;
+    const got = getBearerToken(req) || req.headers["x-api-key"] || req.body?.token || req.body?.secret_token || req.query?.token || req.query?.secret_token;
+    if (expected && safeCompare(got, expected)) {
+      return next();
+    }
+    try {
+      const instanceId = getRequestInstanceId(req);
+      if (!instanceId) {
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      }
+      const config = await getRestaurantConfig(instanceId);
+      assertTenantSecret(req, config, channel);
+      return next();
+    } catch (error) {
+      return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
+    }
+  };
 }
-export function systemRoute() {
-    const router = createRouter();
-    router.get("/health", (_req, res) => {
-        res.json({
-            ok: true,
-            service: "openbot-agent",
-            brain: "VoltAgent",
-            stateless_context: true,
-        });
+function systemRoute() {
+  const router = createRouter();
+  router.get("/health", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "openbot-agent",
+      brain: "VoltAgent",
+      stateless_context: true
     });
-    router.get("/health/detailed", async (_req, res) => {
-        const checks = await runDependencyChecks();
-        const ok = checks.every((check) => check.ok);
-        res.status(ok ? 200 : 503).json({
-            ok,
-            service: "openbot-agent",
-            config: getConfigSummary(),
-            checks,
-        });
+  });
+  router.get("/health/detailed", async (_req, res) => {
+    const checks = await runDependencyChecks();
+    const ok = checks.every((check) => check.ok);
+    res.status(ok ? 200 : 503).json({
+      ok,
+      service: "openbot-agent",
+      config: getConfigSummary(),
+      checks
     });
-    router.post("/api/print_trigger", verifySecret("kanban"), async (req, res) => {
-        try {
-            const io = req.app.get("io");
-            const orderData = req.body || {};
-            if (!io) {
-                res.status(500).json({ success: false, error: "Socket server error" });
-                return;
-            }
-            io.emit("print_new_order", orderData);
-            console.info(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
-            res.status(200).json({ success: true, message: "Print signal sent to agent" });
-        }
-        catch (error) {
-            const instanceId = getRequestInstanceId(req);
-            await notifyDeveloperSystemFailure(instanceId, error, {
-                scope: "print_trigger",
-                orderId: req.body?.order_id || req.body?.id || "",
-            }).catch(() => undefined);
-            if (!res.headersSent) {
-                res.status(500).json({ success: false, error: error?.message || "print trigger failed" });
-            }
-        }
-    });
-    return router;
+  });
+  router.post("/api/print_trigger", verifySecret("kanban"), async (req, res) => {
+    try {
+      const io = req.app.get("io");
+      const orderData = req.body || {};
+      if (!io) {
+        res.status(500).json({ success: false, error: "Socket server error" });
+        return;
+      }
+      io.emit("print_new_order", orderData);
+      console.info(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
+      res.status(200).json({ success: true, message: "Print signal sent to agent" });
+    } catch (error) {
+      const instanceId = getRequestInstanceId(req);
+      await notifyDeveloperSystemFailure(instanceId, error, {
+        scope: "print_trigger",
+        orderId: req.body?.order_id || req.body?.id || ""
+      }).catch(() => void 0);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, error: error?.message || "print trigger failed" });
+      }
+    }
+  });
+  return router;
 }
+export {
+  systemRoute
+};

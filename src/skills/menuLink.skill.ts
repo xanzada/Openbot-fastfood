@@ -1,6 +1,6 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
-import { markMagicLinkSent } from "../services/redis.service.js";
+import { markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
 export function createSendMenuLinkSkill(ctx: FastFoodContext) {
@@ -11,17 +11,21 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       reason: z.string().describe("Why the link is being sent"),
     }),
     execute: async ({ reason }) => {
-      const allowed = !ctx.magicLinkAlreadySent || ctx.explicitMenuLinkIntent;
+      const hasActiveOrder = Boolean(ctx.activeOrder);
+      const runtimeAvailable = Boolean(ctx.hardRealtimeContext?.runtime_available);
+      const allowed = (!ctx.magicLinkAlreadySent || ctx.explicitMenuLinkIntent) && (runtimeAvailable || hasActiveOrder);
       if (!allowed || !ctx.magicLink) {
         return {
           allowed: false,
           link: null,
-          message: ctx.language === "kk"
-            ? "Алдыңғы сілтемемен тапсырыс бере аласыз."
-            : "Можете оформить заказ по предыдущей ссылке.",
+          reason: !runtimeAvailable && !hasActiveOrder ? "runtime_unavailable" : "link_already_sent",
+          message: !runtimeAvailable && !hasActiveOrder
+            ? (ctx.language === "kk" ? "Ас үйдің ағымдағы күйін тексере алмадым, сондықтан жаңа тапсырысты қазір бастай алмаймын. Сәлден кейін қайта көріңіз." : "Не удалось проверить текущее состояние кухни, поэтому сейчас нельзя начать новый заказ. Попробуйте немного позже.")
+            : (ctx.language === "kk" ? "Алдыңғы сілтемемен тапсырыс бере аласыз." : "Можете оформить заказ по предыдущей ссылке."),
         };
       }
       await markMagicLinkSent(ctx.instanceId, ctx.phone).catch(() => false);
+      await markKitchenCheckoutStarted(ctx.instanceId, ctx.phone).catch(() => false);
       return {
         allowed: true,
         link: ctx.magicLink,

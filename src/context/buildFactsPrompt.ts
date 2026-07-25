@@ -1,4 +1,5 @@
 import type { FastFoodContext } from "./types.js";
+import { publicNoteConstraints } from "../services/noteProvenance.service.js";
 
 function firstConfigText(config: Record<string, any>, ...keys: string[]) {
   for (const key of keys) {
@@ -29,11 +30,59 @@ function compactTenantConfig(config: Record<string, any>) {
   };
 }
 
-function compactHistory(history: any[]) {
-  return history.slice(-4).map((entry) => ({
-    role: entry?.role === "assistant" ? "assistant" : "user",
-    text: String(entry?.text || "").slice(0, 500),
-  }));
+type ConversationRole = "user" | "assistant" | "operator";
+
+function conversationRole(entry: any): ConversationRole | null {
+  const role = String(entry?.role || "").trim().toLowerCase();
+  const source = String(entry?.source || "").trim().toLowerCase();
+  if (role === "system") return null;
+  if (role === "operator" || source === "operator_panel" || source === "whatsapp_app") return "operator";
+  if (["assistant", "model", "bot", "ai"].includes(role)) return "assistant";
+  if (entry?.direction === "outgoing" || entry?.fromMe === true) return "assistant";
+  return "user";
+}
+
+export function compactConversationHistory(history: any[]) {
+  const normalized = (Array.isArray(history) ? history : [])
+    .map((entry, index) => ({
+      role: conversationRole(entry),
+      text: String(entry?.text || entry?.body || "").replace(/\s+/g, " ").trim().slice(0, 360),
+      createdAt: Number(entry?.createdAt || entry?.timestamp || 0) || index,
+      index,
+    }))
+    .filter((entry): entry is typeof entry & { role: ConversationRole } => Boolean(entry.role && entry.text))
+    .sort((a, b) => a.createdAt - b.createdAt || a.index - b.index);
+
+  let customerCount = 0;
+  let restaurantCount = 0;
+  const selected: typeof normalized = [];
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const entry = normalized[index];
+    if (entry.role === "user") {
+      if (customerCount >= 5) continue;
+      customerCount += 1;
+    } else {
+      if (restaurantCount >= 5) continue;
+      restaurantCount += 1;
+    }
+    selected.push(entry);
+    if (customerCount >= 5 && restaurantCount >= 5) break;
+  }
+
+  return selected.reverse().map(({ role, text, createdAt }) => ({ role, text, createdAt }));
+}
+
+function operationalRuntime(ctx: FastFoodContext) {
+  const live = ctx.hardRealtimeContext || {};
+  return {
+    wait_time: Number(live.wait_time || 0), delivery: live.delivery ?? null, pickup: live.pickup ?? null,
+    is_emergency: Boolean(live.is_emergency), reset_at: Number(live.reset_at || 0),
+    stale: Boolean(live.stale), runtime_available: Boolean(live.runtime_available),
+  };
+}
+
+function operationalShiftNotes(ctx: FastFoodContext) {
+  return publicNoteConstraints(ctx.activeShiftNotes).map((entry) => ({ type: "operator_constraint", active: true, blocked_terms: entry.blocked_terms, expires_at: entry.expires_at }));
 }
 
 export function buildFactsPrompt(ctx: FastFoodContext): string {
@@ -48,9 +97,9 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         language_policy: ctx.languagePolicy,
         language_persistence: {
           locked_language: ctx.language,
-          cache_ttl_hours: 6,
+          cache_ttl_hours: 24,
           cached_from_previous_message: Boolean(ctx.languagePolicy?.cached),
-          rule: "This language is locked for 6 hours from the first detected message. You MUST reply ONLY in this language regardless of the customer's current message language or any system data in other languages.",
+          rule: "This language is locked for 24 hours from the first genuine customer text. You MUST reply ONLY in this language regardless of the customer's current message language or any system data in other languages.",
         },
         restaurant: {
           instance_id: ctx.instanceId,
@@ -71,8 +120,12 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         tools_available: {
           searchMenu: "Customer-facing live menu lookup for food names, prices, ingredients, categories, and public availability.",
           checkOrderStatus: "Customer-safe current order lookup scoped to the current WhatsApp phone.",
-          getPaymentDetails: "Current customer-facing payment details.",
+          getPaymentDetails: "Current payment details only from live site kitchen settings payment_details; never from NocoDB.",
+          getBusinessInfo: "Current-instance NocoDB allowlist only: work_hours, whatsapp_phone, brand, address.",
         },
+        operational_runtime: operationalRuntime(ctx),
+        active_operator_notes: operationalShiftNotes(ctx),
+        note_policy: "Active operator notes and kitchen indicators are cumulative backend-preloaded constraints. Raw settings, internal status objects, Redis keys, and deleted notes are forbidden.",
         magic_link: {
           already_sent: ctx.magicLinkAlreadySent,
           explicit_request: ctx.explicitMenuLinkIntent,
@@ -80,7 +133,8 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           url: ctx.magicLink,
           validity_rule: "Magic link is valid for 1 month and is tied to the customer's WhatsApp number.",
         },
-        recent_dialog: compactHistory(ctx.chatHistory),
+        recent_dialog: compactConversationHistory(ctx.chatHistory),
+        conversation_policy: "Use recent_dialog as balanced working memory: up to 5 customer messages and up to 5 restaurant-side messages in chronological order. Preserve operator as a distinct human role. Continue from the last unresolved point, do not repeat answered questions, and never expose internal reasoning.",
         shpor_context: ctx.shporContext.slice(0, 3),
       },
       null,

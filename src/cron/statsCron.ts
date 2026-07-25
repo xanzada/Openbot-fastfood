@@ -2,6 +2,7 @@ import axios from "axios";
 import { redisClient } from "../services/redis.service.js";
 import { normalizePublicDomain, safeHttpAgent, safeHttpsAgent } from "../services/dle.service.js";
 import { getAllRestaurantConfigs } from "../services/nocodb.service.js";
+import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 
 const ANALYTICS_TIMEZONE = process.env.ANALYTICS_TIMEZONE || "Asia/Almaty";
 const ANALYTICS_CRON_EXPR = process.env.ANALYTICS_CRON_EXPR || "59 23 * * *";
@@ -210,6 +211,10 @@ export async function processDailyAnalytics() {
       await processRestaurantAnalytics(config, reportDate);
     } catch (error: any) {
       console.error(`[CRON] analytics error (${config?.instance_id || "unknown"}):`, error?.message || error);
+      await notifyDeveloperSystemFailure(String(config?.instance_id || ""), error, {
+        scope: "daily_analytics",
+        action: "process_restaurant_analytics",
+      }).catch(() => undefined);
     }
   }
 }
@@ -257,6 +262,9 @@ export function startDailyCron() {
       processDailyAnalytics()
         .catch((error: any) => {
           console.error("[CRON] analytics fatal error:", error?.message || error);
+          void notifyAllDevelopersSystemFailure(error, {
+            scope: "daily_analytics_fatal",
+          }).catch(() => undefined);
         })
         .finally(scheduleNext);
     }, delay);

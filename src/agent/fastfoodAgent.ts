@@ -15,8 +15,8 @@ function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
 
 export async function runFastFoodAgent(ctx: FastFoodContext) {
   const instructions = [
-    FASTFOOD_AGENT_INSTRUCTIONS,
     buildTenantInstructions(ctx),
+    FASTFOOD_AGENT_INSTRUCTIONS,
     buildFactsPrompt(ctx),
   ].filter(Boolean).join("\n\n");
   const agent = new Agent({

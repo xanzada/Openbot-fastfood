@@ -8,26 +8,21 @@ const SPAM_WINDOW_SECONDS = 60;
 const SPAM_LIMIT = Number(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE || 15);
 const MUTE_SECONDS = Number(process.env.OPENBOT_SPAM_MUTE_SECONDS || 900);
 const DUPLICATE_TEXT_SECONDS = 5;
+const INBOUND_BUFFER_SECONDS = 5;
+const INBOUND_BUFFER_DELAY_MS = Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 1200);
+const INBOUND_BUFFER_MAX_ITEMS = 8;
+const INBOUND_BUFFER_MAX_CHARS = 2000;
 const PROCESSING_LOCK_SECONDS = 180;
 const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
 const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS || 300);
 const OPERATOR_ACTIVE_SECONDS = Number(process.env.OPERATOR_ACTIVE_SECONDS || 60);
-const MAX_MEDIA_BYTES = Number(process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
+export const MAX_IMAGE_BYTES = Number(process.env.OPENBOT_MAX_IMAGE_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
+export const MAX_DOCUMENT_BYTES = Number(process.env.OPENBOT_MAX_DOCUMENT_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
+export const MAX_AUDIO_BYTES = Number(process.env.OPENBOT_MAX_AUDIO_BYTES || 8 * 1024 * 1024);
+export const MAX_VOICE_SECONDS = Number(process.env.OPENBOT_MAX_VOICE_SECONDS || 180);
+const MEDIA_AI_LIMIT_PER_5_MINUTES = Number(process.env.OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES || 6);
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
-const ALLOWED_AUDIO_MIME_BASES = new Set([
-  "audio/ogg",
-  "audio/opus",
-  "audio/mpeg",
-  "audio/mp3",
-  "audio/wav",
-  "audio/x-wav",
-  "audio/webm",
-  "audio/mp4",
-  "audio/m4a",
-  "audio/aac",
-  "audio/flac",
-]);
 const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
   .split(",")
   .map((item) => item.trim().toLowerCase())
@@ -35,7 +30,7 @@ const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
 
 export interface InboundMediaContext {
   hasMedia: boolean;
-  kind: "image" | "document" | "video" | "audio" | "unknown";
+  kind: "image" | "document" | "video" | "audio" | "sticker" | "unknown";
   mimeType: string;
   sizeBytes: number;
   valid: boolean;
@@ -48,6 +43,8 @@ export interface InboundMediaContext {
   mediaType?: string;
   analysis?: Record<string, any>;
   historyLabel: string;
+  durationSeconds?: number;
+  isVoiceNote?: boolean;
 }
 
 export interface GuardResult {
@@ -96,22 +93,32 @@ function normalizeMimeBase(mimeType = "") {
   return String(mimeType || "").split(";")[0].trim().toLowerCase();
 }
 
-function evaluateMediaValidity(kind: InboundMediaContext["kind"], mimeType: string, sizeBytes: number) {
-  const flags: string[] = [];
-  const mimeBase = normalizeMimeBase(mimeType);
+function maxBytesForKind(kind: InboundMediaContext["kind"]) {
+  if (kind === "audio") return MAX_AUDIO_BYTES;
+  if (kind === "document") return MAX_DOCUMENT_BYTES;
+  return MAX_IMAGE_BYTES;
+}
 
-  if (!mimeBase) flags.push("missing_mime_type");
-  if (kind === "document" && mimeBase !== "application/pdf") flags.push("unsupported_document");
-  if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType)) flags.push("unsupported_mime_type");
-  if (sizeBytes > MAX_MEDIA_BYTES) flags.push("media_too_large");
-  if (kind === "audio" && !ALLOWED_AUDIO_MIME_BASES.has(mimeBase)) flags.push("unsupported_audio_mime");
-  if (kind === "unknown") flags.push("unknown_media_type");
-
-  return {
-    flags,
-    reason: flags[0] || undefined,
-    valid: flags.length === 0,
-  };
+function mediaSignatureMatches(mimeType: string, base64: string) {
+  try {
+    const data = String(base64 || "").replace(/^data:[^;]+;base64,/i, "");
+    const b = Buffer.from(data.slice(0, 64), "base64");
+    const hex = b.toString("hex");
+    const ascii = b.toString("ascii");
+    const mime = normalizeMimeBase(mimeType);
+    if (["image/jpeg","image/jpg"].includes(mime)) return hex.startsWith("ffd8ff");
+    if (mime === "image/png") return hex.startsWith("89504e470d0a1a0a");
+    if (mime === "image/webp") return ascii.startsWith("RIFF") && ascii.slice(8,12) === "WEBP";
+    if (mime === "application/pdf") return ascii.startsWith("%PDF-");
+    if (["audio/ogg","audio/opus"].includes(mime)) return ascii.startsWith("OggS");
+    if (["audio/wav","audio/x-wav"].includes(mime)) return ascii.startsWith("RIFF") && ascii.slice(8,12) === "WAVE";
+    if (["audio/mpeg","audio/mp3"].includes(mime)) return ascii.startsWith("ID3") || (b[0]===0xff && (b[1]&0xe0)===0xe0);
+    if (["audio/webm"].includes(mime)) return hex.startsWith("1a45dfa3");
+    if (["audio/mp4","audio/m4a"].includes(mime)) return ascii.slice(4,8) === "ftyp";
+    if (mime === "audio/flac") return ascii.startsWith("fLaC");
+    if (mime === "audio/aac") return b[0]===0xff && (b[1]&0xf6)===0xf0;
+    return false;
+  } catch { return false; }
 }
 
 function normalizeContactText(value: unknown) {
@@ -181,13 +188,15 @@ export function extractSenderMeta(body: any) {
 
 export function extractInboundMedia(body: any): InboundMediaContext | null {
   const msg = actualMessage(body);
-  const image = msg?.imageMessage || body?.imageMessage || body?.media?.imageMessage;
-  const document = msg?.documentMessage || body?.documentMessage || body?.media?.documentMessage;
-  const video = msg?.videoMessage || body?.videoMessage || body?.media?.videoMessage;
-  const audio = msg?.audioMessage || body?.audioMessage || body?.media?.audioMessage || (body?.type === "audio" ? body?.media || body : null);
+  const messageType = String(body?.type || body?.mediaKind || body?.data?.type || "").trim().toLowerCase();
+  const image = msg?.imageMessage || body?.imageMessage || body?.media?.imageMessage || (messageType === "image" ? body?.media || body : null);
+  const document = msg?.documentMessage || body?.documentMessage || body?.media?.documentMessage || (messageType === "document" ? body?.media || body : null);
+  const video = msg?.videoMessage || body?.videoMessage || body?.media?.videoMessage || (messageType === "video" ? body?.media || body : null);
+  const audio = msg?.audioMessage || body?.audioMessage || body?.media?.audioMessage || (["audio", "ptt"].includes(messageType) ? body?.media || body : null);
+  const sticker = msg?.stickerMessage || body?.stickerMessage || body?.media?.stickerMessage || (messageType === "sticker" ? body?.media || body : null);
   const ptv = msg?.ptvMessage || body?.ptvMessage || body?.media?.ptvMessage;
-  const rawMedia = image || document || video || audio || ptv || body?.media || null;
-  const hasMedia = Boolean(body?.hasMedia || body?.media || image || document || video || audio || ptv);
+  const rawMedia = image || document || video || audio || sticker || ptv || body?.media || null;
+  const hasMedia = Boolean(body?.hasMedia || body?.media || image || document || video || audio || sticker || ptv);
   if (!hasMedia) return null;
 
   const kind: InboundMediaContext["kind"] = image
@@ -198,13 +207,48 @@ export function extractInboundMedia(body: any): InboundMediaContext | null {
         ? "video"
         : audio
           ? "audio"
+          : sticker
+            ? "sticker"
           : "unknown";
   const mimeType = firstString(body?.mimeType, body?.mediaType, defaultMimeForKind(kind, rawMedia));
+  const mimeBase = normalizeMimeBase(mimeType);
   const sizeBytes =
     firstNumber(body?.fileLength, body?.sizeBytes, body?.mediaSize) || getDeclaredMediaBytes(rawMedia);
   const caption = firstString(body?.caption, rawMedia?.caption);
+  const durationSeconds = firstNumber(body?.duration, body?.seconds, rawMedia?.seconds, rawMedia?.duration);
+  const isVoiceNote = kind === "audio" && Boolean(
+    messageType === "ptt" ||
+    String(body?.mediaKind || body?.data?.mediaKind || "").toLowerCase() === "ptt" ||
+    (rawMedia?.ptt ?? body?.ptt ?? body?.isPtt ?? body?.isVoiceNote ?? false)
+  );
+  const flags: string[] = [];
 
-  const validity = evaluateMediaValidity(kind, mimeType, sizeBytes);
+  if (kind !== "sticker" && !mimeBase) flags.push("missing_mime_type");
+  if (kind === "document" && mimeBase !== "application/pdf") flags.push("unsupported_document");
+  if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType)) flags.push("unsupported_mime_type");
+  if (kind !== "sticker" && kind !== "video" && sizeBytes > maxBytesForKind(kind)) flags.push("media_too_large");
+  if (kind === "video") flags.push("video_unsupported");
+  if (kind === "audio" && !isVoiceNote) flags.push("music_audio_not_supported");
+  if (kind === "audio" && durationSeconds > MAX_VOICE_SECONDS) flags.push("voice_too_long");
+  if (
+    kind === "audio" &&
+    ![
+      "audio/ogg",
+      "audio/opus",
+      "audio/mpeg",
+      "audio/mp3",
+      "audio/wav",
+      "audio/x-wav",
+      "audio/webm",
+      "audio/mp4",
+      "audio/m4a",
+      "audio/aac",
+      "audio/flac",
+    ].includes(mimeBase)
+  ) {
+    flags.push("unsupported_audio_mime");
+  }
+  if (kind === "unknown") flags.push("unknown_media_type");
 
   const historyLabel =
     kind === "audio"
@@ -215,6 +259,8 @@ export function extractInboundMedia(body: any): InboundMediaContext | null {
           ? "[Document sent]"
           : kind === "video"
             ? "[Video sent]"
+            : kind === "sticker"
+              ? "[Sticker sent]"
             : "[Media sent]";
 
   return {
@@ -222,14 +268,63 @@ export function extractInboundMedia(body: any): InboundMediaContext | null {
     kind,
     mimeType,
     sizeBytes,
-    valid: validity.valid,
-    reason: validity.reason,
-    flags: validity.flags,
+    valid: flags.length === 0,
+    reason: flags[0] || undefined,
+    flags,
     caption,
     messageId: extractMessageId(body) || undefined,
     mediaType: mimeType,
     historyLabel,
+    durationSeconds: durationSeconds || undefined,
+    isVoiceNote,
   };
+}
+
+export function safeMediaMetadata(mediaContext: InboundMediaContext | null | undefined) {
+  if (!mediaContext) return null;
+  return {
+    hasMedia: true,
+    kind: mediaContext.kind,
+    mimeType: mediaContext.mimeType,
+    sizeBytes: mediaContext.sizeBytes,
+    valid: mediaContext.valid,
+    reason: mediaContext.reason,
+    flags: mediaContext.flags.slice(0, 8),
+    caption: String(mediaContext.caption || "").slice(0, 500),
+    messageId: mediaContext.messageId,
+    durationSeconds: mediaContext.durationSeconds,
+    isVoiceNote: mediaContext.isVoiceNote,
+    analysis: mediaContext.analysis ? {
+      type: String(mediaContext.analysis.type || "").slice(0, 40),
+      analysis: String(mediaContext.analysis.analysis || "").slice(0, 1000),
+      admin_summary: String(mediaContext.analysis.admin_summary || "").slice(0, 1000),
+    } : undefined,
+    historyLabel: mediaContext.historyLabel,
+  };
+}
+
+export function detectOggOpusDurationSeconds(base64Value = "") {
+  try {
+    const raw = String(base64Value || "").includes(",") ? String(base64Value).split(",").pop() || "" : String(base64Value || "");
+    const buffer = Buffer.from(raw, "base64");
+    if (buffer.length < 27 || buffer.subarray(0, 4).toString("ascii") !== "OggS") return 0;
+    let offset = 0;
+    let maxGranule = 0n;
+    while (offset + 27 <= buffer.length && buffer.subarray(offset, offset + 4).toString("ascii") === "OggS") {
+      const segmentCount = buffer[offset + 26];
+      if (offset + 27 + segmentCount > buffer.length) break;
+      let bodyLength = 0;
+      for (let index = 0; index < segmentCount; index += 1) bodyLength += buffer[offset + 27 + index];
+      const pageLength = 27 + segmentCount + bodyLength;
+      if (offset + pageLength > buffer.length) break;
+      const granule = buffer.readBigUInt64LE(offset + 6);
+      if (granule !== 0xffffffffffffffffn && granule > maxGranule) maxGranule = granule;
+      offset += pageLength;
+    }
+    return maxGranule > 0n ? Number(maxGranule) / 48000 : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function cleanDataUrlBase64(value = "", fallbackMimeType = "application/octet-stream") {
@@ -271,10 +366,12 @@ function directMediaBase64(body: any) {
   return firstString(
     body?.base64,
     body?.dataUrl,
+    body?.mediaData,
     body?.media?.base64,
     body?.media?.data,
     body?.media?.dataUrl,
     body?.data?.base64,
+    body?.data?.mediaData,
     body?.data?.media?.base64,
     body?.message?.base64
   );
@@ -309,7 +406,12 @@ async function whatsproHeaders(instanceId = "") {
 export async function getBase64Media(body: any, mediaContext: InboundMediaContext | null = extractInboundMedia(body)) {
   const mimeType = mediaContext?.mimeType || firstString(body?.mimeType, body?.mediaType) || "application/octet-stream";
   const direct = cleanDataUrlBase64(directMediaBase64(body), mimeType);
-  if (direct?.base64) return direct;
+  const maxBytes = maxBytesForKind(mediaContext?.kind || "unknown");
+  if (direct?.base64) {
+    const estimatedBytes = Math.floor(direct.base64.length * 0.75);
+    if (estimatedBytes > maxBytes) return { error: "media_too_large" as const };
+    return direct;
+  }
 
   const url = mediaDownloadUrl(body);
   if (!url) return null;
@@ -317,9 +419,11 @@ export async function getBase64Media(body: any, mediaContext: InboundMediaContex
   try {
     const response = await fetch(url, { headers: await whatsproHeaders(webhookInstanceId(body)) });
     if (!response.ok) throw new Error(`MEDIA_HTTP_${response.status}`);
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > maxBytes) throw new Error("MEDIA_TOO_LARGE");
 
     const arrayBuffer = await response.arrayBuffer();
-    if (arrayBuffer.byteLength > MAX_MEDIA_BYTES) throw new Error("MEDIA_TOO_LARGE");
+    if (arrayBuffer.byteLength > maxBytes) throw new Error("MEDIA_TOO_LARGE");
     const responseMimeType = response.headers.get("content-type")?.split(";")[0] || mimeType;
     const base64 = Buffer.from(arrayBuffer).toString("base64");
     return {
@@ -329,26 +433,41 @@ export async function getBase64Media(body: any, mediaContext: InboundMediaContex
     };
   } catch (error: any) {
     console.error("[DOWNLOAD MEDIA ERROR]:", error?.message || error);
-    return null;
+    return { error: error?.message === "MEDIA_TOO_LARGE" ? "media_too_large" as const : "media_download_failed" as const };
   }
 }
 
 export async function hydrateInboundMedia(body: any, mediaContext: InboundMediaContext | null): Promise<InboundMediaContext | null> {
   if (!mediaContext) return null;
+  if (!mediaContext.valid || mediaContext.kind === "sticker" || mediaContext.kind === "video") return mediaContext;
   const downloaded = await getBase64Media(body, mediaContext);
-  if (!downloaded?.base64) return mediaContext;
-  const updated = {
+  if (!downloaded) return { ...mediaContext, valid: false, reason: "media_download_failed", flags: [...mediaContext.flags, "media_download_failed"] };
+  if ("error" in downloaded) return { ...mediaContext, valid: false, reason: downloaded.error, flags: Array.from(new Set([...mediaContext.flags, downloaded.error])) };
+  if (!downloaded.base64) return { ...mediaContext, valid: false, reason: "media_download_failed", flags: [...mediaContext.flags, "media_download_failed"] };
+  const downloadedMime = normalizeMimeBase(downloaded.mimeType || mediaContext.mimeType);
+  if (!ALLOWED_MEDIA_MIME.test(downloadedMime)) return { ...mediaContext, valid: false, reason: "unsupported_mime_type", flags: [...mediaContext.flags, "unsupported_mime_type"] };
+  if (!mediaSignatureMatches(downloadedMime, downloaded.base64)) return { ...mediaContext, valid: false, reason: "media_signature_mismatch", flags: Array.from(new Set([...mediaContext.flags, "media_signature_mismatch"])) };
+  if (mediaContext.kind === "audio" && mediaContext.isVoiceNote && !mediaContext.durationSeconds && !["audio/ogg","audio/opus"].includes(downloadedMime)) return { ...mediaContext, valid: false, reason: "voice_duration_unverified", flags: Array.from(new Set([...mediaContext.flags, "voice_duration_unverified"])) };
+  const measuredDuration = mediaContext.kind === "audio" && mediaContext.isVoiceNote && !mediaContext.durationSeconds
+    ? detectOggOpusDurationSeconds(downloaded.base64)
+    : Number(mediaContext.durationSeconds || 0);
+  if (mediaContext.kind === "audio" && mediaContext.isVoiceNote && measuredDuration > MAX_VOICE_SECONDS) {
+    return {
+      ...mediaContext,
+      valid: false,
+      reason: "voice_too_long",
+      flags: Array.from(new Set([...mediaContext.flags, "voice_too_long"])),
+      durationSeconds: Math.ceil(measuredDuration),
+    };
+  }
+  return {
     ...mediaContext,
     mimeType: downloaded.mimeType || mediaContext.mimeType,
     mediaType: downloaded.mimeType || mediaContext.mediaType,
     sizeBytes: Math.floor(downloaded.base64.length * 0.75),
     base64: downloaded.dataUrl,
     dataUrl: downloaded.dataUrl,
-  };
-  const validity = evaluateMediaValidity(updated.kind, updated.mimeType, updated.sizeBytes);
-  return {
-    ...updated,
-    ...validity,
+    durationSeconds: measuredDuration || mediaContext.durationSeconds,
   };
 }
 
@@ -520,8 +639,39 @@ export async function saveMediaContext(
   await redisClient.setEx(
     `media_context:${instanceId}:${phone}`,
     MEDIA_CONTEXT_SECONDS,
-    JSON.stringify({ ...mediaContext, savedAt: Date.now() })
+    JSON.stringify({ ...safeMediaMetadata(mediaContext), savedAt: Date.now() })
   );
+}
+
+export async function bufferInboundText(input: { instanceId: string; phone: string; messageId: string; text: string }): Promise<{ leader: boolean; text: string }> {
+  const instanceId = String(input.instanceId || "").trim();
+  const phone = String(input.phone || "").replace(/\D/g, "");
+  const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
+  const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
+  if (!instanceId || !phone || !text) return { leader: true, text };
+  await connectRedis();
+  const listKey = `inbound_buffer:${instanceId}:${phone}`;
+  const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
+  await redisClient.multi()
+    .rPush(listKey, JSON.stringify({ token, text }))
+    .lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1)
+    .expire(listKey, INBOUND_BUFFER_SECONDS)
+    .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
+    .exec();
+  await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+  if ((await redisClient.get(latestKey)) !== token) return { leader: false, text: "" };
+  const rows = await redisClient.lRange(listKey, 0, -1);
+  await redisClient.del([listKey, latestKey]);
+  const parts = rows.map((row) => { try { return String(JSON.parse(row)?.text || "").trim(); } catch { return ""; } }).filter(Boolean);
+  return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS) };
+}
+
+export async function claimMediaAiQuota(instanceId: string, phone: string): Promise<boolean> {
+  await connectRedis();
+  const key = `media_ai_quota:${instanceId}:${phone}`;
+  const count = await redisClient.incr(key);
+  if (count === 1) await redisClient.expire(key, 5 * 60);
+  return count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
 }
 
 export async function clearMediaContext(instanceId: string, phone: string): Promise<void> {

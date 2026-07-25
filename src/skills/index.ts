@@ -5,6 +5,7 @@ import { createUpdateCrmLeadSkill } from "./crm.skill.js";
 import { createEscalateToAdminSkill } from "./escalation.skill.js";
 import { createSendMenuLinkSkill } from "./menuLink.skill.js";
 import { createCheckOrderStatusSkill } from "./checkOrderStatus.skill.js";
+import { createGetBusinessInfoSkill } from "./businessInfo.skill.js";
 
 export const FAST_FOOD_SKILL_NAMES = [
   "searchMenu",
@@ -13,6 +14,7 @@ export const FAST_FOOD_SKILL_NAMES = [
   "escalateToAdmin",
   "sendMenuLink",
   "checkOrderStatus",
+  "getBusinessInfo",
 ] as const;
 
 export function createFastFoodSkills(ctx: FastFoodContext) {
@@ -23,5 +25,6 @@ export function createFastFoodSkills(ctx: FastFoodContext) {
     createEscalateToAdminSkill(ctx),
     createSendMenuLinkSkill(ctx),
     createCheckOrderStatusSkill(ctx),
+    createGetBusinessInfoSkill(ctx),
   ];
 }

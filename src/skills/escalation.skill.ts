@@ -21,18 +21,11 @@ export function createEscalateToAdminSkill(ctx: FastFoodContext) {
       });
 
       return {
-        action: "escalate_to_admin",
-        instanceId: ctx.instanceId,
-        phone: ctx.phone,
-        adminPhone: routing.adminPhone,
+        action: "operator_case_created",
+        caseId: routing.caseId,
+        queuedForChat: routing.queuedForChat,
         escalationAvailable: routing.escalationAvailable,
-        sent: routing.sent,
-        adminPayload: {
-          phone: routing.adminPhone,
-          text: routing.adminText,
-          mediaAttached: routing.mediaAttached,
-        },
-        reason,
+        mediaAttached: routing.mediaAttached,
         urgency,
         customerReply: routing.customerReply,
       };

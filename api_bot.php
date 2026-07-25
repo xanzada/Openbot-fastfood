@@ -421,7 +421,82 @@ if (isset($input['action']) && $input['action'] === 'get_menu_context') {
     die();
 }
 
-// === 1. КОМАНДА: ОБНОВИТЬ CRM-ЛИДА (ИИ Анализ диалогов) ===
+// === 1. КОМАНДА: SOS-СИГНАЛ ОПЕРАТОРУ (срок 1 час) ===
+if (isset($input['action']) && $input['action'] === 'operator_sos') {
+    $phone = preg_replace('/[^0-9]/', '', (string)($input['phone'] ?? ''));
+    $signal_id = preg_replace('/[^A-Za-z0-9_-]/', '', (string)($input['signal_id'] ?? ''));
+    $case_id = preg_replace('/[^A-Za-z0-9_-]/', '', (string)($input['case_id'] ?? ''));
+    $restaurant_id = trim((string)($input['restaurant_id'] ?? ''));
+    $kind = trim(strip_tags((string)($input['kind'] ?? 'human_request')));
+    $summary = preg_replace('/\s+/u', ' ', trim(strip_tags((string)($input['summary'] ?? ''))));
+    $urgency = trim(strip_tags((string)($input['urgency'] ?? 'normal')));
+    $source = trim(strip_tags((string)($input['source'] ?? 'openbot')));
+
+    if (strlen($phone) < 10 || strlen($phone) > 15 || $signal_id === '') {
+        echo json_encode(['success' => false, 'error' => 'Некорректный SOS-сигнал'], JSON_UNESCAPED_UNICODE);
+        die();
+    }
+    $instance_row = $db->super_query("SELECT setting_value FROM " . PREFIX . "_spa_settings WHERE setting_key = 'restaurant_instance'");
+    $site_instance = trim((string)($instance_row['setting_value'] ?? ''));
+    if ($site_instance !== '' && $restaurant_id !== '' && !hash_equals($site_instance, $restaurant_id)) {
+        echo json_encode(['success' => false, 'error' => 'Restaurant mismatch'], JSON_UNESCAPED_UNICODE);
+        die();
+    }
+
+    $now = time();
+    $expires_at = $now + 3600;
+    $db->query("START TRANSACTION");
+    $queue_row = $db->super_query("SELECT setting_value FROM " . PREFIX . "_spa_settings WHERE setting_key = 'operator_sos_notifications' FOR UPDATE");
+    $queue = $queue_row ? json_decode((string)$queue_row['setting_value'], true) : [];
+    if (!is_array($queue)) $queue = [];
+    $existing_signal = null;
+    foreach ($queue as $item) {
+        if (is_array($item) && (int)($item['expires_at'] ?? 0) > $now && (string)($item['signal_id'] ?? '') === $signal_id) {
+            $existing_signal = $item;
+            break;
+        }
+    }
+    if ($existing_signal) {
+        $db->query("COMMIT");
+        echo json_encode([
+            'success' => true,
+            'signal_id' => $signal_id,
+            'created_at' => (int)($existing_signal['created_at'] ?? $now),
+            'expires_at' => (int)($existing_signal['expires_at'] ?? $expires_at),
+            'duplicate' => true
+        ], JSON_UNESCAPED_UNICODE);
+        die();
+    }
+    $queue = array_values(array_filter($queue, function($item) use ($now) {
+        return is_array($item) && (int)($item['expires_at'] ?? 0) > $now;
+    }));
+    $queue[] = [
+        'signal_id' => substr($signal_id, 0, 96),
+        'case_id' => substr($case_id, 0, 96),
+        'restaurant_id' => substr($restaurant_id !== '' ? $restaurant_id : $site_instance, 0, 64),
+        'phone' => $phone,
+        'kind' => substr($kind, 0, 40),
+        'summary' => function_exists('mb_substr') ? mb_substr($summary, 0, 500, 'UTF-8') : substr($summary, 0, 1000),
+        'urgency' => substr($urgency, 0, 20),
+        'source' => substr($source, 0, 80),
+        'created_at' => $now,
+        'expires_at' => $expires_at
+    ];
+    if (count($queue) > 100) $queue = array_slice($queue, -100);
+    $queue_json = $db->safesql(json_encode($queue, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    $db->query("REPLACE INTO " . PREFIX . "_spa_settings (setting_key, setting_value) VALUES ('operator_sos_notifications', '{$queue_json}')");
+    $db->query("COMMIT");
+
+    echo json_encode([
+        'success' => true,
+        'signal_id' => $signal_id,
+        'created_at' => $now,
+        'expires_at' => $expires_at
+    ], JSON_UNESCAPED_UNICODE);
+    die();
+}
+
+// === 2. КОМАНДА: ОБНОВИТЬ CRM-ЛИДА (ИИ Анализ диалогов) ===
 if (isset($input['action']) && $input['action'] === 'update_crm') {
     
     // Безопасное извлечение телефона

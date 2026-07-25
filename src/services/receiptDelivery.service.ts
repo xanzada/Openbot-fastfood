@@ -20,14 +20,10 @@ export type ReceiptDeliveryResult =
 type ReceiptSender = typeof updateCrmAction;
 
 function receiptText(input: ReceiptDeliveryInput) {
-  const parts = [
-    `amount=${Math.max(0, Number(input.amount) || 0)}`,
-    `sender=${String(input.senderName || "").trim().slice(0, 120)}`,
-    `bank=${String(input.bankName || "").trim().slice(0, 40)}`,
-  ];
-  if (input.transactionId) parts.push(`transaction=${String(input.transactionId).trim().slice(0, 120)}`);
-  if (input.paidAt) parts.push(`paid_at=${String(input.paidAt).trim().slice(0, 80)}`);
-  return `payment_receipt ${parts.join("; ")}`;
+  const amount = Math.max(0, Number(input.amount) || 0);
+  const sender = String(input.senderName || "").trim().slice(0, 120);
+  const bank = String(input.bankName || "").trim().slice(0, 40).toUpperCase();
+  return `сумма: ${amount}, отправитель: ${sender}${bank ? ` (${bank})` : ""}`;
 }
 
 function failure(errorCode: string, safeMessage: string): ReceiptDeliveryResult {
@@ -45,6 +41,8 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendRe
     amount_paid: input.amount,
     sender_name: input.senderName,
     bank_name: input.bankName,
+    transaction_id: input.transactionId,
+    date_time: input.paidAt,
     order_id: orderNumber,
     receipt_text: receiptText(input),
   });

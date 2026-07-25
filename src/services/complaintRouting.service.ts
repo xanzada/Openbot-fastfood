@@ -1,7 +1,11 @@
+import crypto from "node:crypto";
 import type { FastFoodContext } from "../context/types.js";
 import { clearComplaintMedia, getComplaintMedia } from "./redis.service.js";
 import { getRestaurantConfig } from "./nocodb.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
+import { createOperatorCase, detectOperatorCaseKind } from "./operatorCase.service.js";
+import { sendOperatorSosSignal } from "./dle.service.js";
+import { auditError } from "./auditLogger.service.js";
 
 export type ComplaintUrgency = "low" | "normal" | "high";
 
@@ -85,6 +89,10 @@ export function isLikelyComplaintText(text = "") {
   return COMPLAINT_RE.test(String(text || ""));
 }
 
+export function isLikelyOperatorRequestText(text = "") {
+  return Boolean(detectOperatorCaseKind(text));
+}
+
 export function buildComplaintClarificationReply(language: "kk" | "ru") {
   return language === "ru"
     ? "Пожалуйста, коротко опишите проблему текстом. Я передам фото и описание администратору."
@@ -110,6 +118,23 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
   const summary = cleanLine(input.summary || input.customerText || ctx.text || "Customer complaint requires review.");
   const customerText = cleanLine(input.customerText || ctx.text || "", 900);
   const urgency = input.urgency || "normal";
+  const detectedKind = detectOperatorCaseKind(input.customerText || ctx.text);
+  const kind = input.source === "long_voice" ? "long_voice" : detectedKind || "complaint";
+  const signalId = `sos_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const domain = cleanLine(liveConfig.domain || ctx.config?.domain || "", 255);
+  const [chatSignal, dleSignal] = await Promise.allSettled([
+    createOperatorCase({
+      instanceId: ctx.instanceId, phone: ctx.phone, kind, summary, source: input.source, urgency,
+      orderNumber: getOrderLabel(ctx), hasMedia: Boolean(media), signalId,
+    }),
+    domain
+      ? sendOperatorSosSignal({ instanceId: ctx.instanceId, phone: ctx.phone, domain, signalId, kind, summary, urgency, source: input.source })
+      : Promise.reject(new Error("DLE_DOMAIN_NOT_CONFIGURED")),
+  ]);
+  const operatorCase = chatSignal.status === "fulfilled" ? chatSignal.value : null;
+  const dleNotified = dleSignal.status === "fulfilled";
+  if (chatSignal.status === "rejected") auditError("WhatsPro SOS signal failed", chatSignal.reason, { instanceId: ctx.instanceId, signalId, kind });
+  if (dleSignal.status === "rejected") auditError("DLE operator SOS signal failed", dleSignal.reason, { instanceId: ctx.instanceId, signalId, kind });
 
   const adminText = [
     "OPENBOT COMPLAINT",
@@ -127,24 +152,21 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
 
   let sent: any = null;
   if (adminPhone) {
-    sent = await sendWhatsProMessage({
-      instanceId: ctx.instanceId,
-      phone: adminPhone,
-      text: adminText,
-      media,
-    });
+    sent = await sendWhatsProMessage({ instanceId: ctx.instanceId, phone: adminPhone, text: adminText, media }).catch(() => null);
     if (savedMedia?.base64) {
       await clearComplaintMedia(ctx.instanceId, ctx.phone).catch(() => undefined);
     }
   }
 
   return {
-    action: "complaint_to_admin",
-    adminPhone: adminPhone || null,
-    escalationAvailable: Boolean(adminPhone),
+    action: "operator_case_created",
+    caseId: operatorCase?.id || null,
+    queuedForChat: Boolean(operatorCase),
+    escalationAvailable: Boolean(operatorCase || dleNotified || adminPhone),
+    signaledToDle: dleNotified,
+    signalId,
     mediaAttached: Boolean(media),
-    sent,
+    sent: Boolean(sent?.acknowledged),
     customerReply: input.customerReply || buildComplaintAckReply(ctx.language),
-    adminText,
   };
 }

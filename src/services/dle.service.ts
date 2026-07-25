@@ -402,6 +402,7 @@ function normalizeOrderPayload(order: Record<string, any> = {}) {
     comment: String(order.comment || "").trim().slice(0, 500),
     is_pickup: toBool(order.is_pickup, false),
     payment_status: String(order.payment_status || "").trim().slice(0, 80),
+    ai_comment: String(order.ai_comment || "").trim().slice(0, 1000),
     created_at: String(order.created_at || order.date || order.date_added || order.time || "").trim().slice(0, 80),
     items,
   };
@@ -629,6 +630,36 @@ export function buildReceiptCrmPayload(data: Record<string, any>) {
     bank_name: bank,
     receipt_text: receiptText,
   };
+}
+
+export async function sendOperatorSosSignal(input: {
+  instanceId: string;
+  phone: string;
+  domain: string;
+  signalId: string;
+  caseId?: string;
+  kind: string;
+  summary: string;
+  urgency?: string;
+  source?: string;
+}) {
+  const cleanPhone = normalizePhone(input.phone);
+  if (!input.domain || !input.instanceId || !cleanPhone || !input.signalId) throw new Error("OPERATOR_SOS_INPUT_INVALID");
+  const response = await apiBot(input.domain, {
+    action: "operator_sos",
+    restaurant_id: input.instanceId,
+    phone: cleanPhone,
+    signal_id: String(input.signalId).slice(0, 96),
+    case_id: String(input.caseId || input.signalId).slice(0, 96),
+    kind: String(input.kind || "human_request").slice(0, 40),
+    summary: String(input.summary || "").replace(/\s+/g, " ").trim().slice(0, 500),
+    urgency: String(input.urgency || "normal").slice(0, 20),
+    source: String(input.source || "openbot").slice(0, 80),
+  }, 8000);
+  if (response?.success !== true || String(response?.signal_id || "") !== String(input.signalId)) {
+    throw new Error("DLE_OPERATOR_SOS_UNCONFIRMED");
+  }
+  return response;
 }
 
 export async function updateCrmAction(
