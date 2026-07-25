@@ -171,7 +171,7 @@ export async function hasActiveKitchenCheckout(instanceId: string, phone: string
 
 export async function clearKitchenCheckoutState(instanceId: string, phone: string): Promise<void> {
   await safeRedis(undefined, async () => {
-    await redisClient.del(kitchenCheckoutGraceKey(instanceId, phone), kitchenConsentKey(instanceId, phone));
+    await redisClient.del([kitchenCheckoutGraceKey(instanceId, phone), kitchenConsentKey(instanceId, phone)]);
   });
 }
 
