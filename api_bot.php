@@ -302,19 +302,42 @@ if (isset($input['action']) && $input['action'] === 'get_runtime_status') {
     ], $kitchen_status);
     $kitchen_status['payment_details'] = $payment_details;
 
+    $kitchen_defaults = [
+        'wait_time' => 40,
+        'is_emergency' => false,
+        'delivery' => true,
+        'pickup' => true,
+        'reset_at' => 0
+    ];
+
     $reset_at = isset($kitchen_status['reset_at']) ? (int)$kitchen_status['reset_at'] : 0;
     if ($reset_at > 0 && time() > $reset_at) {
-        $kitchen_status = [
-            'wait_time' => 40,
-            'is_emergency' => false,
-            'delivery' => true,
-            'pickup' => true,
-            'reset_at' => 0,
-            'payment_details' => $payment_details
-        ];
-        $ks_json = $db->safesql(json_encode($kitchen_status, JSON_UNESCAPED_UNICODE));
-        $db->query("REPLACE INTO " . PREFIX . "_spa_settings (setting_key, setting_value) VALUES ('kitchen_status', '{$ks_json}')");
-        $reset_at = 0;
+        // Это read-endpoint, который пишет: между SELECT выше и REPLACE ниже
+        // админка успевает сохранить новую смену кухни, и она молча терялась.
+        // Перечитываем строку под блокировкой и повторно проверяем дедлайн
+        // (double-checked locking), как это уже делает блок operator_sos.
+        $db->query("START TRANSACTION");
+        $locked_row = $db->super_query("SELECT setting_value FROM " . PREFIX . "_spa_settings WHERE setting_key = 'kitchen_status' FOR UPDATE");
+        $locked = $locked_row ? json_decode((string)$locked_row['setting_value'], true) : [];
+        if (!is_array($locked)) $locked = [];
+        $locked_reset_at = isset($locked['reset_at']) ? (int)$locked['reset_at'] : 0;
+        $payment_details = spa_api_normalize_payment_details($locked['payment_details'] ?? $payment_details_source);
+
+        if ($locked_reset_at > 0 && time() > $locked_reset_at) {
+            // Сброс: значения по умолчанию перекрывают текущие, но остальные
+            // ключи строки сохраняются, а не отбрасываются вместе со сбросом.
+            $kitchen_status = array_merge($locked, $kitchen_defaults);
+            $kitchen_status['payment_details'] = $payment_details;
+            $ks_json = $db->safesql(json_encode($kitchen_status, JSON_UNESCAPED_UNICODE));
+            $db->query("REPLACE INTO " . PREFIX . "_spa_settings (setting_key, setting_value) VALUES ('kitchen_status', '{$ks_json}')");
+            $reset_at = 0;
+        } else {
+            // Пока мы читали, смену переписали. Отдаём актуальную, не сбрасываем.
+            $kitchen_status = array_merge($kitchen_defaults, $locked);
+            $kitchen_status['payment_details'] = $payment_details;
+            $reset_at = $locked_reset_at;
+        }
+        $db->query("COMMIT");
     }
 
     $delivery = spa_api_bool_value($kitchen_status['delivery'] ?? null, true);
