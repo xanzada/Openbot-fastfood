@@ -7,11 +7,27 @@ import {
   buildComplaintDetailQuestion,
   buildOperatorHandoffReply,
 } from "../src/services/complaintRouting.service.js";
+import { detectOperatorCaseKind } from "../src/services/operatorCase.service.js";
 
 test("asking for a human is recognised and never mistaken for a complaint to investigate", () => {
   for (const text of ["оператор шақырыңыз", "адаммен сөйлескім келеді", "позовите оператора", "соедините с менеджером"]) {
     assert.equal(isLikelyOperatorRequestText(text), true, text);
   }
+});
+
+test("a courier number request reaches the operator at once, without an interview", () => {
+  // The courier phone is never in any config and must never be invented, so
+  // there is nothing to clarify — only someone to hand it to.
+  for (const text of ["курьердің номерін беріңізші", "номер курьера дайте", "курьерге хабарласайын"]) {
+    assert.equal(isLikelyOperatorRequestText(text), true, text);
+    assert.equal(detectOperatorCaseKind(text), "courier_request", text);
+  }
+});
+
+test("the operator case knows which kind of help was asked for", () => {
+  assert.equal(detectOperatorCaseKind("оператор керек"), "human_request");
+  assert.equal(detectOperatorCaseKind("тапсырыс суық келді, сапасы нашар"), "complaint");
+  assert.equal(detectOperatorCaseKind("пицца қанша тұрады"), null, "an ordinary question is not a case");
 });
 
 test("a complaint that already names the problem goes straight to the operator", () => {
