@@ -65,6 +65,23 @@ export function getMediaFallbackModel() {
   return envText("MEDIA_FALLBACK_MODEL", envText("OPENROUTER_MEDIA_MODEL", "google/gemini-2.5-flash-lite"));
 }
 
+// Channel 2, kept entirely separate from the client pool: Google API keys from a
+// billing-enabled project, which is what unlocks Pro quota. The free keys answer
+// 429 for every Pro model, so this is the only official way to reach that tier
+// on Google directly.
+export function getMediaProKeys() {
+  return splitList(process.env.MEDIA_PRO_KEYS || "");
+}
+
+export function getMediaProModel() {
+  return envText("MEDIA_PRO_MODEL", "gemini-2.5-pro");
+}
+
+export function usesProMediaChannel() {
+  const raw = String(process.env.MEDIA_PRO_ENABLED ?? "").trim().toLowerCase();
+  return ["1", "true", "yes", "on"].includes(raw);
+}
+
 export function getOpenRouterProvider() {
   return createOpenAI({
     baseURL: "https://openrouter.ai/api/v1",
@@ -116,8 +133,10 @@ function geminiPayload(request: MediaRequest) {
 let mediaKeyCursor = 0;
 
 export async function callGemini(request: MediaRequest) {
-  const keys = getMediaPrimaryKeys();
-  const model = getMediaPrimaryModel();
+  return callGeminiChannel(request, getMediaPrimaryKeys(), getMediaPrimaryModel(), "gemini");
+}
+
+async function callGeminiChannel(request: MediaRequest, keys: string[], model: string, label: string) {
   const transientErrors: unknown[] = [];
   const hardErrors: unknown[] = [];
   const start = keys.length ? mediaKeyCursor % keys.length : 0;
@@ -143,17 +162,17 @@ export async function callGemini(request: MediaRequest) {
 
       const text = extractGeminiText(await response.json());
       if (!text) throw new Error("GEMINI_MEDIA_EMPTY_RESPONSE");
-      console.info(`[LLM:MEDIA] provider=gemini model=${model} key_index=${index + 1}/${keys.length}`);
+      console.info(`[LLM:MEDIA] provider=${label} model=${model} key_index=${index + 1}/${keys.length}`);
       return text;
     } catch (error: any) {
       const status = Number(error?.status || 0);
       if (isTransientStatus(status)) {
         transientErrors.push(error);
-        console.warn(`[LLM:MEDIA] gemini_transient status=${status} key_index=${index + 1}/${keys.length}`);
+        console.warn(`[LLM:MEDIA] ${label}_transient status=${status} key_index=${index + 1}/${keys.length}`);
         continue;
       }
       hardErrors.push(error);
-      console.warn(`[LLM:MEDIA] gemini_error status=${status || "-"} key_index=${index + 1}/${keys.length} error=${error?.message || error}`);
+      console.warn(`[LLM:MEDIA] ${label}_error status=${status || "-"} key_index=${index + 1}/${keys.length} error=${error?.message || error}`);
     }
   }
 
@@ -235,7 +254,36 @@ export async function callOpenRouter(request: MediaRequest) {
   return text;
 }
 
+// MEDIA_USE_FREE_KEYS=false sends media straight to the paid reserve. The free
+// Gemini keys have no Pro quota at all (every Pro model answers 429 on all of
+// them), so Pro-tier reading is only reachable through OpenRouter.
+export function usesFreeMediaKeys() {
+  const raw = String(process.env.MEDIA_USE_FREE_KEYS ?? "").trim().toLowerCase();
+  if (!raw) return true;
+  return !["0", "false", "no", "off"].includes(raw);
+}
+
 export async function generateMediaText(request: MediaRequest) {
+  // Channel 2 first when it is switched on: the paid Pro pool for our own
+  // project. It never touches the client key pool below.
+  if (usesProMediaChannel()) {
+    const proKeys = getMediaProKeys();
+    if (!proKeys.length) {
+      console.warn("[LLM:MEDIA] MEDIA_PRO_ENABLED is on but MEDIA_PRO_KEYS is empty; falling through");
+    } else {
+      try {
+        return await callGeminiChannel(request, proKeys, getMediaProModel(), "gemini_pro");
+      } catch (error: any) {
+        console.warn(`[LLM:MEDIA] pro_channel_failed reason=${error?.message || error}`);
+      }
+    }
+  }
+
+  // Channel 1: the free key pool the client instances run on.
+  if (!usesFreeMediaKeys()) {
+    console.info(`[LLM:MEDIA] provider=openrouter reason=free_keys_disabled model=${getMediaFallbackModel()}`);
+    return callOpenRouter(request);
+  }
   try {
     return await callGemini(request);
   } catch (error: any) {
