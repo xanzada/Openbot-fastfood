@@ -297,14 +297,20 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
       const answer = detectKitchenConsentAnswer(ctx.text);
       if (answer === "yes") { await clearPendingKitchenConsent(ctx.instanceId, ctx.phone); return null; }
       if (answer === "no") { await clearPendingKitchenConsent(ctx.instanceId, ctx.phone); return ctx.language === "ru" ? "Хорошо, заказ не продолжаем. Если решите позже — напишите нам." : "Жақсы, тапсырысты жалғастырмаймыз. Кейін шешсеңіз, бізге жазыңыз."; }
-      return ctx.language === "ru" ? "Подтвердите, пожалуйста: готовы подождать — да или нет?" : "Нақтылап жіберіңізші: күтуге келісесіз бе — иә немесе жоқ?";
+      // Neither yes nor no: the guest is still talking. Let the agent answer them
+      // and raise the wait itself rather than repeating a confirm-yes-or-no line.
+      return null;
     }
   }
   if (policy.blocksAllSales) return closedKitchenReply(policy, ctx.language);
   const channel = detectRequestedServiceChannel(ctx.text);
   if (channel === "delivery" && !policy.delivery) return unavailableChannelReply(channel, ctx.language);
   if (channel === "pickup" && !policy.pickup) return unavailableChannelReply(channel, ctx.language);
-  if (policy.requiresConsent) { await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint); return busyKitchenReply(policy, ctx.language); }
+  // A busy kitchen is a thing to mention, not a wall to put in front of a guest
+  // who only said hello. Record that consent is owed and let the agent greet,
+  // answer, and raise the wait in its own words; FACTS_CONTEXT carries
+  // wait_consent_required so it knows it has to ask before the order is placed.
+  if (policy.requiresConsent) { await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint); return null; }
   return null;
 }
 

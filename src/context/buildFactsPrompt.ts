@@ -1,6 +1,6 @@
 import type { FastFoodContext } from "./types.js";
 import { publicNoteConstraints } from "../services/noteProvenance.service.js";
-import { formatKitchenWait } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicy, formatKitchenWait } from "../services/kitchenPolicy.service.js";
 
 function firstConfigText(config: Record<string, any>, ...keys: string[]) {
   for (const key of keys) {
@@ -76,8 +76,12 @@ export function compactConversationHistory(history: any[]) {
 function operationalRuntime(ctx: FastFoodContext) {
   const live = ctx.hardRealtimeContext || {};
   const waitMinutes = Number(live.wait_time || 0);
+  const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
   return {
     wait_time: waitMinutes,
+    // The gate no longer answers for you when the kitchen is merely busy, so the
+    // wait has to be raised in conversation before the order is placed.
+    wait_consent_required: policy.requiresConsent,
     // The operator sets 60 or 120, and guests read those as hours. Hand the
     // agent the spoken form in the locked language so it does not have to
     // convert the raw number itself, which is where "60 минут" came from.
