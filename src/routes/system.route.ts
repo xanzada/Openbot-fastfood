@@ -4,6 +4,7 @@ import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.s
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { getRestaurantConfig } from "../services/nocodb.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
+import { clearUserLang, getActiveShiftNotes, getUserLangState } from "../services/redis.service.js";
 
 function getRequestInstanceId(req: Request) {
   return String(req.body?.instance || "").trim();
@@ -92,6 +93,49 @@ export function systemRoute(): Router {
       config: getConfigSummary(),
       checks,
     });
+  });
+
+  // Read or reset what the bot believes about one guest. "webhook" channel, so
+  // it never takes the legacy no-auth path the kanban webhook still allows.
+  router.post("/api/maintenance/language", verifySecret("webhook"), async (req, res) => {
+    const instance = String(req.body?.instance || "").trim();
+    const phone = String(req.body?.phone || "").replace(/\D/g, "");
+    const action = String(req.body?.action || "get").trim().toLowerCase();
+    if (!instance || !phone) {
+      res.status(400).json({ ok: false, error: "INSTANCE_AND_PHONE_REQUIRED" });
+      return;
+    }
+    if (action !== "get" && action !== "clear") {
+      res.status(400).json({ ok: false, error: "ACTION_MUST_BE_GET_OR_CLEAR" });
+      return;
+    }
+    try {
+      const before = await getUserLangState(instance, phone);
+      if (action === "get") {
+        res.json({ ok: true, instance, phone, ...before });
+        return;
+      }
+      const removed = await clearUserLang(instance, phone);
+      console.info(`[OPENBOT:MAINTENANCE] language lock cleared instance=${instance} keys=${removed} was=${before.language || "-"}`);
+      res.json({ ok: true, instance, phone, cleared: removed, was: before.language, wasSiteHint: before.siteHint });
+    } catch (error: any) {
+      res.status(500).json({ ok: false, error: error?.message || "language maintenance failed" });
+    }
+  });
+
+  // What the agent is actually being told about the shift right now.
+  router.post("/api/maintenance/notes", verifySecret("webhook"), async (req, res) => {
+    const instance = String(req.body?.instance || "").trim();
+    if (!instance) {
+      res.status(400).json({ ok: false, error: "INSTANCE_REQUIRED" });
+      return;
+    }
+    try {
+      const notes = await getActiveShiftNotes(instance);
+      res.json({ ok: true, instance, count: notes.length, notes });
+    } catch (error: any) {
+      res.status(500).json({ ok: false, error: error?.message || "notes read failed" });
+    }
   });
 
   router.post("/api/print_trigger", verifySecret("kanban"), async (req, res) => {
