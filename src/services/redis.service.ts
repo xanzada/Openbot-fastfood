@@ -455,6 +455,38 @@ export async function clearComplaintMedia(instanceId: string, phone: string): Pr
   });
 }
 
+// A bare "у меня жалоба" carries nothing an operator can act on. The agent is
+// given one turn to ask what happened; this flag guarantees the very next
+// message escalates regardless of what it says, so nobody is left waiting.
+const COMPLAINT_CLARIFY_TTL_SECONDS = 30 * 60;
+
+function complaintClarifyKey(instanceId: string, phone: string) {
+  return `complaint_clarify:${instanceId}:${phone}`;
+}
+
+export async function markComplaintClarificationPending(instanceId: string, phone: string, text: string): Promise<boolean> {
+  return safeRedis(false, async () => {
+    const result = await redisClient.set(complaintClarifyKey(instanceId, phone), String(text || "").slice(0, 900), {
+      EX: COMPLAINT_CLARIFY_TTL_SECONDS,
+    });
+    return result === "OK";
+  });
+}
+
+export async function takeComplaintClarification(instanceId: string, phone: string): Promise<string | null> {
+  return safeRedis(null, async () => {
+    const key = complaintClarifyKey(instanceId, phone);
+    const value = await redisClient.get(key);
+    if (value === null || value === undefined) return null;
+    await redisClient.del(key).catch(() => undefined);
+    return String(value);
+  });
+}
+
+export async function hasComplaintClarificationPending(instanceId: string, phone: string): Promise<boolean> {
+  return safeRedis(false, async () => Boolean(await redisClient.get(complaintClarifyKey(instanceId, phone))));
+}
+
 export async function saveDailyLog(instanceId: string, logData: Record<string, any>): Promise<void> {
   await safeRedis(undefined, async () => {
     const key = `daily_logs:${instanceId}`;

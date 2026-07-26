@@ -93,6 +93,28 @@ export function isLikelyOperatorRequestText(text = "") {
   return Boolean(detectOperatorCaseKind(text));
 }
 
+// "Шағым бар" tells an operator nothing. A complaint that already names what
+// went wrong goes straight through; a bare one earns a single question first,
+// so the case that reaches the operator is worth reading.
+export function complaintHasActionableDetail(text = "") {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (clean.length >= 60) return true;
+  const words = clean.split(" ").filter(word => word.length > 2);
+  return words.length >= 6;
+}
+
+export function buildComplaintDetailQuestion(language: "kk" | "ru") {
+  return language === "ru"
+    ? "Извините. Расскажите, пожалуйста, что именно случилось — передам оператору."
+    : "Кешіріңіз. Нақты не болғанын жазып жіберіңізші — операторға беремін.";
+}
+
+export function buildOperatorHandoffReply(language: "kk" | "ru") {
+  return language === "ru"
+    ? "Передал оператору — он свяжется с вами."
+    : "Операторға бердім — ол сізбен байланысады.";
+}
+
 export function buildComplaintClarificationReply(language: "kk" | "ru") {
   return language === "ru"
     ? "Пожалуйста, коротко опишите проблему текстом. Я передам фото и описание администратору."

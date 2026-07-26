@@ -8,13 +8,17 @@ import {
   getPendingKitchenConsent,
   getKitchenCheckoutFingerprint,
   releaseReceiptFingerprint,
+  markComplaintClarificationPending,
   saveComplaintMedia,
   savePendingKitchenConsent,
   saveToHistory,
+  takeComplaintClarification,
 } from "../services/redis.service.js";
 import {
   buildComplaintAckReply,
   buildComplaintClarificationReply,
+  buildComplaintDetailQuestion,
+  complaintHasActionableDetail,
   hasEscalateAdminSignal,
   hasEscalateDeveloperSignal,
   hasPendingComplaintMedia,
@@ -680,9 +684,27 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const needsDeveloperEscalation = hasEscalateDeveloperSignal(rawAiText) || hasEscalateDeveloperSignal(result.text);
     const needsAdminEscalation = hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text);
     const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
-    const shouldRouteComplaint = needsAdminEscalation || pendingComplaintMedia || isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text);
+    // Asking for a human is not a complaint to investigate — hand it over at
+    // once. A complaint gets one calm question when it names nothing yet, and
+    // the pending flag makes the next message escalate whatever it contains.
+    const askedForOperator = isLikelyOperatorRequestText(ctx.text);
+    const complaintText = isLikelyComplaintText(ctx.text);
+    const awaitingDetail = await takeComplaintClarification(ctx.instanceId, ctx.phone);
+    const complaintNeedsDetail =
+      complaintText && !askedForOperator && !needsAdminEscalation && !pendingComplaintMedia
+      && awaitingDetail === null && !complaintHasActionableDetail(ctx.text);
+
+    const shouldRouteComplaint =
+      !complaintNeedsDetail
+      && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null);
+
+    if (complaintNeedsDetail) {
+      await markComplaintClarificationPending(ctx.instanceId, ctx.phone, ctx.text).catch(() => false);
+    }
+
     const finalText =
-      stripEscalationSignals(result.text) || (shouldRouteComplaint ? buildComplaintAckReply(ctx.language) : result.text);
+      stripEscalationSignals(result.text)
+      || (complaintNeedsDetail ? buildComplaintDetailQuestion(ctx.language) : shouldRouteComplaint ? buildComplaintAckReply(ctx.language) : result.text);
 
     if (needsDeveloperEscalation) {
       await notifyDeveloperSystemFailure(ctx.instanceId, new Error("AI requested developer escalation"), {
@@ -694,8 +716,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
     if (shouldRouteComplaint) {
       const routing = await routeComplaintToAdmin(ctx, {
-        summary: stripEscalationSignals(rawAiText || finalText || ctx.text),
-        customerText: ctx.text,
+        // The first message named the problem, this one adds the detail. The
+        // operator needs both, not whichever half arrived last.
+        summary: [awaitingDetail, stripEscalationSignals(rawAiText || finalText || ctx.text)].filter(Boolean).join(" — "),
+        customerText: [awaitingDetail, ctx.text].filter(Boolean).join(" — "),
         customerReply: finalText,
         urgency: needsAdminEscalation ? "high" : "normal",
         source: needsAdminEscalation ? "ai_escalation_signal" : pendingComplaintMedia ? "pending_complaint_media" : detectOperatorCaseKind(ctx.text) || "complaint_text",
