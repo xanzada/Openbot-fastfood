@@ -224,9 +224,14 @@ export async function callOpenRouter(request: MediaRequest) {
   if (!apiKey) throw new Error("OPENROUTER_API_KEY_NOT_CONFIGURED");
 
   const model = getMediaFallbackModel();
+  // Text-only requests reach this reserve too (language detection, and any media
+  // call whose payload never downloaded). Attaching an empty data URL made
+  // OpenRouter reject the whole request with 400, so the reserve died exactly
+  // when it was needed. Send the media part only when there is media.
+  const mediaParts = request.base64 ? [openRouterMediaPart(request)] : [];
   const messages: OpenRouterMessage[] = [
     ...(request.systemPrompt ? [{ role: "system" as const, content: request.systemPrompt }] : []),
-    { role: "user", content: [{ type: "text", text: request.prompt }, openRouterMediaPart(request)] },
+    { role: "user", content: [{ type: "text", text: request.prompt }, ...mediaParts] },
   ];
 
   const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
