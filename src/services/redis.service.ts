@@ -570,13 +570,16 @@ export async function deleteShiftNote(
     const deleteKey = async (key: string) => {
       if (await redisClient.del(key)) deletedIds.push(key.split(":").pop() || "");
     };
+    // A delete must name its target: the note id, or failing that the exact text
+    // of one note. Nothing else is removed. The previous fallback wiped every
+    // note of the instance when neither was supplied, so one malformed webhook
+    // erased a whole shift and the agent kept answering from stale memory.
     if (safeNoteId && safeNoteId !== "0") await deleteKey(`shift_note:${instanceId}:${safeNoteId}`);
-    if (!deletedIds.length) {
+    if (!deletedIds.length && expectedText) {
       const keys = await scanKeys(`shift_note:${instanceId}:*`);
       for (const key of keys) {
         const stored = parseShiftNoteRecord((await redisClient.get(key).catch(() => "")) || "");
-        const exactMatch = expectedText && stored.text.toLowerCase().trim() === expectedText;
-        if (exactMatch || ((!safeNoteId || safeNoteId === "0") && !expectedText)) await deleteKey(key);
+        if (stored.text.toLowerCase().trim() === expectedText) await deleteKey(key);
       }
     }
     await purgeShiftNoteIdsFromHistory(instanceId, deletedIds);

@@ -49,26 +49,46 @@ test("one channel open is reported as channel_limited, not as a stop", () => {
   assert.equal(p.blocksAllSales, false);
 });
 
-test("a restriction lasting a day or more reads as vacation", () => {
-  const p = classifyKitchenSalesPolicy(runtime({ wait_time: 60, reset_at: nowSec + 3 * 86400 }), NOW);
+test("a closure lasting a day or more reads as vacation", () => {
+  const p = classifyKitchenSalesPolicy(
+    runtime({ wait_time: 10, is_emergency: true, reset_at: nowSec + 3 * 86400 }),
+    NOW
+  );
   assert.equal(p.mode, "vacation");
   assert.equal(p.remainingDays, 3);
   assert.equal(p.blocksAllSales, true);
 });
 
-// --- The boundary that behaves against the written rule -------------------
-// reset_at defaults to 0 in api_bot.php, and the expiry reset puts it back to
-// 0. So "wait 45 minutes, no reopening time" is an everyday state, not an edge
-// case. This test records what actually happens today.
-test("REGRESSION GUARD: without a reopening time, a 41-minute wait stops all sales", () => {
-  const p = classifyKitchenSalesPolicy(runtime({ wait_time: 41, reset_at: 0 }), NOW);
+test("a long queue is never mistaken for a closure, however long it is scheduled", () => {
+  const p = classifyKitchenSalesPolicy(runtime({ wait_time: 60, reset_at: nowSec + 3 * 86400 }), NOW);
+  assert.equal(p.mode, "busy", "a slow kitchen is not a closed one");
+  assert.equal(p.blocksAllSales, false);
+  assert.equal(p.requiresConsent, true);
+});
+
+// reset_at defaults to 0 in api_bot.php and the expiry reset restores it, so
+// "45 minutes, no reopening time entered" is an everyday state. It must still
+// let the guest decide instead of quietly closing the restaurant.
+test("a queue with no reopening time still asks the guest instead of stopping sales", () => {
+  for (const wait of [41, 90, 180]) {
+    const p = classifyKitchenSalesPolicy(runtime({ wait_time: wait, reset_at: 0 }), NOW);
+    assert.equal(p.mode, "busy", `wait=${wait} without reset_at must stay busy`);
+    assert.equal(p.blocksAllSales, false, `wait=${wait} must not block sales`);
+    assert.equal(p.requiresConsent, true, `wait=${wait} must ask the guest`);
+  }
+});
+
+test("beyond three hours it stops being a queue and sales close", () => {
+  const p = classifyKitchenSalesPolicy(runtime({ wait_time: 200, reset_at: 0 }), NOW);
+  assert.equal(p.mode, "critical");
+  assert.equal(p.blocksAllSales, true);
+  assert.equal(p.requiresConsent, false, "no point asking a guest to wait nearly four hours");
+});
+
+test("a closed restaurant with no reopening time is still indefinite", () => {
+  const p = classifyKitchenSalesPolicy(runtime({ wait_time: 10, is_emergency: true, reset_at: 0 }), NOW);
   assert.equal(p.mode, "indefinite");
   assert.equal(p.blocksAllSales, true);
-  assert.equal(p.requiresConsent, false, "the guest is never asked whether they would wait");
-
-  const p180 = classifyKitchenSalesPolicy(runtime({ wait_time: 180, reset_at: 0 }), NOW);
-  assert.equal(p180.mode, "indefinite", "even exactly 180 blocks, though the rule calls 180 busy");
-  assert.equal(p180.blocksAllSales, true);
 });
 
 test("consent answers are read in both languages", () => {

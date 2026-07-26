@@ -49,13 +49,17 @@ export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, 
   const remainingSeconds = resetAt > nowSeconds ? resetAt - nowSeconds : 0;
   const remainingDays = remainingSeconds > 0 ? Math.ceil(remainingSeconds / 86400) : 0;
   const globalStop = isEmergency || !isAcceptingOrders || !withinWorkHours || (!delivery && !pickup);
-  const activeRestriction = globalStop || waitMinutes > 40;
 
+  // indefinite and vacation describe a closed restaurant, not a slow one. A long
+  // queue is something the guest can decide about, so it stays sellable and asks
+  // for consent whether or not a reopening time was entered -- reset_at defaults
+  // to 0, and treating that as a shutdown silently killed sales at 41 minutes.
+  // Past 180 the wait stops being a queue at all, so it blocks like before.
   let mode: KitchenSalesMode = "normal";
-  if (activeRestriction && resetAt === 0) mode = "indefinite";
-  else if (activeRestriction && remainingSeconds >= 86400) mode = "vacation";
+  if (globalStop && resetAt === 0) mode = "indefinite";
+  else if (globalStop && remainingSeconds >= 86400) mode = "vacation";
   else if (globalStop || waitMinutes > 180) mode = "critical";
-  else if (waitMinutes >= 41 && waitMinutes <= 180) mode = "busy";
+  else if (waitMinutes > 40) mode = "busy";
   else if (delivery !== pickup) mode = "channel_limited";
 
   const blocksAllSales = mode === "critical" || mode === "vacation" || mode === "indefinite";

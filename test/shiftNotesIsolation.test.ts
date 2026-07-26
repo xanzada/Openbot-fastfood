@@ -76,14 +76,23 @@ test("deleting by text matches inside the tenant only", async () => {
   assert.equal(store.has(`shift_note:${B}:202`), true, "identical text in another tenant must survive");
 });
 
-test("an id-less, text-less delete clears the tenant but cannot cross into another", async () => {
+test("a delete that names no note removes nothing at all", async () => {
   await seed();
-  // This is the wipe-all branch. It is destructive by design; what matters is
-  // that its blast radius stops at the instance boundary.
+  // A malformed webhook must not be able to erase a shift. Without an id or an
+  // exact text there is no target, so nothing is touched anywhere.
   await deleteShiftNote(A, "", "");
 
-  assert.equal(await getActiveShiftNotes(A).then((n) => n.length), 0, "every note of this tenant is cleared");
+  assert.equal(await getActiveShiftNotes(A).then((n) => n.length), 2, "this tenant keeps every note");
   assert.equal(store.has(`shift_note:${B}:201`), true, "the other restaurant keeps its notes");
+});
+
+test("an unknown id or unmatched text deletes nothing", async () => {
+  await seed();
+  await deleteShiftNote(A, "999");
+  await deleteShiftNote(A, "", "мұндай ескертпе жоқ");
+
+  assert.equal(await getActiveShiftNotes(A).then((n) => n.length), 2);
+  assert.equal(store.has(`shift_note:${B}:201`), true);
 });
 
 test("an expired note is never served to the agent and is cleaned up", async () => {
