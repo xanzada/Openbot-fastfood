@@ -1,6 +1,7 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
+import { classifyKitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
 export function createSendMenuLinkSkill(ctx: FastFoodContext) {
@@ -25,7 +26,11 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
         };
       }
       await markMagicLinkSent(ctx.instanceId, ctx.phone).catch(() => false);
-      await markKitchenCheckoutStarted(ctx.instanceId, ctx.phone).catch(() => false);
+      // Remember the kitchen as it is right now. If it changes while the guest is
+      // choosing, the gate reopens and tells them; if nothing changed, they are
+      // left alone to finish the order.
+      const policyAtLinkTime = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+      await markKitchenCheckoutStarted(ctx.instanceId, ctx.phone, policyAtLinkTime.fingerprint).catch(() => false);
       return {
         allowed: true,
         link: ctx.magicLink,

@@ -158,15 +158,26 @@ export async function clearPendingKitchenConsent(instanceId: string, phone: stri
   });
 }
 
-export async function markKitchenCheckoutStarted(instanceId: string, phone: string): Promise<boolean> {
+// The grace stores the kitchen policy as it stood when the link went out, so a
+// guest mid-order is not interrupted for conditions that never changed, while a
+// genuine change still reaches them on their next message.
+export async function markKitchenCheckoutStarted(instanceId: string, phone: string, policyFingerprint = ""): Promise<boolean> {
   return safeRedis(false, async () => {
-    const result = await redisClient.set(kitchenCheckoutGraceKey(instanceId, phone), String(Date.now()), { EX: KITCHEN_CHECKOUT_GRACE_TTL_SECONDS });
+    const value = policyFingerprint || String(Date.now());
+    const result = await redisClient.set(kitchenCheckoutGraceKey(instanceId, phone), value, { EX: KITCHEN_CHECKOUT_GRACE_TTL_SECONDS });
     return result === "OK";
   });
 }
 
 export async function hasActiveKitchenCheckout(instanceId: string, phone: string): Promise<boolean> {
   return safeRedis(false, async () => Boolean(await redisClient.get(kitchenCheckoutGraceKey(instanceId, phone))));
+}
+
+export async function getKitchenCheckoutFingerprint(instanceId: string, phone: string): Promise<string | null> {
+  return safeRedis(null, async () => {
+    const value = await redisClient.get(kitchenCheckoutGraceKey(instanceId, phone));
+    return value ? String(value) : null;
+  });
 }
 
 export async function clearKitchenCheckoutState(instanceId: string, phone: string): Promise<void> {

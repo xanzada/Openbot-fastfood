@@ -6,7 +6,7 @@ import {
   claimReceiptFingerprint,
   clearPendingKitchenConsent,
   getPendingKitchenConsent,
-  hasActiveKitchenCheckout,
+  getKitchenCheckoutFingerprint,
   releaseReceiptFingerprint,
   saveComplaintMedia,
   savePendingKitchenConsent,
@@ -284,8 +284,12 @@ function unavailableChannelReply(channel: "delivery" | "pickup", language: "kk" 
   return channel === "delivery" ? "Қазір жеткізу уақытша қолжетімсіз, бірақ алып кетуге тапсырыс бере аласыз." : "Қазір алып кету уақытша қолжетімсіз, бірақ жеткізуге тапсырыс бере аласыз.";
 }
 async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
-  if (ctx.activeOrder || await hasActiveKitchenCheckout(ctx.instanceId, ctx.phone).catch(() => false)) return null;
+  if (ctx.activeOrder) return null;
   const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+  // A guest who already has the link is left to finish, but only while the
+  // kitchen is what it was when they got it. A real change reopens the gate.
+  const checkoutFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
+  if (checkoutFingerprint && checkoutFingerprint === policy.fingerprint) return null;
   const pending = await getPendingKitchenConsent(ctx.instanceId, ctx.phone).catch(() => null);
   if (pending) {
     if (pending.policyFingerprint !== policy.fingerprint) await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
