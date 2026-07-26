@@ -110,13 +110,21 @@ function geminiPayload(request: MediaRequest) {
   };
 }
 
+// Where the next request starts its sweep. The keys are separate free-tier
+// accounts, so always beginning at the first one drained its daily quota while
+// the rest sat idle; every key still gets tried, only the entry point moves.
+let mediaKeyCursor = 0;
+
 export async function callGemini(request: MediaRequest) {
   const keys = getMediaPrimaryKeys();
   const model = getMediaPrimaryModel();
   const transientErrors: unknown[] = [];
   const hardErrors: unknown[] = [];
+  const start = keys.length ? mediaKeyCursor % keys.length : 0;
+  if (keys.length) mediaKeyCursor = (mediaKeyCursor + 1) % keys.length;
 
-  for (let index = 0; index < keys.length; index += 1) {
+  for (let attempt = 0; attempt < keys.length; attempt += 1) {
+    const index = (start + attempt) % keys.length;
     const key = keys[index];
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
     try {
@@ -231,10 +239,11 @@ export async function generateMediaText(request: MediaRequest) {
   try {
     return await callGemini(request);
   } catch (error: any) {
-    if (error?.transientExhausted === true) {
-      console.warn(`[LLM:MEDIA] failover=openrouter reason=${error?.message || error}`);
-      return callOpenRouter(request);
-    }
-    throw error;
+    // Gemini produced no answer on any key. Which way it failed does not change
+    // that: a retired model 404s hard, and this branch used to fire only for an
+    // all-429 sweep, so a paid OpenRouter fallback sat unused while receipts
+    // came back as "could not process the file".
+    console.warn(`[LLM:MEDIA] failover=openrouter reason=${error?.message || error}`);
+    return callOpenRouter(request);
   }
 }
