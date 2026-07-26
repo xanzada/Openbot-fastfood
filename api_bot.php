@@ -293,7 +293,7 @@ if (isset($input['action']) && $input['action'] === 'get_runtime_status') {
     $payment_details_source = $kitchen_status['payment_details'] ?? ($settings['payment_details'] ?? []);
     $payment_details = spa_api_normalize_payment_details($payment_details_source);
     $kitchen_status = array_merge([
-        'wait_time' => 40,
+        'wait_time' => 0,
         'is_emergency' => false,
         'delivery' => true,
         'pickup' => true,
@@ -303,7 +303,7 @@ if (isset($input['action']) && $input['action'] === 'get_runtime_status') {
     $kitchen_status['payment_details'] = $payment_details;
 
     $kitchen_defaults = [
-        'wait_time' => 40,
+        'wait_time' => 0,
         'is_emergency' => false,
         'delivery' => true,
         'pickup' => true,
@@ -343,7 +343,12 @@ if (isset($input['action']) && $input['action'] === 'get_runtime_status') {
     $delivery = spa_api_bool_value($kitchen_status['delivery'] ?? null, true);
     $pickup = spa_api_bool_value($kitchen_status['pickup'] ?? null, true);
     $is_emergency = spa_api_bool_value($kitchen_status['is_emergency'] ?? null, false);
+    // Тот же порог, что и в модуле сайта: всё, что 40 и ниже, это норма.
+    // Оператор выставляет только 0 / 60 / 120, а бот считает запарой строго >40,
+    // поэтому промежуточные значения не должны утекать в разные стороны.
     $wait_time = isset($kitchen_status['wait_time']) ? (int)$kitchen_status['wait_time'] : 0;
+    if ($wait_time <= 40) { $wait_time = 0; }
+    $kitchen_status['wait_time'] = $wait_time;
     $work_start = isset($settings['work_start']) ? trim((string)$settings['work_start']) : '';
     $work_end = isset($settings['work_end']) ? trim((string)$settings['work_end']) : '';
     $within_work_hours = spa_api_within_work_hours($work_start, $work_end);
