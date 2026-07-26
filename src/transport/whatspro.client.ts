@@ -29,12 +29,17 @@ function firstValue(...values: unknown[]) {
   return "";
 }
 
-function whatsproHeaders(apiToken = "") {
+// The instance travels in a header as well as the body. WhatsPro authenticates
+// /api/send before parsing the body — it will not run a 23mb parse for an
+// unauthenticated caller — so a per-restaurant token has nothing to scope itself
+// to unless the header is there. The gateway then checks the two agree.
+function whatsproHeaders(apiToken = "", instanceId = "") {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (apiToken) {
     headers.authorization = `Bearer ${apiToken}`;
     headers["x-api-key"] = apiToken;
   }
+  if (instanceId) headers["x-chat-instance"] = instanceId;
   return headers;
 }
 
@@ -154,7 +159,7 @@ export async function sendWhatsProMessage(payload: {
     return { skipped: true, reason: "tenant whatspro_send_url/whatspro_base_url is not configured" };
   }
 
-  const headers = whatsproHeaders(transport.apiToken);
+  const headers = whatsproHeaders(transport.apiToken, payload.instanceId);
   if (!transport.apiToken) {
     auditDecision("WhatsPro outbound skipped: tenant API token not configured", {
       instance: payload.instanceId,
@@ -242,7 +247,7 @@ export async function sendWhatsProPresence(payload: { instanceId: string; phone:
         phone: payload.phone,
         state: "composing",
       },
-      { timeout: 3000, headers: whatsproHeaders(transport.apiToken) }
+      { timeout: 3000, headers: whatsproHeaders(transport.apiToken, payload.instanceId) }
     );
     return response.data;
   } catch (error: any) {

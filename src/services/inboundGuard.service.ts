@@ -400,6 +400,9 @@ async function whatsproHeaders(instanceId = "") {
     headers.authorization = `Bearer ${token}`;
     headers["x-api-key"] = token;
   }
+  // The media URL already carries the instance in its path, but say it here too
+  // so a per-restaurant token works whatever shape the URL arrives in.
+  if (instanceId) headers["x-chat-instance"] = instanceId;
   return headers;
 }
 
