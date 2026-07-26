@@ -1,7 +1,15 @@
+// Last-resort detector for when the classifier is unreachable. Guests type
+// Kazakh on a Russian keyboard, so every token here also has its plain-Cyrillic
+// spelling. None of these words exist in Russian, which keeps false positives
+// out; missing a word only costs a fallback, never a wrong lock.
 const KAZAKH_RE =
-  /[әғқңөұүһі]|(?:сәлем|салем|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|қазір|казір|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|qalai|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
+  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|qalai|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
 
-import { callGemini, type MediaRequest } from "../services/llm.service.js";
+// generateMediaText, not callGemini: the language of the whole 24-hour lock must
+// not hang on one provider. callGemini alone has no reserve, so while the free
+// keys answered 404 every detection fell through to the regex below, which calls
+// anything without Kazakh letters Russian.
+import { generateMediaText, type MediaRequest } from "../services/llm.service.js";
 
 export interface LanguageDetectionDecision {
   language: "kk" | "ru";
@@ -37,7 +45,7 @@ export function resolveLockedLanguage(storedLang: string | null | undefined, det
   return storedLang === "kk" || storedLang === "ru" ? storedLang : detected;
 }
 
-export async function detectLanguageDecision(text: string, classifier: (request: MediaRequest) => Promise<string> = callGemini): Promise<LanguageDetectionDecision> {
+export async function detectLanguageDecision(text: string, classifier: (request: MediaRequest) => Promise<string> = generateMediaText): Promise<LanguageDetectionDecision> {
   if (!isLanguageBearingCustomerText(text)) return { language: detectLang(text), detector: "fallback", confidence: 0, lockable: false };
   try {
     const aiText = await classifier({

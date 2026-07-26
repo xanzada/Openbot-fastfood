@@ -73,14 +73,21 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     const decision = await detectLanguageDecision(languageCandidateText);
     language = decision.language;
     languageDetector = decision.detector;
-    { // Every first genuine customer text receives a deterministic 24-hour lock, including Gemini fallback.
-
+    // Only a real classification earns the 24-hour lock. The regex fallback
+    // answers Russian for any text without Kazakh letters, and locking that
+    // kept answering a Kazakh guest in Russian for a whole day. When the
+    // classifier could not decide, this turn still uses its guess but the next
+    // message gets another chance to classify.
+    if (decision.lockable) {
       const claimed = await saveUserLang(instanceId, phone, language).catch(() => false);
       if (claimed) languageLocked = true;
       else {
         const concurrentLock = await getUserLang(instanceId, phone).catch(() => null);
         if (concurrentLock) { language = concurrentLock; languageDetector = "redis_lock"; languageLocked = true; }
       }
+    } else {
+      const concurrentLock = await getUserLang(instanceId, phone).catch(() => null);
+      if (concurrentLock) { language = concurrentLock; languageDetector = "redis_lock"; languageLocked = true; }
     }
   }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
