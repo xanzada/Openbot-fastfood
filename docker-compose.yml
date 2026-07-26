@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     environment:
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379
       NODE_ENV: production
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
@@ -33,7 +33,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"]
+    # Reachable from every container on dokploy-network, so it must not be open.
+    # redis-cli picks the password up from REDISCLI_AUTH, which keeps the
+    # healthcheck below unchanged and free of shell quoting.
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     volumes:
       - openbot_redis_data:/data
     healthcheck:

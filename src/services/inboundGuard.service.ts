@@ -437,9 +437,22 @@ export async function getBase64Media(body: any, mediaContext: InboundMediaContex
   }
 }
 
+// WhatsApp often delivers Kaspi PDF receipts as a documentMessage with no
+// mimetype. extractInboundMedia can only flag that as missing_mime_type (plus
+// unsupported_document, which is a consequence of the same unknown mime), so
+// both are re-decided from the download's content-type below. Every other flag
+// still rejects before we spend a download.
+const MIME_RECOVERABLE_FLAGS = new Set(["missing_mime_type", "unsupported_document"]);
+
+function isMimeRecoverable(mediaContext: InboundMediaContext) {
+  return mediaContext.flags.includes("missing_mime_type")
+    && mediaContext.flags.every((flag) => MIME_RECOVERABLE_FLAGS.has(flag));
+}
+
 export async function hydrateInboundMedia(body: any, mediaContext: InboundMediaContext | null): Promise<InboundMediaContext | null> {
   if (!mediaContext) return null;
-  if (!mediaContext.valid || mediaContext.kind === "sticker" || mediaContext.kind === "video") return mediaContext;
+  if (!mediaContext.valid && !isMimeRecoverable(mediaContext)) return mediaContext;
+  if (mediaContext.kind === "sticker" || mediaContext.kind === "video") return mediaContext;
   const downloaded = await getBase64Media(body, mediaContext);
   if (!downloaded) return { ...mediaContext, valid: false, reason: "media_download_failed", flags: [...mediaContext.flags, "media_download_failed"] };
   if ("error" in downloaded) return { ...mediaContext, valid: false, reason: downloaded.error, flags: Array.from(new Set([...mediaContext.flags, downloaded.error])) };
@@ -468,6 +481,11 @@ export async function hydrateInboundMedia(body: any, mediaContext: InboundMediaC
     base64: downloaded.dataUrl,
     dataUrl: downloaded.dataUrl,
     durationSeconds: measuredDuration || mediaContext.durationSeconds,
+    // The download answered what the mime actually is, so the mime-only flags
+    // are settled. A no-op for media that arrived valid: its flags are empty.
+    flags: mediaContext.flags.filter((flag) => !MIME_RECOVERABLE_FLAGS.has(flag)),
+    valid: true,
+    reason: undefined,
   };
 }
 
