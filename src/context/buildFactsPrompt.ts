@@ -1,5 +1,6 @@
 import type { FastFoodContext } from "./types.js";
 import { publicNoteConstraints } from "../services/noteProvenance.service.js";
+import { formatKitchenWait } from "../services/kitchenPolicy.service.js";
 
 function firstConfigText(config: Record<string, any>, ...keys: string[]) {
   for (const key of keys) {
@@ -74,8 +75,14 @@ export function compactConversationHistory(history: any[]) {
 
 function operationalRuntime(ctx: FastFoodContext) {
   const live = ctx.hardRealtimeContext || {};
+  const waitMinutes = Number(live.wait_time || 0);
   return {
-    wait_time: Number(live.wait_time || 0), delivery: live.delivery ?? null, pickup: live.pickup ?? null,
+    wait_time: waitMinutes,
+    // The operator sets 60 or 120, and guests read those as hours. Hand the
+    // agent the spoken form in the locked language so it does not have to
+    // convert the raw number itself, which is where "60 минут" came from.
+    wait_label: waitMinutes > 0 ? formatKitchenWait(waitMinutes, ctx.language === "ru" ? "ru" : "kk") : "",
+    delivery: live.delivery ?? null, pickup: live.pickup ?? null,
     is_emergency: Boolean(live.is_emergency), reset_at: Number(live.reset_at || 0),
     stale: Boolean(live.stale), runtime_available: Boolean(live.runtime_available),
   };
