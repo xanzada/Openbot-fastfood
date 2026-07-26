@@ -35,7 +35,9 @@ $secret_token = ($sk_row && !empty($sk_row['setting_value'])) ? trim($sk_row['se
 // Получаем токен от n8n
 $received_token = trim((string)($input['token'] ?? $input['secret_key'] ?? ''));
 
-if (empty($input) || $received_token === '' || $received_token !== $secret_token) {
+// Сравнение в постоянном времени: тот же результат, что и !==, но без утечки
+// длины совпадающего префикса по таймингу. Пустой secret_key = отказ (fail-closed).
+if (empty($input) || $received_token === '' || $secret_token === '' || !hash_equals($secret_token, $received_token)) {
     die(json_encode(['success' => false, 'error' => 'Доступ запрещен. Неверный токен.'], JSON_UNESCAPED_UNICODE));
 }
 

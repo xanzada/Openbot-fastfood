@@ -46,6 +46,16 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # WhatsPro reads the same chatwoot:* keys and subscribes to
+    # chatwoot:events:{instanceId}. Without the shared network this service
+    # resolves only inside the openbot stack, so the SOS signal never arrives.
+    networks:
+      - dokploy-network
+      - default
 
 volumes:
   openbot_redis_data:
+
+networks:
+  dokploy-network:
+    external: true
