@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { getAllRestaurantConfigs, getRestaurantConfig } from "./nocodb.service.js";
+import { getAllRestaurantConfigs, getRestaurantConfig } from "./platformConfig.service.js";
 import { redisClient } from "./redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 

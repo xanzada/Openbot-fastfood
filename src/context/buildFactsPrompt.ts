@@ -119,7 +119,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         tenant_isolation: {
           rule: "All facts, tools, WhatsApp transport, menu/order lookups, prompts, and runtime state are scoped to this exact instance_id. Never use another restaurant's settings or assumptions.",
           instance_id: ctx.instanceId,
-          config_source: "nocodb_restaurants_by_instance",
+      config_source: "whatspro_platform_by_instance",
         },
         tenant_config: compactTenantConfig(ctx.config),
         sender_meta: {
@@ -131,8 +131,8 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         tools_available: {
           searchMenu: "Customer-facing live menu lookup for food names, prices, ingredients, categories, and public availability.",
           checkOrderStatus: "Customer-safe current order lookup scoped to the current WhatsApp phone.",
-          getPaymentDetails: "Current payment details only from live site kitchen settings payment_details; never from NocoDB.",
-          getBusinessInfo: "Current-instance NocoDB allowlist only: work_hours, whatsapp_phone, brand, address.",
+      getPaymentDetails: "Current payment details only from live site kitchen settings payment_details; never from cached tenant metadata.",
+      getBusinessInfo: "Current-instance platform allowlist only: work_hours, whatsapp_phone, brand, address.",
         },
         operational_runtime: operationalRuntime(ctx),
         active_operator_notes: operationalShiftNotes(ctx),

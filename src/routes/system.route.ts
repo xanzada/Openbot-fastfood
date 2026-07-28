@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
-import { getRestaurantConfig } from "../services/nocodb.service.js";
+import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { clearUserLang, getActiveShiftNotes, getUserLangState } from "../services/redis.service.js";
 

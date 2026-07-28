@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { handleKanbanWebhook } from "../controllers/kanban.js";
-import { getRestaurantConfig } from "../services/nocodb.service.js";
+import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import { assertTenantSecret } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { auditError, auditInbound, auditProcessing, isNewDleAction } from "../services/auditLogger.service.js";

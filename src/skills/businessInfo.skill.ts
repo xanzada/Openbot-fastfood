@@ -26,7 +26,7 @@ export function createGetBusinessInfoSkill(ctx: FastFoodContext) {
   return createTool({
     name: "getBusinessInfo",
     description:
-      "Return only customer-safe restaurant information from the current instance: work hours, this bot's WhatsApp phone, brand, and address. Never return any other NocoDB column.",
+          "Return only customer-safe restaurant information from the current instance: work hours, this bot's WhatsApp phone, brand, and address. Never return any secret platform field.",
     parameters: z.object({
       fields: z.array(z.enum(BUSINESS_INFO_FIELDS)).max(BUSINESS_INFO_FIELDS.length).optional(),
     }),
@@ -35,7 +35,7 @@ export function createGetBusinessInfoSkill(ctx: FastFoodContext) {
       const requested = fields?.length ? Array.from(new Set(fields)) : [...BUSINESS_INFO_FIELDS];
       const data = Object.fromEntries(requested.map((field) => [field, all[field]]));
       return {
-        source: "nocodb_current_instance_allowlist",
+          source: "whatspro_platform_current_instance_allowlist",
         instanceId: ctx.instanceId,
         data,
         unavailable: requested.filter((field) => !all[field]),

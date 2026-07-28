@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
-import { getRestaurantConfig } from "./nocodb.service.js";
+import { getRestaurantConfig } from "./platformConfig.service.js";
 
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const PHONE_RE = /^\d{10,15}$/;

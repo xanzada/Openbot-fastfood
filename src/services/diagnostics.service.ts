@@ -86,39 +86,35 @@ async function checkHttp(name: string, url: string, headers: Record<string, stri
   }
 }
 
-async function checkNocoDB(): Promise<CheckResult> {
-  const base = String(process.env.NOCODB_URL || "").replace(/\/+$/, "");
-  const tableId = String(process.env.NOCODB_TABLE_ID || "").trim();
-  if (!base || !tableId || !envPresent("NOCODB_TOKEN")) {
+async function checkWhatsProPlatform(): Promise<CheckResult> {
+  const base = String(process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
+  if (!base || !envPresent("WHATSPRO_API_TOKEN")) {
     return {
-      name: "nocodb",
+      name: "whatspro_platform",
       ok: false,
       target: hostFromUrl(base),
-      message: "NOCODB_URL, NOCODB_TOKEN or NOCODB_TABLE_ID is missing",
+      message: "WHATSPRO_BASE_URL or WHATSPRO_API_TOKEN is missing",
     };
   }
 
-  const url = `${base}/api/v2/tables/${tableId}/records`;
+  const url = `${base}/api/wa/platform-storage`;
   const started = now();
   try {
     const response = await axios.get(url, {
-      headers: { "xc-token": process.env.NOCODB_TOKEN || "" },
-      params: { limit: 1 },
+      headers: { authorization: `Bearer ${process.env.WHATSPRO_API_TOKEN || ""}` },
       timeout: 7000,
       validateStatus: () => true,
     });
-    const sample = Array.isArray(response.data?.list) ? response.data.list[0] : null;
-    const instance = sample?.instance_id ? ` sample_instance=${sample.instance_id}` : "";
     return {
-      name: "nocodb",
+      name: "whatspro_platform",
       ok: response.status >= 200 && response.status < 400,
       target: hostFromUrl(base),
-      status: `${response.status}${instance}`,
+      status: `${response.status} tenants=${Number(response.data?.tenants || 0)}`,
       latency_ms: now() - started,
     };
   } catch (error: any) {
     return {
-      name: "nocodb",
+      name: "whatspro_platform",
       ok: false,
       target: hostFromUrl(base),
       message: error?.message || String(error),
@@ -143,14 +139,10 @@ export function getConfigSummary() {
     },
     openrouter_key: envPresent("OPENROUTER_API_KEY") ? "present" : "missing",
     openbot_webhook_secret: envPresent("OPENBOT_WEBHOOK_SECRET") ? "present" : "missing",
-    nocodb: {
-      url: hostFromUrl(process.env.NOCODB_URL || ""),
-      token: envPresent("NOCODB_TOKEN") ? "present" : "missing",
-      table: envPresent("NOCODB_TABLE_ID") ? "present" : "missing",
-      shpor_table: envPresent("NOCODB_SHPOR_TABLE_ID") ? "present" : "missing",
-    },
     whatspro: {
-      source: "nocodb_tenant_config",
+      source: "whatspro_platform_tenant_config",
+      url: hostFromUrl(process.env.WHATSPRO_BASE_URL || ""),
+      token: envPresent("WHATSPRO_API_TOKEN") ? "present" : "missing",
       note: "whatspro_base_url, whatspro_send_url, and whatspro_api_token are loaded per instance",
     },
     chatwoot_adapter: {
@@ -163,7 +155,7 @@ export function getConfigSummary() {
 export async function runDependencyChecks() {
   const checks: CheckResult[] = [];
   checks.push(await checkRedis());
-  checks.push(await checkNocoDB());
+  checks.push(await checkWhatsProPlatform());
   if (process.env.CHATWOOT_ADAPTER_URL) {
     checks.push(await checkHttp("chatwoot_adapter", endpointFromBase(process.env.CHATWOOT_ADAPTER_URL, "/health")));
   }

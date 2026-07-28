@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
 import { getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
-import { getRestaurantConfig } from "../services/nocodb.service.js";
+import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import {
   connectRedis,
   clearKitchenCheckoutState,

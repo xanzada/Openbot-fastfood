@@ -5,7 +5,7 @@ VoltAgent-based FastFood AI agent.
 This service is self-contained. It does not import or require the old `fastfood-gateway` project at runtime. The old project can be deleted after these environment variables and external services are available:
 
 - Redis: chat history, language, magic-link state, active shift notes
-- NocoDB: restaurant config and shpor table
+- WhatsPro Platform API: isolated restaurant config, generated tenant keys and second-brain memory
 - DLE `api_bot.php`: runtime status, active order, menu context, CRM/payment updates
 - WhatsPro HTTP API: outgoing WhatsApp messages
 

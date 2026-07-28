@@ -1,6 +1,6 @@
 import axios from "axios";
 import { auditDecision, auditError, auditOutbound } from "../services/auditLogger.service.js";
-import { getRestaurantConfig } from "../services/nocodb.service.js";
+import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "../services/redis.service.js";
 
@@ -51,7 +51,7 @@ async function resolveWhatsProTransport(instanceId: string) {
     sendUrl: firstValue(config.whatspro_send_url, config.whatsproSendUrl),
     presenceUrl: firstValue(config.whatspro_presence_url, config.whatsproPresenceUrl),
     apiToken: firstValue(config.whatspro_api_token, config.whatsproApiToken),
-    source: "tenant_nocodb",
+    source: "tenant_platform",
     tenantFound: Boolean(config.instance_id || config.instance),
   };
 }

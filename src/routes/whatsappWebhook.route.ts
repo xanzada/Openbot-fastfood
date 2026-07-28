@@ -50,7 +50,7 @@ import { sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { customerOrderFromRecord, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
-import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/nocodb.service.js";
+import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import {
   analyzeMedia,

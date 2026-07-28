@@ -128,17 +128,14 @@ function buildShporMemoryPayload(question: string, answer: string, args: Record<
   };
 }
 
-function nocodbHeaders() {
-  return { "xc-token": process.env.NOCODB_TOKEN || "" };
+function platformBaseUrl() {
+  return String(process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
 }
 
-function baseUrl() {
-  return String(process.env.NOCODB_URL || "").replace(/\/+$/, "");
-}
-
-function tableUrl(tableId: string) {
-  if (!baseUrl() || !tableId) throw new Error("NocoDB URL/table id is not configured");
-  return `${baseUrl()}/api/v2/tables/${tableId}/records`;
+function platformHeaders() {
+  const token = String(process.env.WHATSPRO_API_TOKEN || "").trim();
+  if (!platformBaseUrl() || !token) throw new Error("WhatsPro platform API is not configured");
+  return { authorization: `Bearer ${token}`, "content-type": "application/json" };
 }
 
 export async function getRestaurantConfig(instanceId: string): Promise<Record<string, any> | null> {
@@ -149,31 +146,20 @@ export async function getRestaurantConfig(instanceId: string): Promise<Record<st
   if (cached) return cached;
 
   try {
-    let config: Record<string, any> | null = null;
-    const instanceColumns = ["instance_id", "instance", "restaurant_instance", "restaurantInstance"];
-    for (const column of instanceColumns) {
-      try {
-        const response = await axios.get(tableUrl(process.env.NOCODB_TABLE_ID || ""), {
-          headers: nocodbHeaders(),
-          params: { where: `(${column},eq,${safeInstanceId})`, limit: 1 },
-          timeout: 10000,
-        });
-        const records = Array.isArray(response.data?.list) ? response.data.list : [];
-        config = normalizeRestaurantConfig(records[0] || null);
-        if (config) break;
-      } catch {
-        continue;
-      }
-    }
+    const response = await axios.get(
+      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(safeInstanceId)}`,
+      { headers: platformHeaders(), timeout: 10000 }
+    );
+    const config = normalizeRestaurantConfig(response.data?.config || null);
     if (config) {
       await setJsonCache(key, 300, config);
       await setJsonCache(backupKey, 604800, config);
       return config;
     }
-    // Keep the tenant alive with the last known-good config if NocoDB is temporarily unavailable.
+    // Keep the tenant alive with the last known-good platform config during a network interruption.
     return getJsonCache<Record<string, any>>(backupKey);
   } catch (error: any) {
-    console.error(`[NOCODB] config read failed (${safeInstanceId}):`, error?.message || error);
+    console.error(`[PLATFORM] config read failed (${safeInstanceId}):`, error?.message || error);
     return getJsonCache<Record<string, any>>(backupKey);
   }
 }
@@ -185,13 +171,12 @@ export async function getAllRestaurantConfigs(): Promise<Record<string, any>[]> 
   if (cached) return cached;
 
   try {
-    const response = await axios.get(tableUrl(process.env.NOCODB_TABLE_ID || ""), {
-      headers: nocodbHeaders(),
-      params: { limit: 1000 },
+    const response = await axios.get(`${platformBaseUrl()}/api/wa/runtime-configs`, {
+      headers: platformHeaders(),
       timeout: 10000,
     });
-    const records = Array.isArray(response.data?.list)
-      ? response.data.list
+    const records = Array.isArray(response.data?.configs)
+      ? response.data.configs
           .map((record: any) => normalizeRestaurantConfig(record))
           .filter((record: any) => String(record?.instance_id || record?.instance || "").trim())
           .filter(Boolean)
@@ -200,7 +185,7 @@ export async function getAllRestaurantConfigs(): Promise<Record<string, any>[]> 
     await setJsonCache(backupKey, 604800, records);
     return records;
   } catch (error: any) {
-    console.warn("[NOCODB] all restaurants read failed:", error?.message || error);
+    console.warn("[PLATFORM] all restaurants read failed:", error?.message || error);
     return (await getJsonCache<Record<string, any>[]>(backupKey)) || [];
   }
 }
@@ -276,24 +261,24 @@ function selectRelevantShpor(records: any[] = [], query = "", limit = SHPOR_CONT
 }
 
 export async function getShporContext(instanceId: string, query = ""): Promise<any[]> {
-  const tableId = process.env.NOCODB_SHPOR_TABLE_ID || "";
-  if (!tableId) return [];
   const cacheKey = `shpor_context_100:${instanceId}`;
 
   const cached = await getJsonCache<any[]>(cacheKey);
   if (cached) return selectRelevantShpor(cached, query);
 
   try {
-    const response = await axios.get(tableUrl(tableId), {
-      headers: nocodbHeaders(),
-      params: { limit: 100, where: `(instance_id,eq,${instanceId})` },
+    const response = await axios.get(
+      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(instanceId)}/memories`,
+      {
+      headers: platformHeaders(),
       timeout: 10000,
-    });
-    const records = Array.isArray(response.data?.list) ? response.data.list : [];
+      }
+    );
+    const records = Array.isArray(response.data?.memories) ? response.data.memories : [];
     await setJsonCache(cacheKey, 3600, records);
     return selectRelevantShpor(records, query);
   } catch (error: any) {
-    console.error(`[SHPOR] NocoDB read failed (${instanceId}):`, error?.message || error);
+    console.error(`[SHPOR] platform read failed (${instanceId}):`, error?.message || error);
     return [];
   }
 }
@@ -349,8 +334,7 @@ export async function saveToShpor(
   memoryPayload: Record<string, any> | null = null
 ): Promise<void> {
   try {
-    const tableId = process.env.NOCODB_SHPOR_TABLE_ID || "";
-    if (!tableId || !question || question.trim().length < 10) return;
+    if (!question || question.trim().length < 10) return;
     if (!answer || answer.trim().length < 10) return;
     if (question.toLowerCase().includes("сәлем") && question.length < 15) return;
     if (answer.toLowerCase().includes("жүйеде уақытша жүктеме") || answer.toLowerCase().includes("оператор көмегі")) return;
@@ -373,10 +357,14 @@ export async function saveToShpor(
       }
     }
 
-    await axios.post(tableUrl(tableId), payload, {
-      headers: nocodbHeaders(),
+    await axios.post(
+      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(instanceId)}/memories`,
+      payload,
+      {
+      headers: platformHeaders(),
       timeout: 10000,
-    });
+      }
+    );
     await deleteCache(`shpor_context_100:${instanceId}`);
   } catch (error: any) {
     console.error("[SHPOR] save failed:", error?.message || error);

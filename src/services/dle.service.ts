@@ -14,7 +14,7 @@ import {
   type KitchenStatusState,
 } from "./redis.service.js";
 import { auditError } from "./auditLogger.service.js";
-import { getRestaurantConfig } from "./nocodb.service.js";
+import { getRestaurantConfig } from "./platformConfig.service.js";
 
 const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
 const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;

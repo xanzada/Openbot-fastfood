@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
 import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
-import { getRestaurantConfig, getShporContext } from "../services/nocodb.service.js";
+import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
 import {
   connectRedis,
   getActiveShiftNotes,

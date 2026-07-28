@@ -1,7 +1,7 @@
 import axios from "axios";
 import { redisClient } from "../services/redis.service.js";
 import { normalizePublicDomain, safeHttpAgent, safeHttpsAgent } from "../services/dle.service.js";
-import { getAllRestaurantConfigs } from "../services/nocodb.service.js";
+import { getAllRestaurantConfigs } from "../services/platformConfig.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 
 const ANALYTICS_TIMEZONE = process.env.ANALYTICS_TIMEZONE || "Asia/Almaty";

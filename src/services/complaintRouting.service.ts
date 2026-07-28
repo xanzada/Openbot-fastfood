@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { FastFoodContext } from "../context/types.js";
 import { clearComplaintMedia, getComplaintMedia } from "./redis.service.js";
-import { getRestaurantConfig } from "./nocodb.service.js";
+import { getRestaurantConfig } from "./platformConfig.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { createOperatorCase, detectOperatorCaseKind } from "./operatorCase.service.js";
 import { sendOperatorSosSignal } from "./dle.service.js";
