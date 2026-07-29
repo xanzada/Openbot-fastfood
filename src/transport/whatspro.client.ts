@@ -1,11 +1,32 @@
 import axios from "axios";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { auditDecision, auditError, auditOutbound } from "../services/auditLogger.service.js";
 import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import crypto from "node:crypto";
-import { connectRedis, redisClient } from "../services/redis.service.js";
+import { connectRedis, redisClient, scanKeys } from "../services/redis.service.js";
 
 const RESPONSE_CHUNK_MAX = Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 650);
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
+const volatileOutbox = new Map<string, WhatsProOutboxRecord>();
+let outboxTimer: ReturnType<typeof setInterval> | null = null;
+const outboxDirectory = path.resolve(
+  process.env.OPENBOT_OUTBOX_DIR ||
+  (process.env.NODE_ENV === "production"
+    ? "/app/state/whatspro-outbox"
+    : path.join(process.cwd(), ".openbot-outbox"))
+);
+
+interface WhatsProOutboxRecord {
+  id: string;
+  instanceId: string;
+  phone: string;
+  text: string;
+  attempts: number;
+  createdAt: number;
+  nextAttemptAt: number;
+  error?: string;
+}
 
 function maskPhone(phone = "") {
   const clean = String(phone || "").replace(/\D/g, "");
@@ -144,6 +165,7 @@ export async function sendWhatsProMessage(payload: {
   phone: string;
   text: string;
   media?: any;
+  requestId?: string;
 }) {
   const transport = await resolveWhatsProTransport(payload.instanceId);
   const url = endpointFromTransport(transport.sendUrl, transport.baseUrl, "/api/send");
@@ -192,6 +214,7 @@ export async function sendWhatsProMessage(payload: {
         phone: payload.phone,
         text: payload.text,
         media: payload.media,
+        requestId: payload.requestId,
       },
       { timeout: 10000, headers }
     );
@@ -231,6 +254,135 @@ export async function sendWhatsProMessage(payload: {
     });
     throw error;
   }
+}
+
+async function persistOutbox(record: WhatsProOutboxRecord) {
+  volatileOutbox.set(record.id, record);
+  try {
+    await fs.mkdir(outboxDirectory, { recursive: true, mode: 0o700 });
+    const target = path.join(outboxDirectory, `${record.id}.json`);
+    const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(record), { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temporary, target);
+  } catch (error: any) {
+    auditError("WhatsPro file outbox write failed", error, {
+      failedStep: "whatspro_file_outbox_write",
+      instance: record.instanceId,
+      outboxId: record.id,
+    });
+  }
+  try {
+    await connectRedis();
+    await redisClient.setEx(`outbox:whatspro:${record.id}`, 7 * 24 * 60 * 60, JSON.stringify(record));
+  } catch {
+    // The process-local copy keeps retrying while Redis reconnects.
+  }
+}
+
+async function removeOutbox(id: string) {
+  volatileOutbox.delete(id);
+  await fs.unlink(path.join(outboxDirectory, `${id}.json`)).catch((error: any) => {
+    if (error?.code !== "ENOENT") {
+      auditError("WhatsPro file outbox cleanup failed", error, {
+        failedStep: "whatspro_file_outbox_cleanup",
+        outboxId: id,
+      });
+    }
+  });
+  try {
+    await connectRedis();
+    await redisClient.del(`outbox:whatspro:${id}`);
+  } catch {
+    // A replay is safe because the same requestId reaches WhatsPro idempotency.
+  }
+}
+
+export async function getWhatsProOutboxSummary() {
+  const filePending = await fs.readdir(outboxDirectory)
+    .then((names) => names.filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).length)
+    .catch(() => 0);
+  let redisPending = 0;
+  try {
+    redisPending = (await scanKeys("outbox:whatspro:*")).length;
+  } catch {
+    redisPending = -1;
+  }
+  return {
+    volatilePending: volatileOutbox.size,
+    filePending,
+    redisPending,
+  };
+}
+
+export async function drainWhatsProOutbox(limit = 25) {
+  const records = new Map<string, WhatsProOutboxRecord>(volatileOutbox);
+  try {
+    const names = (await fs.readdir(outboxDirectory))
+      .filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
+      .slice(0, limit);
+    for (const name of names) {
+      try {
+        const record = JSON.parse(await fs.readFile(path.join(outboxDirectory, name), "utf8")) as WhatsProOutboxRecord;
+        if (record?.id && record?.instanceId && record?.phone && record?.text) records.set(record.id, record);
+      } catch {
+        await fs.unlink(path.join(outboxDirectory, name)).catch(() => undefined);
+      }
+    }
+  } catch {
+    // The Redis and process-local copies remain available.
+  }
+  try {
+    const keys = await scanKeys("outbox:whatspro:*");
+    for (const key of keys.slice(0, limit)) {
+      const raw = await redisClient.get(key);
+      if (!raw) continue;
+      try {
+        const record = JSON.parse(raw) as WhatsProOutboxRecord;
+        if (record?.id && record?.instanceId && record?.phone && record?.text) records.set(record.id, record);
+      } catch {
+        await redisClient.del(key);
+      }
+    }
+  } catch {
+    // Redis will be retried by the connection manager; volatile records remain.
+  }
+
+  let delivered = 0;
+  for (const record of [...records.values()].slice(0, limit)) {
+    if (Number(record.nextAttemptAt || 0) > Date.now()) continue;
+    try {
+      const result = await sendWhatsProMessage({
+        instanceId: record.instanceId,
+        phone: record.phone,
+        text: record.text,
+        requestId: record.id,
+      });
+      if (result?.acknowledged !== true) throw new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
+      await removeOutbox(record.id);
+      delivered += 1;
+    } catch (error: any) {
+      const attempts = Number(record.attempts || 0) + 1;
+      await persistOutbox({
+        ...record,
+        attempts,
+        nextAttemptAt: Date.now() + Math.min(5 * 60_000, 2_000 * (2 ** Math.min(attempts, 7))),
+        error: String(error?.message || error || "delivery_failed"),
+      });
+    }
+  }
+  return { checked: Math.min(records.size, limit), delivered, pending: records.size - delivered };
+}
+
+export function startWhatsProOutboxWorker() {
+  if (outboxTimer) return outboxTimer;
+  void drainWhatsProOutbox().catch(() => undefined);
+  outboxTimer = setInterval(() => {
+    void drainWhatsProOutbox().catch((error) => {
+      auditError("WhatsPro outbox drain failed", error, { failedStep: "whatspro_outbox_drain" });
+    });
+  }, Math.max(2_000, Number(process.env.OPENBOT_OUTBOX_INTERVAL_MS || 10_000)));
+  outboxTimer.unref?.();
+  return outboxTimer;
 }
 
 export async function sendWhatsProPresence(payload: { instanceId: string; phone: string }) {
@@ -279,19 +431,34 @@ export function startWhatsProTyping(payload: { instanceId: string; phone: string
   };
 }
 
-export async function sendWhatsProResponseSequence(payload: { instanceId: string; phone: string; text: string }) {
+export async function sendWhatsProResponseSequence(payload: {
+  instanceId: string;
+  phone: string;
+  text: string;
+  requestScope?: string;
+}) {
   const chunks = splitWhatsProResponse(payload.text);
   if (!chunks.length) throw new Error("WHATSPRO_EMPTY_RESPONSE");
+  // Stable for retries of one inbound message, but unique for a later customer
+  // turn that happens to produce the same reply text.
+  const requestScope = String(payload.requestScope || crypto.randomUUID());
   const sent: any[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     await sendWhatsProPresence(payload);
     if (index > 0) await delay(randomTypingDelayMs());
-    const outboundId = crypto.createHash("sha256").update(`${payload.instanceId}|${payload.phone}|${index}|${chunks[index]}`).digest("hex");
+    const outboundId = crypto.createHash("sha256")
+      .update(`${payload.instanceId}|${payload.phone}|${requestScope}|${index}|${chunks[index]}`)
+      .digest("hex");
     let result: any = null;
     let lastError: any = null;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        result = await sendWhatsProMessage({ instanceId: payload.instanceId, phone: payload.phone, text: chunks[index] });
+        result = await sendWhatsProMessage({
+          instanceId: payload.instanceId,
+          phone: payload.phone,
+          text: chunks[index],
+          requestId: outboundId,
+        });
         if (result?.acknowledged === true) break;
         throw new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
       } catch (error) {
@@ -300,10 +467,19 @@ export async function sendWhatsProResponseSequence(payload: { instanceId: string
       }
     }
     if (!result?.acknowledged) {
-      await connectRedis().then(() => redisClient.setEx(`outbox:whatspro:${outboundId}`, 24 * 60 * 60, JSON.stringify({ id: outboundId, instanceId: payload.instanceId, phone: payload.phone, text: chunks[index], attempts: 3, failedAt: Date.now(), error: String(lastError?.message || "delivery_not_acknowledged") }))).catch(() => undefined);
+      await persistOutbox({
+        id: outboundId,
+        instanceId: payload.instanceId,
+        phone: payload.phone,
+        text: chunks[index],
+        attempts: 3,
+        createdAt: Date.now(),
+        nextAttemptAt: Date.now() + 5_000,
+        error: String(lastError?.message || "delivery_not_acknowledged"),
+      });
       throw lastError || new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
     }
-    await connectRedis().then(() => redisClient.del(`outbox:whatspro:${outboundId}`)).catch(() => undefined);
+    await removeOutbox(outboundId);
     sent.push(result);
   }
   return { ok: sent.length === chunks.length, chunks: chunks.length, sent };

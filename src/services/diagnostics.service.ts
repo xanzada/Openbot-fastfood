@@ -1,6 +1,7 @@
 import axios from "axios";
 import { getRedisTarget, pingRedis } from "./redis.service.js";
 import { getMediaFallbackModel, getMediaPrimaryKeys, getMediaPrimaryModel, getTextModels } from "./llm.service.js";
+import { getWhatsProOutboxSummary } from "../transport/whatspro.client.js";
 
 type CheckResult = {
   name: string;
@@ -167,6 +168,14 @@ export async function runDependencyChecks() {
   const checks: CheckResult[] = [];
   checks.push(await checkRedis());
   checks.push(await checkTenantsPlatform());
+  const outboxStarted = now();
+  const outbox = await getWhatsProOutboxSummary().catch(() => ({ volatilePending: -1, filePending: -1, redisPending: -1 }));
+  checks.push({
+    name: "whatspro_outbox",
+    ok: outbox.volatilePending >= 0,
+    status: `volatile=${outbox.volatilePending} file=${outbox.filePending} redis=${outbox.redisPending}`,
+    latency_ms: now() - outboxStarted,
+  });
   if (process.env.CHATWOOT_ADAPTER_URL) {
     checks.push(await checkHttp("chatwoot_adapter", endpointFromBase(process.env.CHATWOOT_ADAPTER_URL, "/health")));
   }

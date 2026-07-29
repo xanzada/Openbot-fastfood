@@ -329,7 +329,12 @@ function hasMeaningfulMediaDescription(text = "", mediaContext: Record<string, a
 async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: string, reply: string, source: string) {
   const cleanReply = stripEscalationSignals(reply);
   if (cleanReply) {
-    const delivery = await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: cleanReply });
+    const delivery = await sendWhatsProResponseSequence({
+      instanceId: ctx.instanceId,
+      phone: ctx.phone,
+      text: cleanReply,
+      requestScope: messageId,
+    });
     if (!delivery.ok) throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");
     await saveToHistory(ctx.instanceId, ctx.phone, "assistant", cleanReply, { source, ...noteHistoryMeta(ctx, cleanReply) });
   }
@@ -422,7 +427,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
         ctx.language === "ru"
           ? "Извините, я не принимаю видео. Пожалуйста, опишите, что произошло, текстом или отправьте фото."
           : "Кешіріңіз, видео қабылдай алмаймын. Не болғанын мәтінмен түсіндіріңіз немесе фото жіберіңіз.";
-      await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: reply });
+      await sendWhatsProResponseSequence({
+        instanceId: ctx.instanceId,
+        phone: ctx.phone,
+        text: reply,
+        requestScope: messageId,
+      });
       await markInboundDone(ctx.instanceId, messageId);
       return;
     }
@@ -770,6 +780,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       instanceId: ctx.instanceId,
       phone: ctx.phone,
       text: finalText,
+      requestScope: messageId,
     });
 
     if (!sendResult.ok) throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");

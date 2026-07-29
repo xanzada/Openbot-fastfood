@@ -5,6 +5,9 @@ import { z } from "zod";
 import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
 
 const SHPOR_CONTEXT_LIMIT = Number(process.env.SHPOR_CONTEXT_LIMIT || 8);
+const runtimeConfigMemory = new Map<string, { value: Record<string, any>; expiresAt: number }>();
+const botControlMemory = new Map<string, { enabled: boolean; expiresAt: number }>();
+let allConfigsMemory: { value: Record<string, any>[]; expiresAt: number } | null = null;
 const openrouter = createOpenAI({
   baseURL: "https://openrouter.ai/api/v1",
   apiKey: process.env.OPENROUTER_API_KEY,
@@ -99,10 +102,15 @@ export function normalizeRestaurantConfig(
 export async function isTenantBotEnabled(instanceId: string): Promise<boolean> {
   const safeInstanceId = String(instanceId || "").trim();
   if (!safeInstanceId) return false;
+  const memoryControl = botControlMemory.get(safeInstanceId);
+  if (memoryControl && memoryControl.expiresAt > Date.now()) return memoryControl.enabled;
   const key = `bot_control:${safeInstanceId}`;
   const backupKey = `bot_control_backup:${safeInstanceId}`;
   const cached = await getJsonCache<{ enabled: boolean }>(key);
-  if (cached && typeof cached.enabled === "boolean") return cached.enabled;
+  if (cached && typeof cached.enabled === "boolean") {
+    botControlMemory.set(safeInstanceId, { enabled: cached.enabled, expiresAt: Date.now() + 2_000 });
+    return cached.enabled;
+  }
 
   try {
     const response = await axios.get(
@@ -113,17 +121,20 @@ export async function isTenantBotEnabled(instanceId: string): Promise<boolean> {
     if (!config) throw new Error("TENANTS_PLATFORM_TENANT_MISMATCH");
     const enabled = config?.bot_enabled !== false;
     const control = { enabled };
-    await setJsonCache(key, 2, control);
-    await setJsonCache(backupKey, 604800, control);
-    if (config) {
-      await setJsonCache(`config:${safeInstanceId}`, 300, config);
-      await setJsonCache(`config_backup:${safeInstanceId}`, 604800, config);
-    }
+    botControlMemory.set(safeInstanceId, { enabled, expiresAt: Date.now() + 2_000 });
+    runtimeConfigMemory.set(safeInstanceId, { value: config, expiresAt: Date.now() + 60_000 });
+    void Promise.all([
+      setJsonCache(key, 2, control),
+      setJsonCache(backupKey, 604800, control),
+      setJsonCache(`config:${safeInstanceId}`, 300, config),
+      setJsonCache(`config_backup:${safeInstanceId}`, 604800, config),
+    ]).catch(() => undefined);
     return enabled;
   } catch (error: any) {
     console.warn(`[PLATFORM] bot control read failed (${safeInstanceId}):`, error?.message || error);
     const backup = await getJsonCache<{ enabled: boolean }>(backupKey);
     if (backup && typeof backup.enabled === "boolean") return backup.enabled;
+    if (memoryControl) return memoryControl.enabled;
     const config = await getRestaurantConfig(safeInstanceId);
     return config?.bot_enabled !== false;
   }
@@ -187,10 +198,15 @@ function platformHeaders() {
 
 export async function getRestaurantConfig(instanceId: string): Promise<Record<string, any> | null> {
   const safeInstanceId = String(instanceId || "").trim();
+  const memory = runtimeConfigMemory.get(safeInstanceId);
+  if (memory && memory.expiresAt > Date.now()) return memory.value;
   const key = `config:${safeInstanceId}`;
   const backupKey = `config_backup:${safeInstanceId}`;
   const cached = await getJsonCache<Record<string, any>>(key);
-  if (cached) return cached;
+  if (cached) {
+    runtimeConfigMemory.set(safeInstanceId, { value: cached, expiresAt: Date.now() + 60_000 });
+    return cached;
+  }
 
   try {
     const response = await axios.get(
@@ -199,23 +215,30 @@ export async function getRestaurantConfig(instanceId: string): Promise<Record<st
     );
     const config = normalizeRestaurantConfig(response.data?.config || null, safeInstanceId);
     if (config) {
-      await setJsonCache(key, 300, config);
-      await setJsonCache(backupKey, 604800, config);
+      runtimeConfigMemory.set(safeInstanceId, { value: config, expiresAt: Date.now() + 60_000 });
+      void Promise.all([
+        setJsonCache(key, 300, config),
+        setJsonCache(backupKey, 604800, config),
+      ]).catch(() => undefined);
       return config;
     }
     // Keep the tenant alive with the last known-good platform config during a network interruption.
-    return getJsonCache<Record<string, any>>(backupKey);
+    return memory?.value || await getJsonCache<Record<string, any>>(backupKey);
   } catch (error: any) {
     console.error(`[PLATFORM] config read failed (${safeInstanceId}):`, error?.message || error);
-    return getJsonCache<Record<string, any>>(backupKey);
+    return memory?.value || await getJsonCache<Record<string, any>>(backupKey);
   }
 }
 
 export async function getAllRestaurantConfigs(): Promise<Record<string, any>[]> {
+  if (allConfigsMemory && allConfigsMemory.expiresAt > Date.now()) return allConfigsMemory.value;
   const cacheKey = "config:all_restaurants";
   const backupKey = "config_backup:all_restaurants";
   const cached = await getJsonCache<Record<string, any>[]>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    allConfigsMemory = { value: cached, expiresAt: Date.now() + 60_000 };
+    return cached;
+  }
 
   try {
     const response = await axios.get(`${platformBaseUrl()}/api/wa/runtime-configs`, {
@@ -228,12 +251,19 @@ export async function getAllRestaurantConfigs(): Promise<Record<string, any>[]> 
           .filter((record: any) => String(record?.instance_id || record?.instance || "").trim())
           .filter(Boolean)
       : [];
-    await setJsonCache(cacheKey, 300, records);
-    await setJsonCache(backupKey, 604800, records);
+    allConfigsMemory = { value: records, expiresAt: Date.now() + 60_000 };
+    for (const config of records) {
+      const instance = String(config.instance_id || config.instance || "");
+      if (instance) runtimeConfigMemory.set(instance, { value: config, expiresAt: Date.now() + 60_000 });
+    }
+    void Promise.all([
+      setJsonCache(cacheKey, 300, records),
+      setJsonCache(backupKey, 604800, records),
+    ]).catch(() => undefined);
     return records;
   } catch (error: any) {
     console.warn("[PLATFORM] all restaurants read failed:", error?.message || error);
-    return (await getJsonCache<Record<string, any>[]>(backupKey)) || [];
+    return allConfigsMemory?.value || (await getJsonCache<Record<string, any>[]>(backupKey)) || [];
   }
 }
 

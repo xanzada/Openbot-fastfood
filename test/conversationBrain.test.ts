@@ -22,6 +22,8 @@ test("OpenRouter text models use chat completions rather than the hanging Respon
   const router = await readFile(new URL("../src/agent/modelRouter.ts", import.meta.url), "utf8");
   const agent = await readFile(new URL("../src/agent/fastfoodAgent.ts", import.meta.url), "utf8");
   const redis = await readFile(new URL("../src/services/redis.service.ts", import.meta.url), "utf8");
+  const transport = await readFile(new URL("../src/transport/whatspro.client.ts", import.meta.url), "utf8");
+  const server = await readFile(new URL("../src/server.ts", import.meta.url), "utf8");
   const platform = await readFile(new URL("../src/services/platformConfig.service.ts", import.meta.url), "utf8");
   assert.match(router, /openrouterProvider\.chat\(textPrimaryModel\)/);
   assert.match(router, /openrouterProvider\.chat\(textFallbackModel\)/);
@@ -31,6 +33,12 @@ test("OpenRouter text models use chat completions rather than the hanging Respon
   assert.match(router, /TEXT_RESERVE_TIMEOUT_MS/);
   assert.match(agent, /maxRetries:\s*0/);
   assert.match(redis, /REDIS_OPERATION_TIMEOUT_MS/);
+  assert.match(redis, /disableOfflineQueue:\s*true/);
+  assert.match(transport, /drainWhatsProOutbox/);
+  assert.match(transport, /requestId:\s*outboundId/);
+  assert.match(transport, /requestScope \|\| crypto\.randomUUID\(\)/);
+  assert.match(transport, /payload\.phone\}\|\$\{requestScope\}/);
+  assert.match(server, /startWhatsProOutboxWorker\(\)/);
   assert.match(platform, /openrouter\.chat\("openai\/gpt-4o-mini"\)/);
 });
 

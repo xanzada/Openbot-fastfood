@@ -28,6 +28,70 @@ const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
   .map((item) => item.trim().toLowerCase())
   .filter(Boolean);
 
+const localDone = new Map<string, number>();
+const localProcessing = new Map<string, number>();
+const localDuplicateText = new Map<string, { hash: string; expiresAt: number }>();
+const localSpam = new Map<string, { count: number; windowEndsAt: number; mutedUntil: number }>();
+const localMediaQuota = new Map<string, { count: number; windowEndsAt: number }>();
+
+function localKey(instanceId: string, value: string) {
+  return `${instanceId}:${value}`;
+}
+
+function pruneLocalGuardState(now = Date.now()) {
+  for (const [key, expiresAt] of localDone) if (expiresAt <= now) localDone.delete(key);
+  for (const [key, expiresAt] of localProcessing) if (expiresAt <= now) localProcessing.delete(key);
+  for (const [key, item] of localDuplicateText) if (item.expiresAt <= now) localDuplicateText.delete(key);
+  for (const [key, item] of localSpam) {
+    if (item.windowEndsAt <= now && item.mutedUntil <= now) localSpam.delete(key);
+  }
+  for (const [key, item] of localMediaQuota) if (item.windowEndsAt <= now) localMediaQuota.delete(key);
+}
+
+function guardIncomingMessageInMemory(instanceId: string, phone: string, text: string, messageId: string): GuardResult {
+  const now = Date.now();
+  pruneLocalGuardState(now);
+  const messageKey = messageId ? localKey(instanceId, messageId) : "";
+  if (messageKey && localDone.has(messageKey)) return { blocked: true, reason: "duplicate_done_local" };
+  if (messageKey && localProcessing.has(messageKey)) return { blocked: true, reason: "duplicate_processing_local" };
+  if (messageKey) localProcessing.set(messageKey, now + PROCESSING_LOCK_SECONDS * 1000);
+
+  const customerKey = localKey(instanceId, phone);
+  const spam = localSpam.get(customerKey);
+  if (spam?.mutedUntil && spam.mutedUntil > now) return { blocked: true, reason: "spam_muted_local" };
+
+  if (text) {
+    const textHash = sha1(text.toLowerCase());
+    const previous = localDuplicateText.get(customerKey);
+    if (previous?.hash === textHash && previous.expiresAt > now) {
+      if (messageKey) {
+        localProcessing.delete(messageKey);
+        localDone.set(messageKey, now + DONE_SECONDS * 1000);
+      }
+      return { blocked: true, reason: "duplicate_text_local" };
+    }
+    localDuplicateText.set(customerKey, {
+      hash: textHash,
+      expiresAt: now + DUPLICATE_TEXT_SECONDS * 1000,
+    });
+  }
+
+  const activeSpam = spam?.windowEndsAt && spam.windowEndsAt > now
+    ? spam
+    : { count: 0, windowEndsAt: now + SPAM_WINDOW_SECONDS * 1000, mutedUntil: 0 };
+  activeSpam.count += 1;
+  if (activeSpam.count > SPAM_LIMIT) activeSpam.mutedUntil = now + MUTE_SECONDS * 1000;
+  localSpam.set(customerKey, activeSpam);
+  if (activeSpam.mutedUntil > now) {
+    if (messageKey) {
+      localProcessing.delete(messageKey);
+      localDone.set(messageKey, now + DONE_SECONDS * 1000);
+    }
+    return { blocked: true, reason: "spam_limit_exceeded_local" };
+  }
+  return { blocked: false, source: "redis_fail_open" };
+}
+
 export interface InboundMediaContext {
   hasMedia: boolean;
   kind: "image" | "document" | "video" | "audio" | "sticker" | "unknown";
@@ -580,75 +644,92 @@ export async function guardIncomingMessage(input: {
   if (hasPrivateKeyword(privateNames)) return { blocked: true, reason: "private_contact_keyword" };
   if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact)) return { blocked: true, reason: "private_saved_contact" };
 
-  await connectRedis();
+  try {
+    await connectRedis();
 
-  const operatorActive = await getFreshOperatorActive(instanceId, phone);
-  if (operatorActive) {
-    await markInboundDone(instanceId, messageId);
-    return { blocked: true, reason: "operator_active", source: "operator_override" };
-  }
-
-  if (messageId) {
-    if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
-      return { blocked: true, reason: "duplicate_done" };
-    }
-    const lock = await redisClient.set(`msg_processing:${instanceId}:${messageId}`, "1", {
-      NX: true,
-      EX: PROCESSING_LOCK_SECONDS,
-    });
-    if (!lock) return { blocked: true, reason: "duplicate_processing" };
-  }
-
-  const operatorMute = await getFreshOperatorMute(instanceId, phone);
-  if (operatorMute) {
-    await markInboundDone(instanceId, messageId);
-    return { blocked: true, reason: "muted", source: "operator_override" };
-  }
-
-  if (await redisClient.get(`mute:${instanceId}:${phone}`)) {
-    await markInboundDone(instanceId, messageId);
-    return { blocked: true, reason: "muted" };
-  }
-
-  if (text) {
-    const duplicateKey = `anti_dup:${instanceId}:${phone}`;
-    const textHash = sha1(text.toLowerCase());
-    const previousHash = await redisClient.get(duplicateKey);
-    if (previousHash === textHash) {
+    const operatorActive = await getFreshOperatorActive(instanceId, phone);
+    if (operatorActive) {
       await markInboundDone(instanceId, messageId);
-      return { blocked: true, reason: "duplicate_text" };
+      return { blocked: true, reason: "operator_active", source: "operator_override" };
     }
-    await redisClient.setEx(duplicateKey, DUPLICATE_TEXT_SECONDS, textHash);
-  }
 
-  const spamKey = `spam:${instanceId}:${phone}`;
-  const count = await redisClient.incr(spamKey);
-  if (count === 1) await redisClient.expire(spamKey, SPAM_WINDOW_SECONDS);
-  if (count > SPAM_LIMIT) {
-    await redisClient.setEx(`mute:${instanceId}:${phone}`, MUTE_SECONDS, "spam_blocked");
-    await markInboundDone(instanceId, messageId);
-    return { blocked: true, reason: "spam_limit_exceeded" };
-  }
+    if (messageId) {
+      if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
+        return { blocked: true, reason: "duplicate_done" };
+      }
+      const lock = await redisClient.set(`msg_processing:${instanceId}:${messageId}`, "1", {
+        NX: true,
+        EX: PROCESSING_LOCK_SECONDS,
+      });
+      if (!lock) return { blocked: true, reason: "duplicate_processing" };
+    }
 
-  return { blocked: false };
+    const operatorMute = await getFreshOperatorMute(instanceId, phone);
+    if (operatorMute) {
+      await markInboundDone(instanceId, messageId);
+      return { blocked: true, reason: "muted", source: "operator_override" };
+    }
+
+    if (await redisClient.get(`mute:${instanceId}:${phone}`)) {
+      await markInboundDone(instanceId, messageId);
+      return { blocked: true, reason: "muted" };
+    }
+
+    if (text) {
+      const duplicateKey = `anti_dup:${instanceId}:${phone}`;
+      const textHash = sha1(text.toLowerCase());
+      const previousHash = await redisClient.get(duplicateKey);
+      if (previousHash === textHash) {
+        await markInboundDone(instanceId, messageId);
+        return { blocked: true, reason: "duplicate_text" };
+      }
+      await redisClient.setEx(duplicateKey, DUPLICATE_TEXT_SECONDS, textHash);
+    }
+
+    const spamKey = `spam:${instanceId}:${phone}`;
+    const count = await redisClient.incr(spamKey);
+    if (count === 1) await redisClient.expire(spamKey, SPAM_WINDOW_SECONDS);
+    if (count > SPAM_LIMIT) {
+      await redisClient.setEx(`mute:${instanceId}:${phone}`, MUTE_SECONDS, "spam_blocked");
+      await markInboundDone(instanceId, messageId);
+      return { blocked: true, reason: "spam_limit_exceeded" };
+    }
+
+    return { blocked: false };
+  } catch (error: any) {
+    console.warn(`[OPENBOT:GUARD] Redis unavailable, using tenant-local memory guard instance=${instanceId}:`, error?.message || error);
+    return guardIncomingMessageInMemory(instanceId, phone, text, messageId);
+  }
 }
 
 export async function markInboundDone(instanceId: string, messageId?: string): Promise<void> {
   const safeMessageId = String(messageId || "").trim();
   if (!safeMessageId) return;
-  await connectRedis();
-  await redisClient
-    .multi()
-    .setEx(`msg_done:${instanceId}:${safeMessageId}`, DONE_SECONDS, "1")
-    .del(`msg_processing:${instanceId}:${safeMessageId}`)
-    .exec();
+  const key = localKey(instanceId, safeMessageId);
+  localProcessing.delete(key);
+  localDone.set(key, Date.now() + DONE_SECONDS * 1000);
+  try {
+    await connectRedis();
+    await redisClient
+      .multi()
+      .setEx(`msg_done:${instanceId}:${safeMessageId}`, DONE_SECONDS, "1")
+      .del(`msg_processing:${instanceId}:${safeMessageId}`)
+      .exec();
+  } catch {
+    // The local marker keeps WAL replays idempotent until Redis reconnects.
+  }
 }
 
 export async function clearInboundProcessing(instanceId: string, messageId?: string): Promise<void> {
   const safeMessageId = String(messageId || "").trim();
   if (!safeMessageId) return;
-  await connectRedis();
-  await redisClient.del(`msg_processing:${instanceId}:${safeMessageId}`);
+  localProcessing.delete(localKey(instanceId, safeMessageId));
+  try {
+    await connectRedis();
+    await redisClient.del(`msg_processing:${instanceId}:${safeMessageId}`);
+  } catch {
+    // Best effort: a Redis processing lock has its own short TTL.
+  }
 }
 
 export async function saveMediaContext(
@@ -656,12 +737,16 @@ export async function saveMediaContext(
   phone: string,
   mediaContext: InboundMediaContext
 ): Promise<void> {
-  await connectRedis();
-  await redisClient.setEx(
-    `media_context:${instanceId}:${phone}`,
-    MEDIA_CONTEXT_SECONDS,
-    JSON.stringify({ ...safeMediaMetadata(mediaContext), savedAt: Date.now() })
-  );
+  try {
+    await connectRedis();
+    await redisClient.setEx(
+      `media_context:${instanceId}:${phone}`,
+      MEDIA_CONTEXT_SECONDS,
+      JSON.stringify({ ...safeMediaMetadata(mediaContext), savedAt: Date.now() })
+    );
+  } catch {
+    // Media processing can continue from the current request context.
+  }
 }
 
 export async function bufferInboundText(input: { instanceId: string; phone: string; messageId: string; text: string }): Promise<{ leader: boolean; text: string }> {
@@ -670,32 +755,51 @@ export async function bufferInboundText(input: { instanceId: string; phone: stri
   const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
   const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
   if (!instanceId || !phone || !text) return { leader: true, text };
-  await connectRedis();
-  const listKey = `inbound_buffer:${instanceId}:${phone}`;
-  const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
-  await redisClient.multi()
-    .rPush(listKey, JSON.stringify({ token, text }))
-    .lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1)
-    .expire(listKey, INBOUND_BUFFER_SECONDS)
-    .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
-    .exec();
-  await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
-  if ((await redisClient.get(latestKey)) !== token) return { leader: false, text: "" };
-  const rows = await redisClient.lRange(listKey, 0, -1);
-  await redisClient.del([listKey, latestKey]);
-  const parts = rows.map((row) => { try { return String(JSON.parse(row)?.text || "").trim(); } catch { return ""; } }).filter(Boolean);
-  return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS) };
+  try {
+    await connectRedis();
+    const listKey = `inbound_buffer:${instanceId}:${phone}`;
+    const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
+    await redisClient.multi()
+      .rPush(listKey, JSON.stringify({ token, text }))
+      .lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1)
+      .expire(listKey, INBOUND_BUFFER_SECONDS)
+      .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
+      .exec();
+    await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+    if ((await redisClient.get(latestKey)) !== token) return { leader: false, text: "" };
+    const rows = await redisClient.lRange(listKey, 0, -1);
+    await redisClient.del([listKey, latestKey]);
+    const parts = rows.map((row) => { try { return String(JSON.parse(row)?.text || "").trim(); } catch { return ""; } }).filter(Boolean);
+    return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS) };
+  } catch {
+    return { leader: true, text };
+  }
 }
 
 export async function claimMediaAiQuota(instanceId: string, phone: string): Promise<boolean> {
-  await connectRedis();
-  const key = `media_ai_quota:${instanceId}:${phone}`;
-  const count = await redisClient.incr(key);
-  if (count === 1) await redisClient.expire(key, 5 * 60);
-  return count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
+  try {
+    await connectRedis();
+    const key = `media_ai_quota:${instanceId}:${phone}`;
+    const count = await redisClient.incr(key);
+    if (count === 1) await redisClient.expire(key, 5 * 60);
+    return count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
+  } catch {
+    const key = localKey(instanceId, phone);
+    const now = Date.now();
+    const current = localMediaQuota.get(key);
+    const next = current?.windowEndsAt && current.windowEndsAt > now
+      ? { ...current, count: current.count + 1 }
+      : { count: 1, windowEndsAt: now + 5 * 60 * 1000 };
+    localMediaQuota.set(key, next);
+    return next.count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
+  }
 }
 
 export async function clearMediaContext(instanceId: string, phone: string): Promise<void> {
-  await connectRedis();
-  await redisClient.del(`media_context:${instanceId}:${phone}`);
+  try {
+    await connectRedis();
+    await redisClient.del(`media_context:${instanceId}:${phone}`);
+  } catch {
+    // Best effort cleanup; the Redis key has a short TTL.
+  }
 }

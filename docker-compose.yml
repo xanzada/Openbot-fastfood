@@ -8,6 +8,8 @@ services:
         condition: service_healthy
     env_file:
       - .env
+    volumes:
+      - openbot_state:/app/state
     environment:
       REDIS_URL: redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379
       NODE_ENV: production
@@ -77,6 +79,7 @@ services:
       REDIS_URL: redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379
     volumes:
       - backup_state:/work
+      - openbot_state:/source/openbot_state:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/backup-healthcheck"]
       interval: 5m
@@ -87,6 +90,7 @@ services:
 volumes:
   openbot_redis_data:
   backup_state:
+  openbot_state:
 
 networks:
   dokploy-network:

@@ -53,10 +53,11 @@ next_slot() {
 write_manifest() {
   local stage="$1"
   local created="$2"
-  local redis_hash
+  local redis_hash openbot_state_hash
   redis_hash="$(sha256sum "${stage}/redis.rdb" | cut -d' ' -f1)"
-  printf '{"format":1,"source":"%s","createdAt":"%s","redisSha256":"%s","whatsappAuthIncluded":false,"whatsappAuthSha256":""}\n' \
-    "${BACKUP_SOURCE_NAME}" "${created}" "${redis_hash}" > "${stage}/manifest.json"
+  openbot_state_hash="$(sha256sum "${stage}/openbot-state.tar" | cut -d' ' -f1)"
+  printf '{"format":2,"source":"%s","createdAt":"%s","redisSha256":"%s","openbotStateIncluded":true,"openbotStateSha256":"%s","whatsappAuthIncluded":false,"whatsappAuthSha256":""}\n' \
+    "${BACKUP_SOURCE_NAME}" "${created}" "${redis_hash}" "${openbot_state_hash}" > "${stage}/manifest.json"
 }
 
 make_snapshot() {
@@ -65,8 +66,9 @@ make_snapshot() {
   local created="$3"
 
   redis-cli -u "${REDIS_URL}" --rdb "${stage}/redis.rdb" >/dev/null
+  tar -C /source -cf "${stage}/openbot-state.tar" openbot_state
   write_manifest "${stage}" "${created}"
-  tar -C "${stage}" -cf - manifest.json redis.rdb \
+  tar -C "${stage}" -cf - manifest.json redis.rdb openbot-state.tar \
     | zstd -T0 -8 --quiet \
     | age -r "${recipient}" \
     | split -b 90m -d -a 3 - "${stage}/snapshot.tar.zst.age.part-"

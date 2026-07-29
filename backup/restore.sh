@@ -25,6 +25,8 @@ git clone --quiet --depth 1 --branch "${branch}" "${repo_url}" "${work_dir}/vaul
 )
 redis_hash="$(sha256sum "${work_dir}/redis.rdb" | cut -d' ' -f1)"
 grep -Fq "\"redisSha256\":\"${redis_hash}\"" "${work_dir}/manifest.json"
+openbot_state_hash="$(sha256sum "${work_dir}/openbot-state.tar" | cut -d' ' -f1)"
+grep -Fq "\"openbotStateSha256\":\"${openbot_state_hash}\"" "${work_dir}/manifest.json"
 mkdir -p "${output_dir}"
-mv "${work_dir}/manifest.json" "${work_dir}/redis.rdb" "${output_dir}/"
+mv "${work_dir}/manifest.json" "${work_dir}/redis.rdb" "${work_dir}/openbot-state.tar" "${output_dir}/"
 echo "Snapshot verified and extracted to ${output_dir}"

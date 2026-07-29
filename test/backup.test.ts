@@ -11,6 +11,7 @@ const restore = readFileSync(join(root, "backup", "restore.sh"), "utf8");
 describe("encrypted offsite backup", () => {
   it("mounts only backup state and protects credentials behind env values", () => {
     assert.match(compose, /backup_state:\/work/);
+    assert.match(compose, /openbot_state:\/source\/openbot_state:ro/);
     assert.match(compose, /BACKUP_ENABLED: \$\{BACKUP_ENABLED:-false\}/);
     assert.doesNotMatch(backup, /BEGIN OPENSSH PRIVATE KEY/);
   });
@@ -26,5 +27,7 @@ describe("encrypted offsite backup", () => {
     assert.match(restore, /sha256sum -c encrypted-parts\.sha256/);
     assert.match(restore, /age -d -i/);
     assert.match(restore, /redisSha256/);
+    assert.match(restore, /openbotStateSha256/);
+    assert.match(backup, /openbot-state\.tar/);
   });
 });

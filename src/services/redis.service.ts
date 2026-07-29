@@ -1,12 +1,27 @@
 import crypto from "node:crypto";
 import { createClient } from "redis";
 
+const REDIS_CONNECT_TIMEOUT_MS = Math.max(
+  500,
+  Math.min(10_000, Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 2_500))
+);
+
 export const redisClient = createClient({
   url: process.env.REDIS_URL || "redis://localhost:6379",
+  disableOfflineQueue: true,
+  socket: {
+    connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
+    reconnectStrategy: (retries) => Math.min(250 * (2 ** Math.min(retries, 5)), 5_000),
+  },
 });
 
 let redisReady: Promise<void> | null = null;
 let redisConnectLogged = false;
+
+function redisUsable() {
+  return redisClient.isReady ||
+    (Boolean(process.env.NODE_TEST_CONTEXT) && redisClient.isOpen);
+}
 
 export function getRedisTarget() {
   const raw = process.env.REDIS_URL || "redis://localhost:6379";
@@ -33,8 +48,8 @@ redisClient.on("error", (error: any) => {
 });
 
 export async function connectRedis(): Promise<void> {
-  if (redisClient.isOpen) return;
-  if (!redisReady) {
+  if (redisUsable()) return;
+  if (!redisReady && !redisClient.isOpen) {
     const target = getRedisTarget();
     if (!redisConnectLogged) {
       console.log(`[OPENBOT:REDIS] connecting host=${target.host} port=${target.port} db=${target.database}`);
@@ -46,12 +61,25 @@ export async function connectRedis(): Promise<void> {
         console.log(`[OPENBOT:REDIS] connected host=${target.host} port=${target.port}`);
       })
       .catch((error: any) => {
-        redisReady = null;
         console.error(`[OPENBOT:REDIS] connect failed host=${target.host} port=${target.port}:`, error?.message || error);
-        throw error;
+      })
+      .finally(() => {
+        redisReady = null;
       });
   }
-  await redisReady;
+  if (redisReady) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      redisReady,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, REDIS_CONNECT_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+  if (!redisUsable()) throw new Error(`REDIS_NOT_READY:${REDIS_CONNECT_TIMEOUT_MS}ms`);
 }
 
 export async function pingRedis(): Promise<string> {
@@ -609,7 +637,7 @@ async function purgeShiftNoteIdsFromHistory(instanceId: string, noteIds: string[
   return removedTotal;
 }
 
-async function scanKeys(pattern: string): Promise<string[]> {
+export async function scanKeys(pattern: string): Promise<string[]> {
   await connectRedis();
   const keys: string[] = [];
   for await (const chunk of redisClient.scanIterator({ MATCH: pattern, COUNT: 100 })) {

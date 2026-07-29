@@ -41,7 +41,7 @@ function firstValue(...values: unknown[]) {
 }
 
 export async function preloadContext(input: InboundMessage): Promise<FastFoodContext> {
-  await connectRedis();
+  const redisAvailable = await connectRedis().then(() => true).catch(() => false);
 
   const instanceId = String(input.instanceId || "").trim();
   const phone = String(input.phone || "").replace(/\D/g, "");
@@ -142,7 +142,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     active_shift_notes: activeShiftNotes,
     stale: Boolean(runtimeStatus?.stale || runtimeStatus?.is_stale || runtimeStatus?.stale_runtime_backup),
     runtime_available: runtimeAvailable,
-    redis_available: true,
+    redis_available: redisAvailable,
   };
 
   return {
