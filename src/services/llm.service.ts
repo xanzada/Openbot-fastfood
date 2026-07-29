@@ -14,9 +14,10 @@ export interface MediaRequest {
   systemPrompt?: string;
 }
 
-export interface TextModelPair {
+export interface TextModelChain {
   primary: string;
   fallback: string;
+  reserve: string;
 }
 
 function envText(name: string, fallback = "") {
@@ -50,10 +51,11 @@ export function getMediaPrimaryKeys() {
       : legacyGeminiKeys();
 }
 
-export function getTextModels(): TextModelPair {
+export function getTextModels(): TextModelChain {
   return {
     primary: envText("TEXT_PRIMARY_MODEL", "deepseek/deepseek-chat"),
     fallback: envText("TEXT_FALLBACK_MODEL", "deepseek/deepseek-chat-v3"),
+    reserve: envText("TEXT_RESERVE_MODEL", "google/gemini-2.5-flash"),
   };
 }
 

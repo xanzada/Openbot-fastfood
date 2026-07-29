@@ -462,7 +462,7 @@ reason must be brief and in Kazakh.
 `;
 
     const result = await generateText({
-      model: openrouter("openai/gpt-4o-mini"),
+      model: openrouter.chat("openai/gpt-4o-mini"),
       system: systemPrompt,
       prompt: `[DIALOGUE]\nClient: ${question}\nBot: ${answer}`,
       allowSystemInMessages: true,

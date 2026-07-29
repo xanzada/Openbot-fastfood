@@ -5,6 +5,7 @@ import { buildTenantInstructionsFromConfig } from "../src/agent/persona.js";
 import { buildFactsPrompt, compactConversationHistory } from "../src/context/buildFactsPrompt.js";
 import { validateFinalText } from "../src/agent/finalValidator.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
+import { readFile } from "node:fs/promises";
 
 test("core prompt defines autonomous judgment and exact active tools", () => {
   assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /DECISION STANDARD/);
@@ -15,6 +16,22 @@ test("core prompt defines autonomous judgment and exact active tools", () => {
   }
   assert.doesNotMatch(FASTFOOD_AGENT_INSTRUCTIONS, /registerPaymentReceipt/);
   assert.doesNotMatch(FASTFOOD_AGENT_INSTRUCTIONS, /Suggested customer repl/i);
+});
+
+test("OpenRouter text models use chat completions rather than the hanging Responses API", async () => {
+  const router = await readFile(new URL("../src/agent/modelRouter.ts", import.meta.url), "utf8");
+  const agent = await readFile(new URL("../src/agent/fastfoodAgent.ts", import.meta.url), "utf8");
+  const redis = await readFile(new URL("../src/services/redis.service.ts", import.meta.url), "utf8");
+  const platform = await readFile(new URL("../src/services/platformConfig.service.ts", import.meta.url), "utf8");
+  assert.match(router, /openrouterProvider\.chat\(textPrimaryModel\)/);
+  assert.match(router, /openrouterProvider\.chat\(textFallbackModel\)/);
+  assert.match(router, /openrouterProvider\.chat\(textReserveModel\)/);
+  assert.match(router, /TEXT_PRIMARY_TIMEOUT_MS/);
+  assert.match(router, /TEXT_FALLBACK_TIMEOUT_MS/);
+  assert.match(router, /TEXT_RESERVE_TIMEOUT_MS/);
+  assert.match(agent, /maxRetries:\s*0/);
+  assert.match(redis, /REDIS_OPERATION_TIMEOUT_MS/);
+  assert.match(platform, /openrouter\.chat\("openai\/gpt-4o-mini"\)/);
 });
 
 test("identity policy is natural without permitting a false human claim", () => {

@@ -59,10 +59,31 @@ export async function pingRedis(): Promise<string> {
   return redisClient.ping();
 }
 
+async function withRedisTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`REDIS_OPERATION_TIMEOUT:${timeoutMs}ms`)),
+          timeoutMs
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function safeRedis<T>(fallback: T, fn: () => Promise<T>): Promise<T> {
   try {
-    await connectRedis();
-    return await fn();
+    const timeoutMs = Math.max(
+      500,
+      Math.min(10_000, Number(process.env.REDIS_OPERATION_TIMEOUT_MS || 2_500))
+    );
+    await withRedisTimeout(connectRedis(), timeoutMs);
+    return await withRedisTimeout(fn(), timeoutMs);
   } catch {
     return fallback;
   }

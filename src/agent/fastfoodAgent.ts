@@ -32,6 +32,9 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
 
   const result = await agent.generateText(ctx.text, {
     maxSteps: 6,
+    // The model router owns retry/failover. SDK-level retries would repeat a
+    // stalled provider before the paid fallback chain gets a chance to run.
+    maxRetries: 0,
     prepareStep: createAgentStepPolicy(toolPlan),
     // @ts-expect-error - allowSystemMessages is valid in AI SDK v6 but missing from @voltagent/core types
     allowSystemMessages: true,
