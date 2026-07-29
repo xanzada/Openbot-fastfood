@@ -50,7 +50,7 @@ import { sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { customerOrderFromRecord, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
-import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, saveToShpor } from "../services/platformConfig.service.js";
+import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, isTenantBotEnabled, saveToShpor } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import {
   analyzeMedia,
@@ -359,6 +359,14 @@ async function processWhatsAppWebhook(body: any, started: number) {
     if (!String(text || "").trim() && !mediaContext) {
       console.log(
         `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=empty_message elapsed=${Date.now() - started}ms`
+      );
+      return;
+    }
+
+    if (!(await isTenantBotEnabled(instanceId))) {
+      await markInboundDone(instanceId, messageId).catch(() => undefined);
+      console.log(
+        `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=bot_paused elapsed=${Date.now() - started}ms`
       );
       return;
     }

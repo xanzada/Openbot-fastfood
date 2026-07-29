@@ -48,7 +48,13 @@ function firstValue(...values: unknown[]) {
 
 function normalizeRestaurantConfig(record: Record<string, any> | null): Record<string, any> | null {
   if (!record) return null;
-  const devPhone = normalizePhone(record.dev_phone || record.developer_phone || record.developer || record.devPhone);
+  const devPhone = normalizePhone(
+    record.dev_phone ||
+    record.developer_phone ||
+    record.developer ||
+    record.devPhone ||
+    process.env.OPENBOT_DEVELOPER_PHONE
+  );
   const instanceId = String(firstValue(record.instance_id, record.instance, record.restaurant_instance, record.restaurantInstance)).trim();
   const whatsAppPhone = normalizePhone(
     firstValue(
@@ -70,6 +76,7 @@ function normalizeRestaurantConfig(record: Record<string, any> | null): Record<s
     instance_id: instanceId,
     instance: instanceId,
     dev_phone: devPhone,
+    bot_enabled: record.bot_enabled === undefined || record.bot_enabled === null ? true : Boolean(record.bot_enabled),
     whatsapp_phone: whatsAppPhone,
     work_hours: cleanString(firstValue(record.work_hours, record.workHours)),
     brand: cleanString(firstValue(record.brand)),
@@ -80,6 +87,38 @@ function normalizeRestaurantConfig(record: Record<string, any> | null): Record<s
     whatspro_api_token: firstValue(record.whatspro_api_token, record.whatsproApiToken, record.WHATSPRO_API_TOKEN),
     crm_secret_token: firstValue(record.crm_secret_token, record.crmSecretToken, record.secret_token, record.secretToken, record.secret_key, record.secretKey),
   };
+}
+
+export async function isTenantBotEnabled(instanceId: string): Promise<boolean> {
+  const safeInstanceId = String(instanceId || "").trim();
+  if (!safeInstanceId) return false;
+  const key = `bot_control:${safeInstanceId}`;
+  const backupKey = `bot_control_backup:${safeInstanceId}`;
+  const cached = await getJsonCache<{ enabled: boolean }>(key);
+  if (cached && typeof cached.enabled === "boolean") return cached.enabled;
+
+  try {
+    const response = await axios.get(
+      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(safeInstanceId)}`,
+      { headers: platformHeaders(), timeout: 5000 }
+    );
+    const config = normalizeRestaurantConfig(response.data?.config || null);
+    const enabled = config?.bot_enabled !== false;
+    const control = { enabled };
+    await setJsonCache(key, 2, control);
+    await setJsonCache(backupKey, 604800, control);
+    if (config) {
+      await setJsonCache(`config:${safeInstanceId}`, 300, config);
+      await setJsonCache(`config_backup:${safeInstanceId}`, 604800, config);
+    }
+    return enabled;
+  } catch (error: any) {
+    console.warn(`[PLATFORM] bot control read failed (${safeInstanceId}):`, error?.message || error);
+    const backup = await getJsonCache<{ enabled: boolean }>(backupKey);
+    if (backup && typeof backup.enabled === "boolean") return backup.enabled;
+    const config = await getRestaurantConfig(safeInstanceId);
+    return config?.bot_enabled !== false;
+  }
 }
 
 function cleanPromptLine(value: unknown, max = 240) {

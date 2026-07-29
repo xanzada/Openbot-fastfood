@@ -90,7 +90,7 @@ async function sendAlertWithConfig(
   error: unknown,
   meta: Record<string, unknown>
 ): Promise<boolean> {
-  const developerPhone = normalizePhone(config.dev_phone);
+  const developerPhone = normalizePhone(config.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE);
   if (!developerPhone) {
     console.error(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=dev_phone_missing`);
     return false;
@@ -146,7 +146,7 @@ export async function notifyAllDevelopersSystemFailure(
     const unique = new Map<string, Record<string, any>>();
     for (const config of configs) {
       const instanceId = String(config?.instance_id || config?.instance || "").trim();
-      if (instanceId && normalizePhone(config?.dev_phone)) unique.set(instanceId, config);
+      if (instanceId && normalizePhone(config?.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE)) unique.set(instanceId, config);
     }
     const results = await Promise.allSettled(
       [...unique.entries()].map(([instanceId, config]) => sendAlertWithConfig(instanceId, config, error, meta))
