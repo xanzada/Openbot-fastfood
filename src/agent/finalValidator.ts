@@ -147,9 +147,16 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
 
   // Link integrity and duplicate suppression are transport contracts.
   const hasLinkInText = hasLinkInResponse(text);
-  if (ctx.magicLinkAlreadySent && !ctx.explicitMenuLinkIntent && hasLinkInText) {
-    text = text.replace(URL_RE, "").replace(/\s{2,}/g, " ").trim();
-    warnings.push("duplicate_menu_link_removed");
+  const hasUnrequestedMenuLink = Boolean(
+    ctx.magicLink
+    && !ctx.explicitMenuLinkIntent
+    && uniqueUrls(text).some((url) => isLikelyMagicLinkUrl(url, ctx.magicLink || ""))
+  );
+  if (hasUnrequestedMenuLink) {
+    text = text.replace(URL_RE, (url) =>
+      isLikelyMagicLinkUrl(trimUrlPunctuation(url), ctx.magicLink || "") ? "" : url
+    ).replace(/\s{2,}/g, " ").trim();
+    warnings.push(ctx.magicLinkAlreadySent ? "duplicate_menu_link_removed" : "unrequested_menu_link_removed");
     if (MENU_LINK_SENT_RE.test(text)) return { text: text || fallback(ctx), hasLink: false, warnings };
     return { text: text || fallback(ctx), hasLink: false, warnings };
   }

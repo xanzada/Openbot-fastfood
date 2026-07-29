@@ -6,6 +6,7 @@ import { buildFactsPrompt, compactConversationHistory } from "../src/context/bui
 import { validateFinalText } from "../src/agent/finalValidator.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 import { splitWhatsProResponse } from "../src/transport/whatspro.client.js";
+import { hasExplicitMenuLinkIntent } from "../src/utils/magicLink.js";
 import { readFile } from "node:fs/promises";
 
 test("core prompt defines autonomous judgment and exact active tools", () => {
@@ -134,6 +135,28 @@ test("high-confidence live intents are code-gated to the correct tools", () => {
   assert.deepEqual(plan("Қанша уақыт күтемін?"), []);
   assert.deepEqual(plan("Сколько вы сегодня работаете?"), ["getBusinessInfo"]);
   assert.deepEqual(plan("Сәлем, бүгін көңіл-күй қалай?"), []);
+});
+
+test("incidental send wording and media conversation never trigger a menu link", () => {
+  assert.equal(hasExplicitMenuLinkIntent("Тәтті ғой, жай жіберем ғой қызық болсын деп"), false);
+  assert.equal(hasExplicitMenuLinkIntent("Мәзір сілтемесін қайта жіберіңіз"), true);
+  const ctx = {
+    language: "kk", text: "Тәтті ғой, жай жіберем ғой қызық болсын деп",
+    magicLink: "https://prestige.bekaba.com/?phone=77000000000&hash=test",
+    magicLinkAlreadySent: false, explicitMenuLinkIntent: false,
+    config: {}, fetchedSettings: {}, hardRealtimeContext: {}, runtimeStatus: {}, activeOrder: null,
+  } as any;
+  const result = validateFinalText(`Міне мәзір сілтемесі:\n${ctx.magicLink}`, ctx);
+  assert.equal(result.hasLink, false);
+  assert.deepEqual(result.warnings, ["unrequested_menu_link_removed"]);
+});
+
+test("operator handoff stays in Chat and cannot message the developer", async () => {
+  const routing = await readFile(new URL("../src/services/complaintRouting.service.ts", import.meta.url), "utf8");
+  const webhook = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(routing, /sendWhatsProMessage/);
+  assert.match(routing, /createOperatorCase/);
+  assert.doesNotMatch(webhook, /AI requested developer escalation/);
 });
 
 test("multi-intent messages can require several independent live tools", () => {

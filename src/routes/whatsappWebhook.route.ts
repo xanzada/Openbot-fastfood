@@ -20,7 +20,6 @@ import {
   buildComplaintDetailQuestion,
   complaintHasActionableDetail,
   hasEscalateAdminSignal,
-  hasEscalateDeveloperSignal,
   hasPendingComplaintMedia,
   isLikelyComplaintText,
   isLikelyOperatorRequestText,
@@ -704,7 +703,6 @@ async function processWhatsAppWebhook(body: any, started: number) {
     );
 
     const rawAiText = String(result.rawText || result.text || "");
-    const needsDeveloperEscalation = hasEscalateDeveloperSignal(rawAiText) || hasEscalateDeveloperSignal(result.text);
     const needsAdminEscalation = hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text);
     const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
     // Asking for a human is not a complaint to investigate — hand it over at
@@ -728,14 +726,6 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const finalText =
       stripEscalationSignals(result.text)
       || (complaintNeedsDetail ? buildComplaintDetailQuestion(ctx.language) : shouldRouteComplaint ? buildComplaintAckReply(ctx.language) : result.text);
-
-    if (needsDeveloperEscalation) {
-      await notifyDeveloperSystemFailure(ctx.instanceId, new Error("AI requested developer escalation"), {
-        scope: "ai-router",
-        messageId,
-        customerPhone: maskPhone(ctx.phone),
-      }).catch(() => undefined);
-    }
 
     if (shouldRouteComplaint) {
       const routing = await routeComplaintToAdmin(ctx, {

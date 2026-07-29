@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import type { FastFoodContext } from "../context/types.js";
 import { clearComplaintMedia, getComplaintMedia } from "./redis.service.js";
 import { getRestaurantConfig } from "./platformConfig.service.js";
-import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { createOperatorCase, detectOperatorCaseKind } from "./operatorCase.service.js";
 import { sendOperatorSosSignal } from "./dle.service.js";
 import { auditError } from "./auditLogger.service.js";
@@ -40,18 +39,6 @@ function cleanLine(value: unknown, max = 700) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
-}
-
-function getAdminPhone(config: Record<string, any> = {}) {
-  return normalizePhone(
-    config.admin_phone ||
-      config.admin ||
-      config.manager_phone ||
-      config.operator_phone ||
-      config.complaint_phone ||
-      process.env.ADMIN_PHONE ||
-      ""
-  );
 }
 
 function getRestaurantLabel(ctx: FastFoodContext, liveConfig: Record<string, any>) {
@@ -134,7 +121,6 @@ export async function hasPendingComplaintMedia(instanceId: string, phone: string
 
 export async function routeComplaintToAdmin(ctx: FastFoodContext, input: ComplaintRoutingInput) {
   const liveConfig = (await getRestaurantConfig(ctx.instanceId).catch(() => null)) || {};
-  const adminPhone = getAdminPhone(liveConfig);
   const savedMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
   const media = toWhatsProMedia(input.media || (savedMedia as ComplaintMediaPayload | null));
   const summary = cleanLine(input.summary || input.customerText || ctx.text || "Customer complaint requires review.");
@@ -158,37 +144,22 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
   if (chatSignal.status === "rejected") auditError("WhatsPro SOS signal failed", chatSignal.reason, { instanceId: ctx.instanceId, signalId, kind });
   if (dleSignal.status === "rejected") auditError("DLE operator SOS signal failed", dleSignal.reason, { instanceId: ctx.instanceId, signalId, kind });
 
-  const adminText = [
-    "OPENBOT COMPLAINT",
-    `Restaurant: ${getRestaurantLabel(ctx, liveConfig)}`,
-    `Customer: +${ctx.phone}`,
-    `Order: ${getOrderLabel(ctx)}`,
-    `Urgency: ${urgency}`,
-    `Source: ${cleanLine(input.source || "openbot", 80)}`,
-    "",
-    `Summary: ${summary}`,
-    customerText && customerText !== summary ? `Customer text: ${customerText}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  let sent: any = null;
-  if (adminPhone) {
-    sent = await sendWhatsProMessage({ instanceId: ctx.instanceId, phone: adminPhone, text: adminText, media }).catch(() => null);
-    if (savedMedia?.base64) {
-      await clearComplaintMedia(ctx.instanceId, ctx.phone).catch(() => undefined);
-    }
+  // Human handoff is an operator-workflow signal, not a developer alert or a
+  // second WhatsApp conversation. The original customer message/media is
+  // already visible in Chat, so creating the scoped case is sufficient.
+  if (savedMedia?.base64 && (operatorCase || dleNotified)) {
+    await clearComplaintMedia(ctx.instanceId, ctx.phone).catch(() => undefined);
   }
 
   return {
     action: "operator_case_created",
     caseId: operatorCase?.id || null,
     queuedForChat: Boolean(operatorCase),
-    escalationAvailable: Boolean(operatorCase || dleNotified || adminPhone),
+    escalationAvailable: Boolean(operatorCase || dleNotified),
     signaledToDle: dleNotified,
     signalId,
     mediaAttached: Boolean(media),
-    sent: Boolean(sent?.acknowledged),
+    sent: false,
     customerReply: input.customerReply || buildComplaintAckReply(ctx.language),
   };
 }
