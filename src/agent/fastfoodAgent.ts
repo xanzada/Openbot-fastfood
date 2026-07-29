@@ -36,8 +36,10 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     // stalled provider before the paid fallback chain gets a chance to run.
     maxRetries: 0,
     prepareStep: createAgentStepPolicy(toolPlan),
-    // @ts-expect-error - allowSystemMessages is valid in AI SDK v6 but missing from @voltagent/core types
-    allowSystemMessages: true,
+    // @ts-expect-error - allowSystemInMessages is valid in AI SDK v6 but missing from @voltagent/core types.
+    // The old key name was allowSystemMessages, which the SDK ignored, so every
+    // single generation logged a security warning in production.
+    allowSystemInMessages: true,
   });
 
   const validation = validateFinalText(result.text, ctx);

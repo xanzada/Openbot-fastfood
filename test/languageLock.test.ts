@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { detectLanguageDecision, detectLang, parseGeminiLanguageDecision } from "../src/utils/language.js";
+import { shouldSwitchLockedLanguage } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
 // regex cannot see it, which is why a failed classification must never be
@@ -56,6 +57,13 @@ test("plain Russian is still read as Russian", () => {
 test("a stored language always wins over any detection", () => {
   assert.equal(detectLang("Добрый день", "kk"), "kk");
   assert.equal(detectLang("Сәлеметсіз бе", "ru"), "ru");
+});
+
+test("a 24-hour lock switches only after two consecutive messages in the other language", () => {
+  assert.equal(shouldSwitchLockedLanguage("kk", null, "ru"), false);
+  assert.equal(shouldSwitchLockedLanguage("kk", "kk", "ru"), false);
+  assert.equal(shouldSwitchLockedLanguage("kk", "ru", "ru"), true);
+  assert.equal(shouldSwitchLockedLanguage("ru", "kk", "kk"), true);
 });
 
 test("a malformed classifier reply is rejected rather than half-read", () => {

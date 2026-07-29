@@ -418,6 +418,13 @@ export async function saveUserLang(instanceId: string, phone: string, lang: "kk"
   });
 }
 
+export async function replaceUserLang(instanceId: string, phone: string, lang: "kk" | "ru"): Promise<boolean> {
+  return safeRedis(false, async () => {
+    const result = await redisClient.set(languageKey(instanceId, phone), lang, { EX: USER_LANG_TTL_SECONDS });
+    return result === "OK";
+  });
+}
+
 // Support needs to see why a guest is being answered in one language and to undo
 // a wrong lock without waiting out its 24 hours.
 export async function getUserLangState(instanceId: string, phone: string) {

@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
+import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemory.service.js";
 import {
   claimReceiptFingerprint,
   clearPendingKitchenConsent,
@@ -267,11 +268,11 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
   return missingOrderReply(ctx.language);
 }
 
-function busyKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
-  return language === "ru"
-    ? `Сейчас много заказов, поэтому приготовление или доставка могут задержаться примерно на ${policy.waitLabelRu}. Вы согласны подождать и продолжить?`
-    : `Қазір тапсырыс көп болғандықтан дайындау немесе жеткізу шамамен ${policy.waitLabelKk} кешігуі мүмкін. Күтіп, жалғастыруға келісесіз бе?`;
-}
+// busyKitchenReply used to hard-code the "we are busy, do you agree to wait?"
+// sentence, but nothing has called it since the busy kitchen became a context
+// fact (operational_runtime.wait_consent_required + wait_label) that the agent
+// phrases itself in its own words. Removed so there is exactly one owner of
+// that message and no dead template can silently come back.
 function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
   if (language === "ru") {
     if (policy.mode === "vacation") return `Сейчас временно не принимаем заказы${policy.remainingDays ? ` примерно ${policy.remainingDays} дн.` : ""}. Напишите нам немного позже — мы сообщим актуальную информацию. Спасибо за понимание.`;
@@ -777,6 +778,33 @@ async function processWhatsAppWebhook(body: any, started: number) {
     await saveToHistory(ctx.instanceId, ctx.phone, "assistant", finalText, { source: "openbot-agent", ...noteHistoryMeta(ctx, finalText) });
     await markInboundDone(ctx.instanceId, messageId);
     await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
+
+    // Memory is written only after the customer already has the reply, so it can
+    // never add latency to the answer and can never fail the request. The trace
+    // is what makes the agent self-aware on the next turn; the profile/summary
+    // refresh is what makes it remember this customer at all.
+    void recordTurnTrace({
+      instanceId: ctx.instanceId,
+      phone: ctx.phone,
+      trace: {
+        tools: result.toolCalls.map((call: { name: string }) => call.name),
+        planned_tools: result.toolPlan.requiredTools,
+        warnings: result.validationWarnings,
+        validator_edited: result.validationWarnings.length > 0,
+        media_analysed: Boolean(ctx.mediaContext),
+        reply_had_link: Boolean(result.hasLink),
+      },
+    }).catch(() => undefined);
+    void refreshCustomerMemory({
+      instanceId: ctx.instanceId,
+      phone: ctx.phone,
+      history: [
+        ...(Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []),
+        { role: "user", text: ctx.text },
+        { role: "assistant", text: finalText },
+      ],
+      language: ctx.language,
+    }).catch(() => undefined);
     console.log(
       `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_in_text=${result.hasLink} elapsed=${Date.now() - started}ms`
     );

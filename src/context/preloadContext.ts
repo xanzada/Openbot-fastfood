@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
+import { detectLang, detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
 import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
@@ -10,8 +10,15 @@ import {
   getSiteLanguageHint,
   getUserLang,
   hasMagicLinkBeenSent,
+  replaceUserLang,
   saveUserLang,
 } from "../services/redis.service.js";
+import {
+  getConversationSummary,
+  getCustomerProfile,
+  getTurnTrace,
+} from "../services/customerMemory.service.js";
+import { shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
 export interface InboundMessage {
@@ -69,7 +76,23 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   let language: "kk" | "ru" = storedLang || siteLanguageHint || "kk";
   let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
   let languageLocked = Boolean(storedLang);
-  if (!storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+  if (storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+    const decision = await detectLanguageDecision(languageCandidateText);
+    const previousCustomerText = [...chatHistory].reverse().find((entry: any) => {
+      const role = String(entry?.role || "").toLowerCase();
+      return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+    })?.text;
+    const previousLanguage = previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
+      ? detectLang(String(previousCustomerText))
+      : null;
+    if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language)) {
+      const switched = await replaceUserLang(instanceId, phone, decision.language).catch(() => false);
+      if (switched) {
+        language = decision.language;
+        languageDetector = decision.detector;
+      }
+    }
+  } else if (!storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
     const decision = await detectLanguageDecision(languageCandidateText);
     language = decision.language;
     languageDetector = decision.detector;
@@ -93,13 +116,20 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
   if (domain) safeConfig.domain = domain;
 
-  const [runtimeStatus, activeOrder, shporContext] = await Promise.all([
-    getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
-    domain
-      ? getOrderStatus(instanceId, phone, domain).catch(() => null)
-      : Promise.resolve(null),
-    getShporContext(instanceId, text).catch(() => []),
-  ]);
+  // Long-term memory is read in the same parallel batch as the live lookups, so
+  // it adds no measurable latency. Every read degrades to null on failure:
+  // memory enriches the answer, it must never be able to block one.
+  const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace] =
+    await Promise.all([
+      getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
+      domain
+        ? getOrderStatus(instanceId, phone, domain).catch(() => null)
+        : Promise.resolve(null),
+      getShporContext(instanceId, text).catch(() => []),
+      getCustomerProfile(instanceId, phone).catch(() => null),
+      getConversationSummary(instanceId, phone).catch(() => null),
+      getTurnTrace(instanceId, phone).catch(() => null),
+    ]);
 
   const runtimeAvailable = Boolean(runtimeStatus);
   const runtimeWaitTime = Number(
@@ -172,6 +202,9 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     mediaContext: input.mediaContext || null,
     shporContext,
     magicLinkAlreadySent,
+    customerProfile,
+    conversationSummary,
+    lastTurnTrace,
     explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
     magicLink: generateSecureMenuUrl(
       domain,

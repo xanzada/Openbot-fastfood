@@ -6,7 +6,7 @@ import { routeComplaintToAdmin } from "../services/complaintRouting.service.js";
 export function createEscalateToAdminSkill(ctx: FastFoodContext) {
   return createTool({
     name: "escalateToAdmin",
-    description: "Escalate a critical or uncertain case to the restaurant admin/operator.",
+    description: "Create a human operator case only for an explicit request to speak to a person, a genuine complaint/service incident, or unresolved fulfillment that requires human action. Missing menu, payment, address, or business data alone is not a reason to escalate.",
     parameters: z.object({
       reason: z.string(),
       customerReply: z.string(),

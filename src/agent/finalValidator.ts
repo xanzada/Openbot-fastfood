@@ -1,14 +1,26 @@
 import type { FastFoodContext } from "../context/types.js";
 
-const WAIT_SENTENCE_RE =
-  /[^.!?\n]*(?:\b(?:30|40|50|60|90|120)\s*(?:мин|минут|minute|min)\b|күту|кідіріс|күт|ожидан|задерж)[^.!?\n]*[.!?]?/giu;
+// Only an unverified CONCRETE duration is a factual violation. The old pattern
+// also matched the bare stem "күт", so every polite "күте тұрыңыз" / "бір минут"
+// sentence was deleted whenever wait_time was 0 - which is most of the time.
+// That single regex is what made replies read like a stripped-down machine.
+const WAIT_TIME_CLAIM_RE =
+  /[^.!?\n]*\d{1,3}\s*(?:мин|минут|minute|min|сағат|саг\.|час|часа|часов)[^.!?\n]*[.!?]?/giu;
+// Soft signal only: polite waiting language stays in the reply, it is just
+// reported in warnings so the audit log still shows it.
+const SOFT_WAIT_HINT_RE = /(күте тұр|күтіп тұр|күтіңіз|подожд|ожидай)/iu;
 const ORDER_STATUS_RE =
   /(тапсырысыңыз|заказыңыз|заказ|order).*(дайындалып|әзірленіп|курьер|жолда|жеткіз|аяқтал|готов|едет|достав|дайын|әзір|даяр)/iu;
+// Bare "дайын"/"готов"/"работает" appear in ordinary menu and order replies too,
+// so the kitchen guard now demands an explicit kitchen subject next to the
+// claim. Otherwise a correct answer got replaced by the canned kitchen line.
 const KITCHEN_STATUS_RE =
-  /(асүй|ас үй|кухн|kitchen|повар|cook|дайындал|готов|жұмыс істеп|жабық|closed|работает)/iu;
+  /(асүй|ас\s?үй|кухн|kitchen)[^.!?\n]{0,40}?(дайын|әзір|жұмыс|ашық|жабық|бос|істе|готов|работа|открыт|закрыт|загружен|busy|closed|open)/iu;
 const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІ]/u;
+// JavaScript's \\b is ASCII-based and misses Cyrillic boundaries, so the old
+// detector silently accepted a fully Russian answer in a Kazakh conversation.
 const RUSSIAN_SERVICE_WORD_RE =
-  /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ)\b/iu;
+  /(?:^|[^\p{L}])(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ|к сожалению|хотите)(?=$|[^\p{L}])/iu;
 const FORBIDDEN_FOREIGN_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bengali}\p{Script=Devanagari}\p{Script=Thai}]/u;
 const MENU_LINK_SENT_RE =
   /(алдыңғы сілтеме|предыдущ ссылк|ескі сілтеме|стара ссылка)/iu;
@@ -33,7 +45,24 @@ function sentenceCount(text: string): number {
   return sentences ? sentences.length : 1;
 }
 
-function enforceMaxSentences(text: string, max = 3): string {
+/**
+ * Removes only the sentences that make an unverifiable claim and keeps the rest
+ * of the reply intact. URLs are preserved, because a stripped clause must never
+ * cost the customer the link they asked for.
+ */
+function dropSentencesMatching(text: string, pattern: RegExp): string {
+  const urls = uniqueUrls(text);
+  const body = textWithoutUrls(text);
+  const sentences = body.match(/[^.!?\n]+[.!?]*/g) || [body];
+  const kept = sentences
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence && !new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")).test(sentence));
+  const rebuilt = kept.join(" ").replace(/\s{2,}/g, " ").trim();
+  if (!rebuilt) return "";
+  return urls.length ? `${rebuilt}\n${urls.join("\n")}` : rebuilt;
+}
+
+function enforceMaxSentences(text: string, max = 5): string {
   const urls = uniqueUrls(text);
   const trimmed = textWithoutUrls(text);
   if (!trimmed) return text;
@@ -56,10 +85,12 @@ function stripBotTags(text: string) {
     .trim();
 }
 
+// The prompt forbids emoji by default, yet the deterministic fallback shipped
+// one - so the single most frequently sent sentence contradicted the persona.
 function fallback(ctx: FastFoodContext) {
   return ctx.language === "kk"
-    ? "Қалай көмектесе аламын? 😊"
-    : "Как могу помочь? 😊";
+    ? "Тыңдап тұрмын, не қажет екенін жазыңыз."
+    : "Слушаю, напишите, что нужно.";
 }
 
 function noActiveOrderText(ctx: FastFoodContext) {
@@ -127,26 +158,56 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
     warnings.push("possible_russian_in_kazakh_reply");
   }
 
-  // Safety-critical factual guards remain deterministic.
+  // Safety-critical factual guards remain deterministic, but they now cut the
+  // offending clause instead of throwing away a whole useful answer. Replacing
+  // the entire reply with a canned line is what made the bot feel dead: one
+  // stale runtime read turned a good menu answer into "I cannot check that".
   if (!ctx.runtimeStatus || ctx.hardRealtimeContext?.stale) {
     if (KITCHEN_STATUS_RE.test(text)) {
-      return { text: runtimeUnavailableText(ctx), hasLink: false, warnings: [...warnings, "unsupported_kitchen_claim"] };
+      const withoutKitchenClaims = dropSentencesMatching(text, KITCHEN_STATUS_RE);
+      if (withoutKitchenClaims) {
+        text = withoutKitchenClaims;
+        warnings.push("unsupported_kitchen_claim_clause_removed");
+      } else {
+        return { text: runtimeUnavailableText(ctx), hasLink: false, warnings: [...warnings, "unsupported_kitchen_claim"] };
+      }
     }
   }
 
   const liveWaitTime = Number(ctx.fetchedSettings?.wait_time || 0);
   if (!liveWaitTime) {
-    if (WAIT_SENTENCE_RE.test(text)) warnings.push("unsupported_wait_claim_removed");
-    WAIT_SENTENCE_RE.lastIndex = 0;
-    text = text.replace(WAIT_SENTENCE_RE, "").replace(/\s{2,}/g, " ").trim();
+    WAIT_TIME_CLAIM_RE.lastIndex = 0;
+    const hasUnsupportedWaitClaim = WAIT_TIME_CLAIM_RE.test(text);
+    WAIT_TIME_CLAIM_RE.lastIndex = 0;
+    if (hasUnsupportedWaitClaim) {
+      const strippedTimeClaims = text.replace(WAIT_TIME_CLAIM_RE, "").replace(/\s{2,}/g, " ").trim();
+      // Never let the guard empty the whole reply. Before, a one-sentence answer
+      // that mentioned a duration was deleted down to nothing and the customer
+      // received the generic fallback instead of an answer.
+      if (strippedTimeClaims) {
+        text = strippedTimeClaims;
+        warnings.push("unsupported_wait_claim_removed");
+      } else {
+        warnings.push("unsupported_wait_claim_only_sentence");
+      }
+    }
+    if (SOFT_WAIT_HINT_RE.test(text)) warnings.push("polite_wait_phrase_kept");
   }
 
   if (!ctx.activeOrder && ORDER_STATUS_RE.test(text)) {
-    return { text: noActiveOrderText(ctx), hasLink: false, warnings: [...warnings, "unsupported_order_claim"] };
+    // Same principle as the kitchen guard: cut the false order claim, keep the
+    // rest of the answer. Only when nothing survives do we fall back to the
+    // deterministic "no active order" line.
+    const withoutOrderClaims = dropSentencesMatching(text, ORDER_STATUS_RE);
+    if (withoutOrderClaims) {
+      text = withoutOrderClaims;
+      warnings.push("unsupported_order_claim_clause_removed");
+    } else {
+      return { text: noActiveOrderText(ctx), hasLink: false, warnings: [...warnings, "unsupported_order_claim"] };
+    }
   }
 
   // Link integrity and duplicate suppression are transport contracts.
-  const hasLinkInText = hasLinkInResponse(text);
   const hasUnrequestedMenuLink = Boolean(
     ctx.magicLink
     && !ctx.explicitMenuLinkIntent
@@ -163,9 +224,14 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
 
   text = enforceExactMagicLink(text, ctx);
 
-  if (sentenceCount(text) > 3) {
-    text = enforceMaxSentences(text, 3);
-    warnings.push("reply_truncated_to_three_sentences");
+  // A hard three-sentence cut amputated real answers mid-thought ("here are the
+  // options, the price is X" lost the closing question). Brevity now belongs to
+  // the prompt; the validator only stops genuine runaway output.
+  const REPLY_MAX_SENTENCES = 5;
+  const REPLY_MAX_CHARS = 600;
+  if (sentenceCount(text) > REPLY_MAX_SENTENCES || textWithoutUrls(text).length > REPLY_MAX_CHARS) {
+    text = enforceMaxSentences(text, REPLY_MAX_SENTENCES);
+    warnings.push("reply_length_capped");
   }
 
   return { text: text || fallback(ctx), hasLink: hasLinkInResponse(text), warnings };

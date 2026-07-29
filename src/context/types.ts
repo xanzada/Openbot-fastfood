@@ -18,4 +18,9 @@ export interface FastFoodContext {
   magicLinkAlreadySent: boolean;
   explicitMenuLinkIntent: boolean;
   magicLink: string | null;
+  // Long-term memory. Optional so every existing caller, test, and smoke script
+  // keeps compiling and behaves exactly as before when Redis has nothing yet.
+  customerProfile?: Record<string, any> | null;
+  conversationSummary?: Record<string, any> | null;
+  lastTurnTrace?: Record<string, any> | null;
 }

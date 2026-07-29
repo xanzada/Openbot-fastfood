@@ -1,5 +1,13 @@
 export type CustomerLanguage = "kk" | "ru";
 
+export function shouldSwitchLockedLanguage(
+  lockedLanguage: CustomerLanguage,
+  previousCustomerLanguage: CustomerLanguage | null,
+  currentCustomerLanguage: CustomerLanguage
+) {
+  return currentCustomerLanguage !== lockedLanguage && previousCustomerLanguage === currentCustomerLanguage;
+}
+
 export function normalizeSiteLanguage(value: unknown): CustomerLanguage | null {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "ru") return "ru";

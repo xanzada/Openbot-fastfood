@@ -8,6 +8,7 @@ import {
   buildOperatorHandoffReply,
 } from "../src/services/complaintRouting.service.js";
 import { detectOperatorCaseKind } from "../src/services/operatorCase.service.js";
+import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 
 test("asking for a human is recognised and never mistaken for a complaint to investigate", () => {
   for (const text of ["оператор шақырыңыз", "адаммен сөйлескім келеді", "позовите оператора", "соедините с менеджером"]) {
@@ -34,6 +35,16 @@ test("a complaint that already names the problem goes straight to the operator",
   const detailed = "Тапсырысым суық келді, пицца жабысып қалған, 42 нөмірлі заказ";
   assert.equal(isLikelyComplaintText(detailed), true);
   assert.equal(complaintHasActionableDetail(detailed), true, "there is something an operator can act on");
+});
+
+test("an explicit late-order incident escalates before any status lookup", () => {
+  for (const text of ["Заказ опоздал на час", "Тапсырыс бір сағатқа кешікті"]) {
+    assert.equal(isLikelyComplaintText(text), true, text);
+    assert.equal(complaintHasActionableDetail(text), true, text);
+    const plan = resolveAgentToolPlan({ text } as any);
+    assert.equal(plan.requiredTools[0], "escalateToAdmin", text);
+    assert.equal(plan.requiredTools.includes("checkOrderStatus"), false, text);
+  }
 });
 
 test("a bare complaint earns one question first", () => {

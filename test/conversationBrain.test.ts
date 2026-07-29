@@ -62,18 +62,18 @@ test("tenant prompt is explicitly subordinate to core contracts", () => {
   assert.match(text, /instance_id: tenant-a/);
 });
 
-test("facts expose a balanced ten-message dialogue and preserve operator role", () => {
-  const history = Array.from({ length: 14 }, (_, index) => ({
+test("facts expose a balanced sixteen-message dialogue and preserve operator role", () => {
+  const history = Array.from({ length: 24 }, (_, index) => ({
     role: index === 9 ? "operator" : index % 2 ? "assistant" : "user",
     text: `message ${index}`,
     createdAt: 1000 + index,
   }));
   const compact = compactConversationHistory(history);
-  assert.equal(compact.length, 10);
-  assert.equal(compact.filter((entry) => entry.role === "user").length, 5);
-  assert.equal(compact.filter((entry) => entry.role === "assistant" || entry.role === "operator").length, 5);
+  assert.equal(compact.length, 16);
+  assert.equal(compact.filter((entry) => entry.role === "user").length, 8);
+  assert.equal(compact.filter((entry) => entry.role === "assistant" || entry.role === "operator").length, 8);
   assert.equal(compact.find((entry) => entry.text === "message 9")?.role, "operator");
-  assert.equal(compact[0].text, "message 4");
+  assert.equal(compact[0].text, "message 8");
 
   const prompt = buildFactsPrompt({
     language: "ru", languagePolicy: {}, instanceId: "tenant-a", config: { brand: "Prestige" },
@@ -82,9 +82,9 @@ test("facts expose a balanced ten-message dialogue and preserve operator role", 
     magicLink: "", chatHistory: history, shporContext: []
   } as any);
   const json = JSON.parse(prompt.split("FACTS_CONTEXT_START\n")[1].split("\nFACTS_CONTEXT_END")[0]);
-  assert.equal(json.recent_dialog.length, 10);
+  assert.equal(json.recent_dialog.length, 16);
   assert.equal(json.recent_dialog.find((entry: any) => entry.text === "message 9")?.role, "operator");
-  assert.match(json.conversation_policy, /up to 5 customer messages/);
+  assert.match(json.conversation_policy, /up to 8 customer and 8 business-side messages/);
   assert.equal(json.restaurant.brand, "Prestige");
   assert.equal(json.agent_identity.brand, "Prestige");
   assert.equal(json.agent_identity.role, "tenant_scoped_fast_food_service_agent");
@@ -105,11 +105,15 @@ test("long replies split only after complete sentences and never duplicate conte
   assert.ok(chunks.every((chunk) => /[.!?]$/.test(chunk)));
 });
 
-test("validator allows three natural sentences but truncates a fourth", () => {
+test("validator leaves a natural four-sentence answer alone but caps a sixth sentence", () => {
   const ctx = { language: "ru", text: "Привет", config: {}, fetchedSettings: {}, hardRealtimeContext: {}, runtimeStatus: null, activeOrder: null } as any;
-  const result = validateFinalText("Первое. Второе. Третье. Четвертое.", ctx);
-  assert.equal(result.text, "Первое. Второе. Третье.");
-  assert.deepEqual(result.warnings, ["reply_truncated_to_three_sentences"]);
+  const natural = validateFinalText("Первое. Второе. Третье. Четвертое.", ctx);
+  assert.equal(natural.text, "Первое. Второе. Третье. Четвертое.");
+  assert.deepEqual(natural.warnings, []);
+
+  const tooLong = validateFinalText("Первое. Второе. Третье. Четвертое. Пятое. Шестое.", ctx);
+  assert.equal(tooLong.text, "Первое. Второе. Третье. Четвертое. Пятое.");
+  assert.deepEqual(tooLong.warnings, ["reply_length_capped"]);
 });
 
 test("validator keeps useful mixed-language wording instead of replacing it with a stock fallback", () => {
@@ -168,18 +172,23 @@ test("multi-intent messages can require several independent live tools", () => {
   assert.deepEqual(result.requiredTools, ["getPaymentDetails", "searchMenu"]);
 });
 
-test("step policy forces required live tools once and then returns control to the model", () => {
+test("step policy pins only the first live tool and then returns control to the model", () => {
   const policy = createAgentStepPolicy({
     requiredTools: ["getPaymentDetails", "searchMenu"],
     reason: ["live_payment_details", "live_menu_lookup"],
   });
   assert.deepEqual(policy({ stepNumber: 0 }), {
-    activeTools: ["getPaymentDetails"],
     toolChoice: { type: "tool", toolName: "getPaymentDetails" },
   });
-  assert.deepEqual(policy({ stepNumber: 1 }), {
-    activeTools: ["searchMenu"],
-    toolChoice: { type: "tool", toolName: "searchMenu" },
-  });
-  assert.deepEqual(policy({ stepNumber: 2 }), { toolChoice: "none" });
+  assert.deepEqual(policy({ stepNumber: 1 }), { toolChoice: "auto" });
+  assert.deepEqual(policy({ stepNumber: 2 }), { toolChoice: "auto" });
+  assert.deepEqual(policy({ stepNumber: 3 }), { toolChoice: "auto" });
+  assert.deepEqual(policy({ stepNumber: 4 }), { toolChoice: "none" });
+  assert.deepEqual(policy({ stepNumber: 5 }), { toolChoice: "none" });
+});
+
+test("with no code-detected live intent the agent chooses its own tools from the first step", () => {
+  const policy = createAgentStepPolicy({ requiredTools: [], reason: [] });
+  assert.deepEqual(policy({ stepNumber: 0 }), { toolChoice: "auto" });
+  assert.deepEqual(policy({ stepNumber: 1 }), { toolChoice: "auto" });
 });
