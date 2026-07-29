@@ -58,8 +58,35 @@ services:
       - dokploy-network
       - default
 
+  backup:
+    build:
+      context: .
+      dockerfile: backup/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      BACKUP_ENABLED: ${BACKUP_ENABLED:-false}
+      BACKUP_SOURCE_NAME: openbot
+      BACKUP_GIT_URL: ${BACKUP_GIT_URL:-}
+      BACKUP_GIT_BRANCH_PREFIX: snapshot-openbot
+      BACKUP_SSH_PRIVATE_KEY_B64: ${BACKUP_SSH_PRIVATE_KEY_B64:-}
+      BACKUP_AGE_RECIPIENT_B64: ${BACKUP_AGE_RECIPIENT_B64:-}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-900}
+      REDIS_URL: redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379
+    volumes:
+      - backup_state:/work
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/backup-healthcheck"]
+      interval: 5m
+      timeout: 10s
+      retries: 4
+      start_period: 2m
+
 volumes:
   openbot_redis_data:
+  backup_state:
 
 networks:
   dokploy-network:
