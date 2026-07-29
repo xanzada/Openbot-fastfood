@@ -97,6 +97,7 @@ function operationalShiftNotes(ctx: FastFoodContext) {
 }
 
 export function buildFactsPrompt(ctx: FastFoodContext): string {
+  const brand = firstConfigText(ctx.config, "brand", "name", "restaurant_name", "restaurantName");
   return [
     "FACTS_CONTEXT_START",
     JSON.stringify(
@@ -114,12 +115,19 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         },
         restaurant: {
           instance_id: ctx.instanceId,
-          name: ctx.config.name,
+          name: brand,
+          brand,
+        },
+        agent_identity: {
+          role: "online_restaurant_representative",
+          brand,
+          channel: "whatsapp",
+          rule: "Represent this exact business naturally. If asked who you are, identify yourself as this brand's online assistant; never act like a generic FAQ bot.",
         },
         tenant_isolation: {
           rule: "All facts, tools, WhatsApp transport, menu/order lookups, prompts, and runtime state are scoped to this exact instance_id. Never use another restaurant's settings or assumptions.",
           instance_id: ctx.instanceId,
-      config_source: "whatspro_platform_by_instance",
+      config_source: "tenants_platform_by_instance",
         },
         tenant_config: compactTenantConfig(ctx.config),
         sender_meta: {

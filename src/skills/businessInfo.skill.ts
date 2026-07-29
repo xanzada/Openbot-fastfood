@@ -35,7 +35,7 @@ export function createGetBusinessInfoSkill(ctx: FastFoodContext) {
       const requested = fields?.length ? Array.from(new Set(fields)) : [...BUSINESS_INFO_FIELDS];
       const data = Object.fromEntries(requested.map((field) => [field, all[field]]));
       return {
-          source: "whatspro_platform_current_instance_allowlist",
+          source: "tenants_platform_current_instance_allowlist",
         instanceId: ctx.instanceId,
         data,
         unavailable: requested.filter((field) => !all[field]),

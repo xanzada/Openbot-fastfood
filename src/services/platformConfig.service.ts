@@ -46,7 +46,10 @@ function firstValue(...values: unknown[]) {
   return "";
 }
 
-function normalizeRestaurantConfig(record: Record<string, any> | null): Record<string, any> | null {
+export function normalizeRestaurantConfig(
+  record: Record<string, any> | null,
+  expectedInstanceId = ""
+): Record<string, any> | null {
   if (!record) return null;
   const devPhone = normalizePhone(
     record.dev_phone ||
@@ -56,6 +59,10 @@ function normalizeRestaurantConfig(record: Record<string, any> | null): Record<s
     process.env.OPENBOT_DEVELOPER_PHONE
   );
   const instanceId = String(firstValue(record.instance_id, record.instance, record.restaurant_instance, record.restaurantInstance)).trim();
+  const expected = String(expectedInstanceId || "").trim();
+  // Defense in depth: even a misrouted or stale platform response must never be
+  // cached under another tenant's key.
+  if (expected && instanceId !== expected) return null;
   const whatsAppPhone = normalizePhone(
     firstValue(
       record.whatsapp_phone,
@@ -79,7 +86,7 @@ function normalizeRestaurantConfig(record: Record<string, any> | null): Record<s
     bot_enabled: record.bot_enabled === undefined || record.bot_enabled === null ? true : Boolean(record.bot_enabled),
     whatsapp_phone: whatsAppPhone,
     work_hours: cleanString(firstValue(record.work_hours, record.workHours)),
-    brand: cleanString(firstValue(record.brand)),
+    brand: cleanString(firstValue(record.brand, record.name, record.restaurant_name, record.restaurantName)),
     address: cleanString(firstValue(record.address)),
     whatspro_base_url: firstValue(record.whatspro_base_url, record.whatsproBaseUrl, record.WHATSPRO_BASE_URL),
     whatspro_send_url: firstValue(record.whatspro_send_url, record.whatsproSendUrl, record.WHATSPRO_SEND_URL),
@@ -102,7 +109,8 @@ export async function isTenantBotEnabled(instanceId: string): Promise<boolean> {
       `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(safeInstanceId)}`,
       { headers: platformHeaders(), timeout: 5000 }
     );
-    const config = normalizeRestaurantConfig(response.data?.config || null);
+    const config = normalizeRestaurantConfig(response.data?.config || null, safeInstanceId);
+    if (!config) throw new Error("TENANTS_PLATFORM_TENANT_MISMATCH");
     const enabled = config?.bot_enabled !== false;
     const control = { enabled };
     await setJsonCache(key, 2, control);
@@ -168,12 +176,12 @@ function buildShporMemoryPayload(question: string, answer: string, args: Record<
 }
 
 function platformBaseUrl() {
-  return String(process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
+  return String(process.env.TENANTS_PLATFORM_BASE_URL || process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
 }
 
 function platformHeaders() {
-  const token = String(process.env.WHATSPRO_API_TOKEN || "").trim();
-  if (!platformBaseUrl() || !token) throw new Error("WhatsPro platform API is not configured");
+  const token = String(process.env.TENANTS_PLATFORM_API_TOKEN || process.env.WHATSPRO_API_TOKEN || "").trim();
+  if (!platformBaseUrl() || !token) throw new Error("Tenants platform API is not configured");
   return { authorization: `Bearer ${token}`, "content-type": "application/json" };
 }
 
@@ -189,7 +197,7 @@ export async function getRestaurantConfig(instanceId: string): Promise<Record<st
       `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(safeInstanceId)}`,
       { headers: platformHeaders(), timeout: 10000 }
     );
-    const config = normalizeRestaurantConfig(response.data?.config || null);
+    const config = normalizeRestaurantConfig(response.data?.config || null, safeInstanceId);
     if (config) {
       await setJsonCache(key, 300, config);
       await setJsonCache(backupKey, 604800, config);
@@ -300,24 +308,30 @@ function selectRelevantShpor(records: any[] = [], query = "", limit = SHPOR_CONT
 }
 
 export async function getShporContext(instanceId: string, query = ""): Promise<any[]> {
-  const cacheKey = `shpor_context_100:${instanceId}`;
+  const safeInstanceId = String(instanceId || "").trim();
+  if (!safeInstanceId) return [];
+  const cacheKey = `shpor_context_100:${safeInstanceId}`;
 
   const cached = await getJsonCache<any[]>(cacheKey);
   if (cached) return selectRelevantShpor(cached, query);
 
   try {
     const response = await axios.get(
-      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(instanceId)}/memories`,
+      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(safeInstanceId)}/memories`,
       {
       headers: platformHeaders(),
       timeout: 10000,
       }
     );
-    const records = Array.isArray(response.data?.memories) ? response.data.memories : [];
+    const records = Array.isArray(response.data?.memories)
+      ? response.data.memories.filter(
+          (item: any) => String(item?.instance_id || "").trim() === safeInstanceId
+        )
+      : [];
     await setJsonCache(cacheKey, 3600, records);
     return selectRelevantShpor(records, query);
   } catch (error: any) {
-    console.error(`[SHPOR] platform read failed (${instanceId}):`, error?.message || error);
+    console.error(`[SHPOR] platform read failed (${safeInstanceId}):`, error?.message || error);
     return [];
   }
 }
@@ -373,15 +387,17 @@ export async function saveToShpor(
   memoryPayload: Record<string, any> | null = null
 ): Promise<void> {
   try {
+    const safeInstanceId = String(instanceId || "").trim();
+    if (!safeInstanceId) return;
     if (!question || question.trim().length < 10) return;
     if (!answer || answer.trim().length < 10) return;
     if (question.toLowerCase().includes("сәлем") && question.length < 15) return;
     if (answer.toLowerCase().includes("жүйеде уақытша жүктеме") || answer.toLowerCase().includes("оператор көмегі")) return;
 
-    const allContext = await getShporContext(instanceId, "*");
+    const allContext = await getShporContext(safeInstanceId, "*");
     if (allContext.length >= 100) return;
     const currentContext = selectRelevantShpor(allContext, question);
-    const payload = buildShporSavePayload(instanceId, question, answer, category, memoryPayload);
+    const payload = buildShporSavePayload(safeInstanceId, question, answer, category, memoryPayload);
 
     const cleanNewQ = payload.question.toLowerCase().trim();
     const cleanNewA = payload.ideal_answer.toLowerCase().trim();
@@ -397,14 +413,14 @@ export async function saveToShpor(
     }
 
     await axios.post(
-      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(instanceId)}/memories`,
+      `${platformBaseUrl()}/api/wa/runtime-configs/${encodeURIComponent(safeInstanceId)}/memories`,
       payload,
       {
       headers: platformHeaders(),
       timeout: 10000,
       }
     );
-    await deleteCache(`shpor_context_100:${instanceId}`);
+    await deleteCache(`shpor_context_100:${safeInstanceId}`);
   } catch (error: any) {
     console.error("[SHPOR] save failed:", error?.message || error);
   }

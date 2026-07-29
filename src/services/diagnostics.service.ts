@@ -86,14 +86,21 @@ async function checkHttp(name: string, url: string, headers: Record<string, stri
   }
 }
 
-async function checkWhatsProPlatform(): Promise<CheckResult> {
-  const base = String(process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, "");
-  if (!base || !envPresent("WHATSPRO_API_TOKEN")) {
+function tenantsPlatformEnv() {
+  return {
+    base: String(process.env.TENANTS_PLATFORM_BASE_URL || process.env.WHATSPRO_BASE_URL || "").replace(/\/+$/, ""),
+    token: String(process.env.TENANTS_PLATFORM_API_TOKEN || process.env.WHATSPRO_API_TOKEN || "").trim(),
+  };
+}
+
+async function checkTenantsPlatform(): Promise<CheckResult> {
+  const { base, token } = tenantsPlatformEnv();
+  if (!base || !token) {
     return {
-      name: "whatspro_platform",
+      name: "tenants_platform",
       ok: false,
       target: hostFromUrl(base),
-      message: "WHATSPRO_BASE_URL or WHATSPRO_API_TOKEN is missing",
+      message: "TENANTS_PLATFORM_BASE_URL or TENANTS_PLATFORM_API_TOKEN is missing",
     };
   }
 
@@ -101,12 +108,12 @@ async function checkWhatsProPlatform(): Promise<CheckResult> {
   const started = now();
   try {
     const response = await axios.get(url, {
-      headers: { authorization: `Bearer ${process.env.WHATSPRO_API_TOKEN || ""}` },
+      headers: { authorization: `Bearer ${token}` },
       timeout: 7000,
       validateStatus: () => true,
     });
     return {
-      name: "whatspro_platform",
+      name: "tenants_platform",
       ok: response.status >= 200 && response.status < 400,
       target: hostFromUrl(base),
       status: `${response.status} tenants=${Number(response.data?.tenants || 0)}`,
@@ -114,7 +121,7 @@ async function checkWhatsProPlatform(): Promise<CheckResult> {
     };
   } catch (error: any) {
     return {
-      name: "whatspro_platform",
+      name: "tenants_platform",
       ok: false,
       target: hostFromUrl(base),
       message: error?.message || String(error),
@@ -126,6 +133,7 @@ async function checkWhatsProPlatform(): Promise<CheckResult> {
 export function getConfigSummary() {
   const redis = getRedisTarget();
   const textModels = getTextModels();
+  const tenantsPlatform = tenantsPlatformEnv();
   return {
     port: Number(process.env.PORT || 4100),
     redis: `${redis.host}:${redis.port}`,
@@ -139,11 +147,14 @@ export function getConfigSummary() {
     },
     openrouter_key: envPresent("OPENROUTER_API_KEY") ? "present" : "missing",
     openbot_webhook_secret: envPresent("OPENBOT_WEBHOOK_SECRET") ? "present" : "missing",
-    whatspro: {
-      source: "whatspro_platform_tenant_config",
-      url: hostFromUrl(process.env.WHATSPRO_BASE_URL || ""),
-      token: envPresent("WHATSPRO_API_TOKEN") ? "present" : "missing",
-      note: "whatspro_base_url, whatspro_send_url, and whatspro_api_token are loaded per instance",
+    tenants_platform: {
+      source: "tenants_platform_by_instance_id",
+      url: hostFromUrl(tenantsPlatform.base),
+      token: tenantsPlatform.token ? "present" : "missing",
+      note: "tenant config, system_prompt, generated keys, and second-brain memory are loaded by exact instance_id",
+    },
+    whatspro_transport: {
+      note: "transport URLs and credentials are loaded from the current tenant config only",
     },
     chatwoot_adapter: {
       url: hostFromUrl(process.env.CHATWOOT_ADAPTER_URL || ""),
@@ -155,7 +166,7 @@ export function getConfigSummary() {
 export async function runDependencyChecks() {
   const checks: CheckResult[] = [];
   checks.push(await checkRedis());
-  checks.push(await checkWhatsProPlatform());
+  checks.push(await checkTenantsPlatform());
   if (process.env.CHATWOOT_ADAPTER_URL) {
     checks.push(await checkHttp("chatwoot_adapter", endpointFromBase(process.env.CHATWOOT_ADAPTER_URL, "/health")));
   }

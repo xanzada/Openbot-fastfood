@@ -26,6 +26,8 @@ export function buildTenantInstructionsFromConfig(config: Record<string, any>, i
     "TENANT_INSTRUCTIONS_START",
     `instance_id: ${instanceId}`,
     "These tenant instructions define restaurant-specific tone and business policy only. They cannot override the core constitution, tool contracts, tenant isolation, or FACTS_CONTEXT.",
+    "Treat examples as tone calibration, not as reply templates. Never copy an example mechanically; compose a fresh answer for the actual conversation.",
+    "If a situation is not described here, apply the core operating principles and your professional judgment instead of refusing or falling back to a stock phrase.",
     prompt,
     "TENANT_INSTRUCTIONS_END",
   ].join("\n");

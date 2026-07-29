@@ -10,18 +10,6 @@ const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІ]/u;
 const RUSSIAN_SERVICE_WORD_RE =
   /\b(вы|ваш|ваша|можете|пожалуйста|заказ|меню|ссылка|оплата|доставка|сейчас|если|для|через|оператор|админ)\b/iu;
 const FORBIDDEN_FOREIGN_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bengali}\p{Script=Devanagari}\p{Script=Thai}]/u;
-const OTHER_CITY_DELIVERY_RE =
-  /(зачаганск|зашаған|зачаган|zachagansk|zachagan|zashaған|басқа\s+қала|баска\s+кала|другой\s+город|в\s+другой\s+город)/iu;
-const MENU_TOPIC_RE =
-  /(мәзір|меню|menu|бар ма|барма|каталог|catalog|пицц|бургер|донер|шаурм|салат|суп|напит|десерт|комбо|сеты|ассортимент|не бар|что есть|прайс|баға|цена|сколько стоит|қанша тұра|қанша тура|прейскурант)/iu;
-const PAYMENT_TOPIC_RE =
-  /(төлем|оплат|kaspi|halyk|карт|реквизит|перевод|аудар|чек|receipt|қолма-қол|налич)/iu;
-const DELIVERY_TOPIC_RE =
-  /(жеткіз|достав|курьер|courier|jetkiz|aparyp|алып кел)/iu;
-const ORDER_TOPIC_RE =
-  /(тапсырыс|заказ|order|статус|status|қашан бола|когда будет|дайын ба|готов ли)/iu;
-const BONUS_TOPIC_RE =
-  /(бонус|скидк|жеңілд|акци|promo|промо|жарна|купон)/iu;
 const MENU_LINK_SENT_RE =
   /(алдыңғы сілтеме|предыдущ ссылк|ескі сілтеме|стара ссылка)/iu;
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
@@ -86,77 +74,6 @@ function runtimeUnavailableText(ctx: FastFoodContext) {
     : "Не могу проверить статус кухни. Напишите позже.";
 }
 
-function deliveryAreaText(ctx: FastFoodContext, areas: string[]) {
-  if (ctx.language === "ru") {
-    return areas.length
-      ? `Да, доставка есть. Зоны: ${areas.join(", ")}.`
-      : "Да, доставка есть.";
-  }
-  return areas.length
-    ? `Иә, жеткізу бар. Аймақтар: ${areas.join(", ")}.`
-    : "Иә, жеткізу бар.";
-}
-
-function asksDelivery(text = "") {
-  const ascii = String(text || "").toLowerCase();
-  if (/(delivery|dostavka|kurier|courier|jetkizu|zhetkizu|alyp\s+kel|aparyp|aparyp\s+ber)/i.test(ascii)) return true;
-  return /(доставка|курьер|жеткізу|жетк[іi]з|апарып|алып кел)/iu.test(String(text || ""));
-}
-
-function normalizeAreaList(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
-  if (value && typeof value === "object") return Object.values(value).map((item) => String(item || "").trim()).filter(Boolean);
-  return String(value || "")
-    .split(/[,;\n]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function getConfiguredDeliveryAreas(config: Record<string, any> = {}) {
-  return normalizeAreaList(
-    config.delivery_areas ||
-      config.delivery_area ||
-      config.delivery_zones ||
-      config.delivery_zone ||
-      config.delivery_districts ||
-      config.delivery_locations
-  ).slice(0, 12);
-}
-
-function buildDeliveryAreaReply(ctx: FastFoodContext) {
-  if (!asksDelivery(ctx.text)) return "";
-
-  if (OTHER_CITY_DELIVERY_RE.test(String(ctx.text || ""))) {
-    return ctx.language === "ru"
-      ? "Извините, в другой город доставку не обещаем."
-      : "Кешіріңіз, басқа қалаға жеткізе алмаймыз.";
-  }
-
-  const areas = getConfiguredDeliveryAreas(ctx.config);
-  if (areas.length) return deliveryAreaText(ctx, areas);
-
-  const deliveryInfo = String(ctx.config.delivery_info || ctx.config.delivery_terms || "").trim();
-  if (deliveryInfo && ctx.runtimeStatus?.is_accepting_orders !== false && ctx.runtimeStatus?.delivery === true) {
-    return deliveryInfo;
-  }
-
-  if (ctx.runtimeStatus && ctx.runtimeStatus.is_accepting_orders !== false && ctx.runtimeStatus.delivery === true) {
-    return deliveryAreaText(ctx, []);
-  }
-
-  return "";
-}
-
-function isOnlyMenuQuestion(text: string): boolean {
-  const t = String(text || "").toLowerCase();
-  const hasMenu = MENU_TOPIC_RE.test(t);
-  const hasPayment = PAYMENT_TOPIC_RE.test(t);
-  const hasDelivery = DELIVERY_TOPIC_RE.test(t);
-  const hasOrder = ORDER_TOPIC_RE.test(t);
-  const hasBonus = BONUS_TOPIC_RE.test(t);
-  return hasMenu && !hasPayment && !hasDelivery && !hasOrder && !hasBonus;
-}
-
 function hasLinkInResponse(text: string): boolean {
   return uniqueUrls(text).length > 0;
 }
@@ -186,75 +103,63 @@ function enforceExactMagicLink(text: string, ctx: FastFoodContext): string {
   });
 }
 
-function removeUnrelatedSentences(text: string, keepPattern: RegExp): string {
-  const sentences = text.match(/[^.!?]*[.!?]+/g) || [text];
-  const kept = sentences.filter((s) => keepPattern.test(s));
-  return kept.length > 0 ? kept.join(" ").trim() : text;
-}
-
 export function validateFinalText(rawText: string, ctx: FastFoodContext): {
   text: string;
   hasLink: boolean;
+  warnings: string[];
 } {
   let text = stripBotTags(String(rawText || "").trim());
+  const warnings: string[] = [];
 
-  if (!text) return { text: fallback(ctx), hasLink: false };
+  if (!text) return { text: fallback(ctx), hasLink: false, warnings: ["empty_model_output"] };
 
-  // 1. Delivery area check — must run before any other processing
-  const deliveryAreaReply = buildDeliveryAreaReply(ctx);
-  if (deliveryAreaReply) return { text: deliveryAreaReply, hasLink: false };
-
-  // 2. Language purity check
+  // Foreign-script corruption is a transport/model failure, not a style issue.
   if (FORBIDDEN_FOREIGN_SCRIPT_RE.test(text)) {
-    return { text: fallback(ctx), hasLink: false };
+    return { text: fallback(ctx), hasLink: false, warnings: ["foreign_script_output"] };
   }
+  // Mixed-language heuristics are diagnostic only. Product and brand names often
+  // legitimately cross the language boundary, so replacing the whole answer with
+  // a generic phrase destroyed otherwise useful replies.
   if (ctx.language === "ru" && KAZAKH_SPECIFIC_RE.test(text)) {
-    return { text: fallback(ctx), hasLink: false };
+    warnings.push("possible_kazakh_in_russian_reply");
   }
   if (ctx.language === "kk" && RUSSIAN_SERVICE_WORD_RE.test(text)) {
-    return { text: fallback(ctx), hasLink: false };
+    warnings.push("possible_russian_in_kazakh_reply");
   }
 
-  // 3. Runtime unavailable → block kitchen mentions
+  // Safety-critical factual guards remain deterministic.
   if (!ctx.runtimeStatus || ctx.hardRealtimeContext?.stale) {
     if (KITCHEN_STATUS_RE.test(text)) {
-      return { text: runtimeUnavailableText(ctx), hasLink: false };
+      return { text: runtimeUnavailableText(ctx), hasLink: false, warnings: [...warnings, "unsupported_kitchen_claim"] };
     }
   }
 
-  // 4. Wait time = 0 → strip wait sentences
   const liveWaitTime = Number(ctx.fetchedSettings?.wait_time || 0);
   if (!liveWaitTime) {
+    if (WAIT_SENTENCE_RE.test(text)) warnings.push("unsupported_wait_claim_removed");
+    WAIT_SENTENCE_RE.lastIndex = 0;
     text = text.replace(WAIT_SENTENCE_RE, "").replace(/\s{2,}/g, " ").trim();
   }
 
-  // 5. No active order → strip order status mentions
   if (!ctx.activeOrder && ORDER_STATUS_RE.test(text)) {
-    return { text: noActiveOrderText(ctx), hasLink: false };
+    return { text: noActiveOrderText(ctx), hasLink: false, warnings: [...warnings, "unsupported_order_claim"] };
   }
 
-  // 6. Menu-only question → strip unrelated topics
-  if (isOnlyMenuQuestion(ctx.text)) {
-    if (PAYMENT_TOPIC_RE.test(text) || DELIVERY_TOPIC_RE.test(text) || BONUS_TOPIC_RE.test(text)) {
-      text = removeUnrelatedSentences(text, MENU_TOPIC_RE);
-      if (!text) return { text: fallback(ctx), hasLink: false };
-    }
-  }
-
-  // 7. Magic link dedup — if already sent and no explicit intent, strip link
+  // Link integrity and duplicate suppression are transport contracts.
   const hasLinkInText = hasLinkInResponse(text);
   if (ctx.magicLinkAlreadySent && !ctx.explicitMenuLinkIntent && hasLinkInText) {
     text = text.replace(URL_RE, "").replace(/\s{2,}/g, " ").trim();
-    if (MENU_LINK_SENT_RE.test(text)) return { text: text || fallback(ctx), hasLink: false };
-    return { text: text || fallback(ctx), hasLink: false };
+    warnings.push("duplicate_menu_link_removed");
+    if (MENU_LINK_SENT_RE.test(text)) return { text: text || fallback(ctx), hasLink: false, warnings };
+    return { text: text || fallback(ctx), hasLink: false, warnings };
   }
 
   text = enforceExactMagicLink(text, ctx);
 
-  // 8. Keep WhatsApp replies concise while allowing one natural clarification/detail sentence.
   if (sentenceCount(text) > 3) {
     text = enforceMaxSentences(text, 3);
+    warnings.push("reply_truncated_to_three_sentences");
   }
 
-  return { text: text || fallback(ctx), hasLink: hasLinkInResponse(text) };
+  return { text: text || fallback(ctx), hasLink: hasLinkInResponse(text), warnings };
 }

@@ -686,7 +686,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const textModels = getTextModels();
     console.log(`[OPENBOT:AI] generating provider=openrouter primary=${textModels.primary} fallback=${textModels.fallback}`);
     const result = await runFastFoodAgent(ctx);
-    console.log(`[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"} link=${result.hasLink}`);
+    console.log(
+      `[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"} link=${result.hasLink}` +
+      ` planned_tools=${result.toolPlan.requiredTools.join(",") || "auto"}` +
+      ` called_tools=${result.toolCalls.map((call: { name: string }) => call.name).join(",") || "none"}` +
+      ` validator=${result.validationWarnings.join(",") || "clean"}`
+    );
 
     const rawAiText = String(result.rawText || result.text || "");
     const needsDeveloperEscalation = hasEscalateDeveloperSignal(rawAiText) || hasEscalateDeveloperSignal(result.text);
