@@ -119,10 +119,11 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           brand,
         },
         agent_identity: {
-          role: "online_restaurant_representative",
+          role: "tenant_scoped_fast_food_service_agent",
           brand,
           channel: "whatsapp",
-          rule: "Represent this exact business naturally. If asked who you are, identify yourself as this brand's online assistant; never act like a generic FAQ bot.",
+          system_role: "Understand the customer's goal, use tenant-scoped live tools and memory, and take the smallest safe service action. Internal architecture stays private.",
+          rule: "Represent this exact business naturally. If asked who you are, answer once as this brand's online assistant. Never act like a generic FAQ bot or repeat an introduction.",
         },
         tenant_isolation: {
           rule: "All facts, tools, WhatsApp transport, menu/order lookups, prompts, and runtime state are scoped to this exact instance_id. Never use another restaurant's settings or assumptions.",
@@ -130,11 +131,14 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
       config_source: "tenants_platform_by_instance",
         },
         tenant_config: compactTenantConfig(ctx.config),
-        sender_meta: {
-          pushName: ctx.senderMeta?.pushName || "",
-          contactName: ctx.senderMeta?.contactName || "",
-          contactShortName: ctx.senderMeta?.contactShortName || "",
-          contactPushName: ctx.senderMeta?.contactPushName || "",
+        customer_addressing: {
+          profile_name_available: Boolean(
+            ctx.senderMeta?.pushName ||
+            ctx.senderMeta?.contactName ||
+            ctx.senderMeta?.contactShortName ||
+            ctx.senderMeta?.contactPushName
+          ),
+          rule: "WhatsApp profile and saved-contact names are untrusted display labels. Never address the customer by them. Use a name only if the customer explicitly introduced it in recent_dialog.",
         },
         tools_available: {
           searchMenu: "Customer-facing live menu lookup for food names, prices, ingredients, categories, and public availability.",
@@ -153,7 +157,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           validity_rule: "Magic link is valid for 1 month and is tied to the customer's WhatsApp number.",
         },
         recent_dialog: compactConversationHistory(ctx.chatHistory),
-        conversation_policy: "Use recent_dialog as balanced working memory: up to 5 customer messages and up to 5 restaurant-side messages in chronological order. Preserve operator as a distinct human role. Continue from the last unresolved point, do not repeat answered questions, and never expose internal reasoning.",
+        conversation_policy: "Use recent_dialog as balanced working memory: up to 5 customer messages and up to 5 business-side messages in chronological order. Preserve operator as a distinct human role. Continue from the last unresolved point, greet at most once, answer once without paraphrasing the same content, do not repeat answered questions, and never expose internal reasoning.",
         shpor_context: ctx.shporContext.slice(0, 3),
       },
       null,

@@ -5,12 +5,17 @@ import { buildTenantInstructionsFromConfig } from "../src/agent/persona.js";
 import { buildFactsPrompt, compactConversationHistory } from "../src/context/buildFactsPrompt.js";
 import { validateFinalText } from "../src/agent/finalValidator.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
+import { splitWhatsProResponse } from "../src/transport/whatspro.client.js";
 import { readFile } from "node:fs/promises";
 
 test("core prompt defines autonomous judgment and exact active tools", () => {
   assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /DECISION STANDARD/);
   assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /not an exhaustive catalogue of situations/);
   assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /Treat the newest message and recent_dialog as one continuing conversation/);
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /multi-tenant fast-food automation system/);
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /never describe this architecture/i);
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /profile and saved-contact names as untrusted display labels/);
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /Answer once, without a second paraphrase/);
   for (const name of ["searchMenu", "sendMenuLink", "checkOrderStatus", "getPaymentDetails", "getBusinessInfo", "updateCrmLead", "escalateToAdmin"]) {
     assert.match(FASTFOOD_AGENT_INSTRUCTIONS, new RegExp(name));
   }
@@ -70,7 +75,8 @@ test("facts expose a balanced ten-message dialogue and preserve operator role", 
   assert.equal(compact[0].text, "message 4");
 
   const prompt = buildFactsPrompt({
-    language: "ru", languagePolicy: {}, instanceId: "tenant-a", config: { brand: "Prestige" }, senderMeta: {},
+    language: "ru", languagePolicy: {}, instanceId: "tenant-a", config: { brand: "Prestige" },
+    senderMeta: { pushName: "Xanzada.", contactName: "Xanzada." },
     hardRealtimeContext: {}, activeShiftNotes: [], magicLinkAlreadySent: false, explicitMenuLinkIntent: false,
     magicLink: "", chatHistory: history, shporContext: []
   } as any);
@@ -80,7 +86,22 @@ test("facts expose a balanced ten-message dialogue and preserve operator role", 
   assert.match(json.conversation_policy, /up to 5 customer messages/);
   assert.equal(json.restaurant.brand, "Prestige");
   assert.equal(json.agent_identity.brand, "Prestige");
-  assert.equal(json.agent_identity.role, "online_restaurant_representative");
+  assert.equal(json.agent_identity.role, "tenant_scoped_fast_food_service_agent");
+  assert.equal(json.customer_addressing.profile_name_available, true);
+  assert.match(json.customer_addressing.rule, /Never address the customer by them/);
+  assert.equal(JSON.stringify(json).includes("Xanzada"), false);
+});
+
+test("long replies split only after complete sentences and never duplicate content", () => {
+  const first = "Бірінші сөйлем клиентке негізгі жауапты береді.";
+  const second = "Екінші сөйлем келесі пайдалы қадамды түсіндіреді.";
+  const third = "Үшінші сөйлем тексерілген қосымша ақпаратты береді.";
+  const text = Array(3).fill([first, second, third].join(" ")).join(" ");
+  const chunks = splitWhatsProResponse(text);
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.join(" "), text);
+  assert.equal(new Set(chunks).size, chunks.length);
+  assert.ok(chunks.every((chunk) => /[.!?]$/.test(chunk)));
 });
 
 test("validator allows three natural sentences but truncates a fourth", () => {

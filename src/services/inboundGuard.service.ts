@@ -9,7 +9,7 @@ const SPAM_LIMIT = Number(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE || 15);
 const MUTE_SECONDS = Number(process.env.OPENBOT_SPAM_MUTE_SECONDS || 900);
 const DUPLICATE_TEXT_SECONDS = 5;
 const INBOUND_BUFFER_SECONDS = 5;
-const INBOUND_BUFFER_DELAY_MS = Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 1200);
+const INBOUND_BUFFER_DELAY_MS = Math.max(600, Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 2400));
 const INBOUND_BUFFER_MAX_ITEMS = 8;
 const INBOUND_BUFFER_MAX_CHARS = 2000;
 const PROCESSING_LOCK_SECONDS = 180;
@@ -33,6 +33,11 @@ const localProcessing = new Map<string, number>();
 const localDuplicateText = new Map<string, { hash: string; expiresAt: number }>();
 const localSpam = new Map<string, { count: number; windowEndsAt: number; mutedUntil: number }>();
 const localMediaQuota = new Map<string, { count: number; windowEndsAt: number }>();
+const localInboundBuffers = new Map<string, {
+  items: Array<{ token: string; text: string }>;
+  latestToken: string;
+  expiresAt: number;
+}>();
 
 function localKey(instanceId: string, value: string) {
   return `${instanceId}:${value}`;
@@ -46,6 +51,7 @@ function pruneLocalGuardState(now = Date.now()) {
     if (item.windowEndsAt <= now && item.mutedUntil <= now) localSpam.delete(key);
   }
   for (const [key, item] of localMediaQuota) if (item.windowEndsAt <= now) localMediaQuota.delete(key);
+  for (const [key, item] of localInboundBuffers) if (item.expiresAt <= now) localInboundBuffers.delete(key);
 }
 
 function guardIncomingMessageInMemory(instanceId: string, phone: string, text: string, messageId: string): GuardResult {
@@ -772,7 +778,23 @@ export async function bufferInboundText(input: { instanceId: string; phone: stri
     const parts = rows.map((row) => { try { return String(JSON.parse(row)?.text || "").trim(); } catch { return ""; } }).filter(Boolean);
     return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS) };
   } catch {
-    return { leader: true, text };
+    const now = Date.now();
+    pruneLocalGuardState(now);
+    const key = localKey(instanceId, phone);
+    const current = localInboundBuffers.get(key) || { items: [], latestToken: "", expiresAt: 0 };
+    current.items.push({ token, text });
+    current.items = current.items.slice(-INBOUND_BUFFER_MAX_ITEMS);
+    current.latestToken = token;
+    current.expiresAt = now + INBOUND_BUFFER_SECONDS * 1000;
+    localInboundBuffers.set(key, current);
+    await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+    const latest = localInboundBuffers.get(key);
+    if (!latest || latest.latestToken !== token) return { leader: false, text: "" };
+    localInboundBuffers.delete(key);
+    return {
+      leader: true,
+      text: latest.items.map((item) => item.text).filter(Boolean).join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS),
+    };
   }
 }
 

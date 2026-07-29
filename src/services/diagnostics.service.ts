@@ -148,6 +148,15 @@ export function getConfigSummary() {
     },
     openrouter_key: envPresent("OPENROUTER_API_KEY") ? "present" : "missing",
     openbot_webhook_secret: envPresent("OPENBOT_WEBHOOK_SECRET") ? "present" : "missing",
+    runtime_controls: {
+      test_mode: String(process.env.TEST_MODE_ENABLED || "false").trim().toLowerCase() === "true",
+      developer_phone: envPresent("OPENBOT_DEVELOPER_PHONE") ? "present" : "missing",
+      receipt_ai_filter: !["false", "0", "off", "no"].includes(
+        String(process.env.RECEIPT_AI_FILTER_ENABLED ?? "true").trim().toLowerCase()
+      ),
+      inbound_buffer_ms: Math.max(600, Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 2400)),
+      response_chunk_max: Math.max(180, Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 320)),
+    },
     tenants_platform: {
       source: "tenants_platform_by_instance_id",
       url: hostFromUrl(tenantsPlatform.base),

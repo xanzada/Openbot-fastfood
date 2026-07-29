@@ -6,7 +6,7 @@ import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import crypto from "node:crypto";
 import { connectRedis, redisClient, scanKeys } from "../services/redis.service.js";
 
-const RESPONSE_CHUNK_MAX = Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 650);
+const RESPONSE_CHUNK_MAX = Math.max(180, Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 320));
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 const volatileOutbox = new Map<string, WhatsProOutboxRecord>();
 let outboxTimer: ReturnType<typeof setInterval> | null = null;
@@ -94,7 +94,7 @@ function delay(ms: number) {
 }
 
 function randomTypingDelayMs() {
-  return 1500 + Math.floor(Math.random() * 1500);
+  return 900 + Math.floor(Math.random() * 1400);
 }
 
 function pushSized(chunks: string[], value = "") {
@@ -108,10 +108,11 @@ function pushSized(chunks: string[], value = "") {
   const sentences = text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [text];
   let current = "";
   for (const sentence of sentences) {
-    const next = `${current} ${sentence}`.trim();
+    const cleanSentence = sentence.trim();
+    const next = `${current} ${cleanSentence}`.trim();
     if (next.length > RESPONSE_CHUNK_MAX && current) {
       chunks.push(current);
-      current = sentence.trim();
+      current = cleanSentence;
     } else {
       current = next;
     }
