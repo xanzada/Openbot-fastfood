@@ -6,7 +6,7 @@ import { getRestaurantConfig, getShporContext } from "../services/platformConfig
 import { connectRedis, getActiveShiftNotes, getChatHistory, getSiteLanguageHint, getUserLang, hasMagicLinkBeenSent, replaceUserLang, saveUserLang, } from "../services/redis.service.js";
 import { getConversationSummary, getCustomerProfile, getTurnTrace, } from "../services/customerMemory.service.js";
 import { getActiveGoal } from "../services/goalTracker.service.js";
-import { shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
+import { resolveOrganicLanguage, shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
 function firstValue(...values) {
     for (const value of values) {
         if (value !== undefined && value !== null && String(value).trim() !== "")
@@ -41,7 +41,11 @@ export async function preloadContext(input) {
     let language = storedLang || siteLanguageHint || "kk";
     let languageDetector = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
     let languageLocked = Boolean(storedLang);
-    if (storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+    // The 24-hour language lock belongs to guests who arrived through the site:
+    // the site already told us their language. A guest who wrote straight to
+    // WhatsApp gets their language resolved again on every message instead.
+    const siteOriginated = Boolean(siteLanguageHint);
+    if (siteOriginated && storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
         const decision = await detectLanguageDecision(languageCandidateText);
         const previousCustomerText = [...chatHistory].reverse().find((entry) => {
             const role = String(entry?.role || "").toLowerCase();
@@ -58,7 +62,7 @@ export async function preloadContext(input) {
             }
         }
     }
-    else if (!storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+    else if (siteOriginated && !storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
         const decision = await detectLanguageDecision(languageCandidateText);
         language = decision.language;
         languageDetector = decision.detector;
@@ -88,6 +92,32 @@ export async function preloadContext(input) {
                 languageLocked = true;
             }
         }
+    }
+    else {
+        const decision = isLanguageBearingCustomerText(languageCandidateText)
+            ? await detectLanguageDecision(languageCandidateText)
+            : null;
+        const previousCustomerText = [...chatHistory].reverse().find((entry) => {
+            const role = String(entry?.role || "").toLowerCase();
+            return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+        })?.text;
+        const priorLanguage = storedLang
+            || (previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
+                ? detectLang(String(previousCustomerText))
+                : null);
+        const resolved = resolveOrganicLanguage({
+            detected: decision?.lockable ? decision.language : null,
+            priorLanguage,
+            contactName: firstValue(input.senderMeta?.pushName, input.senderMeta?.contactName, input.senderMeta?.contactShortName, input.senderMeta?.contactPushName),
+            siteLanguageHint,
+        });
+        language = resolved.language;
+        languageDetector =
+            resolved.source === "message" ? (decision?.detector || "gemini")
+                : resolved.source === "history" ? "redis_lock"
+                    : resolved.source === "site_hint" ? "site_hint"
+                        : "fallback";
+        languageLocked = false;
     }
     const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
     if (domain)

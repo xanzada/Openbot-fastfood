@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { detectLanguageDecision, detectLang, parseGeminiLanguageDecision } from "../src/utils/language.js";
-import { shouldSwitchLockedLanguage } from "../src/services/languagePolicy.service.js";
+import { detectNameLanguage, resolveOrganicLanguage, shouldSwitchLockedLanguage } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
 // regex cannot see it, which is why a failed classification must never be
@@ -73,4 +73,51 @@ test("a malformed classifier reply is rejected rather than half-read", () => {
     language: "kk",
     confidence: 0.8,
   });
+});
+
+// A guest who never came through the site has no saved language. Their turn is
+// resolved again every time, so the language question can never get stuck.
+test("a contact name decides the language when the message carries no signal", () => {
+  assert.equal(detectNameLanguage("Айгүл"), "kk");
+  assert.equal(detectNameLanguage("Нурбек"), "kk");
+  assert.equal(detectNameLanguage("Александр"), "ru");
+  assert.equal(detectNameLanguage("Иванов"), "ru");
+  assert.equal(detectNameLanguage("+7 747"), null);
+});
+
+test("what the guest just wrote outranks their name and their history", () => {
+  const resolved = resolveOrganicLanguage({
+    detected: "ru",
+    priorLanguage: "kk",
+    contactName: "Айгүл",
+    siteLanguageHint: "kk",
+  });
+  assert.equal(resolved.language, "ru");
+  assert.equal(resolved.source, "message");
+});
+
+test("a returning guest keeps their usual language when a turn says nothing", () => {
+  const resolved = resolveOrganicLanguage({
+    detected: null,
+    priorLanguage: "ru",
+    contactName: "Айгүл",
+    siteLanguageHint: "kk",
+  });
+  assert.equal(resolved.language, "ru");
+  assert.equal(resolved.source, "history");
+});
+
+test("a brand new guest falls back to the name, then the site, then Kazakh", () => {
+  assert.deepEqual(
+    resolveOrganicLanguage({ detected: null, priorLanguage: null, contactName: "Сергей", siteLanguageHint: "kk" }),
+    { language: "ru", source: "contact_name" }
+  );
+  assert.deepEqual(
+    resolveOrganicLanguage({ detected: null, priorLanguage: null, contactName: "", siteLanguageHint: "ru" }),
+    { language: "ru", source: "site_hint" }
+  );
+  assert.deepEqual(
+    resolveOrganicLanguage({ detected: null, priorLanguage: null, contactName: "", siteLanguageHint: null }),
+    { language: "kk", source: "default" }
+  );
 });

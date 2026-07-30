@@ -19,7 +19,7 @@ import {
   getTurnTrace,
 } from "../services/customerMemory.service.js";
 import { getActiveGoal } from "../services/goalTracker.service.js";
-import { shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
+import { resolveOrganicLanguage, shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
 export interface InboundMessage {
@@ -77,7 +77,11 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   let language: "kk" | "ru" = storedLang || siteLanguageHint || "kk";
   let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
   let languageLocked = Boolean(storedLang);
-  if (storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+  // The 24-hour language lock belongs to guests who arrived through the site:
+  // the site already told us their language. A guest who wrote straight to
+  // WhatsApp gets their language resolved again on every message instead.
+  const siteOriginated = Boolean(siteLanguageHint);
+  if (siteOriginated && storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
     const decision = await detectLanguageDecision(languageCandidateText);
     const previousCustomerText = [...chatHistory].reverse().find((entry: any) => {
       const role = String(entry?.role || "").toLowerCase();
@@ -93,7 +97,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
         languageDetector = decision.detector;
       }
     }
-  } else if (!storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+  } else if (siteOriginated && !storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
     const decision = await detectLanguageDecision(languageCandidateText);
     language = decision.language;
     languageDetector = decision.detector;
@@ -113,6 +117,36 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       const concurrentLock = await getUserLang(instanceId, phone).catch(() => null);
       if (concurrentLock) { language = concurrentLock; languageDetector = "redis_lock"; languageLocked = true; }
     }
+  } else {
+    const decision = isLanguageBearingCustomerText(languageCandidateText)
+      ? await detectLanguageDecision(languageCandidateText)
+      : null;
+    const previousCustomerText = [...chatHistory].reverse().find((entry: any) => {
+      const role = String(entry?.role || "").toLowerCase();
+      return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+    })?.text;
+    const priorLanguage = storedLang
+      || (previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
+        ? detectLang(String(previousCustomerText))
+        : null);
+    const resolved = resolveOrganicLanguage({
+      detected: decision?.lockable ? decision.language : null,
+      priorLanguage,
+      contactName: firstValue(
+        input.senderMeta?.pushName,
+        input.senderMeta?.contactName,
+        input.senderMeta?.contactShortName,
+        input.senderMeta?.contactPushName
+      ),
+      siteLanguageHint,
+    });
+    language = resolved.language;
+    languageDetector =
+      resolved.source === "message" ? (decision?.detector || "gemini")
+      : resolved.source === "history" ? "redis_lock"
+      : resolved.source === "site_hint" ? "site_hint"
+      : "fallback";
+    languageLocked = false;
   }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
   if (domain) safeConfig.domain = domain;
