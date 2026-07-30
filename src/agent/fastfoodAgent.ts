@@ -1,4 +1,4 @@
-import { Agent } from "@voltagent/core";
+import { Agent, stepCountIs } from "@voltagent/core";
 import { buildFactsPrompt } from "../context/buildFactsPrompt.js";
 import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
@@ -68,8 +68,14 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   // missing from @voltagent/core types. The old key name was allowSystemMessages,
   // which the SDK ignored, so every single generation logged a security warning
   // in production. The model router owns retry/failover, hence maxRetries: 0.
+  // STEP_LOOP_FIX: per-call `maxSteps` is stripped from VoltAgent v2 generate
+  // options (Omit<..., "maxSteps", ...>), so a turn that called a tool stopped
+  // right after the tool step and shipped the partial pre-tool text (e.g. a
+  // 3-char reply). `stopWhen` is the supported per-call stop condition, so the
+  // agent now finishes its answer after reading the tool result.
   const generateOptions: any = {
     maxSteps: 6,
+    stopWhen: stepCountIs(6),
     maxRetries: 0,
     prepareStep: stepPolicy,
     allowSystemInMessages: true,
