@@ -50,3 +50,15 @@ test("instructions forbid revealing internal machinery", () => {
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Internal machinery is invisible to the customer"));
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never say where a fact came from"));
 });
+
+test("a truncated fragment never reaches the guest", () => {
+  const res = validateFinalText("\u04e8\u043a\u0456", ctx() as any);
+  assert.ok(res.warnings.includes("truncated_model_output"));
+  assert.ok(res.text.length > 12, "fragment is replaced by a complete sentence");
+});
+
+test("a short but complete sentence is kept", () => {
+  const res = validateFinalText("\u0418\u04d9, \u0431\u0430\u0440.", ctx() as any);
+  assert.equal(res.text, "\u0418\u04d9, \u0431\u0430\u0440.");
+  assert.ok(!res.warnings.includes("truncated_model_output"));
+});

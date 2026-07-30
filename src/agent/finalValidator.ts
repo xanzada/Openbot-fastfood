@@ -161,6 +161,13 @@ export function validateFinalText(
 
   if (!text) return { text: fallback(ctx), hasLink: false, warnings: ["empty_model_output"] };
 
+  // A truncated generation once shipped the single word "Өкі" to a guest. A reply that
+  // short with no sentence ending and no URL is a broken fragment, not an answer.
+  const looksUnfinished = text.length < 12 && !/[.!?…:]$/.test(text) && !hasLinkInResponse(text);
+  if (looksUnfinished) {
+    return { text: fallback(ctx), hasLink: false, warnings: ["truncated_model_output"] };
+  }
+
   // Foreign-script corruption is a transport/model failure, not a style issue.
   if (FORBIDDEN_FOREIGN_SCRIPT_RE.test(text)) {
     return { text: fallback(ctx), hasLink: false, warnings: ["foreign_script_output"] };
