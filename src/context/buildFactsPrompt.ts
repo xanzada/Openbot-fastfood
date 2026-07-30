@@ -222,7 +222,37 @@ function operationalRuntime(ctx: FastFoodContext) {
 }
 
 function operationalShiftNotes(ctx: FastFoodContext) {
-  return publicNoteConstraints(ctx.activeShiftNotes).map((entry) => ({ type: "operator_constraint", active: true, blocked_terms: entry.blocked_terms, expires_at: entry.expires_at }));
+  const textById = new Map(
+    (Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [])
+      .map((note) => [
+        String(note?.noteId || note?.id || "").trim(),
+        String(note?.text || "").replace(/\s+/g, " ").trim().slice(0, 140),
+      ] as const)
+      .filter(([id, text]) => id && text)
+  );
+  // Only the extracted terms used to reach the agent, so "сусындар жоқ" was
+  // an opaque word list and the model could not reason that a кола belongs to
+  // сусындар. The plain-language note text travels with the terms now.
+  return publicNoteConstraints(ctx.activeShiftNotes).map((entry) => ({
+    type: "operator_constraint",
+    active: true,
+    note: textById.get(entry.note_id) || "",
+    blocked_terms: entry.blocked_terms,
+    expires_at: entry.expires_at,
+  }));
+}
+
+function operationalShiftNotesBlock(ctx: FastFoodContext) {
+  const notes = operationalShiftNotes(ctx);
+  return {
+    active_operator_notes: notes,
+    ...(notes.length
+      ? {
+          active_operator_notes_rule:
+            "These are the kitchen/operator's live constraints written in plain language. When the customer's request or a menu choice relates to a note semantically (for example кола belongs to сусындар/напитки, or a dish name appears in blocked_terms), warn the customer BEFORE they order and offer the closest real alternative. Never quote raw notes verbatim and never mention these mechanics.",
+        }
+      : {}),
+  };
 }
 
 export function buildFactsPrompt(ctx: FastFoodContext): string {
@@ -280,7 +310,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         },
         payment_policy: ONLINE_PREPAYMENT_POLICY,
         operational_runtime: operationalRuntime(ctx),
-        active_operator_notes: operationalShiftNotes(ctx),
+        ...operationalShiftNotesBlock(ctx),
         note_policy: "Active operator notes and kitchen indicators are cumulative backend-preloaded constraints. Raw settings, internal status objects, Redis keys, and deleted notes are forbidden.",
         magic_link: {
           already_sent: ctx.magicLinkAlreadySent,
