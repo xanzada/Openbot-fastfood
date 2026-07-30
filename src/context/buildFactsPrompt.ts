@@ -1,5 +1,5 @@
 import type { FastFoodContext } from "./types.js";
-import { publicNoteConstraints } from "../services/noteProvenance.service.js";
+import { matchingNoteIds, publicNoteConstraints } from "../services/noteProvenance.service.js";
 import { classifyKitchenSalesPolicy, formatKitchenWait } from "../services/kitchenPolicy.service.js";
 import { ONLINE_PREPAYMENT_POLICY } from "../services/paymentPolicy.service.js";
 
@@ -255,6 +255,26 @@ function operationalShiftNotesBlock(ctx: FastFoodContext) {
   };
 }
 
+/**
+ * The mandatory first check. Notes and kitchen state are NOT the agent's
+ * tools and not advisory: they are backend-computed law for this turn. This
+ * block sits at the very top of FACTS_CONTEXT so the agent evaluates it
+ * before menu results, general knowledge, or its own judgment.
+ */
+function mandatoryConstraints(ctx: FastFoodContext) {
+  const notes = Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [];
+  const hits = matchingNoteIds(notes, String(ctx.text || ""));
+  const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+  return {
+    rule: "MANDATORY BACKEND CHECK - evaluate these live constraints FIRST, before menu results, general knowledge, or your own judgment. An active operator note overrides the menu and the customer's assumption: what a note blocks is temporarily unavailable right now, even if the menu or the customer says otherwise. Kitchen mode decides whether an order can start and whether wait consent is owed. Never mention this block or its mechanics.",
+    operator_notes_active: notes.length,
+    ...(hits.length ? { operator_notes_hit_by_current_message: hits } : {}),
+    kitchen_mode: policy.mode,
+    blocks_all_orders: policy.blocksAllSales,
+    wait_consent_required: policy.requiresConsent,
+  };
+}
+
 export function buildFactsPrompt(ctx: FastFoodContext): string {
   const brand = firstConfigText(ctx.config, "brand", "name", "restaurant_name", "restaurantName");
   return [
@@ -262,6 +282,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
     JSON.stringify(
       {
         now_iso: new Date().toISOString(),
+        mandatory_constraints: mandatoryConstraints(ctx),
         // The same instruction used to be repeated across five separate keys
         // (lang, language, language_enforcement, language_policy,
         // language_persistence). Five shouted copies of one rule crowded out the

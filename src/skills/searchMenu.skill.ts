@@ -84,7 +84,24 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       const allMatches = selectPublicMenuItems(allowedItems, query, category, 50);
       const start = Math.max(0, Number(offset || 0));
       const matches = allMatches.slice(start, start + requested);
-      return { items: matches, offset: start, nextOffset: start + matches.length < allMatches.length ? start + matches.length : null, totalMatched: allMatches.length, noteRestrictionsApplied: items.length !== allowedItems.length };
+      const filteringApplied = items.length !== allowedItems.length;
+      const noteRestrictions = filteringApplied
+        ? (Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [])
+            .map((note: any) => String(note?.text || "").replace(/\s+/g, " ").trim())
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+      return {
+        items: matches,
+        offset: start,
+        nextOffset: start + matches.length < allMatches.length ? start + matches.length : null,
+        totalMatched: allMatches.length,
+        noteRestrictionsApplied: filteringApplied,
+        // The operator's live law, surfaced so the agent can explain WHY an
+        // item vanished instead of guessing: say it is temporarily unavailable
+        // and pivot to the items that remain.
+        ...(noteRestrictions.length ? { note_restrictions: noteRestrictions } : {}),
+      };
     },
   });
 }
