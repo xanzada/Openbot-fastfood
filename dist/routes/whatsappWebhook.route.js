@@ -227,7 +227,7 @@ async function kitchenGateReply(ctx) {
                 await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
                 return ctx.language === "ru"
                     ? "Понимаю, извините за ожидание. Тогда заказ сейчас не оформляем. Будем рады видеть вас позже — просто напишите нам."
-                    : "Түсіндім, күттіргеніміз үшін кешіріңіз. Онда қазір тапсырыс расімдемейміз. Кейінᵃек күтеміз — бізге жазыңыз.";
+                    : "Түсіндім, күттіргеніміз үшін кешіріңіз. Онда қазір тапсырысты рәсімдемей тұрайық. Кейінірек жазсаңыз, қуана қабылдаймыз.";
             }
             // Neither yes nor no: the guest is still talking. Let the agent answer
             // them; the consent stays owed and FACTS_CONTEXT still carries it.
