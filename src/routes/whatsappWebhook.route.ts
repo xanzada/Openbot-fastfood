@@ -64,6 +64,10 @@ import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, requestedOr
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
 import { bumpOperatorCaseSignal, detectOperatorCaseKind } from "../services/operatorCase.service.js";
+import { computeProactiveSignals } from "../services/proactiveSignals.service.js";
+import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
+import { recordLearningEvent } from "../services/learningLoop.service.js";
+import { bumpMetric, recordLatency } from "../services/metrics.service.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
 
@@ -660,6 +664,13 @@ async function processWhatsAppWebhook(body: any, started: number) {
       await saveToHistory(ctx.instanceId, ctx.phone, "system", "operator case created", {
         source: "operator-case", caseId: routing.caseId, mediaAttached: routing.mediaAttached,
       });
+      void bumpMetric(ctx.instanceId, "escalations");
+      void bumpMetric(ctx.instanceId, "complaints");
+      void recordLearningEvent(ctx.instanceId, {
+        type: "escalation",
+        detail: detectOperatorCaseKind(ctx.text) || "complaint_text",
+        phone: maskPhone(ctx.phone),
+      });
       if (!routing.escalationAvailable) {
         await notifyDeveloperSystemFailure(ctx.instanceId, new Error("ADMIN_PHONE_NOT_CONFIGURED_FOR_COMPLAINT"), {
           scope: "complaint-routing",
@@ -693,6 +704,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
+    // Deterministic proactive observations (order status changed since the
+    // last contact, an abandoned checkout link). Advisory context only: they
+    // reach the reply only when relevant to what the guest just said.
+    ctx.proactiveSignals = await computeProactiveSignals(ctx).catch(() => null);
+    void bumpMetric(ctx.instanceId, "turns");
+
     const textModels = getTextModels();
     console.log(`[OPENBOT:AI] generating provider=openrouter primary=${textModels.primary} fallback=${textModels.fallback}`);
     const result = await runFastFoodAgent(ctx);
@@ -702,6 +719,32 @@ async function processWhatsAppWebhook(body: any, started: number) {
       ` called_tools=${result.toolCalls.map((call: { name: string }) => call.name).join(",") || "none"}` +
       ` validator=${result.validationWarnings.join(",") || "clean"}`
     );
+
+    if (result.thinking) void bumpMetric(ctx.instanceId, "think_used");
+    if (result.critic && !result.critic.ok) {
+      void bumpMetric(ctx.instanceId, "critic_regens");
+      void recordLearningEvent(ctx.instanceId, {
+        type: "critic_regen",
+        detail: result.critic.issues.slice(0, 4).join(","),
+        phone: maskPhone(ctx.phone),
+      });
+    }
+    if (result.validationWarnings.length) {
+      void bumpMetric(ctx.instanceId, "validator_edits");
+      void recordLearningEvent(ctx.instanceId, {
+        type: "validator_edit",
+        detail: result.validationWarnings.slice(0, 5).join(","),
+        phone: maskPhone(ctx.phone),
+      });
+      if (result.validationWarnings.some((warning: string) => ["empty_model_output", "foreign_script_output"].includes(warning))) {
+        void bumpMetric(ctx.instanceId, "fallbacks");
+        void recordLearningEvent(ctx.instanceId, {
+          type: "fallback_reply",
+          detail: result.validationWarnings.slice(0, 5).join(","),
+          phone: maskPhone(ctx.phone),
+        });
+      }
+    }
 
     const rawAiText = String(result.rawText || result.text || "");
     const needsAdminEscalation = hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text);
@@ -779,6 +822,18 @@ async function processWhatsAppWebhook(body: any, started: number) {
     await markInboundDone(ctx.instanceId, messageId);
     await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
 
+    // The customer's mission advances only after their reply is safely out.
+    // Fire-and-forget: one tiny Redis value, never on the latency path.
+    void updateGoalAfterTurn({
+      ctx,
+      analysis: result.thinking || null,
+      escalated:
+        shouldRouteComplaint ||
+        result.toolCalls.some((call: { name: string }) => call.name === "escalateToAdmin"),
+    }).catch(() => undefined);
+    void recordLatency(ctx.instanceId, Date.now() - started);
+    if (result.hasLink) void bumpMetric(ctx.instanceId, "links_sent");
+
     // Memory is written only after the customer already has the reply, so it can
     // never add latency to the answer and can never fail the request. The trace
     // is what makes the agent self-aware on the next turn; the profile/summary
@@ -793,6 +848,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
         validator_edited: result.validationWarnings.length > 0,
         media_analysed: Boolean(ctx.mediaContext),
         reply_had_link: Boolean(result.hasLink),
+        think_goal: result.thinking?.goal || null,
+        think_mood: result.thinking?.mood || null,
+        think_risk: result.thinking?.risk || null,
+        critic_issues: Array.isArray(result.critic?.issues) ? result.critic.issues.slice(0, 4) : [],
       },
     }).catch(() => undefined);
     void refreshCustomerMemory({

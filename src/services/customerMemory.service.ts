@@ -26,6 +26,11 @@ export interface CustomerProfile {
   avoid?: string[];
   usual_channel?: string;
   notes?: string[];
+  favorite_items?: string[];
+  allergies?: string[];
+  usual_address?: string;
+  preferred_tone?: string;
+  lessons?: string[];
   order_count?: number;
   complaint_count?: number;
   first_seen_at?: string;
@@ -121,10 +126,15 @@ function stringList(value: unknown, max = 6): string[] {
 }
 
 const MEMORY_SYSTEM_PROMPT = `You maintain the private CRM memory of one restaurant customer.
-You are not talking to the customer. You only extract what the customer themselves stated.
+You are not talking to the customer. You only extract what the customer themselves stated or what demonstrably happened.
 Rules:
 - Never guess, never infer identity, gender, income, or health.
 - Only record a name if the customer wrote it about themselves.
+- favorite_items: concrete dishes the customer ordered, praised, or repeatedly asked about.
+- allergies: only explicit allergy or intolerance statements - never dietary guesses.
+- usual_address: a delivery address the customer themselves gave, shortened to one line.
+- preferred_tone: how this person visibly prefers to be spoken to (short, warm, formal), only if their messages show it.
+- lessons: at most 2 short notes on what worked or failed in serving this customer (e.g. "answers better in short messages", "was upset about late delivery").
 - Preferences and dislikes must be about food, channel, timing, or payment, quoted close to their own words.
 - The summary is at most 3 sentences of what matters for serving this person next time.
 - open_point is the single unresolved thing from the end of the conversation, or an empty string.
@@ -176,7 +186,7 @@ export async function refreshCustomerMemory(input: {
         "conversation:",
         transcript,
         "",
-        'Return JSON: {"summary":"","open_point":"","self_introduced_name":"","preferences":[],"avoid":[],"usual_channel":"","notes":[]}',
+        'Return JSON: {"summary":"","open_point":"","self_introduced_name":"","preferences":[],"avoid":[],"usual_channel":"","notes":[],"favorite_items":[],"allergies":[],"usual_address":"","preferred_tone":"","lessons":[]}',
       ].join("\n"),
     });
 
@@ -202,6 +212,11 @@ export async function refreshCustomerMemory(input: {
       avoid: stringList(parsed.avoid).length ? stringList(parsed.avoid) : existingProfile.avoid,
       usual_channel: String(parsed.usual_channel || existingProfile.usual_channel || "").trim().slice(0, 40) || undefined,
       notes: stringList(parsed.notes, 4).length ? stringList(parsed.notes, 4) : existingProfile.notes,
+      favorite_items: stringList(parsed.favorite_items, 6).length ? stringList(parsed.favorite_items, 6) : existingProfile.favorite_items,
+      allergies: stringList(parsed.allergies, 4).length ? stringList(parsed.allergies, 4) : existingProfile.allergies,
+      usual_address: String(parsed.usual_address || existingProfile.usual_address || "").trim().slice(0, 160) || undefined,
+      preferred_tone: String(parsed.preferred_tone || existingProfile.preferred_tone || "").trim().slice(0, 60) || undefined,
+      lessons: stringList(parsed.lessons, 3).length ? stringList(parsed.lessons, 3) : existingProfile.lessons,
       first_seen_at: existingProfile.first_seen_at || nowIso,
       last_seen_at: nowIso,
     });

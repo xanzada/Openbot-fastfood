@@ -18,6 +18,7 @@ import {
   getCustomerProfile,
   getTurnTrace,
 } from "../services/customerMemory.service.js";
+import { getActiveGoal } from "../services/goalTracker.service.js";
 import { shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
@@ -119,7 +120,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // Long-term memory is read in the same parallel batch as the live lookups, so
   // it adds no measurable latency. Every read degrades to null on failure:
   // memory enriches the answer, it must never be able to block one.
-  const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace] =
+  const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal] =
     await Promise.all([
       getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
       domain
@@ -129,6 +130,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       getCustomerProfile(instanceId, phone).catch(() => null),
       getConversationSummary(instanceId, phone).catch(() => null),
       getTurnTrace(instanceId, phone).catch(() => null),
+      getActiveGoal(instanceId, phone).catch(() => null),
     ]);
 
   const runtimeAvailable = Boolean(runtimeStatus);
@@ -205,6 +207,9 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     customerProfile,
     conversationSummary,
     lastTurnTrace,
+    activeGoal,
+    thinking: null,
+    proactiveSignals: null,
     explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
     magicLink: generateSecureMenuUrl(
       domain,

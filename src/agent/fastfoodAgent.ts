@@ -2,6 +2,7 @@ import { Agent } from "@voltagent/core";
 import { buildFactsPrompt } from "../context/buildFactsPrompt.js";
 import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
+import { analyzeTurnSituation, critiqueDraftReply, type DraftCritique, type TurnAnalysis } from "../services/agentThinking.service.js";
 import { FASTFOOD_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { validateFinalText } from "./finalValidator.js";
 import { resolveModel } from "./modelRouter.js";
@@ -14,14 +15,14 @@ function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
   return `${intro}\n${ctx.magicLink}`;
 }
 
-export async function runFastFoodAgent(ctx: FastFoodContext) {
-  const toolPlan = resolveAgentToolPlan(ctx);
+function buildAgent(ctx: FastFoodContext, extraInstruction?: string) {
   const instructions = [
     FASTFOOD_AGENT_INSTRUCTIONS,
     buildTenantInstructions(ctx),
     buildFactsPrompt(ctx),
+    extraInstruction || "",
   ].filter(Boolean).join("\n\n");
-  const agent = new Agent({
+  return new Agent({
     name: "FastFood OpenBot",
     instructions,
     model: resolveModel(ctx),
@@ -29,28 +30,86 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     maxSteps: 6,
     markdown: false,
   });
+}
 
-  const result = await agent.generateText(ctx.text, {
-    maxSteps: 6,
-    // The model router owns retry/failover. SDK-level retries would repeat a
-    // stalled provider before the paid fallback chain gets a chance to run.
-    maxRetries: 0,
-    prepareStep: createAgentStepPolicy(toolPlan),
-    // @ts-expect-error - allowSystemInMessages is valid in AI SDK v6 but missing from @voltagent/core types.
-    // The old key name was allowSystemMessages, which the SDK ignored, so every
-    // single generation logged a security warning in production.
-    allowSystemInMessages: true,
-  });
-
-  const validation = validateFinalText(result.text, ctx);
-  const finalText = enforceExplicitMagicLink(validation.text, ctx);
-  const steps = Array.isArray((result as any).steps) ? (result as any).steps : [];
-  const toolCalls = steps.flatMap((step: any) =>
+function extractToolCalls(result: any) {
+  const steps = Array.isArray(result?.steps) ? result.steps : [];
+  return steps.flatMap((step: any) =>
     (Array.isArray(step?.toolCalls) ? step.toolCalls : []).map((call: any) => ({
       name: String(call?.toolName || call?.name || ""),
       arguments: call?.input || call?.args || call?.arguments || {},
     }))
   ).filter((call: any) => call.name);
+}
+
+export async function runFastFoodAgent(ctx: FastFoodContext) {
+  const turnStartedAt = Date.now();
+  // Latency budget: the customer waits in WhatsApp, so the optional
+  // intelligence layers only run while there is time left. A turn that already
+  // burned its budget on model failover answers with the plain (already good)
+  // pipeline instead of stacking more calls on top.
+  const CRITIC_BUDGET_MS = Math.max(10_000, Math.min(60_000, Number(process.env.CRITIC_BUDGET_MS || 20_000)));
+  const REGEN_BUDGET_MS = Math.max(CRITIC_BUDGET_MS + 5_000, Math.min(90_000, Number(process.env.REGEN_BUDGET_MS || 38_000)));
+
+  // Silent pre-pass: on non-trivial turns the think layer reads the situation
+  // first (goal, mood, risk) and lands in FACTS_CONTEXT as advisory guidance.
+  // Skipped entirely for greetings and one-word turns, so simple chats pay
+  // nothing. Any failure is just "no guidance".
+  if (ctx.thinking === undefined || ctx.thinking === null) {
+    ctx.thinking = await analyzeTurnSituation(ctx).catch(() => null);
+  }
+  const thinking = (ctx.thinking || null) as TurnAnalysis | null;
+
+  const toolPlan = resolveAgentToolPlan(ctx);
+  const stepPolicy = createAgentStepPolicy(toolPlan);
+  // Typed as any on purpose: allowSystemInMessages is valid in AI SDK v6 but
+  // missing from @voltagent/core types. The old key name was allowSystemMessages,
+  // which the SDK ignored, so every single generation logged a security warning
+  // in production. The model router owns retry/failover, hence maxRetries: 0.
+  const generateOptions: any = {
+    maxSteps: 6,
+    maxRetries: 0,
+    prepareStep: stepPolicy,
+    allowSystemInMessages: true,
+  };
+
+  let result = await buildAgent(ctx).generateText(ctx.text, generateOptions);
+  let validation = validateFinalText(result.text, ctx, { toolsCalled: extractToolCalls(result).map((call: { name: string }) => call.name) });
+  let finalText = enforceExplicitMagicLink(validation.text, ctx);
+  let critic: DraftCritique | null = null;
+
+  // Bounded self-check: only high-risk turns (money, order state, strong
+  // emotion) pay for a critic read, and only a genuinely broken draft is
+  // rewritten - exactly once, so latency and cost stay capped.
+  if (thinking?.risk === "high" && finalText && Date.now() - turnStartedAt < CRITIC_BUDGET_MS) {
+    critic = await critiqueDraftReply({ ctx, analysis: thinking, draft: finalText }).catch(() => null);
+    if (critic && !critic.ok && Date.now() - turnStartedAt < REGEN_BUDGET_MS) {
+      const critiqueNote = [
+        "CRITIC_NOTE (internal, never quote or mention):",
+        `issues: ${critic.issues.join(", ")}`,
+        critic.fix_hint ? `fix: ${critic.fix_hint}` : "",
+        "Rewrite the reply for THIS turn fixing exactly that. Keep every verified fact and every required link.",
+      ].filter(Boolean).join("\n");
+      try {
+        const regenerated = await buildAgent(ctx, critiqueNote).generateText(ctx.text, generateOptions);
+        const regeneratedValidation = validateFinalText(regenerated.text, ctx, { toolsCalled: extractToolCalls(regenerated).map((call: { name: string }) => call.name) });
+        const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
+        if (regeneratedText && regeneratedText !== finalText) {
+          result = regenerated;
+          validation = {
+            ...regeneratedValidation,
+            warnings: [...regeneratedValidation.warnings, "critic_regenerated", ...critic.issues.map((issue) => `critic_${issue}`)],
+          };
+          finalText = regeneratedText;
+          console.info(`[CRITIC] regenerated instance=${ctx.instanceId} issues=${critic.issues.join(",")}`);
+        }
+      } catch (error: any) {
+        console.warn(`[CRITIC] regen_failed instance=${ctx.instanceId} reason=${error?.message || error}`);
+        validation = { ...validation, warnings: [...validation.warnings, "critic_regen_failed"] };
+      }
+    }
+  }
+
   return {
     text: finalText,
     hasLink: validation.hasLink || Boolean(ctx.magicLink && finalText.includes(ctx.magicLink)),
@@ -59,7 +118,9 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     usage: result.usage,
     finishReason: result.finishReason,
     toolPlan,
-    toolCalls,
+    toolCalls: extractToolCalls(result),
     validationWarnings: validation.warnings,
+    thinking,
+    critic,
   };
 }

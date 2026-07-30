@@ -24,6 +24,14 @@ const RUSSIAN_SERVICE_WORD_RE =
 const FORBIDDEN_FOREIGN_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bengali}\p{Script=Devanagari}\p{Script=Thai}]/u;
 const MENU_LINK_SENT_RE =
   /(алдыңғы сілтеме|предыдущ ссылк|ескі сілтеме|стара ссылка)/iu;
+// Hallucination guards. A price or promo the model "remembers" is the single
+// most damaging lie a food bot can tell, so such claims may only survive when
+// a live tool grounded them this turn. Clause-cut, never reply-replace.
+const PRICE_CLAIM_RE =
+  /[^.!?\n]*\d[\d\s]*(?:тенге|теңге|тг|₸)[^.!?\n]*[.!?]?/iu;
+const PROMO_CLAIM_RE =
+  /[^.!?\n]*(?:скидк|жеңілді|акци|бонус|промо|подарок|сыйлық|тегін|бесплатн)[^.!?\n]*(?:\d|%|бар|есть|жүріп|идет|действу|береміз|даём)[^.!?\n]*[.!?]?/iu;
+const PRICE_GROUNDING_TOOLS = ["searchMenu", "checkOrderStatus", "getPaymentDetails"];
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 
 function trimUrlPunctuation(url: string) {
@@ -134,7 +142,11 @@ function enforceExactMagicLink(text: string, ctx: FastFoodContext): string {
   });
 }
 
-export function validateFinalText(rawText: string, ctx: FastFoodContext): {
+export function validateFinalText(
+  rawText: string,
+  ctx: FastFoodContext,
+  grounding?: { toolsCalled?: string[] }
+): {
   text: string;
   hasLink: boolean;
   warnings: string[];
@@ -223,6 +235,33 @@ export function validateFinalText(rawText: string, ctx: FastFoodContext): {
   }
 
   text = enforceExactMagicLink(text, ctx);
+
+  // Ungrounded factual claims: only enforced when the caller reports which
+  // tools actually ran this turn. When the report is absent (older callers,
+  // unit tests), behavior is byte-identical to before.
+  if (grounding && Array.isArray(grounding.toolsCalled)) {
+    const grounded = grounding.toolsCalled.some((tool) => PRICE_GROUNDING_TOOLS.includes(tool));
+    if (!grounded) {
+      if (PRICE_CLAIM_RE.test(text)) {
+        const withoutPrices = dropSentencesMatching(text, PRICE_CLAIM_RE);
+        if (withoutPrices && withoutPrices !== text) {
+          text = withoutPrices;
+          warnings.push("ungrounded_price_claim_removed");
+        } else {
+          warnings.push("ungrounded_price_claim_kept_no_survivor");
+        }
+      }
+      if (PROMO_CLAIM_RE.test(text)) {
+        const withoutPromos = dropSentencesMatching(text, PROMO_CLAIM_RE);
+        if (withoutPromos && withoutPromos !== text) {
+          text = withoutPromos;
+          warnings.push("unverified_promo_claim_removed");
+        } else {
+          warnings.push("unverified_promo_claim_kept_no_survivor");
+        }
+      }
+    }
+  }
 
   // A hard three-sentence cut amputated real answers mid-thought ("here are the
   // options, the price is X" lost the closing question). Brevity now belongs to

@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "learn": "tsx scripts/learnFromFailures.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.74",

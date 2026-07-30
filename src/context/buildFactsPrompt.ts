@@ -113,10 +113,60 @@ function customerMemory(ctx: FastFoodContext) {
     avoid: Array.isArray(profile?.avoid) ? profile?.avoid.slice(0, 6) : [],
     usual_channel: profile?.usual_channel || null,
     notes: Array.isArray(profile?.notes) ? profile?.notes.slice(0, 4) : [],
+    favorite_items: Array.isArray(profile?.favorite_items) ? profile?.favorite_items.slice(0, 6) : [],
+    allergies: Array.isArray(profile?.allergies) ? profile?.allergies.slice(0, 4) : [],
+    usual_address_known: Boolean(profile?.usual_address),
+    preferred_tone: profile?.preferred_tone || null,
+    lessons_learned: Array.isArray(profile?.lessons) ? profile?.lessons.slice(0, 3) : [],
     returning_customer: Boolean(profile?.first_seen_at && profile?.last_seen_at && profile.first_seen_at !== profile.last_seen_at),
     earlier_conversation_summary: summary?.summary || null,
     unresolved_point_from_before: summary?.open_point || null,
     rule: "Advisory memory built from earlier conversations with THIS customer. It never overrides live tools or FACTS_CONTEXT, and prices, stock and order state must still be verified. Use it to sound like someone who remembers them, not to state facts.",
+  };
+}
+
+/**
+ * The think layer's silent read of this exact turn, plus the tracked mission.
+ *
+ * This is guidance, not ground truth: it tells the answering layer what the
+ * guest most likely wants, how they feel and how to speak to them, so tone and
+ * priority stop depending on a lucky first token. Facts still come only from
+ * tools and FACTS_CONTEXT.
+ */
+function turnAnalysis(ctx: FastFoodContext) {
+  const thinking = ctx.thinking || null;
+  if (!thinking) return null;
+  return {
+    likely_goal: thinking.goal || null,
+    customer_mood: thinking.mood || null,
+    urgency: thinking.urgency || null,
+    risk: thinking.risk || null,
+    how_to_talk_now: thinking.style_hint || null,
+    what_they_actually_want: thinking.reasoning_brief || null,
+    worth_mentioning_unasked: thinking.proactive_note || null,
+    rule: "Silent pre-analysis for this turn. Use it to choose tone and priority. Never quote it, never treat it as a fact, and still verify prices, stock and order state with tools.",
+  };
+}
+
+function activeMission(ctx: FastFoodContext) {
+  const goal = ctx.activeGoal || null;
+  if (!goal || goal.status !== "active") return null;
+  return {
+    kind: goal.kind || null,
+    detail: goal.detail || null,
+    turns_in_progress: Number(goal.turns || 1),
+    rule: "The customer's ongoing mission across messages. Continue it instead of restarting; when it is clearly finished, close it mentally and move on. Never mention this tracking.",
+  };
+}
+
+function proactiveSignals(ctx: FastFoodContext) {
+  const signals = ctx.proactiveSignals || null;
+  if (!signals) return null;
+  const notes = Array.isArray(signals.notes) ? signals.notes.filter(Boolean).slice(0, 3) : [];
+  if (!notes.length) return null;
+  return {
+    notes,
+    rule: "Deterministic observations worth weaving in naturally IF relevant to what the customer just said. Never dump them as a list and never force them into an unrelated question.",
   };
 }
 
@@ -209,6 +259,9 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         recent_dialog: compactConversationHistory(ctx.chatHistory),
         conversation_policy: "recent_dialog is your working memory: up to 8 customer and 8 business-side messages in chronological order, operator kept as a distinct human role. Continue from the last unresolved point, greet at most once, answer once, do not re-ask what was answered, and never expose internal reasoning.",
         customer_memory: customerMemory(ctx),
+        turn_analysis: turnAnalysis(ctx),
+        active_mission: activeMission(ctx),
+        proactive_signals: proactiveSignals(ctx),
         last_turn: lastTurnAwareness(ctx),
         shpor_context: ctx.shporContext.slice(0, 4),
       },
