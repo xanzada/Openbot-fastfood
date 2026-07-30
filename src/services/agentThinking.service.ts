@@ -41,12 +41,20 @@ const THINK_WORTHY_RE =
  * Deterministic gate: spend a think call only where judgment changes the
  * outcome. Short polite turns and one-word answers go straight to the agent;
  * anything with money, orders, complaints, emotion or real length gets the
- * pre-pass.
+ * pre-pass. When the regex tool plan is ALREADY confident (menu lookup, price,
+ * payment details, business info, link request, order status) and nothing
+ * emotional or complaint-like is happening, the pre-pass adds seconds without
+ * adding judgment - so it is skipped and the turn stays fast.
  */
-export function shouldThink(ctx: FastFoodContext): boolean {
+const COMPLAINT_OR_EMOTION_RE =
+  /(шағым|жалоб|претенз|опозд|опазд|задерж|кешік|кешіг|не\s+привез|келмед|холодн|салқын|испорч|бұзыл|бузыл|улан|отрав|волос|шаш|гряз|лас|возврат|қайтар|ақша\s+қайт|деньги\s+верн|оператор|админ|менеджер|адаммен|человек|!!|\?\s*\?)/iu;
+
+export function shouldThink(ctx: FastFoodContext, toolPlan?: { requiredTools?: string[] }): boolean {
   const text = String(ctx.text || "").trim();
   if (!text) return false;
   if (text.length <= 40 && TRIVIAL_TEXT_RE.test(text)) return false;
+  const confidentPlan = Boolean(toolPlan && Array.isArray(toolPlan.requiredTools) && toolPlan.requiredTools.length > 0);
+  if (confidentPlan && text.length < 200 && !COMPLAINT_OR_EMOTION_RE.test(text) && !ctx.mediaContext) return false;
   if (THINK_WORTHY_RE.test(text)) return true;
   if (text.length >= 140) return true;
   const questionMarks = (text.match(/\?/g) || []).length + (text.match(/\?/g) || []).length;
@@ -109,9 +117,9 @@ No markdown, no commentary, JSON only.`;
  * Runs the silent analysis. Returns null on any failure, timeout, or whenever
  * the turn is trivial - callers must treat null as "no guidance".
  */
-export async function analyzeTurnSituation(ctx: FastFoodContext): Promise<TurnAnalysis | null> {
-  if (!shouldThink(ctx)) return null;
-  const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 7_000)));
+export async function analyzeTurnSituation(ctx: FastFoodContext, toolPlan?: { requiredTools?: string[] }): Promise<TurnAnalysis | null> {
+  if (!shouldThink(ctx, toolPlan)) return null;
+  const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 5_000)));
   try {
     const historyLines = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
       .slice(-6)
@@ -181,7 +189,7 @@ export async function critiqueDraftReply(input: {
 }): Promise<DraftCritique | null> {
   const { ctx, analysis, draft } = input;
   if (!draft.trim()) return null;
-  const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 7_000)));
+  const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 5_000)));
   try {
     const result = await generateWithTimeout(
       thinkModel(),

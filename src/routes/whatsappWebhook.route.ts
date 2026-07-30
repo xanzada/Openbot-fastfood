@@ -30,8 +30,12 @@ import {
   type ComplaintUrgency,
 } from "../services/complaintRouting.service.js";
 import {
+  acquireTurnLock,
   bufferInboundText,
   claimMediaAiQuota,
+  claimOutboundReply,
+  drainInboundBuffer,
+  releaseTurnLock,
   clearInboundProcessing,
   extractInboundMedia,
   extractSenderMeta,
@@ -46,7 +50,7 @@ import {
 } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
-import { sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/whatspro.client.js";
+import { markWhatsProChatRead, sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { customerOrderFromRecord, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
@@ -68,6 +72,7 @@ import { computeProactiveSignals } from "../services/proactiveSignals.service.js
 import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
 import { recordLearningEvent } from "../services/learningLoop.service.js";
 import { bumpMetric, recordLatency } from "../services/metrics.service.js";
+import { mergeBufferedParts } from "../services/bufferBrain.service.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
 
@@ -359,6 +364,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
     (mediaContext ? "[Media sent]" : "");
   let customerLanguageText = extractInboundText(body) || mediaContext?.caption || "";
   let stopTyping: () => void = () => {};
+  let turnLockOwner: string | null = null;
 
   console.log(
     `[OPENBOT:INBOUND] received instance=${instanceId || "-"} phone=${maskPhone(phone)} text_len=${String(text || "").length} media=${mediaContext?.kind || "no"} source=${body.source || "-"}`
@@ -402,6 +408,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
+    // Presence + read receipt start the moment the guard accepts the
+    // message: the customer sees blue ticks and "typing..." for the whole
+    // turn, including the buffer wait that used to look like dead silence.
+    stopTyping = startWhatsProTyping({ instanceId, phone });
+    void markWhatsProChatRead({ instanceId, phone });
+
     // Stickers are accepted by the gateway, but never sent to AI or persisted.
     if (mediaContext?.kind === "sticker") {
       await markInboundDone(instanceId, messageId);
@@ -415,11 +427,30 @@ async function processWhatsAppWebhook(body: any, started: number) {
         await markInboundDone(instanceId, messageId);
         return;
       }
-      text = buffered.text || text;
+
+      // One conversation = one reply at a time. The per-message lock never
+      // stopped two batches of split messages from being answered in parallel;
+      // this turn lock does. A part that arrives while the previous reply is
+      // still being generated waits a bounded moment, then gets folded into
+      // ONE coherent message by the buffer brain - never a second answer.
+      turnLockOwner = await acquireTurnLock(instanceId, phone);
+      for (let waited = 0; !turnLockOwner && waited < 20_000; waited += 1_500) {
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        turnLockOwner = await acquireTurnLock(instanceId, phone);
+      }
+      if (!turnLockOwner) {
+        console.warn(`[OPENBOT:BUFFER] turn busy, part deferred instance=${instanceId} phone=${maskPhone(phone)}`);
+        await markInboundDone(instanceId, messageId);
+        return;
+      }
+      const leftovers = await drainInboundBuffer(instanceId, phone).catch(() => [] as string[]);
+      const parts = [...buffered.items, ...leftovers].filter(Boolean);
+      text = parts.length > 1
+        ? await mergeBufferedParts(parts).catch(() => buffered.text || text)
+        : (parts[0] || buffered.text || text);
       customerLanguageText = text;
     }
 
-    stopTyping = startWhatsProTyping({ instanceId, phone });
     mediaContext = await hydrateInboundMedia(body, mediaContext);
     const ctx = await preloadContext({ instanceId, phone, text, languageCandidateText: customerLanguageText, mediaContext, senderMeta });
     console.log(
@@ -809,6 +840,15 @@ async function processWhatsAppWebhook(body: any, started: number) {
         }).catch(() => undefined);
       });
 
+    // Outbound duplicate guard: an identical reply sent within the last
+    // 60s (parallel turn, retried webhook) is dropped instead of shown twice.
+    const outboundIsNew = await claimOutboundReply(ctx.instanceId, ctx.phone, finalText).catch(() => true);
+    if (!outboundIsNew) {
+      console.warn(`[OPENBOT:OUTBOUND] duplicate reply suppressed instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)}`);
+      await markInboundDone(ctx.instanceId, messageId);
+      return;
+    }
+
     // Send main text response
     const sendResult = await sendWhatsProResponseSequence({
       instanceId: ctx.instanceId,
@@ -821,6 +861,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
     await saveToHistory(ctx.instanceId, ctx.phone, "assistant", finalText, { source: "openbot-agent", ...noteHistoryMeta(ctx, finalText) });
     await markInboundDone(ctx.instanceId, messageId);
     await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
+
+    // Sweep leftovers from the burst we just answered so they cannot become a
+    // second reply; genuinely new messages flush their own batch anyway.
+    void drainInboundBuffer(ctx.instanceId, ctx.phone).catch(() => []);
 
     // The customer's mission advances only after their reply is safely out.
     // Fire-and-forget: one tiny Redis value, never on the latency path.
@@ -877,6 +921,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
     throw error;
   } finally {
     stopTyping();
+    if (turnLockOwner) {
+      void releaseTurnLock(instanceId, phone, turnLockOwner).catch(() => undefined);
+      turnLockOwner = null;
+    }
   }
 }
 

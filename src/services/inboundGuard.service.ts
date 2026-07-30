@@ -755,12 +755,12 @@ export async function saveMediaContext(
   }
 }
 
-export async function bufferInboundText(input: { instanceId: string; phone: string; messageId: string; text: string }): Promise<{ leader: boolean; text: string }> {
+export async function bufferInboundText(input: { instanceId: string; phone: string; messageId: string; text: string }): Promise<{ leader: boolean; text: string; parts: number; items: string[] }> {
   const instanceId = String(input.instanceId || "").trim();
   const phone = String(input.phone || "").replace(/\D/g, "");
   const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
   const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
-  if (!instanceId || !phone || !text) return { leader: true, text };
+  if (!instanceId || !phone || !text) return { leader: true, text, parts: text ? 1 : 0, items: text ? [text] : [] };
   try {
     await connectRedis();
     const listKey = `inbound_buffer:${instanceId}:${phone}`;
@@ -772,11 +772,11 @@ export async function bufferInboundText(input: { instanceId: string; phone: stri
       .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
       .exec();
     await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
-    if ((await redisClient.get(latestKey)) !== token) return { leader: false, text: "" };
+    if ((await redisClient.get(latestKey)) !== token) return { leader: false, text: "", parts: 0, items: [] };
     const rows = await redisClient.lRange(listKey, 0, -1);
     await redisClient.del([listKey, latestKey]);
     const parts = rows.map((row) => { try { return String(JSON.parse(row)?.text || "").trim(); } catch { return ""; } }).filter(Boolean);
-    return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS) };
+    return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS), parts: parts.length, items: parts.slice(0, INBOUND_BUFFER_MAX_ITEMS) };
   } catch {
     const now = Date.now();
     pruneLocalGuardState(now);
@@ -789,11 +789,14 @@ export async function bufferInboundText(input: { instanceId: string; phone: stri
     localInboundBuffers.set(key, current);
     await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
     const latest = localInboundBuffers.get(key);
-    if (!latest || latest.latestToken !== token) return { leader: false, text: "" };
+    if (!latest || latest.latestToken !== token) return { leader: false, text: "", parts: 0, items: [] };
     localInboundBuffers.delete(key);
+    const localParts = latest.items.map((item) => String(item?.text || "").trim()).filter(Boolean);
     return {
       leader: true,
-      text: latest.items.map((item) => item.text).filter(Boolean).join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS),
+      text: localParts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS),
+      parts: localParts.length,
+      items: localParts.slice(0, INBOUND_BUFFER_MAX_ITEMS),
     };
   }
 }
@@ -823,5 +826,115 @@ export async function clearMediaContext(instanceId: string, phone: string): Prom
     await redisClient.del(`media_context:${instanceId}:${phone}`);
   } catch {
     // Best effort cleanup; the Redis key has a short TTL.
+  }
+}
+
+/**
+ * Turn-level single-flight lock per (tenant, customer).
+ *
+ * The per-messageId lock only stops the SAME message being processed twice;
+ * it never stopped TWO different batches of one customer's split messages from
+ * being answered in parallel - which is exactly how a guest who wrote "сәлем"
+ * then "пицца бар ма" got two replies. One conversation = one turn at a time.
+ */
+const TURN_LOCK_FALLBACK_TTL_MS = 90_000;
+const localTurnLocks = new Map<string, { owner: string; expiresAt: number }>();
+
+export async function acquireTurnLock(instanceId: string, phone: string, ttlMs = TURN_LOCK_FALLBACK_TTL_MS): Promise<string | null> {
+  const owner = crypto.randomUUID();
+  const key = `turn_lock:${instanceId}:${phone}`;
+  try {
+    await connectRedis();
+    const claimed = await redisClient.set(key, owner, { NX: true, PX: Math.max(5_000, ttlMs) });
+    return claimed ? owner : null;
+  } catch {
+    const now = Date.now();
+    const local = localTurnLocks.get(key);
+    if (local && local.expiresAt > now) return null;
+    localTurnLocks.set(key, { owner, expiresAt: now + Math.max(5_000, ttlMs) });
+    return owner;
+  }
+}
+
+export async function releaseTurnLock(instanceId: string, phone: string, owner: string): Promise<void> {
+  const key = `turn_lock:${instanceId}:${phone}`;
+  try {
+    await connectRedis();
+    const current = await redisClient.get(key);
+    if (current === owner) await redisClient.del(key);
+    return;
+  } catch {
+    const local = localTurnLocks.get(key);
+    if (local?.owner === owner) localTurnLocks.delete(key);
+  }
+}
+
+/**
+ * Non-blocking sweep of the fragment buffer. After a reply is sent, anything
+ * left in the buffer belongs to the SAME burst of messages - deleting it is
+ * what stops a leftover part from becoming a second answer a minute later.
+ * Returns the leftover parts so a lock-holding leader can still fold them into
+ * its own turn instead of dropping them.
+ */
+export async function drainInboundBuffer(instanceId: string, phone: string): Promise<string[]> {
+  const listKey = `inbound_buffer:${instanceId}:${phone}`;
+  const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
+  try {
+    await connectRedis();
+    const rows = await redisClient.lRange(listKey, 0, -1);
+    await redisClient.del([listKey, latestKey]);
+    return rows
+      .map((row) => {
+        try {
+          return String(JSON.parse(row)?.text || "").trim();
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    const key = localKey(instanceId, phone);
+    const current = localInboundBuffers.get(key);
+    if (!current) return [];
+    localInboundBuffers.delete(key);
+    return current.items.map((item) => String(item?.text || "").trim()).filter(Boolean);
+  }
+}
+
+/**
+ * Outbound duplicate guard. Incoming dedupe only watched the customer side;
+ * nothing watched OUR side, so two parallel turns could send the guest the
+ * same answer twice. The normalized hash of the last reply is remembered for a
+ * short window and an identical resend is skipped.
+ */
+const OUTBOUND_DUP_SECONDS = 60;
+const localOutboundClaims = new Map<string, number>();
+
+export function normalizeReplyText(text: string): string {
+  return String(text || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 600);
+}
+
+export async function claimOutboundReply(instanceId: string, phone: string, text: string): Promise<boolean> {
+  const normalized = normalizeReplyText(text);
+  if (!normalized) return true;
+  const key = `outbound_dup:${instanceId}:${phone}`;
+  const hash = sha1(normalized);
+  try {
+    await connectRedis();
+    const claimed = await redisClient.set(key, hash, { NX: true, EX: OUTBOUND_DUP_SECONDS });
+    if (claimed) return true;
+    const previous = await redisClient.get(key);
+    if (previous !== hash) {
+      await redisClient.set(key, hash, { EX: OUTBOUND_DUP_SECONDS });
+      return true;
+    }
+    return false;
+  } catch {
+    const now = Date.now();
+    const localKeyFull = `${key}:${hash}`;
+    const expiresAt = localOutboundClaims.get(localKeyFull);
+    if (expiresAt && expiresAt > now) return false;
+    localOutboundClaims.set(localKeyFull, now + OUTBOUND_DUP_SECONDS * 1000);
+    return true;
   }
 }

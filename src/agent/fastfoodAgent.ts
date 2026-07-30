@@ -51,16 +51,18 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   const CRITIC_BUDGET_MS = Math.max(10_000, Math.min(60_000, Number(process.env.CRITIC_BUDGET_MS || 20_000)));
   const REGEN_BUDGET_MS = Math.max(CRITIC_BUDGET_MS + 5_000, Math.min(90_000, Number(process.env.REGEN_BUDGET_MS || 38_000)));
 
+  const toolPlan = resolveAgentToolPlan(ctx);
+
   // Silent pre-pass: on non-trivial turns the think layer reads the situation
   // first (goal, mood, risk) and lands in FACTS_CONTEXT as advisory guidance.
-  // Skipped entirely for greetings and one-word turns, so simple chats pay
-  // nothing. Any failure is just "no guidance".
+  // Skipped entirely for greetings, one-word turns, and turns whose tool plan
+  // is already confident - so simple chats pay nothing. Any failure is just
+  // "no guidance".
   if (ctx.thinking === undefined || ctx.thinking === null) {
-    ctx.thinking = await analyzeTurnSituation(ctx).catch(() => null);
+    ctx.thinking = await analyzeTurnSituation(ctx, toolPlan).catch(() => null);
   }
   const thinking = (ctx.thinking || null) as TurnAnalysis | null;
 
-  const toolPlan = resolveAgentToolPlan(ctx);
   const stepPolicy = createAgentStepPolicy(toolPlan);
   // Typed as any on purpose: allowSystemInMessages is valid in AI SDK v6 but
   // missing from @voltagent/core types. The old key name was allowSystemMessages,
