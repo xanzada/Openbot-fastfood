@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { buildFactsPrompt } from "../src/context/buildFactsPrompt.js";
 
 function ctx(overrides: Record<string, any> = {}) {
@@ -64,4 +65,17 @@ test("wait label is spoken form, not raw minutes", () => {
   }));
   assert.ok(out.includes('"wait_label": "2 сағат"'));
   assert.ok(!out.includes('"wait_label": "120'));
+});
+
+test("an existing order never mutes the kitchen gate", () => {
+  // Regression: a guest with an open order asked to order again and the bot
+  // answered with a bare link, never mentioning the 60-minute wait, because
+  // the gate returned early on activeOrder. Questions about an existing order
+  // are answered before the gate, so anything reaching it is new intent.
+  const src = readFileSync(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  const gate = src.slice(src.indexOf("async function kitchenGateReply"));
+  const body = gate.slice(0, gate.indexOf("\nasync function ", 10) + 1 || undefined);
+  assert.ok(!/if \(ctx\.activeOrder\) return null;/.test(body), "the gate must not mute itself on an active order");
+  assert.ok(body.includes("policy.requiresConsent"), "consent branch must remain");
+  assert.ok(body.includes("savePendingKitchenConsent"), "the wait question must be remembered");
 });

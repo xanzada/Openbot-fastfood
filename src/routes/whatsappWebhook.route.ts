@@ -299,7 +299,10 @@ function unavailableChannelReply(channel: "delivery" | "pickup", language: "kk" 
   return channel === "delivery" ? "Қазір жеткізу уақытша қолжетімсіз, бірақ алып кетуге тапсырыс бере аласыз." : "Қазір алып кету уақытша қолжетімсіз, бірақ жеткізуге тапсырыс бере аласыз.";
 }
 async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
-  if (ctx.activeOrder) return null;
+  // An existing order does not silence the kitchen. Questions ABOUT that order
+  // are already answered above by customerOrderReply, so anything reaching here
+  // is new intent, and new intent must hear the kitchen's real state. Repetition
+  // is prevented by consent memory below, not by muting the gate.
   const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
   // A guest who already has the link is left to finish, but only while the
   // kitchen is what it was when they got it. A real change reopens the gate.
