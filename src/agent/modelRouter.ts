@@ -101,9 +101,9 @@ function createFallbackModel(primary: any, secondary: any, reserve: any): any {
   return wrapped;
 }
 
-const textPrimaryModel = envText("TEXT_PRIMARY_MODEL", "deepseek/deepseek-chat");
-const textFallbackModel = envText("TEXT_FALLBACK_MODEL", "deepseek/deepseek-chat-v3");
-const textReserveModel = envText("TEXT_RESERVE_MODEL", "google/gemini-2.5-flash");
+const textPrimaryModel = envText("TEXT_PRIMARY_MODEL", "google/gemini-2.5-flash");
+const textFallbackModel = envText("TEXT_FALLBACK_MODEL", "openai/gpt-4.1-mini");
+const textReserveModel = envText("TEXT_RESERVE_MODEL", "openai/gpt-4o-mini");
 
 const textModel = createFallbackModel(
   // OpenRouter's broad model catalogue is chat-completions compatible. Calling

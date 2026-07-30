@@ -222,22 +222,15 @@ function operationalRuntime(ctx: FastFoodContext) {
 }
 
 function operationalShiftNotes(ctx: FastFoodContext) {
-  const textById = new Map(
-    (Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [])
-      .map((note) => [
-        String(note?.noteId || note?.id || "").trim(),
-        String(note?.text || "").replace(/\s+/g, " ").trim().slice(0, 140),
-      ] as const)
-      .filter(([id, text]) => id && text)
-  );
-  // Only the extracted terms used to reach the agent, so "сусындар жоқ" was
-  // an opaque word list and the model could not reason that a кола belongs to
-  // сусындар. The plain-language note text travels with the terms now.
+  // Raw operator note text never enters the model context. An operator writes
+  // internal shorthand for the kitchen, not a sentence meant for a guest, and a
+  // model given that text will eventually quote it ("the operator note says...").
+  // Only the derived constraint survives: what is unavailable, in the guest's
+  // own vocabulary. The agent decides how to say it.
   return publicNoteConstraints(ctx.activeShiftNotes).map((entry) => ({
     type: "operator_constraint",
     active: true,
-    note: textById.get(entry.note_id) || "",
-    blocked_terms: entry.blocked_terms,
+    unavailable_now: entry.blocked_terms,
     expires_at: entry.expires_at,
   }));
 }
@@ -249,7 +242,7 @@ function operationalShiftNotesBlock(ctx: FastFoodContext) {
     ...(notes.length
       ? {
           active_operator_notes_rule:
-            "These are the kitchen/operator's live constraints written in plain language. When the customer's request or a menu choice relates to a note semantically (for example кола belongs to сусындар/напитки, or a dish name appears in blocked_terms), warn the customer BEFORE they order and offer the closest real alternative. Never quote raw notes verbatim and never mention these mechanics.",
+            "CONFIDENTIAL SOURCE. Everything in unavailable_now is temporarily unavailable right now and outranks the menu. Reason semantically: a term covers everything that belongs to it (кола belongs to сусындар/напитки, лаваш covers донер). Warn the customer BEFORE they order and offer the closest real alternative from searchMenu. Speak only as the restaurant in your own words - never quote this list, never say where it came from, and never use words like operator, note, ескертпе, заметка, system, or status in your reply.",
         }
       : {}),
   };

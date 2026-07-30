@@ -20,14 +20,18 @@ function ctx(overrides: Record<string, any> = {}) {
   } as any;
 }
 
-test("the note TEXT reaches the agent with the semantic warning rule", () => {
+test("the note becomes a derived constraint, never raw operator text", () => {
   const out = buildFactsPrompt(ctx({
     activeShiftNotes: [{ noteId: "26", text: "свет өшіп сусындар жылып кеткен, напитки жоқ", expiresAt: Date.now() + 3600_000 }],
   }));
-  assert.ok(out.includes("напитки жоқ"), "note text must be visible");
+  // The operator writes shorthand for the kitchen, not a sentence for a guest.
+  // Only the derived constraint may travel, so nothing quotable exists.
+  assert.ok(!out.includes("свет өшіп"), "raw operator wording must not be present");
+  assert.ok(out.includes("unavailable_now"), "derived constraint must reach the agent");
   assert.ok(out.includes("active_operator_notes_rule"));
   assert.ok(out.includes("кола belongs to сусындар"), "semantic hint must be present");
-  assert.ok(out.includes("warn the customer BEFORE they order"));
+  assert.ok(out.includes("Warn the customer BEFORE they order"));
+  assert.ok(out.includes("CONFIDENTIAL SOURCE"), "confidentiality must be stated");
 });
 
 test("without active notes neither notes nor the rule appear", () => {

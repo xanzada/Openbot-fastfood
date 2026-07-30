@@ -8,6 +8,7 @@ import {
   clearPendingKitchenConsent,
   getPendingKitchenConsent,
   getKitchenCheckoutFingerprint,
+  markKitchenCheckoutStarted,
   releaseReceiptFingerprint,
   markComplaintClarificationPending,
   saveComplaintMedia,
@@ -63,7 +64,8 @@ import {
   validateReceiptAnalysis,
 } from "../services/mediaAnalysis.service.js";
 import { getTextModels } from "../services/llm.service.js";
-import { classifyKitchenSalesPolicy, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicy,
+  formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
@@ -301,17 +303,26 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
   const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
   // A guest who already has the link is left to finish, but only while the
   // kitchen is what it was when they got it. A real change reopens the gate.
-  const checkoutFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
-  if (checkoutFingerprint && checkoutFingerprint === policy.fingerprint) return null;
   const pending = await getPendingKitchenConsent(ctx.instanceId, ctx.phone).catch(() => null);
   if (pending) {
     if (pending.policyFingerprint !== policy.fingerprint) await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
     else {
       const answer = detectKitchenConsentAnswer(ctx.text);
-      if (answer === "yes") { await clearPendingKitchenConsent(ctx.instanceId, ctx.phone); return null; }
-      if (answer === "no") { await clearPendingKitchenConsent(ctx.instanceId, ctx.phone); return ctx.language === "ru" ? "Хорошо, заказ не продолжаем. Если решите позже — напишите нам." : "Жақсы, тапсырысты жалғастырмаймыз. Кейін шешсеңіз, бізге жазыңыз."; }
-      // Neither yes nor no: the guest is still talking. Let the agent answer them
-      // and raise the wait itself rather than repeating a confirm-yes-or-no line.
+      if (answer === "yes") {
+        await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
+        // The guest accepted this exact kitchen state. Remember it, so the wait
+        // is raised once and never turns into nagging on every message.
+        await markKitchenCheckoutStarted(ctx.instanceId, ctx.phone, policy.fingerprint).catch(() => false);
+        return null;
+      }
+      if (answer === "no") {
+        await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
+        return ctx.language === "ru"
+          ? "Понимаю, извините за ожидание. Тогда заказ сейчас не оформляем. Будем рады видеть вас позже — просто напишите нам."
+          : "Түсіндім, күттіргеніміз үшін кешіріңіз. Онда қазір тапсырыс расімдемейміз. Кейінᵃек күтеміз — бізге жазыңыз.";
+      }
+      // Neither yes nor no: the guest is still talking. Let the agent answer
+      // them; the consent stays owed and FACTS_CONTEXT still carries it.
       return null;
     }
   }
@@ -319,11 +330,20 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
   const channel = detectRequestedServiceChannel(ctx.text);
   if (channel === "delivery" && !policy.delivery) return unavailableChannelReply(channel, ctx.language);
   if (channel === "pickup" && !policy.pickup) return unavailableChannelReply(channel, ctx.language);
-  // A busy kitchen is a thing to mention, not a wall to put in front of a guest
-  // who only said hello. Record that consent is owed and let the agent greet,
-  // answer, and raise the wait in its own words; FACTS_CONTEXT carries
-  // wait_consent_required so it knows it has to ask before the order is placed.
-  if (policy.requiresConsent) { await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint); return null; }
+  // A guest who already accepted this same kitchen state is left to finish.
+  // Only a real change of the kitchen reopens the gate.
+  const checkoutFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
+  if (checkoutFingerprint && checkoutFingerprint === policy.fingerprint) return null;
+  // The delay is the operator's promise to the guest, so the code states it
+  // rather than hoping the model will. Asked once per kitchen state, in the
+  // guest's language, and the answer decides what happens next.
+  if (policy.requiresConsent) {
+    await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint);
+    const label = formatKitchenWait(policy.waitMinutes || 0, ctx.language === "ru" ? "ru" : "kk");
+    return ctx.language === "ru"
+      ? `Сейчас заказов много, приготовление займёт примерно ${label}. Сможете подождать? Если да — продолжим заказ.`
+      : `Қазір тапсырыс көп, дайындалуы шамамен ${label} болады. Күте аласыз ба? Күтсеңіз, тапсырысты жалғастыра берейін.`;
+  }
   return null;
 }
 

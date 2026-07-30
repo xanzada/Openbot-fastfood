@@ -1,0 +1,75 @@
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
+const MENU_LOOKUP_RE = /(бар\s*ма|есть\s*ли|қанша\s*(?:тұр|тұрады|теңге)|сколько\s*(?:стоит|тенге)|баға|цена|құрамы|состав|ингредиент|ащы|остр|вегетари|халал|пепперони|pepperoni|пицц|бургер|донер|шаурм|суши|ролл|салат|сусын|напит|десерт|комбо|сет)/iu;
+const DIRECT_MENU_LINK_RE = /(сілтеме|ссылка|link|линк|каталог|мәзірді\s*(?:жібер|бер|аш)|меню\s*(?:пришли|скинь|дай|открой|покажи)|тапсырыс\s*(?:бер|жасай|ет)|заказ\s*(?:хочу|сдел|оформ)|заказать|оформить|корзин|себет)/iu;
+const PAYMENT_DETAILS_RE = /(реквизит|kaspi|каспи|halyk|халық|оплат(?:ить|а|у)|төлем|аударым|перевод).*(?:қалай|қайда|как|куда|номер|счет|шот)?/iu;
+const RECEIPT_EVENT_RE = /(чек(?:ті|ті\s+жібер| отправ| скин)|receipt|түбіртек|квитанц)/iu;
+const BUSINESS_INFO_RE = /(мекенжай|адрес|қайда\s*(?:орналас|тұр)|где\s*(?:находит|вы)|жұмыс\s*уақыт|жұмыс\s*істей|график|режим\s*работ|до\s*скольк|сколько.{0,30}(?:работ|открыт)|сағат\s*нешеге|телефон|номер\s*(?:рестора|заведен)|қалай\s*табам)/iu;
+function add(plan, tool, reason) {
+    if (plan.requiredTools.includes(tool))
+        return;
+    plan.requiredTools.push(tool);
+    plan.reason.push(reason);
+}
+/**
+ * Code-gates only high-confidence live-data intents. Everything else remains
+ * model-decided so the agent can reason about new conversational situations
+ * without waiting for a new regex or prompt example.
+ */
+export function resolveAgentToolPlan(ctx) {
+    const text = String(ctx.text || "").trim();
+    const plan = { requiredTools: [], reason: [] };
+    const immediateServiceIncident = isLikelyComplaintText(text) && complaintHasActionableDetail(text);
+    if (immediateServiceIncident) {
+        add(plan, "escalateToAdmin", "actionable_service_incident");
+    }
+    else if (isCustomerOrderStatusQuestion(text) || (Boolean(ctx.activeOrder) && isLikelyOrderStatusFollowUp(text))) {
+        add(plan, "checkOrderStatus", "live_order_status");
+    }
+    if (PAYMENT_DETAILS_RE.test(text) && !RECEIPT_EVENT_RE.test(text)) {
+        add(plan, "getPaymentDetails", "live_payment_details");
+    }
+    if (BUSINESS_INFO_RE.test(text)) {
+        add(plan, "getBusinessInfo", "current_business_information");
+    }
+    if (MENU_LOOKUP_RE.test(text)) {
+        add(plan, "searchMenu", "live_menu_lookup");
+    }
+    if (DIRECT_MENU_LINK_RE.test(text) || (ctx.explicitMenuLinkIntent && !MENU_LOOKUP_RE.test(text))) {
+        add(plan, "sendMenuLink", "personal_menu_link");
+    }
+    return {
+        requiredTools: plan.requiredTools.slice(0, 3),
+        reason: plan.reason.slice(0, 3),
+    };
+}
+/**
+ * The plan seeds the first move, it does not drive the whole turn.
+ *
+ * The previous policy forced one tool per step and then locked toolChoice to
+ * "none", with activeTools narrowed to a single tool. Any regex hit therefore
+ * removed the agent's own judgment for the rest of the turn: it could not chain
+ * a second lookup, could not re-check a fact, and could not skip a tool that
+ * turned out to be irrelevant. That is exactly the "prompt/regex dependence"
+ * that made replies feel mechanical.
+ *
+ * Now: when code is confident about a live-data intent, the first step is still
+ * pinned so the answer is always grounded in fresh data. Every later step is
+ * the agent's own decision, with the full toolset available.
+ */
+export function createAgentStepPolicy(plan) {
+    return ({ stepNumber }) => {
+        if (stepNumber === 0 && plan.requiredTools.length) {
+            const firstTool = plan.requiredTools[0];
+            return {
+                toolChoice: { type: "tool", toolName: firstTool },
+            };
+        }
+        // Four autonomous tool rounds are enough even for a multi-intent request.
+        // The final two steps are reserved for synthesis so a model cannot spend the
+        // whole budget repeating lookups and return an empty customer reply.
+        if (stepNumber >= 4)
+            return { toolChoice: "none" };
+        return { toolChoice: "auto" };
+    };
+}

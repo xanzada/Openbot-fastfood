@@ -1,34 +1,67 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { routeComplaintToAdmin } from "../services/complaintRouting.service.js";
-function createEscalateToAdminSkill(ctx) {
-  return createTool({
-    name: "escalateToAdmin",
-    description: "Escalate a critical or uncertain case to the restaurant admin/operator.",
-    parameters: z.object({
-      reason: z.string(),
-      customerReply: z.string(),
-      urgency: z.enum(["low", "normal", "high"]).default("normal")
-    }),
-    execute: async ({ reason, customerReply, urgency }) => {
-      const routing = await routeComplaintToAdmin(ctx, {
-        summary: reason,
-        customerReply,
-        urgency,
-        source: "ai_tool_escalate_to_admin"
-      });
-      return {
-        action: "operator_case_created",
-        caseId: routing.caseId,
-        queuedForChat: routing.queuedForChat,
-        escalationAvailable: routing.escalationAvailable,
-        mediaAttached: routing.mediaAttached,
-        urgency,
-        customerReply: routing.customerReply
-      };
+/**
+ * Builds the operator-facing handoff digest.
+ *
+ * A raw "customer is angry about a late order" used to be all the operator
+ * received, so their first messages went into re-collecting what the bot
+ * already knew. This digest hands over the situation the way a good colleague
+ * would: what the customer wants, how they feel, what we remember about them,
+ * and what has already been verified - so the human continues the conversation
+ * instead of restarting it. Deterministic from ctx only: no extra model call.
+ */
+export function buildHandoffDigest(ctx, reason) {
+    const parts = [String(reason || "").trim()];
+    const thinking = ctx.thinking;
+    if (thinking?.goal || thinking?.mood) {
+        parts.push(`Контекст: мақсат=${String(thinking?.goal || "-")}, көңіл-күй=${String(thinking?.mood || "-")}, шұғылдылық=${String(thinking?.urgency || "-")}`);
     }
-  });
+    const profile = ctx.customerProfile;
+    const memoryBits = [];
+    if (profile?.self_introduced_name)
+        memoryBits.push(`аты: ${String(profile.self_introduced_name)}`);
+    if (profile?.complaint_count)
+        memoryBits.push(`бұрынғы шағымдар: ${Number(profile.complaint_count)}`);
+    if (Array.isArray(profile?.preferences) && profile.preferences.length) {
+        memoryBits.push(`тілейіндері: ${profile.preferences.slice(0, 3).join(", ")}`);
+    }
+    if (memoryBits.length)
+        parts.push(`Клиент жайлы белгілісі: ${memoryBits.join("; ")}`);
+    const order = ctx.activeOrder;
+    const orderNumber = order?.number || order?.order_number || order?.id || order?.order_id;
+    if (orderNumber)
+        parts.push(`Белсенді тапсырыс: №${String(orderNumber)}`);
+    const summary = ctx.conversationSummary?.summary;
+    if (summary)
+        parts.push(`Алдыңғы сөйлесу қорытындысы: ${String(summary).slice(0, 220)}`);
+    return parts.filter(Boolean).join("\n").slice(0, 900);
 }
-export {
-  createEscalateToAdminSkill
-};
+export function createEscalateToAdminSkill(ctx) {
+    return createTool({
+        name: "escalateToAdmin",
+        description: "Create a human operator case only for an explicit request to speak to a person, a genuine complaint/service incident, or unresolved fulfillment that requires human action. Missing menu, payment, address, or business data alone is not a reason to escalate.",
+        parameters: z.object({
+            reason: z.string(),
+            customerReply: z.string(),
+            urgency: z.enum(["low", "normal", "high"]).default("normal"),
+        }),
+        execute: async ({ reason, customerReply, urgency }) => {
+            const routing = await routeComplaintToAdmin(ctx, {
+                summary: buildHandoffDigest(ctx, reason),
+                customerReply,
+                urgency,
+                source: "ai_tool_escalate_to_admin",
+            });
+            return {
+                action: "operator_case_created",
+                caseId: routing.caseId,
+                queuedForChat: routing.queuedForChat,
+                escalationAvailable: routing.escalationAvailable,
+                mediaAttached: routing.mediaAttached,
+                urgency,
+                customerReply: routing.customerReply,
+            };
+        },
+    });
+}

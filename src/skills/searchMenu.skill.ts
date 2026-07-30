@@ -2,7 +2,7 @@ import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
-import { menuItemBlockedByNotes } from "../services/noteProvenance.service.js";
+import { publicNoteConstraints, menuItemBlockedByNotes } from "../services/noteProvenance.service.js";
 
 function normalizeText(value: unknown) {
   return String(value || "")
@@ -85,11 +85,11 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       const start = Math.max(0, Number(offset || 0));
       const matches = allMatches.slice(start, start + requested);
       const filteringApplied = items.length !== allowedItems.length;
-      const noteRestrictions = filteringApplied
-        ? (Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [])
-            .map((note: any) => String(note?.text || "").replace(/\s+/g, " ").trim())
-            .filter(Boolean)
-            .slice(0, 3)
+      // Why an item vanished, without ever handing the model the operator's raw
+      // wording: only the derived unavailable terms, which are safe to reason
+      // about and useless to quote.
+      const unavailableNow = filteringApplied
+        ? Array.from(new Set(publicNoteConstraints(ctx.activeShiftNotes).flatMap((entry: any) => entry.blocked_terms || []))).slice(0, 12)
         : [];
       return {
         items: matches,
@@ -97,10 +97,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
         nextOffset: start + matches.length < allMatches.length ? start + matches.length : null,
         totalMatched: allMatches.length,
         noteRestrictionsApplied: filteringApplied,
-        // The operator's live law, surfaced so the agent can explain WHY an
-        // item vanished instead of guessing: say it is temporarily unavailable
-        // and pivot to the items that remain.
-        ...(noteRestrictions.length ? { note_restrictions: noteRestrictions } : {}),
+        ...(unavailableNow.length ? { unavailable_now: unavailableNow } : {}),
       };
     },
   });

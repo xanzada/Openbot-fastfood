@@ -142,6 +142,11 @@ function enforceExactMagicLink(text: string, ctx: FastFoodContext): string {
   });
 }
 
+// Words that only exist inside the system: operator notes, kitchen status,
+// context and tooling. A guest must never see any of them.
+const INTERNAL_DISCLOSURE_RE =
+  /(\u043e\u043f\u0435\u0440\u0430\u0442\u043e\u0440|\u0435\u0441\u043a\u0435\u0440\u0442\u043f|\u0437\u0430\u043c\u0435\u0442\u043a|\u043f\u0440\u0438\u043c\u0435\u0447\u0430\u043d\u0438|\u0436\u04af\u0439\u0435\u0434\u0435|\u0441\u0438\u0441\u0442\u0435\u043c\u0430\u0434\u0430|\u0441\u0442\u0430\u0442\u0443\u0441\u0442\u0430|kitchen[_ ]?status|operator|note[s]?\b|context|instruction|prompt|tool\b)/i;
+
 export function validateFinalText(
   rawText: string,
   ctx: FastFoodContext,
@@ -217,6 +222,22 @@ export function validateFinalText(
     } else {
       return { text: noActiveOrderText(ctx), hasLink: false, warnings: [...warnings, "unsupported_order_claim"] };
     }
+  }
+
+  // Internal provenance must never reach a guest. A model under pressure likes
+  // to justify itself ("the operator note says..."), which exposes kitchen
+  // shorthand written for staff. The sentence carrying the disclosure is cut,
+  // not the whole reply, so the useful part of the answer survives.
+  if (INTERNAL_DISCLOSURE_RE.test(text)) {
+    const kept = text
+      .split(/(?<=[.!?\u2026])\s+|\n+/)
+      .filter((sentence) => !INTERNAL_DISCLOSURE_RE.test(sentence))
+      .join(" ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    warnings.push("internal_disclosure_removed");
+    text = kept;
+    if (!text) return { text: fallback(ctx), hasLink: false, warnings };
   }
 
   // Link integrity and duplicate suppression are transport contracts.
