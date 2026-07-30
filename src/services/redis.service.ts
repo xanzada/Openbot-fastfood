@@ -654,6 +654,33 @@ export async function scanKeys(pattern: string): Promise<string[]> {
   return keys;
 }
 
+const SHIFT_NOTE_DEFAULT_TTL_SECONDS = 24 * 60 * 60;
+
+/**
+ * Parses whatever expiry format the DLE site sends into a TTL.
+ *
+ * The hidden bug: a Unix timestamp in SECONDS ("1785400000") goes through
+ * Date.parse as garbage (NaN in V8), so every note with an epoch expiry
+ * silently lived the default 24h instead of its real lifetime. Numeric strings
+ * are now detected explicitly: >=1e12 is treated as milliseconds, >=1e9 as
+ * seconds; anything else falls back to Date.parse; past or invalid values fall
+ * back to the 24h default.
+ */
+export function resolveShiftNoteTtlSeconds(expiresAtString?: string, nowMs = Date.now()): number {
+  const raw = String(expiresAtString || "").trim();
+  if (!raw) return SHIFT_NOTE_DEFAULT_TTL_SECONDS;
+  let expiresAtMs = 0;
+  if (/^\d{10,16}$/.test(raw)) {
+    const numeric = Number(raw);
+    expiresAtMs = numeric >= 1e12 ? numeric : numeric * 1000;
+  } else {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) expiresAtMs = parsed;
+  }
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return SHIFT_NOTE_DEFAULT_TTL_SECONDS;
+  return Math.max(60, Math.ceil((expiresAtMs - nowMs) / 1000));
+}
+
 export async function saveShiftNote(
   instanceId: string,
   noteId: string | number | undefined,
@@ -667,11 +694,7 @@ export async function saveShiftNote(
       String(noteId || "").trim() ||
       `fallback_${crypto.createHash("sha1").update(`${instanceId}|${noteText}|${expiresAtString || ""}`).digest("hex").slice(0, 16)}`;
 
-    let ttlSeconds = 24 * 60 * 60;
-    const expiresAt = expiresAtString ? Date.parse(expiresAtString) : 0;
-    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-      ttlSeconds = Math.max(60, Math.ceil((expiresAt - Date.now()) / 1000));
-    }
+    const ttlSeconds = resolveShiftNoteTtlSeconds(expiresAtString);
 
     await redisClient.setEx(
       `shift_note:${instanceId}:${safeNoteId}`,

@@ -588,6 +588,11 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     auditDecision("Creating new processing record via Redis lock", { orderId, action, instance, lockKey });
 
     if (action === "shift_note_created" && shiftNotePayload) {
+      if (!shiftNotePayload.text.trim()) {
+        auditDecision("Rejected shift note: empty text", { instance, shiftNotePayload });
+        res.status(400).json({ ok: false, error: "EMPTY_NOTE_TEXT" });
+        return;
+      }
       auditDecision("Saving shift note to AI memory", { instance, shiftNotePayload });
       const saved = await saveShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text, shiftNotePayload.expiresAt);
       if (!saved) throw new Error("SHIFT_NOTE_SAVE_FAILED");
