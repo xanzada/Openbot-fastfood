@@ -557,6 +557,12 @@ async function purgeShiftNoteIdsFromHistory(instanceId, noteIds) {
         await multi.exec();
         if (kept.length && ttlBefore > 0)
             await redisClient.expire(key, ttlBefore);
+        // The rolling summary is written from this history, so a note that was
+        // just deleted survives inside it ("pizza was unavailable") and reaches
+        // the prompt again long after the operator removed it. The summary is a
+        // derived cache: dropping it makes the next turn rebuild it from what is
+        // actually left, which is the only state the guest may hear about.
+        await redisClient.del(key.replace(/^history:/, "conv_summary:")).catch(() => undefined);
         removedTotal += removed;
     }
     return removedTotal;
