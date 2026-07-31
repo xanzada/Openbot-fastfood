@@ -54,13 +54,23 @@ export function selectPublicMenuItems(items, query = "", category = "", limit = 
     })
         .sort((left, right) => right.score - left.score || Number(left.item.price || 0) - Number(right.item.price || 0))
         .slice(0, max)
-        .map((entry) => ({
-        name: entry.item.name,
-        category: entry.item.category_name,
-        ingredients: entry.item.composition || entry.item.description || "",
-        price: entry.item.price,
-        available: typeof entry.item.available === "boolean" ? entry.item.available : undefined,
-    }));
+        .map((entry) => {
+        const name = normalizeText(entry.item.name || entry.item.title);
+        const category = normalizeText(entry.item.category_name || entry.item.category);
+        const body = normalizeText(`${entry.item.composition || ""} ${entry.item.description || ""}`);
+        // "лаваш" is not a dish here, it is what the Донер is wrapped in. Without this
+        // flag the model reads a hit it cannot explain and tells the guest we have
+        // nothing, when the right answer is to offer the dish that contains it.
+        const ingredientMatch = Boolean(normalizedQuery && !name.includes(normalizedQuery) && !category.includes(normalizedQuery) && body.includes(normalizedQuery));
+        return {
+            name: entry.item.name,
+            category: entry.item.category_name,
+            ingredients: entry.item.composition || entry.item.description || "",
+            price: entry.item.price,
+            available: typeof entry.item.available === "boolean" ? entry.item.available : undefined,
+            ...(ingredientMatch ? { matched_as_ingredient: true } : {}),
+        };
+    });
 }
 export function createSearchMenuSkill(ctx) {
     return createTool({
