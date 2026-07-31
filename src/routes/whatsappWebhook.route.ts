@@ -66,7 +66,7 @@ import {
 import { getTextModels } from "../services/llm.service.js";
 import { classifyKitchenSalesPolicy,
   formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, requestedOrderNumber } from "../utils/orderIntent.js";
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
 import { bumpOperatorCaseSignal, detectOperatorCaseKind } from "../services/operatorCase.service.js";
@@ -272,7 +272,8 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
   // complaint and never raise the operator flag, so anger and human requests
   // are left to the escalation path further down instead of being short-circuited here.
   if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text)) return null;
-  if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text))) return null;
+  const timingAsked = Boolean(ctx.activeOrder) && isOrderTimingQuestion(ctx.text);
+  if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked) return null;
   const orderNumber = requestedOrderNumber(ctx.text);
   const lookup = orderNumber
     ? await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, orderNumber)

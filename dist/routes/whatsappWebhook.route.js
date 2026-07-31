@@ -16,7 +16,7 @@ import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.
 import { analyzeMedia, createReceiptFingerprint, receiptFilterEnabled, validateReceiptAnalysis, } from "../services/mediaAnalysis.service.js";
 import { getTextModels } from "../services/llm.service.js";
 import { classifyKitchenSalesPolicy, formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel } from "../services/kitchenPolicy.service.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, requestedOrderNumber } from "../utils/orderIntent.js";
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, requestedOrderNumber } from "../utils/orderIntent.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
 import { bumpOperatorCaseSignal, detectOperatorCaseKind } from "../services/operatorCase.service.js";
 import { computeProactiveSignals } from "../services/proactiveSignals.service.js";
@@ -170,7 +170,8 @@ async function customerOrderReply(ctx) {
     // are left to the escalation path further down instead of being short-circuited here.
     if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text))
         return null;
-    if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)))
+    const timingAsked = Boolean(ctx.activeOrder) && isOrderTimingQuestion(ctx.text);
+    if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked)
         return null;
     const orderNumber = requestedOrderNumber(ctx.text);
     const lookup = orderNumber
