@@ -6,7 +6,7 @@ import { getRestaurantConfig, getShporContext } from "../services/platformConfig
 import { connectRedis, getActiveShiftNotes, getChatHistory, getSiteLanguageHint, getUserLang, hasMagicLinkBeenSent, replaceUserLang, saveUserLang, } from "../services/redis.service.js";
 import { getConversationSummary, getCustomerProfile, getTurnTrace, } from "../services/customerMemory.service.js";
 import { getActiveGoal } from "../services/goalTracker.service.js";
-import { resolveOrganicLanguage, shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
+import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 function firstValue(...values) {
     for (const value of values) {
         if (value !== undefined && value !== null && String(value).trim() !== "")
@@ -54,7 +54,8 @@ export async function preloadContext(input) {
         const previousLanguage = previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
             ? detectLang(String(previousCustomerText))
             : null;
-        if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language)) {
+        const decisiveNow = textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language);
+        if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language, decisiveNow)) {
             const switched = await replaceUserLang(instanceId, phone, decision.language).catch(() => false);
             if (switched) {
                 language = decision.language;

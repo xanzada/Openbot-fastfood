@@ -19,7 +19,7 @@ import {
   getTurnTrace,
 } from "../services/customerMemory.service.js";
 import { getActiveGoal } from "../services/goalTracker.service.js";
-import { resolveOrganicLanguage, shouldSwitchLockedLanguage } from "../services/languagePolicy.service.js";
+import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
 export interface InboundMessage {
@@ -90,7 +90,8 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     const previousLanguage = previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
       ? detectLang(String(previousCustomerText))
       : null;
-    if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language)) {
+    const decisiveNow = textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language);
+    if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language, decisiveNow)) {
       const switched = await replaceUserLang(instanceId, phone, decision.language).catch(() => false);
       if (switched) {
         language = decision.language;

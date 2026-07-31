@@ -1,11 +1,29 @@
 export type CustomerLanguage = "kk" | "ru";
 
+// Letters and words that only one of the two languages uses. A message carrying
+// them is not a guess, so making the guest repeat themselves before being
+// answered in their own language would be rude.
+const DECISIVE_KAZAKH = /[әғқңөұүһі]/u;
+const DECISIVE_RUSSIAN = /(?:здравствуй|привет|пожалуйста|спасибо|хочу|можно|сколько|доставка|заказыва|давайте|ещё|еще раз)/iu;
+
+export function textCarriesDecisiveLanguageSignal(text: unknown, language: CustomerLanguage) {
+  const value = String(text || "").toLowerCase();
+  if (!value.trim()) return false;
+  if (language === "kk") return DECISIVE_KAZAKH.test(value);
+  return !DECISIVE_KAZAKH.test(value) && DECISIVE_RUSSIAN.test(value);
+}
+
 export function shouldSwitchLockedLanguage(
   lockedLanguage: CustomerLanguage,
   previousCustomerLanguage: CustomerLanguage | null,
-  currentCustomerLanguage: CustomerLanguage
+  currentCustomerLanguage: CustomerLanguage,
+  currentTextIsDecisive = false
 ) {
-  return currentCustomerLanguage !== lockedLanguage && previousCustomerLanguage === currentCustomerLanguage;
+  if (currentCustomerLanguage === lockedLanguage) return false;
+  // One unmistakable message is enough; anything weaker still waits for a second
+  // message in the same language so a single foreign word cannot flip the lock.
+  if (currentTextIsDecisive) return true;
+  return previousCustomerLanguage === currentCustomerLanguage;
 }
 
 export function normalizeSiteLanguage(value: unknown): CustomerLanguage | null {

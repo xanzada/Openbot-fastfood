@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { detectLanguageDecision, detectLang, parseGeminiLanguageDecision } from "../src/utils/language.js";
-import { detectNameLanguage, resolveOrganicLanguage, shouldSwitchLockedLanguage } from "../src/services/languagePolicy.service.js";
+import { detectNameLanguage, resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
 // regex cannot see it, which is why a failed classification must never be
@@ -120,4 +120,21 @@ test("a brand new guest falls back to the name, then the site, then Kazakh", () 
     resolveOrganicLanguage({ detected: null, priorLanguage: null, contactName: "", siteLanguageHint: null }),
     { language: "kk", source: "default" }
   );
+});
+
+test("an unmistakable message switches the locked language at once", () => {
+  // "тамақтың сапасы нашар" carries Kazakh-only letters, so answering it in
+  // Russian and waiting for a second Kazakh message insults the guest.
+  assert.equal(textCarriesDecisiveLanguageSignal("тамақтың сапасы нашар", "kk"), true);
+  assert.equal(shouldSwitchLockedLanguage("ru", "ru", "kk", true), true);
+  assert.equal(textCarriesDecisiveLanguageSignal("здравствуйте, сколько стоит доставка", "ru"), true);
+  assert.equal(shouldSwitchLockedLanguage("kk", "kk", "ru", true), true);
+});
+
+test("a weak signal still needs a second message before the lock moves", () => {
+  assert.equal(textCarriesDecisiveLanguageSignal("ok", "kk"), false);
+  assert.equal(textCarriesDecisiveLanguageSignal("бар ма", "ru"), false);
+  assert.equal(shouldSwitchLockedLanguage("ru", "ru", "kk", false), false);
+  assert.equal(shouldSwitchLockedLanguage("ru", "kk", "kk", false), true);
+  assert.equal(shouldSwitchLockedLanguage("kk", "ru", "kk", true), false);
 });
