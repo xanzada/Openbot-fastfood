@@ -193,6 +193,13 @@ function operationalRuntime(ctx) {
         delivery: live.delivery ?? null, pickup: live.pickup ?? null,
         is_emergency: Boolean(live.is_emergency), reset_at: Number(live.reset_at || 0),
         stale: Boolean(live.stale), runtime_available: Boolean(live.runtime_available),
+        // A guest asking "how long?" has already paid; "I have no information" is the
+        // one answer that is never true here. wait_time plus the order stage always
+        // supports an honest estimate, and the kitchen can be quoted as normal speed
+        // when the wait is zero.
+        timing_answer_rule: waitMinutes > 0
+            ? "If the customer asks how long, say the kitchen is loaded and name the wait out loud, then say you will write the moment it is ready. Never answer that you have no information."
+            : "If the customer asks how long, say the kitchen is working at its normal pace and give the usual readiness window, then say you will write the moment it is ready. Never answer that you have no information.",
     };
 }
 function operationalShiftNotes(ctx) {
