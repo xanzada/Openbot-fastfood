@@ -98,6 +98,23 @@ export async function bumpOperatorCaseSignal(instanceId, rawPhone) {
         return false;
     const data = JSON.parse(raw);
     const now = Date.now();
+    // One open case deserves one red flag. Re-pushing the marker on every inbound
+    // message buried the real conversation under duplicates and made the operator
+    // panel look like the customer kept asking for a human.
+    const recent = await redisClient.lRange(`history:${instanceId}:${customerPhone}`, -40, -1);
+    const alreadyFlagged = recent.some((entry) => {
+        try {
+            const parsed = JSON.parse(entry);
+            return parsed?.source === "openbot_operator_case" && parsed?.operatorCaseId === caseId;
+        }
+        catch {
+            return false;
+        }
+    });
+    if (alreadyFlagged) {
+        await redisClient.zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }]);
+        return true;
+    }
     const marker = JSON.stringify({
         role: "user", direction: "incoming", fromMe: false, source: "openbot_operator_case", operatorCaseId: caseId,
         caseKind: data.kind, highlight: "red", text: `🚨 Оператор қажет: ${clean(data.summary, 180)}`, createdAt: now,
