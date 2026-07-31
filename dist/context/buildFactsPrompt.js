@@ -245,6 +245,30 @@ function mandatoryConstraints(ctx) {
         wait_consent_required: policy.requiresConsent,
     };
 }
+/**
+ * The live menu, preloaded. Without it the model answered availability
+ * questions from memory and invented shortages of dishes the kitchen sells.
+ * The rule is deliberately narrow: absence from this list or an operator note
+ * are the only two grounds on which anything may be called unavailable.
+ */
+function menuSnapshotBlock(ctx) {
+    const snapshot = ctx.menuSnapshot;
+    const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+    if (!items.length) {
+        return {
+            menu_snapshot_unavailable: {
+                rule: "The menu could not be preloaded this turn. Call searchMenu before saying anything about what exists, what it costs, or what is out. Never tell the customer a dish is unavailable on a guess.",
+            },
+        };
+    }
+    return {
+        menu_snapshot: {
+            count: items.length,
+            items,
+            rule: "This is the live menu of this restaurant. A dish listed here EXISTS and can be sold at the price shown, unless unavailable_now blocks it. You may call a dish unavailable ONLY when it is absent from this list or blocked by an operator constraint - never from memory or assumption. When something is blocked, say so and in the same message offer a real replacement by name and price, chosen from this list and never a dish whose composition mentions the missing thing. Use composition to answer what is inside a dish and to judge whether a replacement is honest.",
+        },
+    };
+}
 export function buildFactsPrompt(ctx) {
     const brand = firstConfigText(ctx.config, "brand", "name", "restaurant_name", "restaurantName");
     return [
@@ -296,6 +320,7 @@ export function buildFactsPrompt(ctx) {
                 getPaymentDetails: "Current online prepayment requisites only from live site kitchen settings payment_details; never from cached tenant metadata.",
                 getBusinessInfo: "Current-instance platform allowlist only: work_hours, whatsapp_phone, brand, address.",
             },
+            ...menuSnapshotBlock(ctx),
             payment_policy: ONLINE_PREPAYMENT_POLICY,
             operational_runtime: operationalRuntime(ctx),
             ...operationalShiftNotesBlock(ctx),

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { detectLang, detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
 import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
-import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
+import { getMenuContext, getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
 import {
   connectRedis,
@@ -23,6 +23,30 @@ import { orderMentionedByItems, pickConversationOrder } from "../services/custom
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
+
+/**
+ * The menu used to reach the agent only when the model happened to call
+ * searchMenu. When it did not, the turn ran with no menu at all and the model
+ * filled the hole with a guess: real dishes were announced as "temporarily
+ * unavailable". Availability is a fact, not a tool call, so a compact snapshot
+ * of the live menu now rides in the context of every turn. It stays small:
+ * name, price, category and a short composition, which is all an answer about
+ * price, existence or ingredients needs.
+ */
+function buildMenuSnapshot(menu: any) {
+  const items = Array.isArray(menu?.items) ? menu.items : [];
+  if (!items.length) return null;
+  return {
+    source: String(menu?.source || ""),
+    count: items.length,
+    items: items.slice(0, 60).map((item: any) => ({
+      name: String(item?.name || "").trim(),
+      price: item?.price ?? null,
+      category: String(item?.category_name || item?.category || "").trim(),
+      composition: String(item?.composition || item?.description || "").trim().slice(0, 160),
+    })).filter((item: any) => item.name),
+  };
+}
 
 export interface InboundMessage {
   instanceId: string;
@@ -157,7 +181,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // Long-term memory is read in the same parallel batch as the live lookups, so
   // it adds no measurable latency. Every read degrades to null on failure:
   // memory enriches the answer, it must never be able to block one.
-  const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal] =
+  const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal, liveMenu] =
     await Promise.all([
       getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
       domain
@@ -168,7 +192,10 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       getConversationSummary(instanceId, phone).catch(() => null),
       getTurnTrace(instanceId, phone).catch(() => null),
       getActiveGoal(instanceId, phone).catch(() => null),
+      domain ? getMenuContext(instanceId, domain, language).catch(() => null) : Promise.resolve(null),
     ]);
+
+  const menuSnapshot = buildMenuSnapshot(liveMenu);
 
   // The site calls the oldest unfinished order "active", but a guest who has
   // spent the whole chat asking about one order means that order when they say
@@ -253,6 +280,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     hardRealtimeContext,
     activeOrder: focusedActiveOrder,
     chatHistory,
+    menuSnapshot,
     activeShiftNotes,
     activeShiftNotesFingerprint,
     mediaContext: input.mediaContext || null,

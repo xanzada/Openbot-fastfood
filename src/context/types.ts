@@ -11,6 +11,7 @@ export interface FastFoodContext {
   hardRealtimeContext: Record<string, any>;
   activeOrder: Record<string, any> | null;
   chatHistory: any[];
+  menuSnapshot: Record<string, any> | null;
   activeShiftNotes: any[];
   activeShiftNotesFingerprint: string;
   mediaContext: Record<string, any> | null;
