@@ -115,6 +115,21 @@ export async function createOperatorCase(input: {
   return { ...data, sos };
 }
 
+// A case already sitting on the operator board must not raise a second red flag
+// just because the chat scrolled past the first one, and a case nobody has
+// touched for half a day must not keep flagging a guest who has long moved on
+// to ordinary questions.
+export const CASE_FLAG_QUIET_MS = 12 * 60 * 60 * 1000;
+
+export type CaseFlagDecision = "flag" | "already_flagged" | "stale";
+
+export function decideCaseFlag(data: { markerPushedAt?: number; updatedAt?: number; createdAt?: number }, now = Date.now()): CaseFlagDecision {
+  if (data?.markerPushedAt) return "already_flagged";
+  const lastTouch = Number(data?.updatedAt || data?.createdAt || 0);
+  if (lastTouch && now - lastTouch > CASE_FLAG_QUIET_MS) return "stale";
+  return "flag";
+}
+
 export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: string) {
   const customerPhone = phone(rawPhone);
   if (!instanceId || !customerPhone) return false;
@@ -125,9 +140,17 @@ export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: strin
   if (!raw) return false;
   const data = JSON.parse(raw);
   const now = Date.now();
-  // One open case deserves one red flag. Re-pushing the marker on every inbound
-  // message buried the real conversation under duplicates and made the operator
-  // panel look like the customer kept asking for a human.
+  // The case record remembers its own flag, so trimming the history can never
+  // resurrect it.
+  const decision = decideCaseFlag(data, now);
+  if (decision === "already_flagged") {
+    await redisClient.zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }]);
+    return true;
+  }
+  if (decision === "stale") {
+    await redisClient.del(activeKey(instanceId, customerPhone));
+    return false;
+  }
   const recent = await redisClient.lRange(`history:${instanceId}:${customerPhone}`, -40, -1);
   const alreadyFlagged = recent.some((entry: string) => {
     try {
@@ -137,18 +160,23 @@ export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: strin
       return false;
     }
   });
+  const flagged = { ...data, markerPushedAt: now };
   if (alreadyFlagged) {
-    await redisClient.zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }]);
+    await redisClient.multi()
+      .set(caseKey(instanceId, caseId), JSON.stringify(flagged), { EX: CASE_TTL_SECONDS })
+      .zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }])
+      .exec();
     return true;
   }
   const marker = JSON.stringify({
     role: "user", direction: "incoming", fromMe: false, source: "openbot_operator_case", operatorCaseId: caseId,
-    caseKind: data.kind, highlight: "red", text: `🚨 Оператор қажет: ${clean(data.summary, 180)}`, createdAt: now,
+    caseKind: data.kind, highlight: "red", text: `\u{1F6A8} Оператор қажет: ${clean(data.summary, 180)}`, createdAt: now,
   });
   await redisClient.multi()
     .rPush(`history:${instanceId}:${customerPhone}`, marker)
     .lTrim(`history:${instanceId}:${customerPhone}`, -120, -1)
     .expire(`history:${instanceId}:${customerPhone}`, 24 * 60 * 60)
+    .set(caseKey(instanceId, caseId), JSON.stringify(flagged), { EX: CASE_TTL_SECONDS })
     .zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }])
     .exec();
   return true;
