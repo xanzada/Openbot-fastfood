@@ -65,5 +65,19 @@ catch (error) {
     auditError("Customer order lookup failed", error, { instanceId, orderNumber: orderNumber || "", phone: normalizePhone(phone) });
     return { state: "unavailable" };
 } }
+// A status line that stops at the label leaves the guest wondering what to do
+// next, so every answer ends with who moves and when.
+export function orderNextStepLine(order, language) {
+    const label = String(order.statusLabel || "").toLowerCase();
+    if (/готов|дайын/.test(label))
+        return language === "ru" ? "Можете забирать — всё упаковано." : "Алып кетуге болады — бәрі дайын.";
+    if (/пути|достав|жолда|жеткіз/.test(label))
+        return language === "ru" ? "Курьер уже едет к вам." : "Курьер жолға шықты.";
+    if (/отмен|болдыр|бас тарт/.test(label))
+        return language === "ru" ? "Если это ошибка, напишите — сразу разберёмся." : "Егер бұл қате болса, жазыңыз — бірден шешеміз.";
+    if (/готовит|даярла|дайындал/.test(label))
+        return language === "ru" ? "Как только будет готово, сразу напишем." : "Дайын болған сәтте бірден хабарлаймыз.";
+    return language === "ru" ? "Как только что-то изменится, сразу напишем." : "Жаңалық болса, бірден хабарлаймыз.";
+}
 export function formatCustomerOrderStatus(order, language) { const items = order.items.slice(0, 8).map(i => `${i.name} ×${i.quantity}`).join(", "); if (language === "ru")
-    return items ? `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Состав: ${items}.` : `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}.`; return items ? `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Құрамы: ${items}.` : `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}.`; }
+    return items ? `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Состав: ${items}. ${orderNextStepLine(order, language)}` : `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${orderNextStepLine(order, language)}`; return items ? `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Құрамы: ${items}. ${orderNextStepLine(order, language)}` : `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${orderNextStepLine(order, language)}`; }
