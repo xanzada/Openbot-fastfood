@@ -79,3 +79,15 @@ test("both customer-facing lines stay short and promise nothing", () => {
     assert.match(handoff, /оператор/i, `${lang} handoff must name the operator`);
   }
 });
+
+test("anger about a specific order is a complaint, not a status question", () => {
+  // A guest who names an order number while furious used to receive a dry
+  // status line, and the operator never saw a red flag. The complaint signal
+  // has to win over the order-number signal.
+  for (const text of [
+    "вы что творите вообще, заказ 59 холодный привезли и цезарь кислый, это ужас требую возврат",
+    "59 тапсырысым суық келді, сапасы нашар, ақшамды қайтарыңыз",
+  ]) {
+    assert.equal(isLikelyComplaintText(text), true, text);
+  }
+});

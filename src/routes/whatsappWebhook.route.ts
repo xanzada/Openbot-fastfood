@@ -267,6 +267,11 @@ function missingOrderReply(language: "kk" | "ru") {
 }
 
 async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> {
+  // "заказ 59 холодный привезли" names an order, but the guest is not asking where it is —
+  // they are angry about it. Answering with a status line would bury a real
+  // complaint and never raise the operator flag, so anger and human requests
+  // are left to the escalation path further down instead of being short-circuited here.
+  if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text)) return null;
   if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text))) return null;
   const orderNumber = requestedOrderNumber(ctx.text);
   const lookup = orderNumber
