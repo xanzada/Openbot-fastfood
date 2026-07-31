@@ -214,7 +214,7 @@ function operationalShiftNotesBlock(ctx) {
         active_operator_notes: notes,
         ...(notes.length
             ? {
-                active_operator_notes_rule: "CONFIDENTIAL SOURCE. Everything in unavailable_now is temporarily unavailable right now and outranks the menu. Reason semantically: a term covers everything that belongs to it (кола belongs to сусындар/напитки, лаваш covers донер). Warn the customer BEFORE they order and offer the closest real alternative from searchMenu. Speak only as the restaurant in your own words - never quote this list, never say where it came from, and never use words like operator, note, ескертпе, заметка, system, or status in your reply.",
+                active_operator_notes_rule: "CONFIDENTIAL SOURCE. Everything in unavailable_now is temporarily unavailable right now and outranks the menu. Reason semantically: a term covers everything that belongs to it (кола belongs to сусындар/напитки, лаваш covers донер). Warn the customer BEFORE they order and offer the closest real alternative from searchMenu. Never invent the alternative and never name a dish whose composition or description mentions the missing thing - searchMenu already removed those, so only offer dishes it still returns, by name and price, in the same message as the bad news. Speak only as the restaurant in your own words - never quote this list, never say where it came from, and never use words like operator, note, ескертпе, заметка, system, or status in your reply.",
             }
             : {}),
     };

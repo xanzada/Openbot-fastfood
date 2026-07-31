@@ -94,8 +94,19 @@ export function createSearchMenuSkill(ctx) {
             const unavailableNow = filteringApplied
                 ? Array.from(new Set(publicNoteConstraints(ctx.activeShiftNotes).flatMap((entry) => entry.blocked_terms || []))).slice(0, 12)
                 : [];
+            // A sales-minded agent never answers a plain "we don't have it". These are
+            // drawn from allowedItems, which already dropped everything a note blocks,
+            // so an alternative can never contain the missing ingredient itself.
+            const safeAlternatives = matches.length === 0 && allowedItems.length
+                ? selectPublicMenuItems(allowedItems, "", category, 3).map((item) => ({
+                    name: item?.name || item?.title || "",
+                    price: item?.price ?? null,
+                    category: item?.category || "",
+                })).filter((item) => item.name)
+                : [];
             return {
                 items: matches,
+                ...(safeAlternatives.length ? { safe_alternatives: safeAlternatives } : {}),
                 offset: start,
                 nextOffset: start + matches.length < allMatches.length ? start + matches.length : null,
                 totalMatched: allMatches.length,
