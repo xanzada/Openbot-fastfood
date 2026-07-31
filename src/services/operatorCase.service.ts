@@ -70,7 +70,30 @@ export async function createOperatorCase(input: {
   if (existingId) {
     const existing = await redisClient.get(caseKey(instanceId, existingId));
     if (existing) {
-      const data = JSON.parse(existing);
+      // An open case is reused so the operator keeps one thread per guest, but it
+      // must describe what the guest is saying NOW. Leaving the first summary in
+      // place showed "asked for an operator" and an old order number while the
+      // guest was actually complaining about a cold delivery.
+      const previous = JSON.parse(existing);
+      const now = Date.now();
+      const data = {
+        ...previous,
+        kind: input.kind,
+        status: "open",
+        unread: true,
+        highlight: "red",
+        urgency: clean(input.urgency || previous.urgency || "normal", 20),
+        summary: clean(input.summary) || previous.summary,
+        source: clean(input.source || previous.source || "openbot", 80),
+        orderNumber: clean(input.orderNumber || "", 40) || previous.orderNumber || "",
+        hasMedia: Boolean(input.hasMedia) || Boolean(previous.hasMedia),
+        updatedAt: now,
+      };
+      await redisClient.multi()
+        .set(caseKey(instanceId, existingId), JSON.stringify(data), { EX: CASE_TTL_SECONDS })
+        .expire(activeKey(instanceId, customerPhone), CASE_TTL_SECONDS)
+        .zAdd(`operator_cases:${instanceId}`, [{ score: now, value: existingId }])
+        .exec();
       const sos = await activateSos({ instanceId, phone: customerPhone, caseId: existingId, signalId, kind: input.kind, summary: input.summary, urgency: input.urgency, source: input.source });
       return { ...data, sos };
     }
