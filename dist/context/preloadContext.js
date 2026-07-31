@@ -6,6 +6,8 @@ import { getRestaurantConfig, getShporContext } from "../services/platformConfig
 import { connectRedis, getActiveShiftNotes, getChatHistory, getSiteLanguageHint, getUserLang, hasMagicLinkBeenSent, replaceUserLang, saveUserLang, } from "../services/redis.service.js";
 import { getConversationSummary, getCustomerProfile, getTurnTrace, } from "../services/customerMemory.service.js";
 import { getActiveGoal } from "../services/goalTracker.service.js";
+import { pickConversationOrder } from "../services/customerOrder.service.js";
+import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 function firstValue(...values) {
     for (const value of values) {
@@ -137,6 +139,16 @@ export async function preloadContext(input) {
         getTurnTrace(instanceId, phone).catch(() => null),
         getActiveGoal(instanceId, phone).catch(() => null),
     ]);
+    // The site calls the oldest unfinished order "active", but a guest who has
+    // spent the whole chat asking about one order means that order when they say
+    // "қашан келеді?". Pinning the discussed order here keeps the model and the
+    // deterministic status route looking at the same one, so the bot never
+    // answers about an order nobody mentioned.
+    const discussedOrderNumber = lastDiscussedOrderNumber(chatHistory);
+    const discussedOrderRecord = discussedOrderNumber ? pickConversationOrder(activeOrder, discussedOrderNumber) : null;
+    const focusedActiveOrder = discussedOrderRecord && activeOrder
+        ? { ...activeOrder, order: discussedOrderRecord, active_order: discussedOrderRecord, order_id: discussedOrderRecord.id, status: discussedOrderRecord.status, items: discussedOrderRecord.items, total_price: discussedOrderRecord.total_price, address: discussedOrderRecord.address, comment: discussedOrderRecord.comment, is_pickup: discussedOrderRecord.is_pickup, ai_comment: discussedOrderRecord.ai_comment }
+        : activeOrder;
     const runtimeAvailable = Boolean(runtimeStatus);
     const runtimeWaitTime = Number(runtimeStatus?.kitchen_status?.wait_time ??
         runtimeStatus?.wait_time ??
@@ -193,7 +205,7 @@ export async function preloadContext(input) {
         runtimeStatus,
         fetchedSettings,
         hardRealtimeContext,
-        activeOrder,
+        activeOrder: focusedActiveOrder,
         chatHistory,
         activeShiftNotes,
         activeShiftNotesFingerprint,
