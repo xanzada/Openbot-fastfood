@@ -32,16 +32,28 @@
 - `MEDIA_FALLBACK_MODEL` (has default) — .env.example
 - `MEDIA_PRIMARY_KEYS` **required** — .env.example
 - `MEDIA_PRIMARY_MODEL` (has default) — .env.example
+- `MEDIA_PRO_ENABLED` (has default) — .env.example
+- `MEDIA_PRO_KEYS` **required** — .env.example
+- `MEDIA_PRO_MODEL` (has default) — .env.example
+- `MEDIA_USE_FREE_KEYS` (has default) — .env.example
 - `N8N_WEBHOOK_TIMEOUT_MS` (has default) — .env.example
 - `N8N_WEBHOOK_TOKEN` **required** — .env.example
 - `N8N_WEBHOOK_URL` **required** — .env.example
-- `NOCODB_SHPOR_TABLE_ID` **required** — src\services\nocodb.service.ts
-- `NOCODB_TABLE_ID` **required** — .env.example
-- `NOCODB_TOKEN` **required** — .env.example
-- `NOCODB_URL` **required** — .env.example
+- `NODE_ENV` **required** — src\transport\whatspro.client.ts
+- `NODE_TEST_CONTEXT` **required** — src\services\redis.service.ts
 - `OPENAI_API_KEY` (has default) — .env
 - `OPENAI_BASE_URL` (has default) — .env
+- `OPENBOT_DEV_ALERT_DEDUPE_SECONDS` (has default) — .env.example
+- `OPENBOT_DEVELOPER_PHONE` (has default) — .env.example
+- `OPENBOT_INBOUND_BUFFER_MS` (has default) — .env.example
+- `OPENBOT_MAX_AUDIO_BYTES` (has default) — .env.example
+- `OPENBOT_MAX_DOCUMENT_BYTES` (has default) — .env.example
+- `OPENBOT_MAX_IMAGE_BYTES` (has default) — .env.example
 - `OPENBOT_MAX_MEDIA_BYTES` (has default) — .env.example
+- `OPENBOT_MAX_VOICE_SECONDS` (has default) — .env.example
+- `OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES` (has default) — .env.example
+- `OPENBOT_OUTBOX_DIR` (has default) — .env.example
+- `OPENBOT_OUTBOX_INTERVAL_MS` (has default) — .env.example
 - `OPENBOT_RESPONSE_CHUNK_MAX` (has default) — .env.example
 - `OPENBOT_SPAM_LIMIT_PER_MINUTE` (has default) — .env.example
 - `OPENBOT_SPAM_MUTE_SECONDS` (has default) — .env.example
@@ -55,12 +67,23 @@
 - `PORT` (has default) — .env.example
 - `PRIVATE_CONTACT_KEYWORDS` (has default) — .env.example
 - `RECEIPT_AI_FILTER_ENABLED` (has default) — .env.example
+- `REDIS_CONNECT_TIMEOUT_MS` (has default) — .env.example
+- `REDIS_OPERATION_TIMEOUT_MS` (has default) — .env.example
+- `REDIS_PASSWORD` (has default) — .env.example
 - `REDIS_URL` (has default) — .env.example
-- `SHPOR_CONTEXT_LIMIT` **required** — src\services\nocodb.service.ts
+- `SHPOR_CONTEXT_LIMIT` **required** — src\services\platformConfig.service.ts
+- `SMOKE_INSTANCE_ID` **required** — scripts\agentSmoke.ts
+- `SMOKE_TIMEOUT_MS` **required** — scripts\agentSmoke.ts
 - `TAVILY_API_KEY` **required** — .env.example
+- `TENANTS_PLATFORM_API_TOKEN` **required** — .env.example
+- `TENANTS_PLATFORM_BASE_URL` **required** — .env.example
 - `TEST_MODE_ENABLED` (has default) — .env.example
 - `TEXT_FALLBACK_MODEL` (has default) — .env.example
+- `TEXT_FALLBACK_TIMEOUT_MS` (has default) — .env.example
 - `TEXT_PRIMARY_MODEL` (has default) — .env.example
+- `TEXT_PRIMARY_TIMEOUT_MS` (has default) — .env.example
+- `TEXT_RESERVE_MODEL` (has default) — .env.example
+- `TEXT_RESERVE_TIMEOUT_MS` (has default) — .env.example
 - `WHATSPRO_API_TOKEN` **required** — .env.example
 - `WHATSPRO_BASE_URL` **required** — .env.example
 - `WHATSPRO_PASSWORD` (has default) — .env

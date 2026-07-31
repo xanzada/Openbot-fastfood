@@ -2,9 +2,9 @@
 
 > **Stack:** express, php | none | unknown | typescript
 
-> 5 routes (1 inferred) | 0 models | 0 components | 32 lib files | 66 env vars | 0 middleware | 42 events
+> 7 routes (1 inferred) | 0 models | 0 components | 41 lib files | 89 env vars | 0 middleware | 43 events
 > **Token savings:** this file is ~0 tokens. Without it, AI exploration would cost ~0 tokens. **Saves ~0 tokens per conversation.**
-> **Last scanned:** 2026-07-23 06:52 — re-run after significant changes
+> **Last scanned:** 2026-07-29 16:40 — re-run after significant changes
 
 ---
 
@@ -12,9 +12,11 @@
 
 - `GET` `io` [db, cache, payment] `[inferred]`
 - `POST` `/` params() [auth, payment]
-- `GET` `/health` params() [auth, payment]
-- `GET` `/health/detailed` params() [auth, payment]
-- `POST` `/api/print_trigger` params() [auth, payment]
+- `GET` `/health` params() [auth, cache, payment]
+- `GET` `/health/detailed` params() [auth, cache, payment]
+- `POST` `/api/maintenance/language` params() [auth, cache, payment]
+- `POST` `/api/maintenance/notes` params() [auth, cache, payment]
+- `POST` `/api/print_trigger` params() [auth, cache, payment]
 
 ---
 
@@ -24,7 +26,12 @@
 - `src\agent\finalValidator.ts` — function validateFinalText: (rawText, ctx) => void
 - `src\agent\modelRouter.ts` — function getTextModelId: () => void, function resolveModel: (_ctx) => void
 - `src\agent\persona.ts` — function buildTenantInstructionsFromConfig: (config, any>, instanceId) => void, function buildTenantInstructions: (ctx) => void
-- `src\context\buildFactsPrompt.ts` — function buildFactsPrompt: (ctx) => string
+- `src\agent\toolPolicy.ts`
+  - function resolveAgentToolPlan: (ctx) => AgentToolPlan
+  - function createAgentStepPolicy: (plan) => void
+  - interface AgentToolPlan
+  - type AgentToolName
+- `src\context\buildFactsPrompt.ts` — function compactConversationHistory: (history) => void, function buildFactsPrompt: (ctx) => string
 - `src\context\preloadContext.ts`
   - function preloadContext: (input) => Promise<FastFoodContext>
   - interface InboundMessage
@@ -48,10 +55,18 @@
   - function hasEscalateDeveloperSignal: (text) => void
   - function stripEscalationSignals: (text) => void
   - function isLikelyComplaintText: (text) => void
-  - function buildComplaintClarificationReply: (language) => void
-  - function buildComplaintAckReply: (language) => void
-  - _...5 more_
-- `src\services\developerNotify.service.ts` — function notifyDeveloperSystemFailure: (instanceId, error, meta, unknown>) => Promise<boolean>
+  - function isLikelyOperatorRequestText: (text) => void
+  - function complaintHasActionableDetail: (text) => void
+  - _...9 more_
+- `src\services\customerOrder.service.ts`
+  - function classifyOrderStage: (status, aiComment) => CustomerOrderStage
+  - function describeOrderStage: (stage, language) => void
+  - function describeOrderStatus: (status, language, aiComment) => void
+  - function customerOrderFromRecord: (value, any>|null|undefined, expectedPhone, language) => CustomerOrderLookup
+  - function customerOrderFromContext: (context, any>|null|undefined, expectedPhone, language, hasRequestedOrderNumber) => CustomerOrderLookup
+  - function getCustomerOrder: (instanceId, domain, phone, language, orderNumber?) => Promise<CustomerOrderLookup>
+  - _...4 more_
+- `src\services\developerNotify.service.ts` — function notifyDeveloperSystemFailure: (instanceId, error, meta, unknown>) => Promise<boolean>, function notifyAllDevelopersSystemFailure: (error, meta, unknown>) => Promise<number>
 - `src\services\diagnostics.service.ts`
   - function getConfigSummary: () => void
   - function runDependencyChecks: () => void
@@ -63,74 +78,115 @@
   - function extractPhoneCandidate: (rawValue) => void
   - function normalizePhone: (value) => void
   - function normalizePhoneFromCandidates: (candidates) => void
-  - _...12 more_
+  - _...13 more_
 - `src\services\inboundGuard.service.ts`
   - function extractMessageId: (body) => string
   - function extractInboundText: (body) => string
   - function extractSenderMeta: (body) => void
   - function extractInboundMedia: (body) => InboundMediaContext | null
-  - function getBase64Media: (body, mediaContext) => void
-  - function hydrateInboundMedia: (body, mediaContext) => Promise<InboundMediaContext | null>
-  - _...8 more_
+  - function safeMediaMetadata: (mediaContext) => void
+  - function detectOggOpusDurationSeconds: (base64Value) => void
+  - _...16 more_
 - `src\services\kanbanSync.service.ts` — function syncKanbanEvent: (ctx, event, any>) => Promise<
+- `src\services\kitchenPolicy.service.ts`
+  - function formatKitchenWait: (minutesValue, language) => void
+  - function classifyKitchenSalesPolicy: (runtime, any> | null, nowMs) => void
+  - function detectKitchenConsentAnswer: (text) => "yes" | "no" | "unknown"
+  - function detectRequestedServiceChannel: (text) => "delivery" | "pickup" | "unknown"
+  - interface KitchenSalesPolicy
+  - type KitchenSalesMode
+- `src\services\languagePolicy.service.ts`
+  - function normalizeSiteLanguage: (value) => CustomerLanguage | null
+  - function resolveSiteOutboundLanguage: (lockedLanguage, payloadLanguage, siteLanguageHint) => CustomerLanguage
+  - type CustomerLanguage
 - `src\services\llm.service.ts`
   - function getMediaPrimaryKeys: () => void
-  - function getTextModels: () => TextModelPair
+  - function getTextModels: () => TextModelChain
   - function getMediaPrimaryModel: () => void
   - function getMediaFallbackModel: () => void
-  - function getOpenRouterProvider: () => void
-  - function callGemini: (request) => void
-  - _...6 more_
+  - function getMediaProKeys: () => void
+  - function getMediaProModel: () => void
+  - _...10 more_
 - `src\services\mediaAnalysis.service.ts`
   - function receiptFilterEnabled: (env, string | undefined>) => void
   - function validateReceiptAnalysis: (analysis, any>, context) => void
   - function createReceiptFingerprint: (base64Media, analysis, any>) => void
   - function analyzeMedia: (base64Media, mimeType, caption, userLang, isPdf, systemPrompt, receiptContext) => void
   - interface ReceiptValidationContext
-- `src\services\nocodb.service.ts`
+- `src\services\noteProvenance.service.ts`
+  - function noteConstraintTerms: (text) => string[]
+  - function matchingNoteIds: (notes, value) => string[]
+  - function noteHistoryMeta: (ctx, value) => void
+  - function menuItemBlockedByNotes: (notes, item, any>) => void
+  - function publicNoteConstraints: (notes) => void
+- `src\services\operatorCase.service.ts`
+  - function sosIndexKey: (instanceId) => void
+  - function sosMarkerKey: (instanceId, customerPhone) => void
+  - function sosUnreadKey: (instanceId, customerPhone) => void
+  - function detectOperatorCaseKind: (text) => OperatorCaseKind | null
+  - function createOperatorCase: (input) => void
+  - function bumpOperatorCaseSignal: (instanceId, rawPhone) => void
+  - _...3 more_
+- `src\services\platformConfig.service.ts`
+  - function normalizeRestaurantConfig: (record, any> | null, expectedInstanceId) => Record<string, any> | null
+  - function isTenantBotEnabled: (instanceId) => Promise<boolean>
   - function getRestaurantConfig: (instanceId) => Promise<Record<string, any> | null>
   - function getAllRestaurantConfigs: () => Promise<Record<string, any>[]>
   - function getRestaurantConfigByWhatsAppPhone: (phone) => Promise<Record<string, any> | null>
   - function getShporContext: (instanceId, query) => Promise<any[]>
-  - function saveToShpor: (instanceId, question, answer, category, memoryPayload, any> | null) => Promise<void>
-  - function evaluateForShpor: (question, answer) => Promise<
+  - _...2 more_
+- `src\services\receiptDelivery.service.ts`
+  - function deliverReceiptToClient: (input, sendReceipt) => Promise<ReceiptDeliveryResult>
+  - interface ReceiptDeliveryInput
+  - type ReceiptDeliveryResult
 - `src\services\redis.service.ts`
   - function getRedisTarget: () => void
   - function connectRedis: () => Promise<void>
   - function pingRedis: () => Promise<string>
-  - function getChatHistory: (instanceId, phone) => Promise<any[]>
-  - function saveToHistory: (instanceId, phone, role, text, meta, unknown>) => Promise<void>
-  - function languageKey: (instanceId, phone) => void
-  - _...24 more_
+  - function savePendingKitchenConsent: (instanceId, phone, policyFingerprint, kind) => Promise<boolean>
+  - function getPendingKitchenConsent: (instanceId, phone) => Promise<
+  - function clearPendingKitchenConsent: (instanceId, phone) => Promise<void>
+  - _...41 more_
 - `src\services\tenantAuth.service.ts`
   - function safeCompare: (a, b) => boolean
   - function getIncomingTenantSecret: (req) => void
   - function getTenantSecret: (config, any> | null | undefined, channel) => void
   - function assertTenantSecret: (req, config, any> | null | undefined, channel) => void
+- `src\skills\businessInfo.skill.ts` — function createGetBusinessInfoSkill: (ctx) => void
 - `src\skills\checkOrderStatus.skill.ts` — function createCheckOrderStatusSkill: (ctx) => void
 - `src\skills\crm.skill.ts` — function createUpdateCrmLeadSkill: (ctx) => void
 - `src\skills\escalation.skill.ts` — function createEscalateToAdminSkill: (ctx) => void
-- `src\skills\index.ts` — function createFastFoodSkills: (ctx) => void
+- `src\skills\index.ts` — function createFastFoodSkills: (ctx) => void, const FAST_FOOD_SKILL_NAMES
 - `src\skills\menuLink.skill.ts` — function createSendMenuLinkSkill: (ctx) => void
 - `src\skills\payment.skill.ts` — function createGetPaymentDetailsSkill: (ctx) => void
 - `src\skills\runtimeStatus.skill.ts` — function createGetKitchenStatusSkill: (ctx) => void, function createGetShiftNotesSkill: (ctx) => void
-- `src\skills\searchMenu.skill.ts` — function createSearchMenuSkill: (ctx) => void
+- `src\skills\searchMenu.skill.ts` — function selectPublicMenuItems: (items, any>[], query, category, limit) => void, function createSearchMenuSkill: (ctx) => void
 - `src\skills\tavilySearch.skill.ts` — function searchWeb: (query, options) => void, function createTavilySearchSkill: (_ctx) => void
 - `src\transport\whatspro.client.ts`
   - function splitWhatsProResponse: (text) => string[]
   - function sendWhatsProMessage: (payload) => void
+  - function getWhatsProOutboxSummary: () => void
+  - function drainWhatsProOutbox: (limit) => void
+  - function startWhatsProOutboxWorker: () => void
   - function sendWhatsProPresence: (payload) => void
-  - function sendWhatsProResponseSequence: (payload) => void
+  - _...2 more_
 - `src\utils\language.ts`
+  - function isLanguageBearingCustomerText: (text) => void
+  - function parseGeminiLanguageDecision: (value) => void
   - function detectLang: (text, storedLang?) => "kk" | "ru"
   - function resolveLockedLanguage: (storedLang, detected) => "kk" | "ru"
+  - function detectLanguageDecision: (text, classifier) => void
   - function detectLanguageWithAI: (text) => Promise<"kk" | "ru">
-  - function detectLangWithFallback: (text, storedLang?) => Promise<"kk" | "ru">
+  - _...2 more_
 - `src\utils\magicLink.ts`
   - function normalizeMenuDomain: (domain) => string | null
   - function generateSecureMenuUrl: (domain, phone, tenantSecret) => string | null
   - function isMenuLinkResendRequest: (text) => boolean
   - function hasExplicitMenuLinkIntent: (text) => boolean
+- `src\utils\orderIntent.ts`
+  - function requestedOrderNumber: (text) => void
+  - function isCustomerOrderStatusQuestion: (text) => void
+  - function isLikelyOrderStatusFollowUp: (text) => void
 
 ---
 
@@ -168,16 +224,28 @@
 - `MEDIA_FALLBACK_MODEL` (has default) — .env.example
 - `MEDIA_PRIMARY_KEYS` **required** — .env.example
 - `MEDIA_PRIMARY_MODEL` (has default) — .env.example
+- `MEDIA_PRO_ENABLED` (has default) — .env.example
+- `MEDIA_PRO_KEYS` **required** — .env.example
+- `MEDIA_PRO_MODEL` (has default) — .env.example
+- `MEDIA_USE_FREE_KEYS` (has default) — .env.example
 - `N8N_WEBHOOK_TIMEOUT_MS` (has default) — .env.example
 - `N8N_WEBHOOK_TOKEN` **required** — .env.example
 - `N8N_WEBHOOK_URL` **required** — .env.example
-- `NOCODB_SHPOR_TABLE_ID` **required** — src\services\nocodb.service.ts
-- `NOCODB_TABLE_ID` **required** — .env.example
-- `NOCODB_TOKEN` **required** — .env.example
-- `NOCODB_URL` **required** — .env.example
+- `NODE_ENV` **required** — src\transport\whatspro.client.ts
+- `NODE_TEST_CONTEXT` **required** — src\services\redis.service.ts
 - `OPENAI_API_KEY` (has default) — .env
 - `OPENAI_BASE_URL` (has default) — .env
+- `OPENBOT_DEV_ALERT_DEDUPE_SECONDS` (has default) — .env.example
+- `OPENBOT_DEVELOPER_PHONE` (has default) — .env.example
+- `OPENBOT_INBOUND_BUFFER_MS` (has default) — .env.example
+- `OPENBOT_MAX_AUDIO_BYTES` (has default) — .env.example
+- `OPENBOT_MAX_DOCUMENT_BYTES` (has default) — .env.example
+- `OPENBOT_MAX_IMAGE_BYTES` (has default) — .env.example
 - `OPENBOT_MAX_MEDIA_BYTES` (has default) — .env.example
+- `OPENBOT_MAX_VOICE_SECONDS` (has default) — .env.example
+- `OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES` (has default) — .env.example
+- `OPENBOT_OUTBOX_DIR` (has default) — .env.example
+- `OPENBOT_OUTBOX_INTERVAL_MS` (has default) — .env.example
 - `OPENBOT_RESPONSE_CHUNK_MAX` (has default) — .env.example
 - `OPENBOT_SPAM_LIMIT_PER_MINUTE` (has default) — .env.example
 - `OPENBOT_SPAM_MUTE_SECONDS` (has default) — .env.example
@@ -191,12 +259,23 @@
 - `PORT` (has default) — .env.example
 - `PRIVATE_CONTACT_KEYWORDS` (has default) — .env.example
 - `RECEIPT_AI_FILTER_ENABLED` (has default) — .env.example
+- `REDIS_CONNECT_TIMEOUT_MS` (has default) — .env.example
+- `REDIS_OPERATION_TIMEOUT_MS` (has default) — .env.example
+- `REDIS_PASSWORD` (has default) — .env.example
 - `REDIS_URL` (has default) — .env.example
-- `SHPOR_CONTEXT_LIMIT` **required** — src\services\nocodb.service.ts
+- `SHPOR_CONTEXT_LIMIT` **required** — src\services\platformConfig.service.ts
+- `SMOKE_INSTANCE_ID` **required** — scripts\agentSmoke.ts
+- `SMOKE_TIMEOUT_MS` **required** — scripts\agentSmoke.ts
 - `TAVILY_API_KEY` **required** — .env.example
+- `TENANTS_PLATFORM_API_TOKEN` **required** — .env.example
+- `TENANTS_PLATFORM_BASE_URL` **required** — .env.example
 - `TEST_MODE_ENABLED` (has default) — .env.example
 - `TEXT_FALLBACK_MODEL` (has default) — .env.example
+- `TEXT_FALLBACK_TIMEOUT_MS` (has default) — .env.example
 - `TEXT_PRIMARY_MODEL` (has default) — .env.example
+- `TEXT_PRIMARY_TIMEOUT_MS` (has default) — .env.example
+- `TEXT_RESERVE_MODEL` (has default) — .env.example
+- `TEXT_RESERVE_TIMEOUT_MS` (has default) — .env.example
 - `WHATSPRO_API_TOKEN` **required** — .env.example
 - `WHATSPRO_BASE_URL` **required** — .env.example
 - `WHATSPRO_PASSWORD` (has default) — .env
@@ -226,43 +305,45 @@
 
 ## Most Imported Files (change these carefully)
 
-- `src\context\types.ts` — imported by **18** files
-- `src\services\nocodb.service.ts` — imported by **11** files
-- `src\services\dle.service.ts` — imported by **9** files
-- `src\services\redis.service.ts` — imported by **9** files
-- `src\services\developerNotify.service.ts` — imported by **4** files
-- `src\transport\whatspro.client.ts` — imported by **4** files
-- `src\services\auditLogger.service.ts` — imported by **4** files
+- `src\context\types.ts` — imported by **22** files
+- `src\services\redis.service.ts` — imported by **16** files
+- `src\services\platformConfig.service.ts` — imported by **13** files
+- `src\services\dle.service.ts` — imported by **11** files
+- `src\services\auditLogger.service.ts` — imported by **7** files
+- `src\services\developerNotify.service.ts` — imported by **6** files
+- `src\transport\whatspro.client.ts` — imported by **6** files
+- `src\services\kitchenPolicy.service.ts` — imported by **5** files
 - `src\services\llm.service.ts` — imported by **4** files
+- `src\services\noteProvenance.service.ts` — imported by **3** files
+- `src\utils\language.ts` — imported by **3** files
 - `src\services\tenantAuth.service.ts` — imported by **3** files
-- `src\utils\language.ts` — imported by **2** files
-- `src\services\diagnostics.service.ts` — imported by **2** files
-- `src\context\buildFactsPrompt.ts` — imported by **1** files
-- `src\skills\index.ts` — imported by **1** files
-- `src\agent\instructions.ts` — imported by **1** files
-- `src\agent\finalValidator.ts` — imported by **1** files
-- `src\agent\modelRouter.ts` — imported by **1** files
-- `src\agent\persona.ts` — imported by **1** files
-- `src\utils\magicLink.ts` — imported by **1** files
-- `src\controllers\kanban.ts` — imported by **1** files
-- `src\context\preloadContext.ts` — imported by **1** files
+- `src\services\operatorCase.service.ts` — imported by **3** files
+- `src\agent\fastfoodAgent.ts` — imported by **2** files
+- `src\context\buildFactsPrompt.ts` — imported by **2** files
+- `src\skills\index.ts` — imported by **2** files
+- `src\agent\instructions.ts` — imported by **2** files
+- `src\agent\finalValidator.ts` — imported by **2** files
+- `src\agent\persona.ts` — imported by **2** files
+- `src\agent\toolPolicy.ts` — imported by **2** files
 
 ## Import Map (who imports what)
 
-- `src\context\types.ts` ← `src\agent\fastfoodAgent.ts`, `src\agent\finalValidator.ts`, `src\agent\modelRouter.ts`, `src\agent\persona.ts`, `src\context\buildFactsPrompt.ts` +13 more
-- `src\services\nocodb.service.ts` ← `src\context\preloadContext.ts`, `src\controllers\kanban.ts`, `src\cron\statsCron.ts`, `src\routes\dleWebhook.route.ts`, `src\routes\system.route.ts` +6 more
-- `src\services\dle.service.ts` ← `src\context\preloadContext.ts`, `src\controllers\kanban.ts`, `src\cron\statsCron.ts`, `src\routes\whatsappWebhook.route.ts`, `src\skills\checkOrderStatus.skill.ts` +4 more
-- `src\services\redis.service.ts` ← `src\cron\statsCron.ts`, `src\server.ts`, `src\services\complaintRouting.service.ts`, `src\services\diagnostics.service.ts`, `src\services\inboundGuard.service.ts` +4 more
-- `src\services\developerNotify.service.ts` ← `src\controllers\kanban.ts`, `src\routes\dleWebhook.route.ts`, `src\routes\system.route.ts`, `src\routes\whatsappWebhook.route.ts`
-- `src\transport\whatspro.client.ts` ← `src\controllers\kanban.ts`, `src\routes\whatsappWebhook.route.ts`, `src\services\complaintRouting.service.ts`, `src\services\developerNotify.service.ts`
-- `src\services\auditLogger.service.ts` ← `src\controllers\kanban.ts`, `src\routes\dleWebhook.route.ts`, `src\services\dle.service.ts`, `src\transport\whatspro.client.ts`
+- `src\context\types.ts` ← `scripts\agentSmoke.ts`, `src\agent\fastfoodAgent.ts`, `src\agent\finalValidator.ts`, `src\agent\modelRouter.ts`, `src\agent\persona.ts` +17 more
+- `src\services\redis.service.ts` ← `src\cron\statsCron.ts`, `src\routes\system.route.ts`, `src\server.ts`, `src\services\complaintRouting.service.ts`, `src\services\developerNotify.service.ts` +11 more
+- `src\services\platformConfig.service.ts` ← `scripts\agentSmoke.ts`, `src\context\preloadContext.ts`, `src\controllers\kanban.ts`, `src\cron\statsCron.ts`, `src\routes\dleWebhook.route.ts` +8 more
+- `src\services\dle.service.ts` ← `src\context\preloadContext.ts`, `src\controllers\kanban.ts`, `src\cron\statsCron.ts`, `src\routes\whatsappWebhook.route.ts`, `src\services\complaintRouting.service.ts` +6 more
+- `src\services\auditLogger.service.ts` ← `src\controllers\kanban.ts`, `src\routes\dleWebhook.route.ts`, `src\services\complaintRouting.service.ts`, `src\services\customerOrder.service.ts`, `src\services\dle.service.ts` +2 more
+- `src\services\developerNotify.service.ts` ← `src\controllers\kanban.ts`, `src\cron\statsCron.ts`, `src\routes\dleWebhook.route.ts`, `src\routes\system.route.ts`, `src\routes\whatsappWebhook.route.ts` +1 more
+- `src\transport\whatspro.client.ts` ← `src\controllers\kanban.ts`, `src\routes\whatsappWebhook.route.ts`, `src\server.ts`, `src\services\complaintRouting.service.ts`, `src\services\developerNotify.service.ts` +1 more
+- `src\services\kitchenPolicy.service.ts` ← `src\context\buildFactsPrompt.ts`, `src\routes\whatsappWebhook.route.ts`, `src\skills\menuLink.skill.ts`, `test\kitchenPolicy.test.ts`, `test\kitchenWaitLabel.test.ts`
 - `src\services\llm.service.ts` ← `src\routes\whatsappWebhook.route.ts`, `src\services\diagnostics.service.ts`, `src\services\mediaAnalysis.service.ts`, `src\utils\language.ts`
-- `src\services\tenantAuth.service.ts` ← `src\routes\dleWebhook.route.ts`, `src\routes\system.route.ts`, `src\routes\whatsappWebhook.route.ts`
-- `src\utils\language.ts` ← `src\context\preloadContext.ts`, `test\languageAndReceipt.test.ts`
+- `src\services\noteProvenance.service.ts` ← `src\context\buildFactsPrompt.ts`, `src\routes\whatsappWebhook.route.ts`, `src\skills\searchMenu.skill.ts`
 
 ---
 
 # Events & Queues
+
+## eventemitter
 
 - `Payment details resolved` [event] — `src/controllers/kanban.ts`
 - `Complaint notification skipped: admin phone missing` [event] — `src/controllers/kanban.ts`
@@ -306,6 +387,10 @@
 - `No outbound WhatsApp template produced` [event] — `src/controllers/kanban.ts`
 - `Kanban webhook processed successfully` [event] — `src/controllers/kanban.ts`
 - `Releasing idempotency lock after failure` [event] — `src/controllers/kanban.ts`
+
+## redis-pub-sub
+
+- `chatwoot:events:${input.instanceId}` [channel] — `src/services/operatorCase.service.ts`
 
 ---
 

@@ -1,5 +1,7 @@
 # Events & Queues
 
+## eventemitter
+
 - `Payment details resolved` [event] — `src/controllers/kanban.ts`
 - `Complaint notification skipped: admin phone missing` [event] — `src/controllers/kanban.ts`
 - `Print trigger skipped: status is not paid` [event] — `src/controllers/kanban.ts`
@@ -42,3 +44,7 @@
 - `No outbound WhatsApp template produced` [event] — `src/controllers/kanban.ts`
 - `Kanban webhook processed successfully` [event] — `src/controllers/kanban.ts`
 - `Releasing idempotency lock after failure` [event] — `src/controllers/kanban.ts`
+
+## redis-pub-sub
+
+- `chatwoot:events:${input.instanceId}` [channel] — `src/services/operatorCase.service.ts`
