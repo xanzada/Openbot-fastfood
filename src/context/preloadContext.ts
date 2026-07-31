@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import { detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
+import { detectLang, detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
 import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
-import { getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
+import { getMenuContext, getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
 import {
   connectRedis,
@@ -10,9 +10,43 @@ import {
   getSiteLanguageHint,
   getUserLang,
   hasMagicLinkBeenSent,
+  replaceUserLang,
   saveUserLang,
 } from "../services/redis.service.js";
+import {
+  getConversationSummary,
+  getCustomerProfile,
+  getTurnTrace,
+} from "../services/customerMemory.service.js";
+import { getActiveGoal } from "../services/goalTracker.service.js";
+import { orderMentionedByItems, pickConversationOrder } from "../services/customerOrder.service.js";
+import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
+import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
+
+/**
+ * The menu used to reach the agent only when the model happened to call
+ * searchMenu. When it did not, the turn ran with no menu at all and the model
+ * filled the hole with a guess: real dishes were announced as "temporarily
+ * unavailable". Availability is a fact, not a tool call, so a compact snapshot
+ * of the live menu now rides in the context of every turn. It stays small:
+ * name, price, category and a short composition, which is all an answer about
+ * price, existence or ingredients needs.
+ */
+function buildMenuSnapshot(menu: any) {
+  const items = Array.isArray(menu?.items) ? menu.items : [];
+  if (!items.length) return null;
+  return {
+    source: String(menu?.source || ""),
+    count: items.length,
+    items: items.slice(0, 60).map((item: any) => ({
+      name: String(item?.name || "").trim(),
+      price: item?.price ?? null,
+      category: String(item?.category_name || item?.category || "").trim(),
+      composition: String(item?.composition || item?.description || "").trim().slice(0, 160),
+    })).filter((item: any) => item.name),
+  };
+}
 
 export interface InboundMessage {
   instanceId: string;
@@ -69,7 +103,28 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   let language: "kk" | "ru" = storedLang || siteLanguageHint || "kk";
   let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
   let languageLocked = Boolean(storedLang);
-  if (!storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+  // The 24-hour language lock belongs to guests who arrived through the site:
+  // the site already told us their language. A guest who wrote straight to
+  // WhatsApp gets their language resolved again on every message instead.
+  const siteOriginated = Boolean(siteLanguageHint);
+  if (siteOriginated && storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
+    const decision = await detectLanguageDecision(languageCandidateText);
+    const previousCustomerText = [...chatHistory].reverse().find((entry: any) => {
+      const role = String(entry?.role || "").toLowerCase();
+      return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+    })?.text;
+    const previousLanguage = previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
+      ? detectLang(String(previousCustomerText))
+      : null;
+    const decisiveNow = textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language);
+    if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language, decisiveNow)) {
+      const switched = await replaceUserLang(instanceId, phone, decision.language).catch(() => false);
+      if (switched) {
+        language = decision.language;
+        languageDetector = decision.detector;
+      }
+    }
+  } else if (siteOriginated && !storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
     const decision = await detectLanguageDecision(languageCandidateText);
     language = decision.language;
     languageDetector = decision.detector;
@@ -89,17 +144,75 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       const concurrentLock = await getUserLang(instanceId, phone).catch(() => null);
       if (concurrentLock) { language = concurrentLock; languageDetector = "redis_lock"; languageLocked = true; }
     }
+  } else {
+    const decision = isLanguageBearingCustomerText(languageCandidateText)
+      ? await detectLanguageDecision(languageCandidateText)
+      : null;
+    const previousCustomerText = [...chatHistory].reverse().find((entry: any) => {
+      const role = String(entry?.role || "").toLowerCase();
+      return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+    })?.text;
+    const priorLanguage = storedLang
+      || (previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
+        ? detectLang(String(previousCustomerText))
+        : null);
+    const resolved = resolveOrganicLanguage({
+      detected: decision?.lockable ? decision.language : null,
+      priorLanguage,
+      contactName: firstValue(
+        input.senderMeta?.pushName,
+        input.senderMeta?.contactName,
+        input.senderMeta?.contactShortName,
+        input.senderMeta?.contactPushName
+      ),
+      siteLanguageHint,
+    });
+    language = resolved.language;
+    languageDetector =
+      resolved.source === "message" ? (decision?.detector || "gemini")
+      : resolved.source === "history" ? "redis_lock"
+      : resolved.source === "site_hint" ? "site_hint"
+      : "fallback";
+    languageLocked = false;
   }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
   if (domain) safeConfig.domain = domain;
 
-  const [runtimeStatus, activeOrder, shporContext] = await Promise.all([
-    getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
-    domain
-      ? getOrderStatus(instanceId, phone, domain).catch(() => null)
-      : Promise.resolve(null),
-    getShporContext(instanceId, text).catch(() => []),
-  ]);
+  // Long-term memory is read in the same parallel batch as the live lookups, so
+  // it adds no measurable latency. Every read degrades to null on failure:
+  // memory enriches the answer, it must never be able to block one.
+  const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal, liveMenu] =
+    await Promise.all([
+      getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
+      domain
+        ? getOrderStatus(instanceId, phone, domain).catch(() => null)
+        : Promise.resolve(null),
+      getShporContext(instanceId, text).catch(() => []),
+      getCustomerProfile(instanceId, phone).catch(() => null),
+      getConversationSummary(instanceId, phone).catch(() => null),
+      getTurnTrace(instanceId, phone).catch(() => null),
+      getActiveGoal(instanceId, phone).catch(() => null),
+      domain ? getMenuContext(instanceId, domain, language).catch(() => null) : Promise.resolve(null),
+    ]);
+
+  const menuSnapshot = buildMenuSnapshot(liveMenu);
+
+  // The site calls the oldest unfinished order "active", but a guest who has
+  // spent the whole chat asking about one order means that order when they say
+  // "қашан келеді?". Pinning the discussed order here keeps the model and the
+  // deterministic status route looking at the same one, so the bot never
+  // answers about an order nobody mentioned.
+  const discussedOrderNumber = lastDiscussedOrderNumber(chatHistory);
+  const numberPinnedOrder = discussedOrderNumber ? pickConversationOrder(activeOrder, discussedOrderNumber) : null;
+  // A dish the guest names right now outranks a number repeated from history:
+  // if the bot once answered about the wrong order, the old number keeps
+  // echoing back through its own replies, while "the one with the Caesar"
+  // always points at what the person in front of us actually means.
+  const mentionPinnedOrder = orderMentionedByItems(activeOrder, text);
+  const discussedOrderRecord = mentionPinnedOrder || numberPinnedOrder;
+  const focusedActiveOrder = discussedOrderRecord && activeOrder
+    ? { ...activeOrder, order: discussedOrderRecord, active_order: discussedOrderRecord, order_id: discussedOrderRecord.id, status: discussedOrderRecord.status, items: discussedOrderRecord.items, total_price: discussedOrderRecord.total_price, address: discussedOrderRecord.address, comment: discussedOrderRecord.comment, is_pickup: discussedOrderRecord.is_pickup, ai_comment: discussedOrderRecord.ai_comment }
+    : activeOrder;
 
   const runtimeAvailable = Boolean(runtimeStatus);
   const runtimeWaitTime = Number(
@@ -165,13 +278,20 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     runtimeStatus,
     fetchedSettings,
     hardRealtimeContext,
-    activeOrder,
+    activeOrder: focusedActiveOrder,
     chatHistory,
+    menuSnapshot,
     activeShiftNotes,
     activeShiftNotesFingerprint,
     mediaContext: input.mediaContext || null,
     shporContext,
     magicLinkAlreadySent,
+    customerProfile,
+    conversationSummary,
+    lastTurnTrace,
+    activeGoal,
+    thinking: null,
+    proactiveSignals: null,
     explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
     magicLink: generateSecureMenuUrl(
       domain,

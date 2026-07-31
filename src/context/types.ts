@@ -11,6 +11,7 @@ export interface FastFoodContext {
   hardRealtimeContext: Record<string, any>;
   activeOrder: Record<string, any> | null;
   chatHistory: any[];
+  menuSnapshot: Record<string, any> | null;
   activeShiftNotes: any[];
   activeShiftNotesFingerprint: string;
   mediaContext: Record<string, any> | null;
@@ -18,4 +19,15 @@ export interface FastFoodContext {
   magicLinkAlreadySent: boolean;
   explicitMenuLinkIntent: boolean;
   magicLink: string | null;
+  // Long-term memory. Optional so every existing caller, test, and smoke script
+  // keeps compiling and behaves exactly as before when Redis has nothing yet.
+  customerProfile?: Record<string, any> | null;
+  conversationSummary?: Record<string, any> | null;
+  lastTurnTrace?: Record<string, any> | null;
+  // Silent pre-analysis (think layer) and the customer's tracked mission.
+  // Optional for the same reason as memory: every existing caller keeps
+  // compiling, and every read degrades to null without blocking the answer.
+  thinking?: Record<string, any> | null;
+  activeGoal?: Record<string, any> | null;
+  proactiveSignals?: Record<string, any> | null;
 }

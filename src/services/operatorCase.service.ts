@@ -70,7 +70,30 @@ export async function createOperatorCase(input: {
   if (existingId) {
     const existing = await redisClient.get(caseKey(instanceId, existingId));
     if (existing) {
-      const data = JSON.parse(existing);
+      // An open case is reused so the operator keeps one thread per guest, but it
+      // must describe what the guest is saying NOW. Leaving the first summary in
+      // place showed "asked for an operator" and an old order number while the
+      // guest was actually complaining about a cold delivery.
+      const previous = JSON.parse(existing);
+      const now = Date.now();
+      const data = {
+        ...previous,
+        kind: input.kind,
+        status: "open",
+        unread: true,
+        highlight: "red",
+        urgency: clean(input.urgency || previous.urgency || "normal", 20),
+        summary: clean(input.summary) || previous.summary,
+        source: clean(input.source || previous.source || "openbot", 80),
+        orderNumber: clean(input.orderNumber || "", 40) || previous.orderNumber || "",
+        hasMedia: Boolean(input.hasMedia) || Boolean(previous.hasMedia),
+        updatedAt: now,
+      };
+      await redisClient.multi()
+        .set(caseKey(instanceId, existingId), JSON.stringify(data), { EX: CASE_TTL_SECONDS })
+        .expire(activeKey(instanceId, customerPhone), CASE_TTL_SECONDS)
+        .zAdd(`operator_cases:${instanceId}`, [{ score: now, value: existingId }])
+        .exec();
       const sos = await activateSos({ instanceId, phone: customerPhone, caseId: existingId, signalId, kind: input.kind, summary: input.summary, urgency: input.urgency, source: input.source });
       return { ...data, sos };
     }
@@ -92,6 +115,21 @@ export async function createOperatorCase(input: {
   return { ...data, sos };
 }
 
+// A case already sitting on the operator board must not raise a second red flag
+// just because the chat scrolled past the first one, and a case nobody has
+// touched for half a day must not keep flagging a guest who has long moved on
+// to ordinary questions.
+export const CASE_FLAG_QUIET_MS = 12 * 60 * 60 * 1000;
+
+export type CaseFlagDecision = "flag" | "already_flagged" | "stale";
+
+export function decideCaseFlag(data: { markerPushedAt?: number; updatedAt?: number; createdAt?: number }, now = Date.now()): CaseFlagDecision {
+  if (data?.markerPushedAt) return "already_flagged";
+  const lastTouch = Number(data?.updatedAt || data?.createdAt || 0);
+  if (lastTouch && now - lastTouch > CASE_FLAG_QUIET_MS) return "stale";
+  return "flag";
+}
+
 export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: string) {
   const customerPhone = phone(rawPhone);
   if (!instanceId || !customerPhone) return false;
@@ -102,14 +140,43 @@ export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: strin
   if (!raw) return false;
   const data = JSON.parse(raw);
   const now = Date.now();
+  // The case record remembers its own flag, so trimming the history can never
+  // resurrect it.
+  const decision = decideCaseFlag(data, now);
+  if (decision === "already_flagged") {
+    await redisClient.zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }]);
+    return true;
+  }
+  if (decision === "stale") {
+    await redisClient.del(activeKey(instanceId, customerPhone));
+    return false;
+  }
+  const recent = await redisClient.lRange(`history:${instanceId}:${customerPhone}`, -40, -1);
+  const alreadyFlagged = recent.some((entry: string) => {
+    try {
+      const parsed = JSON.parse(entry);
+      return parsed?.source === "openbot_operator_case" && parsed?.operatorCaseId === caseId;
+    } catch {
+      return false;
+    }
+  });
+  const flagged = { ...data, markerPushedAt: now };
+  if (alreadyFlagged) {
+    await redisClient.multi()
+      .set(caseKey(instanceId, caseId), JSON.stringify(flagged), { EX: CASE_TTL_SECONDS })
+      .zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }])
+      .exec();
+    return true;
+  }
   const marker = JSON.stringify({
     role: "user", direction: "incoming", fromMe: false, source: "openbot_operator_case", operatorCaseId: caseId,
-    caseKind: data.kind, highlight: "red", text: `🚨 Оператор қажет: ${clean(data.summary, 180)}`, createdAt: now,
+    caseKind: data.kind, highlight: "red", text: `\u{1F6A8} Оператор қажет: ${clean(data.summary, 180)}`, createdAt: now,
   });
   await redisClient.multi()
     .rPush(`history:${instanceId}:${customerPhone}`, marker)
     .lTrim(`history:${instanceId}:${customerPhone}`, -120, -1)
     .expire(`history:${instanceId}:${customerPhone}`, 24 * 60 * 60)
+    .set(caseKey(instanceId, caseId), JSON.stringify(flagged), { EX: CASE_TTL_SECONDS })
     .zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }])
     .exec();
   return true;

@@ -424,12 +424,41 @@ export function startWhatsProTyping(payload: { instanceId: string; phone: string
     if (!stopped) void sendWhatsProPresence(payload).catch(() => undefined);
   };
   pulse();
-  const timer = setInterval(pulse, 4000);
+  // WhatsApp presence expires after a few seconds; 3s keeps "typing..." alive
+  // through the whole turn (buffer + think + generation + send).
+  const timer = setInterval(pulse, 3000);
   timer.unref?.();
   return () => {
     stopped = true;
     clearInterval(timer);
   };
+}
+
+/**
+ * Blue-tick read receipt over the presence channel.
+ *
+ * The gateway exposes /api/presence (verified to exist); read states ride the
+ * same channel, so the customer immediately sees their message was read the
+ * moment the guard accepts it - long before the answer is generated. Fire and
+ * forget: a gateway that does not map the read state simply ignores it.
+ */
+export async function markWhatsProChatRead(payload: { instanceId: string; phone: string }): Promise<void> {
+  try {
+    const transport = await resolveWhatsProTransport(payload.instanceId);
+    const url = endpointFromTransport(transport.presenceUrl, transport.baseUrl, "/api/presence");
+    if (!url || !transport.apiToken) return;
+    await axios.post(
+      url,
+      {
+        instanceId: payload.instanceId,
+        phone: payload.phone,
+        state: String(process.env.WHATSPRO_READ_STATE || "read"),
+      },
+      { timeout: 2500, headers: whatsproHeaders(transport.apiToken, payload.instanceId) }
+    );
+  } catch {
+    // Read receipts are a courtesy; never let them delay or break a reply.
+  }
 }
 
 export async function sendWhatsProResponseSequence(payload: {

@@ -9,6 +9,7 @@ import { connectRedis } from "./services/redis.service.js";
 import { logStartupDiagnostics } from "./services/diagnostics.service.js";
 import { startDailyCron } from "./cron/statsCron.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "./services/developerNotify.service.js";
+import { startWhatsProOutboxWorker } from "./transport/whatspro.client.js";
 const app = express();
 const port = Number(process.env.PORT || 4100);
 const httpServer = http.createServer(app);
@@ -58,6 +59,7 @@ await connectRedis().catch((error) => {
     console.warn("[OPENBOT:BOOT:WARN] Redis unavailable at startup:", error?.message || error);
 });
 startDailyCron();
+startWhatsProOutboxWorker();
 httpServer.listen(port, () => {
     console.log(`[OPENBOT] VoltAgent FastFood agent listening on ${port}`);
     console.log(`[OPENBOT] WhatsPro webhook mounted at ${whatsproWebhookPath}`);

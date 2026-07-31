@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { detectLanguageDecision, detectLang, parseGeminiLanguageDecision } from "../src/utils/language.js";
+import { detectNameLanguage, resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
 // regex cannot see it, which is why a failed classification must never be
@@ -58,6 +59,13 @@ test("a stored language always wins over any detection", () => {
   assert.equal(detectLang("Сәлеметсіз бе", "ru"), "ru");
 });
 
+test("a 24-hour lock switches only after two consecutive messages in the other language", () => {
+  assert.equal(shouldSwitchLockedLanguage("kk", null, "ru"), false);
+  assert.equal(shouldSwitchLockedLanguage("kk", "kk", "ru"), false);
+  assert.equal(shouldSwitchLockedLanguage("kk", "ru", "ru"), true);
+  assert.equal(shouldSwitchLockedLanguage("ru", "kk", "kk"), true);
+});
+
 test("a malformed classifier reply is rejected rather than half-read", () => {
   assert.equal(parseGeminiLanguageDecision('{"language":"de","confidence":1}'), null);
   assert.equal(parseGeminiLanguageDecision("not json at all"), null);
@@ -65,4 +73,68 @@ test("a malformed classifier reply is rejected rather than half-read", () => {
     language: "kk",
     confidence: 0.8,
   });
+});
+
+// A guest who never came through the site has no saved language. Their turn is
+// resolved again every time, so the language question can never get stuck.
+test("a contact name decides the language when the message carries no signal", () => {
+  assert.equal(detectNameLanguage("Айгүл"), "kk");
+  assert.equal(detectNameLanguage("Нурбек"), "kk");
+  assert.equal(detectNameLanguage("Александр"), "ru");
+  assert.equal(detectNameLanguage("Иванов"), "ru");
+  assert.equal(detectNameLanguage("+7 747"), null);
+});
+
+test("what the guest just wrote outranks their name and their history", () => {
+  const resolved = resolveOrganicLanguage({
+    detected: "ru",
+    priorLanguage: "kk",
+    contactName: "Айгүл",
+    siteLanguageHint: "kk",
+  });
+  assert.equal(resolved.language, "ru");
+  assert.equal(resolved.source, "message");
+});
+
+test("a returning guest keeps their usual language when a turn says nothing", () => {
+  const resolved = resolveOrganicLanguage({
+    detected: null,
+    priorLanguage: "ru",
+    contactName: "Айгүл",
+    siteLanguageHint: "kk",
+  });
+  assert.equal(resolved.language, "ru");
+  assert.equal(resolved.source, "history");
+});
+
+test("a brand new guest falls back to the name, then the site, then Kazakh", () => {
+  assert.deepEqual(
+    resolveOrganicLanguage({ detected: null, priorLanguage: null, contactName: "Сергей", siteLanguageHint: "kk" }),
+    { language: "ru", source: "contact_name" }
+  );
+  assert.deepEqual(
+    resolveOrganicLanguage({ detected: null, priorLanguage: null, contactName: "", siteLanguageHint: "ru" }),
+    { language: "ru", source: "site_hint" }
+  );
+  assert.deepEqual(
+    resolveOrganicLanguage({ detected: null, priorLanguage: null, contactName: "", siteLanguageHint: null }),
+    { language: "kk", source: "default" }
+  );
+});
+
+test("an unmistakable message switches the locked language at once", () => {
+  // "тамақтың сапасы нашар" carries Kazakh-only letters, so answering it in
+  // Russian and waiting for a second Kazakh message insults the guest.
+  assert.equal(textCarriesDecisiveLanguageSignal("тамақтың сапасы нашар", "kk"), true);
+  assert.equal(shouldSwitchLockedLanguage("ru", "ru", "kk", true), true);
+  assert.equal(textCarriesDecisiveLanguageSignal("здравствуйте, сколько стоит доставка", "ru"), true);
+  assert.equal(shouldSwitchLockedLanguage("kk", "kk", "ru", true), true);
+});
+
+test("a weak signal still needs a second message before the lock moves", () => {
+  assert.equal(textCarriesDecisiveLanguageSignal("ok", "kk"), false);
+  assert.equal(textCarriesDecisiveLanguageSignal("бар ма", "ru"), false);
+  assert.equal(shouldSwitchLockedLanguage("ru", "ru", "kk", false), false);
+  assert.equal(shouldSwitchLockedLanguage("ru", "kk", "kk", false), true);
+  assert.equal(shouldSwitchLockedLanguage("kk", "ru", "kk", true), false);
 });

@@ -130,3 +130,43 @@ test("history purge after a delete stays inside the tenant", async () => {
     "a message carrying the same note id in another tenant is left alone"
   );
 });
+
+// A deleted note used to live on inside the rolling summary, which is written
+// from history and fed back into the prompt, so the agent kept repeating a
+// constraint the operator had already removed.
+test("deleting a note also drops the summary written from that history", async () => {
+  await seed();
+  lists.set(`history:${A}:77010000001`, [
+    JSON.stringify({ text: "сусын жоқ дедім", sourceNoteIds: ["101"] }),
+    JSON.stringify({ text: "кәдімгі хабар" }),
+  ]);
+  store.set(`conv_summary:${A}:77010000001`, JSON.stringify({ summary: "drinks were unavailable" }));
+  store.set(`conv_summary:${B}:77020000002`, JSON.stringify({ summary: "other tenant memory" }));
+
+  await deleteShiftNote(A, "101");
+
+  assert.equal(
+    store.has(`conv_summary:${A}:77010000001`),
+    false,
+    "the stale summary is dropped so the next turn rebuilds it without the deleted note"
+  );
+  assert.equal(
+    store.has(`conv_summary:${B}:77020000002`),
+    true,
+    "another tenant's summary is untouched"
+  );
+});
+
+test("a summary survives when the delete removed nothing from that history", async () => {
+  await seed();
+  lists.set(`history:${A}:77010000001`, [JSON.stringify({ text: "кәдімгі хабар" })]);
+  store.set(`conv_summary:${A}:77010000001`, JSON.stringify({ summary: "nothing to do with notes" }));
+
+  await deleteShiftNote(A, "101");
+
+  assert.equal(
+    store.has(`conv_summary:${A}:77010000001`),
+    true,
+    "an unrelated conversation keeps its memory"
+  );
+});

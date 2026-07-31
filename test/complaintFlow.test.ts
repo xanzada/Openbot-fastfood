@@ -8,6 +8,7 @@ import {
   buildOperatorHandoffReply,
 } from "../src/services/complaintRouting.service.js";
 import { detectOperatorCaseKind } from "../src/services/operatorCase.service.js";
+import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 
 test("asking for a human is recognised and never mistaken for a complaint to investigate", () => {
   for (const text of ["оператор шақырыңыз", "адаммен сөйлескім келеді", "позовите оператора", "соедините с менеджером"]) {
@@ -34,6 +35,16 @@ test("a complaint that already names the problem goes straight to the operator",
   const detailed = "Тапсырысым суық келді, пицца жабысып қалған, 42 нөмірлі заказ";
   assert.equal(isLikelyComplaintText(detailed), true);
   assert.equal(complaintHasActionableDetail(detailed), true, "there is something an operator can act on");
+});
+
+test("an explicit late-order incident escalates before any status lookup", () => {
+  for (const text of ["Заказ опоздал на час", "Тапсырыс бір сағатқа кешікті"]) {
+    assert.equal(isLikelyComplaintText(text), true, text);
+    assert.equal(complaintHasActionableDetail(text), true, text);
+    const plan = resolveAgentToolPlan({ text } as any);
+    assert.equal(plan.requiredTools[0], "escalateToAdmin", text);
+    assert.equal(plan.requiredTools.includes("checkOrderStatus"), false, text);
+  }
 });
 
 test("a bare complaint earns one question first", () => {
@@ -66,5 +77,17 @@ test("both customer-facing lines stay short and promise nothing", () => {
       assert.doesNotMatch(line, /скидк|бонус|верн|қайтар|жеңілдік/i, "no promise of refunds or discounts");
     }
     assert.match(handoff, /оператор/i, `${lang} handoff must name the operator`);
+  }
+});
+
+test("anger about a specific order is a complaint, not a status question", () => {
+  // A guest who names an order number while furious used to receive a dry
+  // status line, and the operator never saw a red flag. The complaint signal
+  // has to win over the order-number signal.
+  for (const text of [
+    "вы что творите вообще, заказ 59 холодный привезли и цезарь кислый, это ужас требую возврат",
+    "59 тапсырысым суық келді, сапасы нашар, ақшамды қайтарыңыз",
+  ]) {
+    assert.equal(isLikelyComplaintText(text), true, text);
   }
 });

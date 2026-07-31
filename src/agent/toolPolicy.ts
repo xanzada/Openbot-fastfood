@@ -1,5 +1,6 @@
 import type { FastFoodContext } from "../context/types.js";
 import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -40,8 +41,11 @@ function add(plan: AgentToolPlan, tool: AgentToolName, reason: string) {
 export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const text = String(ctx.text || "").trim();
   const plan: AgentToolPlan = { requiredTools: [], reason: [] };
+  const immediateServiceIncident = isLikelyComplaintText(text) && complaintHasActionableDetail(text);
 
-  if (isCustomerOrderStatusQuestion(text) || (Boolean(ctx.activeOrder) && isLikelyOrderStatusFollowUp(text))) {
+  if (immediateServiceIncident) {
+    add(plan, "escalateToAdmin", "actionable_service_incident");
+  } else if (isCustomerOrderStatusQuestion(text) || (Boolean(ctx.activeOrder) && isLikelyOrderStatusFollowUp(text))) {
     add(plan, "checkOrderStatus", "live_order_status");
   }
 
@@ -67,18 +71,32 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   };
 }
 
+/**
+ * The plan seeds the first move, it does not drive the whole turn.
+ *
+ * The previous policy forced one tool per step and then locked toolChoice to
+ * "none", with activeTools narrowed to a single tool. Any regex hit therefore
+ * removed the agent's own judgment for the rest of the turn: it could not chain
+ * a second lookup, could not re-check a fact, and could not skip a tool that
+ * turned out to be irrelevant. That is exactly the "prompt/regex dependence"
+ * that made replies feel mechanical.
+ *
+ * Now: when code is confident about a live-data intent, the first step is still
+ * pinned so the answer is always grounded in fresh data. Every later step is
+ * the agent's own decision, with the full toolset available.
+ */
 export function createAgentStepPolicy(plan: AgentToolPlan) {
   return ({ stepNumber }: { stepNumber: number }) => {
-    const requiredTool = plan.requiredTools[stepNumber];
-    if (requiredTool) {
+    if (stepNumber === 0 && plan.requiredTools.length) {
+      const firstTool = plan.requiredTools[0];
       return {
-        activeTools: [requiredTool],
-        toolChoice: { type: "tool" as const, toolName: requiredTool },
+        toolChoice: { type: "tool" as const, toolName: firstTool },
       };
     }
-    if (plan.requiredTools.length) {
-      return { toolChoice: "none" as const };
-    }
-    return undefined;
+    // Four autonomous tool rounds are enough even for a multi-intent request.
+    // The final two steps are reserved for synthesis so a model cannot spend the
+    // whole budget repeating lookups and return an empty customer reply.
+    if (stepNumber >= 4) return { toolChoice: "none" as const };
+    return { toolChoice: "auto" as const };
   };
 }
