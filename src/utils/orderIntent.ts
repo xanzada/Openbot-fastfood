@@ -29,3 +29,21 @@ export function isCustomerOrderStatusQuestion(text = "") {
 export function isLikelyOrderStatusFollowUp(text = "") {
   return ACTIVE_ORDER_FOLLOW_UP_RE.test(String(text || ""));
 }
+
+// A guest who has been talking about one order all evening does not repeat its
+// number in every message. The site can hand us a different "active" order (an
+// older pending one), so the conversation itself decides which order the bare
+// question "қашан келеді?" is about.
+const DISCUSSED_ORDER_RE = /(?:тапсырыс|заказ)\s*№?\s*#?\s*(\d{1,6})/iu;
+
+export function lastDiscussedOrderNumber(history: unknown): string {
+  if (!Array.isArray(history)) return "";
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry: any = history[index];
+    const role = String(entry?.role || "");
+    if (role !== "assistant" && role !== "model") continue;
+    const match = DISCUSSED_ORDER_RE.exec(String(entry?.text || entry?.content || ""));
+    if (match) return match[1];
+  }
+  return "";
+}

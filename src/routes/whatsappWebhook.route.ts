@@ -53,7 +53,7 @@ import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { markWhatsProChatRead, sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
-import { customerOrderFromRecord, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
+import { customerOrderFromRecord, pickConversationOrder, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, isTenantBotEnabled, saveToShpor } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
@@ -66,7 +66,7 @@ import {
 import { getTextModels } from "../services/llm.service.js";
 import { classifyKitchenSalesPolicy,
   formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, requestedOrderNumber } from "../utils/orderIntent.js";
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
 import { bumpOperatorCaseSignal, detectOperatorCaseKind } from "../services/operatorCase.service.js";
@@ -275,11 +275,13 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
   const timingAsked = Boolean(ctx.activeOrder) && isOrderTimingQuestion(ctx.text);
   if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked) return null;
   const orderNumber = requestedOrderNumber(ctx.text);
+  const discussedNumber = orderNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
+  const discussedRecord = discussedNumber ? pickConversationOrder(ctx.activeOrder, discussedNumber) : null;
   const lookup = orderNumber
     ? await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, orderNumber)
     : ctx.activeOrder?.is_stale
       ? { state: "unavailable" as const }
-      : customerOrderFromRecord(ctx.activeOrder, ctx.phone, ctx.language);
+      : customerOrderFromRecord(discussedRecord || ctx.activeOrder, ctx.phone, ctx.language);
   if (lookup.state === "found") return formatCustomerOrderStatus(lookup.order, ctx.language);
   if (lookup.state === "unavailable") return unavailableOrderReply(ctx.language);
   return missingOrderReply(ctx.language);

@@ -53,6 +53,31 @@ export function customerOrderFromRecord(value, expectedPhone, language) {
     const description = describeOrderStage(stage, language);
     return { state: "found", order: { orderNumber, status, stage, statusLabel: description.label, statusExplanation: description.explanation, items: customerItems(record?.items || value?.items) } };
 }
+function orderIdOf(record) { return String(record?.id || record?.order_id || "").trim(); }
+function createdAtOf(record) { return Date.parse(String(record?.created_at || "").replace(" ", "T")) || 0; }
+// The order the conversation is about wins over whichever order the site calls
+// "active", unless the site knows about a newer one the guest has not mentioned yet.
+export function pickConversationOrder(context, discussedNumber) {
+    if (!context || !discussedNumber)
+        return null;
+    const pools = [context.recent_orders, context.active_orders, [context.order, context.active_order]];
+    let pinned = null;
+    for (const pool of pools) {
+        if (!Array.isArray(pool))
+            continue;
+        const hit = pool.find((record) => orderIdOf(record) === String(discussedNumber).trim());
+        if (hit) {
+            pinned = hit;
+            break;
+        }
+    }
+    if (!pinned)
+        return null;
+    const current = context.order || context.active_order || null;
+    if (current && orderIdOf(current) !== orderIdOf(pinned) && createdAtOf(current) > createdAtOf(pinned))
+        return null;
+    return pinned;
+}
 export function customerOrderFromContext(context, expectedPhone, language, hasRequestedOrderNumber = false) { if (!context)
     return { state: "not_found" }; if (context.is_stale)
     return { state: "unavailable" }; if (Array.isArray(context.active_orders) && context.active_orders.length > 1 && !hasRequestedOrderNumber)
