@@ -55,6 +55,58 @@ export function customerOrderFromRecord(value, expectedPhone, language) {
 }
 function orderIdOf(record) { return String(record?.id || record?.order_id || "").trim(); }
 function createdAtOf(record) { return Date.parse(String(record?.created_at || "").replace(" ", "T")) || 0; }
+function orderPools(context) {
+    if (!context)
+        return [];
+    const pools = [context.recent_orders, context.active_orders, [context.order, context.active_order]];
+    const seen = new Set();
+    const out = [];
+    for (const pool of pools) {
+        if (!Array.isArray(pool))
+            continue;
+        for (const record of pool) {
+            const id = orderIdOf(record);
+            if (!id || seen.has(id))
+                continue;
+            seen.add(id);
+            out.push(record);
+        }
+    }
+    return out;
+}
+function orderItemWords(record) {
+    const items = customerItems(record?.items);
+    const words = [];
+    for (const item of items) {
+        for (const word of String(item.name).toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+            if (word.length >= 4)
+                words.push(word);
+        }
+    }
+    return words;
+}
+// Guests rarely quote an order number. They say "the one with the Caesar".
+// Matching the dishes they name against their own orders lets the bot follow
+// what the person actually means instead of whatever the site calls active.
+export function orderMentionedByItems(context, text) {
+    const haystack = String(text || "").toLowerCase();
+    if (!haystack)
+        return null;
+    let best = null;
+    let bestScore = 0;
+    for (const record of orderPools(context)) {
+        let score = 0;
+        for (const word of orderItemWords(record)) {
+            if (haystack.includes(word.slice(0, Math.max(4, word.length - 2))))
+                score += 1;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            best = record;
+        }
+    }
+    return bestScore > 0 ? best : null;
+}
 // The order the conversation is about wins over whichever order the site calls
 // "active", unless the site knows about a newer one the guest has not mentioned yet.
 export function pickConversationOrder(context, discussedNumber) {

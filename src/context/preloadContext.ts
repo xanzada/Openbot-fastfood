@@ -19,7 +19,7 @@ import {
   getTurnTrace,
 } from "../services/customerMemory.service.js";
 import { getActiveGoal } from "../services/goalTracker.service.js";
-import { pickConversationOrder } from "../services/customerOrder.service.js";
+import { orderMentionedByItems, pickConversationOrder } from "../services/customerOrder.service.js";
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
@@ -176,7 +176,13 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // deterministic status route looking at the same one, so the bot never
   // answers about an order nobody mentioned.
   const discussedOrderNumber = lastDiscussedOrderNumber(chatHistory);
-  const discussedOrderRecord = discussedOrderNumber ? pickConversationOrder(activeOrder, discussedOrderNumber) : null;
+  const numberPinnedOrder = discussedOrderNumber ? pickConversationOrder(activeOrder, discussedOrderNumber) : null;
+  // A dish the guest names right now outranks a number repeated from history:
+  // if the bot once answered about the wrong order, the old number keeps
+  // echoing back through its own replies, while "the one with the Caesar"
+  // always points at what the person in front of us actually means.
+  const mentionPinnedOrder = orderMentionedByItems(activeOrder, text);
+  const discussedOrderRecord = mentionPinnedOrder || numberPinnedOrder;
   const focusedActiveOrder = discussedOrderRecord && activeOrder
     ? { ...activeOrder, order: discussedOrderRecord, active_order: discussedOrderRecord, order_id: discussedOrderRecord.id, status: discussedOrderRecord.status, items: discussedOrderRecord.items, total_price: discussedOrderRecord.total_price, address: discussedOrderRecord.address, comment: discussedOrderRecord.comment, is_pickup: discussedOrderRecord.is_pickup, ai_comment: discussedOrderRecord.ai_comment }
     : activeOrder;
