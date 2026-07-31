@@ -16,8 +16,22 @@ export function isCustomerOrderStatusQuestion(text = "") {
     const value = String(text || "");
     return Boolean(requestedOrderNumber(value)) || ORDER_STATUS_QUESTION_RE.test(value);
 }
+// "че там у вас из суши есть и почем?" starts exactly like a follow-up
+// about a waiting order, but the guest is reading the menu, not waiting for
+// food. When the sentence asks what exists or what it costs, the assortment
+// wins and the status route stands down.
+const MENU_INTENT_RE = /(меню|мәзір|ассортимент|почем|почём|цена|цены|сколько\s*стоит|қанша\s*тұрады|бағасы|бағасын|бар\s*ма|барма|есть\s*ли|что\s*есть|какие\s*есть|из\s*\p{L}+\s*есть|самый\s*деш[ёе]в|арзан|дешев|скидк|жеңілдік|суши|пицца|ролл)/iu;
+export function hasMenuBrowsingIntent(text = "") {
+    return MENU_INTENT_RE.test(String(text || ""));
+}
 export function isLikelyOrderStatusFollowUp(text = "") {
-    return ACTIVE_ORDER_FOLLOW_UP_RE.test(String(text || ""));
+    const value = String(text || "");
+    if (!ACTIVE_ORDER_FOLLOW_UP_RE.test(value))
+        return false;
+    // An explicit order reference keeps the status route even while browsing.
+    if (requestedOrderNumber(value) || ORDER_STATUS_QUESTION_RE.test(value))
+        return true;
+    return !hasMenuBrowsingIntent(value);
 }
 // A guest who has been talking about one order all evening does not repeat its
 // number in every message. The site can hand us a different "active" order (an
