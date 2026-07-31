@@ -69,14 +69,17 @@ catch (error) {
 // next, so every answer ends with who moves and when.
 export function orderNextStepLine(order, language) {
     const label = String(order.statusLabel || "").toLowerCase();
-    if (/готов|дайын/.test(label))
-        return language === "ru" ? "Можете забирать — всё упаковано." : "Алып кетуге болады — бәрі дайын.";
+    // "Дайындалуда" contains "дайын", so the ready branch used to win and sent a
+    // guest to collect food that was still on the stove. In-progress labels are
+    // matched first and "ready" now has to stand as a whole word.
+    if (/готовит|даярла|дайындал|дайындау|принят|қабылдан|жаңа|новый/.test(label))
+        return language === "ru" ? "Как только будет готово, сразу напишем." : "Дайын болған сәтте бірден хабарлаймыз.";
     if (/пути|достав|жолда|жеткіз/.test(label))
         return language === "ru" ? "Курьер уже едет к вам." : "Курьер жолға шықты.";
     if (/отмен|болдыр|бас тарт/.test(label))
         return language === "ru" ? "Если это ошибка, напишите — сразу разберёмся." : "Егер бұл қате болса, жазыңыз — бірден шешеміз.";
-    if (/готовит|даярла|дайындал/.test(label))
-        return language === "ru" ? "Как только будет готово, сразу напишем." : "Дайын болған сәтте бірден хабарлаймыз.";
+    if (/(?<!\p{L})готов(?:о|а|ый)?(?!\p{L})|(?<!\p{L})дайын(?!\p{L})|заверш|орындал/u.test(label))
+        return language === "ru" ? "Можете забирать — всё упаковано." : "Алып кетуге болады — бәрі дайын.";
     return language === "ru" ? "Как только что-то изменится, сразу напишем." : "Жаңалық болса, бірден хабарлаймыз.";
 }
 export function formatCustomerOrderStatus(order, language) { const items = order.items.slice(0, 8).map(i => `${i.name} ×${i.quantity}`).join(", "); if (language === "ru")
