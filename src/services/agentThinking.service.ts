@@ -57,8 +57,9 @@ export function shouldThink(ctx: FastFoodContext, toolPlan?: { requiredTools?: s
   if (confidentPlan && text.length < 200 && !COMPLAINT_OR_EMOTION_RE.test(text) && !ctx.mediaContext) return false;
   if (THINK_WORTHY_RE.test(text)) return true;
   if (text.length >= 140) return true;
-  const questionMarks = (text.match(/\?/g) || []).length + (text.match(/\?/g) || []).length;
-  if (questionMarks >= 2) return true;
+  const questionMarks = (text.match(/\?/g) || []).length;
+  const clauseBreaks = (text.match(/[,;]/g) || []).length;
+  if (questionMarks >= 2 || (questionMarks === 1 && clauseBreaks >= 2)) return true;
   const exclamations = (text.match(/!/g) || []).length;
   if (exclamations >= 2) return true;
   if (ctx.mediaContext) return true;

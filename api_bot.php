@@ -566,7 +566,7 @@ if (isset($input['action']) && $input['action'] === 'update_crm') {
 }
 
 // === 2. КОМАНДА: ДОБАВИТЬ КОММЕНТАРИЙ О ЧЕКЕ (статус НЕ меняем) ===
-if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $input['action'] === 'update_status')) {
+if (isset($input['action']) && ($input['action'] === 'add_payment_comment' || $input['action'] === 'update_status' || $input['action'] === 'confirm_payment_and_print')) {
     $order_id = (int)($input['order_id'] ?? 0);
     $input_phone = isset($input['phone']) ? preg_replace('/[^0-9]/', '', (string)$input['phone']) : '';
     $amount_paid = isset($input['amount_paid']) ? (int)preg_replace('/[^0-9]/', '', (string)$input['amount_paid']) : 0;
@@ -777,52 +777,6 @@ if (isset($input['action']) && $input['action'] === 'check_status') {
             'success' => false, 
             'error' => 'Не указан номер телефона'
         ], JSON_UNESCAPED_UNICODE);
-    }
-    die();
-}
-
-// === 6. ЖАҢА КОМАНДА: АДМИН ЧЕКТІ РАСТАП, БОТ/ПРИНТЕРГЕ СИГНАЛ БЕРУ ===
-if (isset($input['action']) && $input['action'] === 'confirm_payment_and_print') {
-    $order_id = (int)($input['order_id'] ?? 0);
-
-    if ($order_id <= 0) {
-        echo json_encode(['success' => false, 'error' => 'Заказ ID көрсетілмеді'], JSON_UNESCAPED_UNICODE);
-        die();
-    }
-
-    $db->query("UPDATE " . PREFIX . "_spa_orders SET status = 'paid' WHERE id = '{$order_id}'");
-    $order = $db->super_query("SELECT id, phone, items, total_price FROM " . PREFIX . "_spa_orders WHERE id = '{$order_id}' LIMIT 1");
-
-    if ($order) {
-        $payload = [
-            'order_id' => $order['id'],
-            'phone' => $order['phone'],
-            'items' => json_decode($order['items'], true) ?? [],
-            'total' => $order['total_price'],
-            'status' => 'paid',
-            'secret_token' => $secret_token 
-        ];
-
-        // 🚀 МАҢЫЗДЫ: 3000 порты ЖОҚ, таза HTTPS
-        $nodejs_server_url = 'https://fastfood.bekaba.com/api/print_trigger'; 
-        
-        $ch = curl_init($nodejs_server_url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 3);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_exec($ch);
-        curl_close($ch);
-
-        echo json_encode([
-            'success' => true, 
-            'message' => 'Төлем расталды! Бот пен Принтерге сигнал кетті.'
-        ], JSON_UNESCAPED_UNICODE);
-    } else {
-        echo json_encode(['success' => false, 'error' => 'Базадан тапсырыс табылмады'], JSON_UNESCAPED_UNICODE);
     }
     die();
 }
