@@ -6,12 +6,10 @@ import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_EVAL_SCENARIOS, type AgentEvalScenario, type EvalContextKind } from "../eval/scenarios.js";
-import { FASTFOOD_AGENT_INSTRUCTIONS } from "../src/agent/instructions.js";
+import { buildAgentInstructions } from "../src/agent/instructionAssembly.js";
 import { resolveModel } from "../src/agent/modelRouter.js";
-import { buildTenantInstructions } from "../src/agent/persona.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 import { validateFinalText } from "../src/agent/finalValidator.js";
-import { buildFactsPrompt } from "../src/context/buildFactsPrompt.js";
 import type { FastFoodContext } from "../src/context/types.js";
 import { analyzeTurnSituation, critiqueDraftReply } from "../src/services/agentThinking.service.js";
 import { detectLang } from "../src/utils/language.js";
@@ -190,12 +188,7 @@ function extractToolCalls(result: any): ToolCall[] {
 function buildAgent(ctx: FastFoodContext, calls: ToolCall[], extraInstruction = "") {
   return new Agent({
     name: "FastFood OpenBot Eval",
-    instructions: [
-      FASTFOOD_AGENT_INSTRUCTIONS,
-      buildTenantInstructions(ctx),
-      buildFactsPrompt(ctx),
-      extraInstruction,
-    ].filter(Boolean).join("\n\n"),
+    instructions: buildAgentInstructions(ctx, extraInstruction),
     model: resolveEvalModel(ctx),
     tools: fakeToolSet(ctx, calls),
     maxSteps: 6,

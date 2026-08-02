@@ -1,6 +1,8 @@
 import type { FastFoodContext } from "../context/types.js";
 import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
+import { classifyKitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
+import { intentMatches } from "../utils/intentText.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -17,15 +19,15 @@ export interface AgentToolPlan {
 }
 
 const MENU_LOOKUP_RE =
-  /(бар\s*ма|есть\s*ли|қанша\s*(?:тұр|тұрады|теңге)|сколько\s*(?:стоит|тенге)|баға|цена|құрамы|состав|ингредиент|ащы|остр|вегетари|халал|пепперони|pepperoni|пицц|бургер|донер|шаурм|суши|ролл|салат|сусын|напит|десерт|комбо|сет)/iu;
+  /(бар\s*ма|барма|есть\s*ли|что\s+(?:входит|взять)|что-нибудь|қанша\s*(?:тұр|тұрады|теңге)|ск(?:олько|ока)\s*(?:стоит|тенге)|баға|цена|құрамы|состав|ингредиент|ащы|остр|вегетари|халал|п[ие]п+ерони|pepperoni|маргарит|пицц|бургер|донер|шаурм|суши|ролл|салат|сусын|напит|десерт|комбо|сет|балалар|дет(?:ям|ское)|реб[её]н|етсіз|без\s*мяс|бюджет|деш[её]в|арзан|лаваш)/iu;
 const DIRECT_MENU_LINK_RE =
   /(сілтеме|ссылка|link|линк|каталог|мәзірді\s*(?:жібер|бер|аш)|меню\s*(?:пришли|скинь|дай|открой|покажи)|тапсырыс\s*(?:бер|жасай|ет)|заказ\s*(?:хочу|сдел|оформ)|заказать|оформить|корзин|себет)/iu;
 const PAYMENT_DETAILS_RE =
-  /(реквизит|kaspi|каспи|halyk|халық|оплат(?:ить|а|у)|төлем|аударым|перевод).*(?:қалай|қайда|как|куда|номер|счет|шот)?/iu;
+  /(реквизит|kaspi|каспи|halyk|халық|оплат\p{L}*|төлем|аудар\p{L}*|перевод).*(?:қалай|қайда|как|куда|номер|счет|шот|сілтеме|ссылка)?/iu;
 const RECEIPT_EVENT_RE =
-  /(чек(?:ті|ті\s+жібер| отправ| скин)|receipt|түбіртек|квитанц)/iu;
+  /(чек(?:ті|ті\s+жібер| отправ| скин)|receipt|түбірте[кг]|квитанц|ақшаны\s+аудар|деньги\s+перев[её]л)/iu;
 const BUSINESS_INFO_RE =
-  /(мекенжай|адрес|қайда\s*(?:орналас|тұр)|где\s*(?:находит|вы)|жұмыс\s*уақыт|жұмыс\s*істей|график|режим\s*работ|до\s*скольк|сколько.{0,30}(?:работ|открыт)|сағат\s*нешеге|телефон|номер\s*(?:рестора|заведен)|қалай\s*табам)/iu;
+  /(мекенжай|адрес|қайда\s*(?:орналас|тұр)|қай\s*жерде|орналасқан|где\s*(?:находит|вы)|жұмыс\s*уақыт|жұмыс\s*істей|график|режим\s*работ|до\s*скольк|сколько.{0,30}(?:работ|открыт)|сағат\s*нешеге|телефон|номер\s*(?:рестора|заведен)|қалай\s*табам|бүгін\s*ашық|сегодня\s*открыт|түнде\s*жұмыс|работа\p{L}*\s*ночью)/iu;
 
 function add(plan: AgentToolPlan, tool: AgentToolName, reason: string) {
   if (plan.requiredTools.includes(tool)) return;
@@ -42,6 +44,10 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const text = String(ctx.text || "").trim();
   const plan: AgentToolPlan = { requiredTools: [], reason: [] };
   const immediateServiceIncident = isLikelyComplaintText(text) && complaintHasActionableDetail(text);
+  const paymentDetailsIntent = intentMatches(PAYMENT_DETAILS_RE, text) && !intentMatches(RECEIPT_EVENT_RE, text);
+  const runtime = ctx.hardRealtimeContext || ctx.runtimeStatus;
+  const kitchenPolicy = classifyKitchenSalesPolicy(runtime || null);
+  const checkoutBlocked = kitchenPolicy.blocksAllSales || kitchenPolicy.requiresConsent;
 
   if (immediateServiceIncident) {
     add(plan, "escalateToAdmin", "actionable_service_incident");
@@ -49,19 +55,20 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     add(plan, "checkOrderStatus", "live_order_status");
   }
 
-  if (PAYMENT_DETAILS_RE.test(text) && !RECEIPT_EVENT_RE.test(text)) {
+  if (paymentDetailsIntent) {
     add(plan, "getPaymentDetails", "live_payment_details");
   }
 
-  if (BUSINESS_INFO_RE.test(text)) {
+  if (intentMatches(BUSINESS_INFO_RE, text)) {
     add(plan, "getBusinessInfo", "current_business_information");
   }
 
-  if (MENU_LOOKUP_RE.test(text)) {
+  if (!immediateServiceIncident && intentMatches(MENU_LOOKUP_RE, text)) {
     add(plan, "searchMenu", "live_menu_lookup");
   }
 
-  if (DIRECT_MENU_LINK_RE.test(text) || (ctx.explicitMenuLinkIntent && !MENU_LOOKUP_RE.test(text))) {
+  if (!paymentDetailsIntent && !checkoutBlocked
+    && (intentMatches(DIRECT_MENU_LINK_RE, text) || ctx.explicitMenuLinkIntent)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }
 

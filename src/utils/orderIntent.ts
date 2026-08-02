@@ -1,10 +1,12 @@
-const ORDER_STATUS_QUESTION_RE =
-  /(тапсырысым|заказым|мой\s+заказ|мои\s+заказы|order\s+status|тапсырыс.*(?:қайда|қашан|дайын|жолда|жеткіз|статус)|заказ.*(?:где|когда|готов|едет|достав|статус)|(?:қайда|қашан).*(?:тапсырыс|заказ)|(?:где|когда).*(?:заказ|order)|менде.*(?:тапсырыс|заказ).*бар|у\s+меня.*заказ|есть\s+ли.*заказ|статус\s+(?:тапсырыс|заказ|order))/iu;
+import { intentMatches } from "./intentText.js";
 
-const ORDER_NUMBER_RE = /(?:№|#|order\s*|заказ\s*|тапсырыс\s*)(\d{1,12})/iu;
+const ORDER_STATUS_QUESTION_RE =
+  /(тапсырысым|заказым|мой\s+заказ|мои\s+заказы|соңғы\s+тапсырыс|последн\p{L}*\s+заказ|order\s+status|тапсырыс.*(?:қайда|қашан|дайын|жолда|жеткіз|статус|көрін)|заказ.*(?:где|когда|готов|едет|достав|статус|виден|көрін)|(?:қайда|қашан).*(?:тапсырыс|заказ)|(?:где|когда).*(?:заказ|order)|менде.*(?:тапсырыс|заказ).*бар|у\s+меня.*заказ|есть\s+ли.*заказ|статус\s+(?:тапсырыс|заказ|order)|(?:төледім|оплатил).*(?:тапсырыс|заказ)|(?:тапсырыс|заказ).*(?:төледім|оплатил))/iu;
+
+const ORDER_NUMBER_RE = /(?:№|#|order\s*|заказ(?:ом|а|у)?\s*|тапсырыс(?:ым|тың)?\s*)(\d{1,12})/iu;
 
 const ACTIVE_ORDER_FOLLOW_UP_RE =
-  /((?:че|чё|что)\s*там|не\s*болды|не\s*жаңалық|қалай\s*болып\s*жатыр|как\s*там|дайын\s*ба|дайынба|готов(?:о|а)?\s*ли|готов(?:о|а)?|қашан|когда|скоро\s*ма|скоро|долго\s*(?:ещ[её])?|сколько\s*(?:ещ[её])?|әлі\s*көп\s*пе|жолда\s*ма|курьер|едет|келе\s*жатыр\s*ма)/iu;
+  /((?:че|чё|что)\s*там|не\s*болды|не\s*жаңалық|қалай\s*болып\s*жатыр|как\s*там|дайын\s*ба|дайынба|готов(?:о|а)?\s*ли|готов(?:о|а)?|қашан|когда|скоро\s*ма|скоро|долго\s*(?:ещ[её])?|сколько\s*(?:ещ[её])?|әлі\s*(?:көп\s*пе|қанша\s*күт)|қанша\s*күт|жолда\s*ма|курьер|едет|келе\s*жатыр\s*ма)/iu;
 
 // "қанша уақытта жетеді?" is the single most common thing a guest writes after
 // paying, and it never matched the status patterns, so it fell through to the
@@ -14,7 +16,7 @@ const ORDER_TIMING_QUESTION_RE =
   /(қанша\s*уақыт|қанша\s*минут|қашан\s*жет|қашан\s*әкел|қашан\s*дайын|жетед[іi]\s*ма|жетед[іi]\s*бе|канша\s*уакыт|сколько\s*(?:по\s*)?времени|как\s*долго|через\s*сколько|когда\s*привез|когда\s*будет\s*готов|kan?sha\s*ua[kq]yt|ua[kq]ytta\s*jet|kashan\s*jet|kashan\s*dayin|skolko\s*jdat)/iu;
 
 export function isOrderTimingQuestion(text = "") {
-  return ORDER_TIMING_QUESTION_RE.test(String(text || ""));
+  return intentMatches(ORDER_TIMING_QUESTION_RE, text);
 }
 
 export function requestedOrderNumber(text = "") {
@@ -23,7 +25,7 @@ export function requestedOrderNumber(text = "") {
 
 export function isCustomerOrderStatusQuestion(text = "") {
   const value = String(text || "");
-  return Boolean(requestedOrderNumber(value)) || ORDER_STATUS_QUESTION_RE.test(value);
+  return Boolean(requestedOrderNumber(value)) || intentMatches(ORDER_STATUS_QUESTION_RE, value);
 }
 
 // "че там у вас из суши есть и почем?" starts exactly like a follow-up
@@ -39,9 +41,9 @@ export function hasMenuBrowsingIntent(text = "") {
 
 export function isLikelyOrderStatusFollowUp(text = "") {
   const value = String(text || "");
-  if (!ACTIVE_ORDER_FOLLOW_UP_RE.test(value)) return false;
+  if (!intentMatches(ACTIVE_ORDER_FOLLOW_UP_RE, value)) return false;
   // An explicit order reference keeps the status route even while browsing.
-  if (requestedOrderNumber(value) || ORDER_STATUS_QUESTION_RE.test(value)) return true;
+  if (requestedOrderNumber(value) || intentMatches(ORDER_STATUS_QUESTION_RE, value)) return true;
   return !hasMenuBrowsingIntent(value);
 }
 

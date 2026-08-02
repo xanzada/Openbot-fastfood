@@ -1,12 +1,10 @@
 import { Agent, stepCountIs } from "@voltagent/core";
-import { buildFactsPrompt } from "../context/buildFactsPrompt.js";
 import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
 import { analyzeTurnSituation, critiqueDraftReply, type DraftCritique, type TurnAnalysis } from "../services/agentThinking.service.js";
-import { FASTFOOD_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { validateFinalText } from "./finalValidator.js";
+import { buildAgentInstructions } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
-import { buildTenantInstructions } from "./persona.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
 
 function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
@@ -16,15 +14,9 @@ function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
 }
 
 function buildAgent(ctx: FastFoodContext, extraInstruction?: string) {
-  const instructions = [
-    FASTFOOD_AGENT_INSTRUCTIONS,
-    buildTenantInstructions(ctx),
-    buildFactsPrompt(ctx),
-    extraInstruction || "",
-  ].filter(Boolean).join("\n\n");
   return new Agent({
     name: "FastFood OpenBot",
-    instructions,
+    instructions: buildAgentInstructions(ctx, extraInstruction),
     model: resolveModel(ctx),
     tools: createFastFoodSkills(ctx),
     maxSteps: 6,
