@@ -15,8 +15,15 @@ const ACTIVE_ORDER_FOLLOW_UP_RE =
 const ORDER_TIMING_QUESTION_RE =
   /(қанша\s*уақыт|қанша\s*минут|қашан\s*жет|қашан\s*әкел|қашан\s*дайын|жетед[іi]\s*ма|жетед[іi]\s*бе|канша\s*уакыт|сколько\s*(?:по\s*)?времени|как\s*долго|через\s*сколько|когда\s*привез|когда\s*будет\s*готов|kan?sha\s*ua[kq]yt|ua[kq]ytta\s*jet|kashan\s*jet|kashan\s*dayin|skolko\s*jdat)/iu;
 
+const PROSPECTIVE_ORDER_TIMING_RE =
+  /((?:қазір|казир|жаңа|жана|сейчас|новый|если)\s+(?:заказ|тапсырыс).{0,32}(?:берсем|жасасам|берем|жасайм|закажу|оформлю|сделаю|дам)|(?:заказ|тапсырыс).{0,24}(?:берсем|жасасам|берем|закажу|оформлю|сделаю))/iu;
+
 export function isOrderTimingQuestion(text = "") {
   return intentMatches(ORDER_TIMING_QUESTION_RE, text);
+}
+
+export function isProspectiveOrderTimingQuestion(text = "") {
+  return intentMatches(PROSPECTIVE_ORDER_TIMING_RE, text);
 }
 
 export function requestedOrderNumber(text = "") {

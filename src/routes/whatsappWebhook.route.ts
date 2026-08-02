@@ -66,9 +66,15 @@ import {
 import { getTextModels } from "../services/llm.service.js";
 import { classifyKitchenSalesPolicy,
   formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
+import {
+  buildBlockedMenuItemReply,
+  buildUnverifiedPaymentClaimReply,
+  findBlockedMenuItemMention,
+  isUnverifiedPaymentClaim,
+} from "../services/operationalPreemption.service.js";
 import { bumpOperatorCaseSignal, detectOperatorCaseKind } from "../services/operatorCase.service.js";
 import { computeProactiveSignals } from "../services/proactiveSignals.service.js";
 import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
@@ -272,7 +278,9 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
   // complaint and never raise the operator flag, so anger and human requests
   // are left to the escalation path further down instead of being short-circuited here.
   if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text)) return null;
-  const timingAsked = Boolean(ctx.activeOrder) && isOrderTimingQuestion(ctx.text);
+  const timingAsked = Boolean(ctx.activeOrder)
+    && isOrderTimingQuestion(ctx.text)
+    && !isProspectiveOrderTimingQuestion(ctx.text);
   if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked) return null;
   const orderNumber = requestedOrderNumber(ctx.text);
   const discussedNumber = orderNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
@@ -285,6 +293,25 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
   if (lookup.state === "found") return formatCustomerOrderStatus(lookup.order, ctx.language);
   if (lookup.state === "unavailable") return unavailableOrderReply(ctx.language);
   return missingOrderReply(ctx.language);
+}
+
+function operationalPreemptionReply(ctx: FastFoodContext): string | null {
+  // A text claim is not proof of payment. Asking for the receipt here avoids an
+  // unnecessary model call and, critically, cannot mutate the order to paid or
+  // accidentally send the menu link again.
+  if (!ctx.mediaContext && isUnverifiedPaymentClaim(ctx.text)) {
+    return buildUnverifiedPaymentClaimReply(ctx.language);
+  }
+
+  // Active operator notes outrank the ordering/link intent. This deterministic
+  // check covers compound phrases such as "is Futomaki available, can I order?"
+  // where the link tool previously hid the unavailable-item warning.
+  const blockedItem = findBlockedMenuItemMention(
+    ctx.activeShiftNotes,
+    Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [],
+    ctx.text,
+  );
+  return blockedItem ? buildBlockedMenuItemReply(blockedItem, ctx.language) : null;
 }
 
 // busyKitchenReply used to hard-code the "we are busy, do you agree to wait?"
@@ -746,6 +773,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
     if (mediaPreemptiveReply) {
       await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource || "media_preemptive_reply");
+      return;
+    }
+
+    const operationalReply = operationalPreemptionReply(ctx);
+    if (operationalReply) {
+      await sendCustomerReplyAndFinish(ctx, messageId, operationalReply, "operational_preemption");
       return;
     }
 
