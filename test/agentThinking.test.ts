@@ -46,6 +46,11 @@ test("long or multi-question turns are thought-worthy", () => {
   assert.equal(shouldThink(ctx("Не боп болып жатыр?! Тағы да кешікті!!")), true);
 });
 
+test("one neutral question does not pay for a think call but two questions do", () => {
+  assert.equal(shouldThink(ctx("Can you help?")), false);
+  assert.equal(shouldThink(ctx("Can you help? What is next?")), true);
+});
+
 test("media turns get analysis because captions are rarely self-explanatory", () => {
   assert.equal(shouldThink(ctx("мынау не?", { kind: "photo" })), true);
 });

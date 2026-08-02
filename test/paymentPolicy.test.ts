@@ -46,3 +46,17 @@ test("payment tool returns the same strict policy with live requisites", async (
   assert.match(source, /Payment is online and prepaid only/);
   assert.match(source, /Cash and payment on delivery or pickup are not accepted/);
 });
+
+test("payment confirmation only signals the operator and never marks an order paid", async () => {
+  const source = await readFile(new URL("../api_bot.php", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /add_payment_comment'[\s\S]{0,120}confirm_payment_and_print/,
+    "the legacy action must use the receipt-comment signal path"
+  );
+  assert.doesNotMatch(source, /SET\s+status\s*=\s*'paid'/i);
+  assert.doesNotMatch(source, /\/api\/print_trigger/);
+  assert.doesNotMatch(source, /CURLOPT_SSL_VERIFY(?:HOST|PEER)\s*,\s*false/);
+  assert.match(source, /'status_changed'\s*=>\s*false/);
+});
