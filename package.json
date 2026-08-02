@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
+    "eval:agent": "tsx --env-file=.env scripts/runAgentEval.ts",
     "learn": "tsx scripts/learnFromFailures.ts"
   },
   "dependencies": {
