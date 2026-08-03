@@ -18,6 +18,17 @@ export function noteConstraintTerms(text: unknown): string[] {
     .slice(0, 12);
 }
 
+const UNAVAILABLE_MARKER_RE = /(?:временно|уақытша|уакытша|нету?|жоқ|жок|болмайды|недоступ|законч|отсутств|сатылмайды)/iu;
+
+function availabilityConstraintTerms(text: unknown): string[] {
+  const raw = String(text || "").trim();
+  const clauses = raw.split(/[.!?;\r\n]+/u).map((part) => part.trim()).filter(Boolean);
+  // Operators often append an instruction or audit marker after the actual
+  // availability fact. Only the factual clause may define menu constraints.
+  const factualClause = clauses.find((clause) => UNAVAILABLE_MARKER_RE.test(clause)) || clauses[0] || raw;
+  return noteConstraintTerms(factualClause);
+}
+
 export function matchingNoteIds(notes: any[] = [], value: unknown): string[] {
   const haystack = normalize(value);
   if (!haystack) return [];
@@ -55,13 +66,13 @@ export function menuItemBlockedByNotes(notes: any[] = [], item: Record<string, a
   // including dishes that only mention it inside their composition.
   const words = itemText.split(" ").filter(Boolean);
   const matched = notes.filter((note) => {
-    const terms = noteConstraintTerms(note?.text);
+    const terms = availabilityConstraintTerms(note?.text);
     return terms.length > 0 && terms.every((term) => textCarriesTerm(words, term));
   });
   return { blocked: matched.length > 0, noteIds: matched.map(noteId).filter(Boolean) };
 }
 
 export function publicNoteConstraints(notes: any[] = []) {
-  return notes.map((note) => ({ note_id: noteId(note), blocked_terms: noteConstraintTerms(note?.text), expires_at: Number(note?.expiresAt || 0) || null }))
+  return notes.map((note) => ({ note_id: noteId(note), blocked_terms: availabilityConstraintTerms(note?.text), expires_at: Number(note?.expiresAt || 0) || null }))
     .filter((entry) => entry.note_id && entry.blocked_terms.length);
 }
