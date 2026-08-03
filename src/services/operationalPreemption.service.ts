@@ -25,7 +25,10 @@ function stemOf(term: string) {
 
 function messageNamesItem(message: string, itemName: string) {
   const words = normalize(message).split(" ").filter(Boolean);
-  const nameTerms = normalize(itemName).split(" ").filter((term) => term.length >= 3);
+  // Parentheses usually contain an alias ("Донер (или донер-кебаб)"). A guest
+  // naming the primary menu title must not be forced to repeat every alias.
+  const primaryName = itemName.replace(/\([^)]*\)/gu, " ").trim() || itemName;
+  const nameTerms = normalize(primaryName).split(" ").filter((term) => term.length >= 3);
   return nameTerms.length > 0 && nameTerms.every((term) => {
     const stem = stemOf(term);
     return words.some((word) => word.startsWith(stem));
