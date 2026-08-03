@@ -30,6 +30,16 @@ test("a note naming one dish does not take its whole category down", () => {
   assert.equal(menuItemBlockedByNotes(notes, DONER).blocked, false);
 });
 
+test("operator instructions after the unavailable fact do not become dish-name constraints", () => {
+  const notes = [{
+    id: "live-post-deploy",
+    text: "Донер временно нет. Сообщить клиенту и предложить замену. CODEX POST-DEPLOY REGRESSION.",
+  }];
+
+  assert.equal(menuItemBlockedByNotes(notes, DONER).blocked, true);
+  assert.equal(menuItemBlockedByNotes(notes, PEPPERONI).blocked, false);
+});
+
 test("a one-word category note still clears that category", () => {
   const notes = [{ id: "30", text: "пицца жоқ" }];
   assert.equal(menuItemBlockedByNotes(notes, PEPPERONI).blocked, true);
