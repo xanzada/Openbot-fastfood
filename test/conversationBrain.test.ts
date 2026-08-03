@@ -127,6 +127,17 @@ test("validator keeps useful mixed-language wording instead of replacing it with
   assert.deepEqual(result.warnings, []);
 });
 
+test("validator removes an old wait-consent question after the kitchen returns to normal", () => {
+  const ctx = {
+    language: "kk", text: "донер барма енді?", config: {}, fetchedSettings: { wait_time: 0 },
+    hardRealtimeContext: { wait_time: 0 }, runtimeStatus: { wait_time: 0 }, activeOrder: null,
+  } as any;
+  const result = validateFinalText("Донер (немесе донер-кебаб) бар, бағасы 1000 теңге. Күте аласыз ба?", ctx);
+
+  assert.equal(result.text, "Донер (немесе донер-кебаб) бар, бағасы 1000 теңге.");
+  assert.ok(result.warnings.includes("stale_wait_consent_removed"));
+});
+
 test("high-confidence live intents are code-gated to the correct tools", () => {
   const plan = (text: string, extra: Record<string, any> = {}) =>
     resolveAgentToolPlan({ text, explicitMenuLinkIntent: false, activeOrder: null, ...extra } as any).requiredTools;
