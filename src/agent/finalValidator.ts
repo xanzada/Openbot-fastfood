@@ -9,6 +9,8 @@ const WAIT_TIME_CLAIM_RE =
 // Soft signal only: polite waiting language stays in the reply, it is just
 // reported in warnings so the audit log still shows it.
 const SOFT_WAIT_HINT_RE = /(күте тұр|күтіп тұр|күтіңіз|подожд|ожидай)/iu;
+const STALE_WAIT_CONSENT_RE =
+  /[^.!?\n]*(?:күте\s+аласыз|күте\s+аласың|күтуге\s+дайын|сможете\s+подождать|готовы\s+(?:подождать|ждать)|будете\s+ждать)[^.!?\n]*[?]?/iu;
 const ORDER_STATUS_RE =
   /(тапсырысыңыз|заказыңыз|заказ|order).*(дайындалып|әзірленіп|курьер|жолда|жеткіз|аяқтал|готов|едет|достав|дайын|әзір|даяр)/iu;
 // Bare "дайын"/"готов"/"работает" appear in ordinary menu and order replies too,
@@ -200,6 +202,13 @@ export function validateFinalText(
 
   const liveWaitTime = Number(ctx.fetchedSettings?.wait_time || 0);
   if (!liveWaitTime) {
+    if (STALE_WAIT_CONSENT_RE.test(text)) {
+      const withoutStaleConsent = dropSentencesMatching(text, STALE_WAIT_CONSENT_RE);
+      if (withoutStaleConsent) {
+        text = withoutStaleConsent;
+        warnings.push("stale_wait_consent_removed");
+      }
+    }
     WAIT_TIME_CLAIM_RE.lastIndex = 0;
     const hasUnsupportedWaitClaim = WAIT_TIME_CLAIM_RE.test(text);
     WAIT_TIME_CLAIM_RE.lastIndex = 0;
