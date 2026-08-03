@@ -75,7 +75,38 @@ modified.
 
 ## Verification
 
-- New physical-regression tests: 4/4 passed.
+- Live physical-regression test file: 7/7 passed.
 - Existing deterministic agent corpus: 146/146 passed.
 - Full project test suite: passed.
 - TypeScript `tsc --noEmit`: passed.
+
+## Extended production regression
+
+- Created marked pickup order #61 (one Doner, 1000 KZT), verified `не болды`
+  against `New`, then cancelled it through the operator rejection path. The
+  order is `Cancelled`; no real customer order was changed.
+- `че там брат`, `не болды`, and post-deploy `ну и?` all stayed on the latest
+  discussed order. `ну и?` returned order #61 and its cancelled status.
+- A verbose live note (`Донер временно нет. ...`) exposed that operator
+  instructions and audit markers were being treated as dish-name words. The
+  parser now isolates the factual unavailable clause. The physical retry
+  correctly blocked Doner and did not send a menu link.
+- An ingredient note for salmon blocked a salmon-related availability question
+  without falsely blocking Doner. Removing the notes restored Doner at 1000 KZT.
+- A committed 120-minute kitchen state produced an exact two-hour warning and
+  asked for consent. A negative answer stopped checkout without a link. The
+  kitchen was restored to normal.
+- After recovery to normal, the model initially repeated the stale question
+  `Күте аласыз ба?`. A final validator regression now removes obsolete wait
+  consent when live wait time is zero. The production retry answered only that
+  Doner is available at 1000 KZT.
+- A harmless image was sent physically. The agent asked what the image was about
+  before any escalation; no immediate false SOS was observed.
+- Physical audio upload was not completed because the WhatsApp Web file chooser
+  was unstable in this browser session. Do not treat audio as a physical pass.
+- The DLE `Чат с клиентами` iframe remained at `Загрузка Chatwoot...`; this is a
+  separate UI/integration defect and remains open.
+
+Production deployments verified healthy at commits `4fea01f` and `9ad408e`.
+Final state: no active E2E note, kitchen normal, delivery enabled, pickup enabled,
+and marked order #61 cancelled.
