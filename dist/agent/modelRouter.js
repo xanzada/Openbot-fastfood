@@ -7,39 +7,97 @@ function envText(name, fallback) {
     const value = String(process.env[name] || "").trim();
     return value || fallback;
 }
-function createFallbackModel(primary, secondary) {
+function envTimeout(name, fallback) {
+    const value = Number(process.env[name] || fallback);
+    return Number.isFinite(value) ? Math.max(5_000, Math.min(120_000, value)) : fallback;
+}
+async function timedModelCall(model, operation, options, timeoutMs) {
+    const controller = new AbortController();
+    const upstream = options?.abortSignal;
+    const forwardAbort = () => controller.abort(upstream?.reason);
+    if (upstream?.aborted)
+        forwardAbort();
+    else
+        upstream?.addEventListener("abort", forwardAbort, { once: true });
+    let timer;
+    const timeout = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+            const error = new Error(`TEXT_MODEL_TIMEOUT:${model.modelId}:${timeoutMs}ms`);
+            controller.abort(error);
+            reject(error);
+        }, timeoutMs);
+    });
+    try {
+        return await Promise.race([
+            model[operation].call(model, { ...options, abortSignal: controller.signal }),
+            timeout,
+        ]);
+    }
+    finally {
+        if (timer)
+            clearTimeout(timer);
+        upstream?.removeEventListener("abort", forwardAbort);
+    }
+}
+function createFallbackModel(primary, secondary, reserve) {
     const wrapped = { ...primary };
+    const primaryTimeout = envTimeout("TEXT_PRIMARY_TIMEOUT_MS", 15_000);
+    const fallbackTimeout = envTimeout("TEXT_FALLBACK_TIMEOUT_MS", 15_000);
+    const reserveTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
     if (typeof primary.doGenerate === "function") {
-        const originalDoGenerate = primary.doGenerate.bind(primary);
         wrapped.doGenerate = async (options) => {
             try {
-                return await originalDoGenerate(options);
+                return await timedModelCall(primary, "doGenerate", options, primaryTimeout);
             }
-            catch (error) {
-                console.warn(`[MODEL:TEXT] primary=${primary.modelId} failed; fallback=${secondary.modelId}; error=${error?.message || error}`);
-                return secondary.doGenerate.call(secondary, options);
+            catch (primaryError) {
+                console.warn(`[MODEL:TEXT] primary=${primary.modelId} failed; fallback=${secondary.modelId}; ` +
+                    `error=${primaryError?.message || primaryError}`);
+                try {
+                    return await timedModelCall(secondary, "doGenerate", options, fallbackTimeout);
+                }
+                catch (fallbackError) {
+                    console.warn(`[MODEL:TEXT] fallback=${secondary.modelId} failed; reserve=${reserve.modelId}; ` +
+                        `error=${fallbackError?.message || fallbackError}`);
+                    return timedModelCall(reserve, "doGenerate", options, reserveTimeout);
+                }
             }
         };
     }
     if (typeof primary.doStream === "function") {
-        const originalDoStream = primary.doStream.bind(primary);
         wrapped.doStream = async (options) => {
             try {
-                return await originalDoStream(options);
+                return await timedModelCall(primary, "doStream", options, primaryTimeout);
             }
-            catch (error) {
-                console.warn(`[MODEL:TEXT] primary_stream=${primary.modelId} failed; fallback=${secondary.modelId}; error=${error?.message || error}`);
-                return secondary.doStream.call(secondary, options);
+            catch (primaryError) {
+                console.warn(`[MODEL:TEXT] primary_stream=${primary.modelId} failed; fallback=${secondary.modelId}; ` +
+                    `error=${primaryError?.message || primaryError}`);
+                try {
+                    return await timedModelCall(secondary, "doStream", options, fallbackTimeout);
+                }
+                catch (fallbackError) {
+                    console.warn(`[MODEL:TEXT] fallback_stream=${secondary.modelId} failed; reserve=${reserve.modelId}; ` +
+                        `error=${fallbackError?.message || fallbackError}`);
+                    return timedModelCall(reserve, "doStream", options, reserveTimeout);
+                }
             }
         };
     }
     return wrapped;
 }
-const textPrimaryModel = envText("TEXT_PRIMARY_MODEL", "deepseek/deepseek-chat");
-const textFallbackModel = envText("TEXT_FALLBACK_MODEL", "deepseek/deepseek-chat-v3");
-const textModel = createFallbackModel(openrouterProvider(textPrimaryModel), openrouterProvider(textFallbackModel));
+const textPrimaryModel = envText("TEXT_PRIMARY_MODEL", "google/gemini-2.5-flash");
+const textFallbackModel = envText("TEXT_FALLBACK_MODEL", "openai/gpt-4.1-mini");
+const textReserveModel = envText("TEXT_RESERVE_MODEL", "openai/gpt-4o-mini");
+const textModel = createFallbackModel(
+// OpenRouter's broad model catalogue is chat-completions compatible. Calling
+// the provider as a function selects OpenAI's Responses API in AI SDK v6;
+// several OpenRouter models then accept the request but never finish.
+openrouterProvider.chat(textPrimaryModel), openrouterProvider.chat(textFallbackModel), openrouterProvider.chat(textReserveModel));
 export function getTextModelId() {
-    return { primary: textPrimaryModel, fallback: textFallbackModel };
+    return {
+        primary: textPrimaryModel,
+        fallback: textFallbackModel,
+        reserve: textReserveModel,
+    };
 }
 export function resolveModel(_ctx) {
     return textModel;

@@ -49,9 +49,11 @@ export function generateSecureMenuUrl(domain, phone, tenantSecret = "") {
 }
 export function isMenuLinkResendRequest(text = "") {
     const value = String(text || "");
-    if (LINK_JUST_NOW_RE.test(value) && !MENU_LINK_TOPIC_RE.test(value) && !MENU_LINK_MOJIBAKE_RE.test(value)) {
+    const hasMenuTopic = MENU_LINK_TOPIC_RE.test(value) || MENU_LINK_MOJIBAKE_RE.test(value);
+    if (!hasMenuTopic)
         return false;
-    }
+    if (LINK_JUST_NOW_RE.test(value))
+        return false;
     return LINK_FORCE_RESEND_RE.test(value) || MENU_LINK_RESEND_TEXT_RE.test(value);
 }
 export function hasExplicitMenuLinkIntent(text) {

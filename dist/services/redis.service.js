@@ -1,10 +1,20 @@
 import crypto from "node:crypto";
 import { createClient } from "redis";
+const REDIS_CONNECT_TIMEOUT_MS = Math.max(500, Math.min(10_000, Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 2_500)));
 export const redisClient = createClient({
     url: process.env.REDIS_URL || "redis://localhost:6379",
+    disableOfflineQueue: true,
+    socket: {
+        connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
+        reconnectStrategy: (retries) => Math.min(250 * (2 ** Math.min(retries, 5)), 5_000),
+    },
 });
 let redisReady = null;
 let redisConnectLogged = false;
+function redisUsable() {
+    return redisClient.isReady ||
+        (Boolean(process.env.NODE_TEST_CONTEXT) && redisClient.isOpen);
+}
 export function getRedisTarget() {
     const raw = process.env.REDIS_URL || "redis://localhost:6379";
     try {
@@ -29,9 +39,9 @@ redisClient.on("error", (error) => {
     console.error("[REDIS] error:", error?.message || error);
 });
 export async function connectRedis() {
-    if (redisClient.isOpen)
+    if (redisUsable())
         return;
-    if (!redisReady) {
+    if (!redisReady && !redisClient.isOpen) {
         const target = getRedisTarget();
         if (!redisConnectLogged) {
             console.log(`[OPENBOT:REDIS] connecting host=${target.host} port=${target.port} db=${target.database}`);
@@ -43,21 +53,52 @@ export async function connectRedis() {
             console.log(`[OPENBOT:REDIS] connected host=${target.host} port=${target.port}`);
         })
             .catch((error) => {
-            redisReady = null;
             console.error(`[OPENBOT:REDIS] connect failed host=${target.host} port=${target.port}:`, error?.message || error);
-            throw error;
+        })
+            .finally(() => {
+            redisReady = null;
         });
     }
-    await redisReady;
+    if (redisReady) {
+        let timer;
+        await Promise.race([
+            redisReady,
+            new Promise((resolve) => {
+                timer = setTimeout(resolve, REDIS_CONNECT_TIMEOUT_MS);
+                timer.unref?.();
+            }),
+        ]).finally(() => {
+            if (timer)
+                clearTimeout(timer);
+        });
+    }
+    if (!redisUsable())
+        throw new Error(`REDIS_NOT_READY:${REDIS_CONNECT_TIMEOUT_MS}ms`);
 }
 export async function pingRedis() {
     await connectRedis();
     return redisClient.ping();
 }
+async function withRedisTimeout(operation, timeoutMs) {
+    let timer;
+    try {
+        return await Promise.race([
+            operation,
+            new Promise((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(`REDIS_OPERATION_TIMEOUT:${timeoutMs}ms`)), timeoutMs);
+            }),
+        ]);
+    }
+    finally {
+        if (timer)
+            clearTimeout(timer);
+    }
+}
 async function safeRedis(fallback, fn) {
     try {
-        await connectRedis();
-        return await fn();
+        const timeoutMs = Math.max(500, Math.min(10_000, Number(process.env.REDIS_OPERATION_TIMEOUT_MS || 2_500)));
+        await withRedisTimeout(connectRedis(), timeoutMs);
+        return await withRedisTimeout(fn(), timeoutMs);
     }
     catch {
         return fallback;
@@ -311,6 +352,12 @@ export async function saveUserLang(instanceId, phone, lang) {
         return result === "OK";
     });
 }
+export async function replaceUserLang(instanceId, phone, lang) {
+    return safeRedis(false, async () => {
+        const result = await redisClient.set(languageKey(instanceId, phone), lang, { EX: USER_LANG_TTL_SECONDS });
+        return result === "OK";
+    });
+}
 // Support needs to see why a guest is being answered in one language and to undo
 // a wrong lock without waiting out its 24 hours.
 export async function getUserLangState(instanceId, phone) {
@@ -510,11 +557,17 @@ async function purgeShiftNoteIdsFromHistory(instanceId, noteIds) {
         await multi.exec();
         if (kept.length && ttlBefore > 0)
             await redisClient.expire(key, ttlBefore);
+        // The rolling summary is written from this history, so a note that was
+        // just deleted survives inside it ("pizza was unavailable") and reaches
+        // the prompt again long after the operator removed it. The summary is a
+        // derived cache: dropping it makes the next turn rebuild it from what is
+        // actually left, which is the only state the guest may hear about.
+        await redisClient.del(key.replace(/^history:/, "conv_summary:")).catch(() => undefined);
         removedTotal += removed;
     }
     return removedTotal;
 }
-async function scanKeys(pattern) {
+export async function scanKeys(pattern) {
     await connectRedis();
     const keys = [];
     for await (const chunk of redisClient.scanIterator({ MATCH: pattern, COUNT: 100 })) {
@@ -525,6 +578,35 @@ async function scanKeys(pattern) {
     }
     return keys;
 }
+const SHIFT_NOTE_DEFAULT_TTL_SECONDS = 24 * 60 * 60;
+/**
+ * Parses whatever expiry format the DLE site sends into a TTL.
+ *
+ * The hidden bug: a Unix timestamp in SECONDS ("1785400000") goes through
+ * Date.parse as garbage (NaN in V8), so every note with an epoch expiry
+ * silently lived the default 24h instead of its real lifetime. Numeric strings
+ * are now detected explicitly: >=1e12 is treated as milliseconds, >=1e9 as
+ * seconds; anything else falls back to Date.parse; past or invalid values fall
+ * back to the 24h default.
+ */
+export function resolveShiftNoteTtlSeconds(expiresAtString, nowMs = Date.now()) {
+    const raw = String(expiresAtString || "").trim();
+    if (!raw)
+        return SHIFT_NOTE_DEFAULT_TTL_SECONDS;
+    let expiresAtMs = 0;
+    if (/^\d{10,16}$/.test(raw)) {
+        const numeric = Number(raw);
+        expiresAtMs = numeric >= 1e12 ? numeric : numeric * 1000;
+    }
+    else {
+        const parsed = Date.parse(raw);
+        if (Number.isFinite(parsed))
+            expiresAtMs = parsed;
+    }
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs)
+        return SHIFT_NOTE_DEFAULT_TTL_SECONDS;
+    return Math.max(60, Math.ceil((expiresAtMs - nowMs) / 1000));
+}
 export async function saveShiftNote(instanceId, noteId, text, expiresAtString) {
     const noteText = String(text || "").trim();
     if (!noteText)
@@ -532,11 +614,7 @@ export async function saveShiftNote(instanceId, noteId, text, expiresAtString) {
     return safeRedis(false, async () => {
         const safeNoteId = String(noteId || "").trim() ||
             `fallback_${crypto.createHash("sha1").update(`${instanceId}|${noteText}|${expiresAtString || ""}`).digest("hex").slice(0, 16)}`;
-        let ttlSeconds = 24 * 60 * 60;
-        const expiresAt = expiresAtString ? Date.parse(expiresAtString) : 0;
-        if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-            ttlSeconds = Math.max(60, Math.ceil((expiresAt - Date.now()) / 1000));
-        }
+        const ttlSeconds = resolveShiftNoteTtlSeconds(expiresAtString);
         await redisClient.setEx(`shift_note:${instanceId}:${safeNoteId}`, ttlSeconds, JSON.stringify({ text: noteText, createdAt: Date.now(), expiresAt: Date.now() + ttlSeconds * 1000 }));
         return true;
     });

@@ -1,7 +1,7 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
-import { menuItemBlockedByNotes } from "../services/noteProvenance.service.js";
+import { publicNoteConstraints, menuItemBlockedByNotes } from "../services/noteProvenance.service.js";
 function normalizeText(value) {
     return String(value || "")
         .toLowerCase()
@@ -54,13 +54,23 @@ export function selectPublicMenuItems(items, query = "", category = "", limit = 
     })
         .sort((left, right) => right.score - left.score || Number(left.item.price || 0) - Number(right.item.price || 0))
         .slice(0, max)
-        .map((entry) => ({
-        name: entry.item.name,
-        category: entry.item.category_name,
-        ingredients: entry.item.composition || entry.item.description || "",
-        price: entry.item.price,
-        available: typeof entry.item.available === "boolean" ? entry.item.available : undefined,
-    }));
+        .map((entry) => {
+        const name = normalizeText(entry.item.name || entry.item.title);
+        const category = normalizeText(entry.item.category_name || entry.item.category);
+        const body = normalizeText(`${entry.item.composition || ""} ${entry.item.description || ""}`);
+        // "лаваш" is not a dish here, it is what the Донер is wrapped in. Without this
+        // flag the model reads a hit it cannot explain and tells the guest we have
+        // nothing, when the right answer is to offer the dish that contains it.
+        const ingredientMatch = Boolean(normalizedQuery && !name.includes(normalizedQuery) && !category.includes(normalizedQuery) && body.includes(normalizedQuery));
+        return {
+            name: entry.item.name,
+            category: entry.item.category_name,
+            ingredients: entry.item.composition || entry.item.description || "",
+            price: entry.item.price,
+            available: typeof entry.item.available === "boolean" ? entry.item.available : undefined,
+            ...(ingredientMatch ? { matched_as_ingredient: true } : {}),
+        };
+    });
 }
 export function createSearchMenuSkill(ctx) {
     return createTool({
@@ -87,7 +97,32 @@ export function createSearchMenuSkill(ctx) {
             const allMatches = selectPublicMenuItems(allowedItems, query, category, 50);
             const start = Math.max(0, Number(offset || 0));
             const matches = allMatches.slice(start, start + requested);
-            return { items: matches, offset: start, nextOffset: start + matches.length < allMatches.length ? start + matches.length : null, totalMatched: allMatches.length, noteRestrictionsApplied: items.length !== allowedItems.length };
+            const filteringApplied = items.length !== allowedItems.length;
+            // Why an item vanished, without ever handing the model the operator's raw
+            // wording: only the derived unavailable terms, which are safe to reason
+            // about and useless to quote.
+            const unavailableNow = filteringApplied
+                ? Array.from(new Set(publicNoteConstraints(ctx.activeShiftNotes).flatMap((entry) => entry.blocked_terms || []))).slice(0, 12)
+                : [];
+            // A sales-minded agent never answers a plain "we don't have it". These are
+            // drawn from allowedItems, which already dropped everything a note blocks,
+            // so an alternative can never contain the missing ingredient itself.
+            const safeAlternatives = matches.length === 0 && allowedItems.length
+                ? selectPublicMenuItems(allowedItems, "", category, 3).map((item) => ({
+                    name: item?.name || item?.title || "",
+                    price: item?.price ?? null,
+                    category: item?.category || "",
+                })).filter((item) => item.name)
+                : [];
+            return {
+                items: matches,
+                ...(safeAlternatives.length ? { safe_alternatives: safeAlternatives } : {}),
+                offset: start,
+                nextOffset: start + matches.length < allMatches.length ? start + matches.length : null,
+                totalMatched: allMatches.length,
+                noteRestrictionsApplied: filteringApplied,
+                ...(unavailableNow.length ? { unavailable_now: unavailableNow } : {}),
+            };
         },
     });
 }

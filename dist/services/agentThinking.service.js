@@ -24,8 +24,9 @@ export function shouldThink(ctx, toolPlan) {
         return true;
     if (text.length >= 140)
         return true;
-    const questionMarks = (text.match(/\?/g) || []).length + (text.match(/\?/g) || []).length;
-    if (questionMarks >= 2)
+    const questionMarks = (text.match(/\?/g) || []).length;
+    const clauseBreaks = (text.match(/[,;]/g) || []).length;
+    if (questionMarks >= 2 || (questionMarks === 1 && clauseBreaks >= 2))
         return true;
     const exclamations = (text.match(/!/g) || []).length;
     if (exclamations >= 2)

@@ -1,23 +1,30 @@
 import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
-import { claimReceiptFingerprint, clearPendingKitchenConsent, getPendingKitchenConsent, getKitchenCheckoutFingerprint, releaseReceiptFingerprint, markComplaintClarificationPending, saveComplaintMedia, savePendingKitchenConsent, saveToHistory, takeComplaintClarification, } from "../services/redis.service.js";
-import { buildComplaintAckReply, buildComplaintClarificationReply, buildComplaintDetailQuestion, complaintHasActionableDetail, hasEscalateAdminSignal, hasEscalateDeveloperSignal, hasPendingComplaintMedia, isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin, stripEscalationSignals, } from "../services/complaintRouting.service.js";
-import { bufferInboundText, claimMediaAiQuota, clearInboundProcessing, extractInboundMedia, extractSenderMeta, extractInboundText, extractMessageId, guardIncomingMessage, hydrateInboundMedia, markInboundDone, safeMediaMetadata, saveMediaContext, setOperatorAutoMute, } from "../services/inboundGuard.service.js";
+import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemory.service.js";
+import { claimReceiptFingerprint, clearPendingKitchenConsent, getPendingKitchenConsent, getKitchenCheckoutFingerprint, markKitchenCheckoutStarted, releaseReceiptFingerprint, markComplaintClarificationPending, saveComplaintMedia, savePendingKitchenConsent, saveToHistory, takeComplaintClarification, } from "../services/redis.service.js";
+import { buildComplaintAckReply, buildComplaintClarificationReply, buildComplaintDetailQuestion, complaintHasActionableDetail, hasEscalateAdminSignal, hasPendingComplaintMedia, isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin, stripEscalationSignals, } from "../services/complaintRouting.service.js";
+import { acquireTurnLock, bufferInboundText, claimMediaAiQuota, claimOutboundReply, drainInboundBuffer, releaseTurnLock, clearInboundProcessing, extractInboundMedia, extractSenderMeta, extractInboundText, extractMessageId, guardIncomingMessage, hydrateInboundMedia, markInboundDone, safeMediaMetadata, saveMediaContext, setOperatorAutoMute, } from "../services/inboundGuard.service.js";
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
-import { sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/whatspro.client.js";
+import { markWhatsProChatRead, sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/whatspro.client.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
-import { customerOrderFromRecord, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
+import { customerOrderFromRecord, pickConversationOrder, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, isTenantBotEnabled, saveToShpor } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import { analyzeMedia, createReceiptFingerprint, receiptFilterEnabled, validateReceiptAnalysis, } from "../services/mediaAnalysis.service.js";
 import { getTextModels } from "../services/llm.service.js";
-import { classifyKitchenSalesPolicy, detectKitchenConsentAnswer, detectRequestedServiceChannel } from "../services/kitchenPolicy.service.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, requestedOrderNumber } from "../utils/orderIntent.js";
+import { classifyKitchenSalesPolicy, formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel } from "../services/kitchenPolicy.service.js";
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
+import { buildBlockedMenuItemReply, buildUnverifiedPaymentClaimReply, findBlockedMenuItemMention, isUnverifiedPaymentClaim, } from "../services/operationalPreemption.service.js";
 import { bumpOperatorCaseSignal, detectOperatorCaseKind } from "../services/operatorCase.service.js";
+import { computeProactiveSignals } from "../services/proactiveSignals.service.js";
+import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
+import { recordLearningEvent } from "../services/learningLoop.service.js";
+import { bumpMetric, recordLatency } from "../services/metrics.service.js";
+import { mergeBufferedParts } from "../services/bufferBrain.service.js";
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
 function maskPhone(phone = "") {
     const clean = String(phone || "").replace(/\D/g, "");
@@ -158,25 +165,49 @@ function missingOrderReply(language) {
         : "Бұл нөмір бойынша белсенді тапсырыс табылмады. Тапсырыс нөмірін жіберіңіз.";
 }
 async function customerOrderReply(ctx) {
-    if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)))
+    // "заказ 59 холодный привезли" names an order, but the guest is not asking where it is —
+    // they are angry about it. Answering with a status line would bury a real
+    // complaint and never raise the operator flag, so anger and human requests
+    // are left to the escalation path further down instead of being short-circuited here.
+    if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text))
+        return null;
+    const timingAsked = Boolean(ctx.activeOrder)
+        && isOrderTimingQuestion(ctx.text)
+        && !isProspectiveOrderTimingQuestion(ctx.text);
+    if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked)
         return null;
     const orderNumber = requestedOrderNumber(ctx.text);
+    const discussedNumber = orderNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
+    const discussedRecord = discussedNumber ? pickConversationOrder(ctx.activeOrder, discussedNumber) : null;
     const lookup = orderNumber
         ? await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, orderNumber)
         : ctx.activeOrder?.is_stale
             ? { state: "unavailable" }
-            : customerOrderFromRecord(ctx.activeOrder, ctx.phone, ctx.language);
+            : customerOrderFromRecord(discussedRecord || ctx.activeOrder, ctx.phone, ctx.language);
     if (lookup.state === "found")
         return formatCustomerOrderStatus(lookup.order, ctx.language);
     if (lookup.state === "unavailable")
         return unavailableOrderReply(ctx.language);
     return missingOrderReply(ctx.language);
 }
-function busyKitchenReply(policy, language) {
-    return language === "ru"
-        ? `Сейчас много заказов, поэтому приготовление или доставка могут задержаться примерно на ${policy.waitLabelRu}. Вы согласны подождать и продолжить?`
-        : `Қазір тапсырыс көп болғандықтан дайындау немесе жеткізу шамамен ${policy.waitLabelKk} кешігуі мүмкін. Күтіп, жалғастыруға келісесіз бе?`;
+function operationalPreemptionReply(ctx) {
+    // A text claim is not proof of payment. Asking for the receipt here avoids an
+    // unnecessary model call and, critically, cannot mutate the order to paid or
+    // accidentally send the menu link again.
+    if (!ctx.mediaContext && isUnverifiedPaymentClaim(ctx.text)) {
+        return buildUnverifiedPaymentClaimReply(ctx.language);
+    }
+    // Active operator notes outrank the ordering/link intent. This deterministic
+    // check covers compound phrases such as "is Futomaki available, can I order?"
+    // where the link tool previously hid the unavailable-item warning.
+    const blockedItem = findBlockedMenuItemMention(ctx.activeShiftNotes, Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [], ctx.text);
+    return blockedItem ? buildBlockedMenuItemReply(blockedItem, ctx.language) : null;
 }
+// busyKitchenReply used to hard-code the "we are busy, do you agree to wait?"
+// sentence, but nothing has called it since the busy kitchen became a context
+// fact (operational_runtime.wait_consent_required + wait_label) that the agent
+// phrases itself in its own words. Removed so there is exactly one owner of
+// that message and no dead template can silently come back.
 function closedKitchenReply(policy, language) {
     if (language === "ru") {
         if (policy.mode === "vacation")
@@ -197,14 +228,13 @@ function unavailableChannelReply(channel, language) {
     return channel === "delivery" ? "Қазір жеткізу уақытша қолжетімсіз, бірақ алып кетуге тапсырыс бере аласыз." : "Қазір алып кету уақытша қолжетімсіз, бірақ жеткізуге тапсырыс бере аласыз.";
 }
 async function kitchenGateReply(ctx) {
-    if (ctx.activeOrder)
-        return null;
+    // An existing order does not silence the kitchen. Questions ABOUT that order
+    // are already answered above by customerOrderReply, so anything reaching here
+    // is new intent, and new intent must hear the kitchen's real state. Repetition
+    // is prevented by consent memory below, not by muting the gate.
     const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
     // A guest who already has the link is left to finish, but only while the
     // kitchen is what it was when they got it. A real change reopens the gate.
-    const checkoutFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
-    if (checkoutFingerprint && checkoutFingerprint === policy.fingerprint)
-        return null;
     const pending = await getPendingKitchenConsent(ctx.instanceId, ctx.phone).catch(() => null);
     if (pending) {
         if (pending.policyFingerprint !== policy.fingerprint)
@@ -213,14 +243,19 @@ async function kitchenGateReply(ctx) {
             const answer = detectKitchenConsentAnswer(ctx.text);
             if (answer === "yes") {
                 await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
+                // The guest accepted this exact kitchen state. Remember it, so the wait
+                // is raised once and never turns into nagging on every message.
+                await markKitchenCheckoutStarted(ctx.instanceId, ctx.phone, policy.fingerprint).catch(() => false);
                 return null;
             }
             if (answer === "no") {
                 await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
-                return ctx.language === "ru" ? "Хорошо, заказ не продолжаем. Если решите позже — напишите нам." : "Жақсы, тапсырысты жалғастырмаймыз. Кейін шешсеңіз, бізге жазыңыз.";
+                return ctx.language === "ru"
+                    ? "Понимаю, извините за ожидание. Тогда заказ сейчас не оформляем. Будем рады видеть вас позже — просто напишите нам."
+                    : "Түсіндім, күттіргеніміз үшін кешіріңіз. Онда қазір тапсырысты рәсімдемей тұрайық. Кейінірек жазсаңыз, қуана қабылдаймыз.";
             }
-            // Neither yes nor no: the guest is still talking. Let the agent answer them
-            // and raise the wait itself rather than repeating a confirm-yes-or-no line.
+            // Neither yes nor no: the guest is still talking. Let the agent answer
+            // them; the consent stays owed and FACTS_CONTEXT still carries it.
             return null;
         }
     }
@@ -231,13 +266,20 @@ async function kitchenGateReply(ctx) {
         return unavailableChannelReply(channel, ctx.language);
     if (channel === "pickup" && !policy.pickup)
         return unavailableChannelReply(channel, ctx.language);
-    // A busy kitchen is a thing to mention, not a wall to put in front of a guest
-    // who only said hello. Record that consent is owed and let the agent greet,
-    // answer, and raise the wait in its own words; FACTS_CONTEXT carries
-    // wait_consent_required so it knows it has to ask before the order is placed.
+    // A guest who already accepted this same kitchen state is left to finish.
+    // Only a real change of the kitchen reopens the gate.
+    const checkoutFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
+    if (checkoutFingerprint && checkoutFingerprint === policy.fingerprint)
+        return null;
+    // The delay is the operator's promise to the guest, so the code states it
+    // rather than hoping the model will. Asked once per kitchen state, in the
+    // guest's language, and the answer decides what happens next.
     if (policy.requiresConsent) {
         await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint);
-        return null;
+        const label = formatKitchenWait(policy.waitMinutes || 0, ctx.language === "ru" ? "ru" : "kk");
+        return ctx.language === "ru"
+            ? `Сейчас заказов много, приготовление займёт примерно ${label}. Сможете подождать? Если да — продолжим заказ.`
+            : `Қазір тапсырыс көп, дайындалуы шамамен ${label} болады. Күте аласыз ба? Күтсеңіз, тапсырысты жалғастыра берейін.`;
     }
     return null;
 }
@@ -253,7 +295,12 @@ function hasMeaningfulMediaDescription(text = "", mediaContext = null) {
 async function sendCustomerReplyAndFinish(ctx, messageId, reply, source) {
     const cleanReply = stripEscalationSignals(reply);
     if (cleanReply) {
-        const delivery = await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: cleanReply });
+        const delivery = await sendWhatsProResponseSequence({
+            instanceId: ctx.instanceId,
+            phone: ctx.phone,
+            text: cleanReply,
+            requestScope: messageId,
+        });
         if (!delivery.ok)
             throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");
         await saveToHistory(ctx.instanceId, ctx.phone, "assistant", cleanReply, { source, ...noteHistoryMeta(ctx, cleanReply) });
@@ -273,6 +320,7 @@ async function processWhatsAppWebhook(body, started) {
         (mediaContext ? "[Media sent]" : "");
     let customerLanguageText = extractInboundText(body) || mediaContext?.caption || "";
     let stopTyping = () => { };
+    let turnLockOwner = null;
     console.log(`[OPENBOT:INBOUND] received instance=${instanceId || "-"} phone=${maskPhone(phone)} text_len=${String(text || "").length} media=${mediaContext?.kind || "no"} source=${body.source || "-"}`);
     try {
         if (!String(text || "").trim() && !mediaContext) {
@@ -303,6 +351,11 @@ async function processWhatsAppWebhook(body, started) {
             console.log(`[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=${guard.reason || "blocked"} elapsed=${Date.now() - started}ms`);
             return;
         }
+        // Presence + read receipt start the moment the guard accepts the
+        // message: the customer sees blue ticks and "typing..." for the whole
+        // turn, including the buffer wait that used to look like dead silence.
+        stopTyping = startWhatsProTyping({ instanceId, phone });
+        void markWhatsProChatRead({ instanceId, phone });
         // Stickers are accepted by the gateway, but never sent to AI or persisted.
         if (mediaContext?.kind === "sticker") {
             await markInboundDone(instanceId, messageId);
@@ -315,10 +368,28 @@ async function processWhatsAppWebhook(body, started) {
                 await markInboundDone(instanceId, messageId);
                 return;
             }
-            text = buffered.text || text;
+            // One conversation = one reply at a time. The per-message lock never
+            // stopped two batches of split messages from being answered in parallel;
+            // this turn lock does. A part that arrives while the previous reply is
+            // still being generated waits a bounded moment, then gets folded into
+            // ONE coherent message by the buffer brain - never a second answer.
+            turnLockOwner = await acquireTurnLock(instanceId, phone);
+            for (let waited = 0; !turnLockOwner && waited < 20_000; waited += 1_500) {
+                await new Promise((resolve) => setTimeout(resolve, 1_500));
+                turnLockOwner = await acquireTurnLock(instanceId, phone);
+            }
+            if (!turnLockOwner) {
+                console.warn(`[OPENBOT:BUFFER] turn busy, part deferred instance=${instanceId} phone=${maskPhone(phone)}`);
+                await markInboundDone(instanceId, messageId);
+                return;
+            }
+            const leftovers = await drainInboundBuffer(instanceId, phone).catch(() => []);
+            const parts = [...buffered.items, ...leftovers].filter(Boolean);
+            text = parts.length > 1
+                ? await mergeBufferedParts(parts).catch(() => buffered.text || text)
+                : (parts[0] || buffered.text || text);
             customerLanguageText = text;
         }
-        stopTyping = startWhatsProTyping({ instanceId, phone });
         mediaContext = await hydrateInboundMedia(body, mediaContext);
         const ctx = await preloadContext({ instanceId, phone, text, languageCandidateText: customerLanguageText, mediaContext, senderMeta });
         console.log(`[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`);
@@ -326,7 +397,12 @@ async function processWhatsAppWebhook(body, started) {
             const reply = ctx.language === "ru"
                 ? "Извините, я не принимаю видео. Пожалуйста, опишите, что произошло, текстом или отправьте фото."
                 : "Кешіріңіз, видео қабылдай алмаймын. Не болғанын мәтінмен түсіндіріңіз немесе фото жіберіңіз.";
-            await sendWhatsProResponseSequence({ instanceId: ctx.instanceId, phone: ctx.phone, text: reply });
+            await sendWhatsProResponseSequence({
+                instanceId: ctx.instanceId,
+                phone: ctx.phone,
+                text: reply,
+                requestScope: messageId,
+            });
             await markInboundDone(ctx.instanceId, messageId);
             return;
         }
@@ -515,6 +591,13 @@ async function processWhatsAppWebhook(body, started) {
             await saveToHistory(ctx.instanceId, ctx.phone, "system", "operator case created", {
                 source: "operator-case", caseId: routing.caseId, mediaAttached: routing.mediaAttached,
             });
+            void bumpMetric(ctx.instanceId, "escalations");
+            void bumpMetric(ctx.instanceId, "complaints");
+            void recordLearningEvent(ctx.instanceId, {
+                type: "escalation",
+                detail: detectOperatorCaseKind(ctx.text) || "complaint_text",
+                phone: maskPhone(ctx.phone),
+            });
             if (!routing.escalationAvailable) {
                 await notifyDeveloperSystemFailure(ctx.instanceId, new Error("ADMIN_PHONE_NOT_CONFIGURED_FOR_COMPLAINT"), {
                     scope: "complaint-routing",
@@ -527,6 +610,11 @@ async function processWhatsAppWebhook(body, started) {
         }
         if (mediaPreemptiveReply) {
             await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource || "media_preemptive_reply");
+            return;
+        }
+        const operationalReply = operationalPreemptionReply(ctx);
+        if (operationalReply) {
+            await sendCustomerReplyAndFinish(ctx, messageId, operationalReply, "operational_preemption");
             return;
         }
         const orderReply = await customerOrderReply(ctx);
@@ -546,6 +634,11 @@ async function processWhatsAppWebhook(body, started) {
             await sendCustomerReplyAndFinish(ctx, messageId, runtimeReply, "runtime_unavailable");
             return;
         }
+        // Deterministic proactive observations (order status changed since the
+        // last contact, an abandoned checkout link). Advisory context only: they
+        // reach the reply only when relevant to what the guest just said.
+        ctx.proactiveSignals = await computeProactiveSignals(ctx).catch(() => null);
+        void bumpMetric(ctx.instanceId, "turns");
         const textModels = getTextModels();
         console.log(`[OPENBOT:AI] generating provider=openrouter primary=${textModels.primary} fallback=${textModels.fallback}`);
         const result = await runFastFoodAgent(ctx);
@@ -553,8 +646,33 @@ async function processWhatsAppWebhook(body, started) {
             ` planned_tools=${result.toolPlan.requiredTools.join(",") || "auto"}` +
             ` called_tools=${result.toolCalls.map((call) => call.name).join(",") || "none"}` +
             ` validator=${result.validationWarnings.join(",") || "clean"}`);
+        if (result.thinking)
+            void bumpMetric(ctx.instanceId, "think_used");
+        if (result.critic && !result.critic.ok) {
+            void bumpMetric(ctx.instanceId, "critic_regens");
+            void recordLearningEvent(ctx.instanceId, {
+                type: "critic_regen",
+                detail: result.critic.issues.slice(0, 4).join(","),
+                phone: maskPhone(ctx.phone),
+            });
+        }
+        if (result.validationWarnings.length) {
+            void bumpMetric(ctx.instanceId, "validator_edits");
+            void recordLearningEvent(ctx.instanceId, {
+                type: "validator_edit",
+                detail: result.validationWarnings.slice(0, 5).join(","),
+                phone: maskPhone(ctx.phone),
+            });
+            if (result.validationWarnings.some((warning) => ["empty_model_output", "foreign_script_output"].includes(warning))) {
+                void bumpMetric(ctx.instanceId, "fallbacks");
+                void recordLearningEvent(ctx.instanceId, {
+                    type: "fallback_reply",
+                    detail: result.validationWarnings.slice(0, 5).join(","),
+                    phone: maskPhone(ctx.phone),
+                });
+            }
+        }
         const rawAiText = String(result.rawText || result.text || "");
-        const needsDeveloperEscalation = hasEscalateDeveloperSignal(rawAiText) || hasEscalateDeveloperSignal(result.text);
         const needsAdminEscalation = hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text);
         const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
         // Asking for a human is not a complaint to investigate — hand it over at
@@ -572,13 +690,6 @@ async function processWhatsAppWebhook(body, started) {
         }
         const finalText = stripEscalationSignals(result.text)
             || (complaintNeedsDetail ? buildComplaintDetailQuestion(ctx.language) : shouldRouteComplaint ? buildComplaintAckReply(ctx.language) : result.text);
-        if (needsDeveloperEscalation) {
-            await notifyDeveloperSystemFailure(ctx.instanceId, new Error("AI requested developer escalation"), {
-                scope: "ai-router",
-                messageId,
-                customerPhone: maskPhone(ctx.phone),
-            }).catch(() => undefined);
-        }
         if (shouldRouteComplaint) {
             const routing = await routeComplaintToAdmin(ctx, {
                 // The first message named the problem, this one adds the detail. The
@@ -615,17 +726,70 @@ async function processWhatsAppWebhook(body, started) {
                 customerPhone: maskPhone(ctx.phone),
             }).catch(() => undefined);
         });
+        // Outbound duplicate guard: an identical reply sent within the last
+        // 60s (parallel turn, retried webhook) is dropped instead of shown twice.
+        const outboundIsNew = await claimOutboundReply(ctx.instanceId, ctx.phone, finalText).catch(() => true);
+        if (!outboundIsNew) {
+            console.warn(`[OPENBOT:OUTBOUND] duplicate reply suppressed instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)}`);
+            await markInboundDone(ctx.instanceId, messageId);
+            return;
+        }
         // Send main text response
         const sendResult = await sendWhatsProResponseSequence({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
             text: finalText,
+            requestScope: messageId,
         });
         if (!sendResult.ok)
             throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");
         await saveToHistory(ctx.instanceId, ctx.phone, "assistant", finalText, { source: "openbot-agent", ...noteHistoryMeta(ctx, finalText) });
         await markInboundDone(ctx.instanceId, messageId);
         await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
+        // Sweep leftovers from the burst we just answered so they cannot become a
+        // second reply; genuinely new messages flush their own batch anyway.
+        void drainInboundBuffer(ctx.instanceId, ctx.phone).catch(() => []);
+        // The customer's mission advances only after their reply is safely out.
+        // Fire-and-forget: one tiny Redis value, never on the latency path.
+        void updateGoalAfterTurn({
+            ctx,
+            analysis: result.thinking || null,
+            escalated: shouldRouteComplaint ||
+                result.toolCalls.some((call) => call.name === "escalateToAdmin"),
+        }).catch(() => undefined);
+        void recordLatency(ctx.instanceId, Date.now() - started);
+        if (result.hasLink)
+            void bumpMetric(ctx.instanceId, "links_sent");
+        // Memory is written only after the customer already has the reply, so it can
+        // never add latency to the answer and can never fail the request. The trace
+        // is what makes the agent self-aware on the next turn; the profile/summary
+        // refresh is what makes it remember this customer at all.
+        void recordTurnTrace({
+            instanceId: ctx.instanceId,
+            phone: ctx.phone,
+            trace: {
+                tools: result.toolCalls.map((call) => call.name),
+                planned_tools: result.toolPlan.requiredTools,
+                warnings: result.validationWarnings,
+                validator_edited: result.validationWarnings.length > 0,
+                media_analysed: Boolean(ctx.mediaContext),
+                reply_had_link: Boolean(result.hasLink),
+                think_goal: result.thinking?.goal || null,
+                think_mood: result.thinking?.mood || null,
+                think_risk: result.thinking?.risk || null,
+                critic_issues: Array.isArray(result.critic?.issues) ? result.critic.issues.slice(0, 4) : [],
+            },
+        }).catch(() => undefined);
+        void refreshCustomerMemory({
+            instanceId: ctx.instanceId,
+            phone: ctx.phone,
+            history: [
+                ...(Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []),
+                { role: "user", text: ctx.text },
+                { role: "assistant", text: finalText },
+            ],
+            language: ctx.language,
+        }).catch(() => undefined);
         console.log(`[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_in_text=${result.hasLink} elapsed=${Date.now() - started}ms`);
     }
     catch (error) {
@@ -639,6 +803,10 @@ async function processWhatsAppWebhook(body, started) {
     }
     finally {
         stopTyping();
+        if (turnLockOwner) {
+            void releaseTurnLock(instanceId, phone, turnLockOwner).catch(() => undefined);
+            turnLockOwner = null;
+        }
     }
 }
 export function whatsappWebhookRoute() {

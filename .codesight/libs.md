@@ -1,7 +1,7 @@
 # Libraries
 
 - `src\agent\fastfoodAgent.ts` — function runFastFoodAgent: (ctx) => void
-- `src\agent\finalValidator.ts` — function validateFinalText: (rawText, ctx) => void
+- `src\agent\finalValidator.ts` — function validateFinalText: (rawText, ctx, grounding?) => void
 - `src\agent\modelRouter.ts` — function getTextModelId: () => void, function resolveModel: (_ctx) => void
 - `src\agent\persona.ts` — function buildTenantInstructionsFromConfig: (config, any>, instanceId) => void, function buildTenantInstructions: (ctx) => void
 - `src\agent\toolPolicy.ts`
@@ -9,7 +9,10 @@
   - function createAgentStepPolicy: (plan) => void
   - interface AgentToolPlan
   - type AgentToolName
-- `src\context\buildFactsPrompt.ts` — function compactConversationHistory: (history) => void, function buildFactsPrompt: (ctx) => string
+- `src\context\buildFactsPrompt.ts`
+  - function tenantInstructionsEntry: (config, any>) => void
+  - function compactConversationHistory: (history) => void
+  - function buildFactsPrompt: (ctx) => string
 - `src\context\preloadContext.ts`
   - function preloadContext: (input) => Promise<FastFoodContext>
   - interface InboundMessage
@@ -21,6 +24,12 @@
   - function handleKanbanWebhook: (req, res) => Promise<void>
   - const legacyStatusTemplates: Record<Language, Record<string, string>>
 - `src\cron\statsCron.ts` — function processDailyAnalytics: () => void, function startDailyCron: () => void
+- `src\services\agentThinking.service.ts`
+  - function shouldThink: (ctx, toolPlan?) => boolean
+  - function analyzeTurnSituation: (ctx, toolPlan?) => Promise<TurnAnalysis | null>
+  - function critiqueDraftReply: (input) => Promise<DraftCritique | null>
+  - interface TurnAnalysis
+  - interface DraftCritique
 - `src\services\auditLogger.service.ts`
   - function isNewDleAction: (action) => boolean
   - function auditInbound: (message, fields, unknown>) => void
@@ -28,6 +37,10 @@
   - function auditDecision: (message, fields, unknown>) => void
   - function auditOutbound: (message, fields, unknown>) => void
   - function auditError: (message, error, fields, unknown>) => void
+- `src\services\bufferBrain.service.ts`
+  - function mergePartsDeterministic: (parts) => string
+  - function needsSmartMerge: (parts) => boolean
+  - function mergeBufferedParts: (parts, language) => Promise<string>
 - `src\services\complaintRouting.service.ts`
   - function hasEscalateAdminSignal: (text) => void
   - function hasEscalateDeveloperSignal: (text) => void
@@ -36,14 +49,22 @@
   - function isLikelyOperatorRequestText: (text) => void
   - function complaintHasActionableDetail: (text) => void
   - _...9 more_
+- `src\services\customerMemory.service.ts`
+  - function profileKey: (instanceId, phone) => void
+  - function conversationSummaryKey: (instanceId, phone) => void
+  - function getCustomerProfile: (instanceId, phone) => Promise<CustomerProfile | null>
+  - function getConversationSummary: (instanceId, phone) => Promise<ConversationSummary | null>
+  - function saveCustomerProfile: (instanceId, phone, profile) => Promise<void>
+  - function saveConversationSummary: (instanceId, phone, summary) => Promise<void>
+  - _...6 more_
 - `src\services\customerOrder.service.ts`
   - function classifyOrderStage: (status, aiComment) => CustomerOrderStage
   - function describeOrderStage: (stage, language) => void
   - function describeOrderStatus: (status, language, aiComment) => void
   - function customerOrderFromRecord: (value, any>|null|undefined, expectedPhone, language) => CustomerOrderLookup
-  - function customerOrderFromContext: (context, any>|null|undefined, expectedPhone, language, hasRequestedOrderNumber) => CustomerOrderLookup
-  - function getCustomerOrder: (instanceId, domain, phone, language, orderNumber?) => Promise<CustomerOrderLookup>
-  - _...4 more_
+  - function orderMentionedByItems: (context, any>|null|undefined, text) => void
+  - function pickConversationOrder: (context, any>|null|undefined, discussedNumber) => void
+  - _...7 more_
 - `src\services\developerNotify.service.ts` — function notifyDeveloperSystemFailure: (instanceId, error, meta, unknown>) => Promise<boolean>, function notifyAllDevelopersSystemFailure: (error, meta, unknown>) => Promise<number>
 - `src\services\diagnostics.service.ts`
   - function getConfigSummary: () => void
@@ -57,6 +78,14 @@
   - function normalizePhone: (value) => void
   - function normalizePhoneFromCandidates: (candidates) => void
   - _...13 more_
+- `src\services\goalTracker.service.ts`
+  - function goalKey: (instanceId, phone) => void
+  - function getActiveGoal: (instanceId, phone) => Promise<ActiveGoal | null>
+  - function saveActiveGoal: (instanceId, phone, goal) => Promise<void>
+  - function resolveGoalKind: (ctx, analysis) => GoalKind
+  - function updateGoalAfterTurn: (input) => Promise<void>
+  - interface ActiveGoal
+  - _...2 more_
 - `src\services\inboundGuard.service.ts`
   - function extractMessageId: (body) => string
   - function extractInboundText: (body) => string
@@ -64,7 +93,7 @@
   - function extractInboundMedia: (body) => InboundMediaContext | null
   - function safeMediaMetadata: (mediaContext) => void
   - function detectOggOpusDurationSeconds: (base64Value) => void
-  - _...16 more_
+  - _...21 more_
 - `src\services\kanbanSync.service.ts` — function syncKanbanEvent: (ctx, event, any>) => Promise<
 - `src\services\kitchenPolicy.service.ts`
   - function formatKitchenWait: (minutesValue, language) => void
@@ -74,9 +103,18 @@
   - interface KitchenSalesPolicy
   - type KitchenSalesMode
 - `src\services\languagePolicy.service.ts`
+  - function textCarriesDecisiveLanguageSignal: (text, language) => void
+  - function shouldSwitchLockedLanguage: (lockedLanguage, previousCustomerLanguage, currentCustomerLanguage, currentTextIsDecisive) => void
   - function normalizeSiteLanguage: (value) => CustomerLanguage | null
   - function resolveSiteOutboundLanguage: (lockedLanguage, payloadLanguage, siteLanguageHint) => CustomerLanguage
-  - type CustomerLanguage
+  - function detectNameLanguage: (name) => CustomerLanguage | null
+  - function resolveOrganicLanguage: (input) => void
+  - _...1 more_
+- `src\services\learningLoop.service.ts`
+  - function learningEventsKey: (instanceId) => void
+  - function recordLearningEvent: (instanceId, event, "at">) => Promise<void>
+  - function readLearningEvents: (instanceId, limit) => Promise<LearningEvent[]>
+  - interface LearningEvent
 - `src\services\llm.service.ts`
   - function getMediaPrimaryKeys: () => void
   - function getTextModels: () => TextModelChain
@@ -91,6 +129,12 @@
   - function createReceiptFingerprint: (base64Media, analysis, any>) => void
   - function analyzeMedia: (base64Media, mimeType, caption, userLang, isPdf, systemPrompt, receiptContext) => void
   - interface ReceiptValidationContext
+- `src\services\metrics.service.ts`
+  - function metricsKey: (instanceId, day) => void
+  - function bumpMetric: (instanceId, name, amount) => Promise<void>
+  - function recordLatency: (instanceId, elapsedMs) => Promise<void>
+  - function snapshotMetrics: (instanceId, days) => Promise<Record<string, Record<string, number>>>
+  - type MetricName
 - `src\services\noteProvenance.service.ts`
   - function noteConstraintTerms: (text) => string[]
   - function matchingNoteIds: (notes, value) => string[]
@@ -103,8 +147,8 @@
   - function sosUnreadKey: (instanceId, customerPhone) => void
   - function detectOperatorCaseKind: (text) => OperatorCaseKind | null
   - function createOperatorCase: (input) => void
-  - function bumpOperatorCaseSignal: (instanceId, rawPhone) => void
-  - _...3 more_
+  - function decideCaseFlag: (data, now) => void
+  - _...6 more_
 - `src\services\platformConfig.service.ts`
   - function normalizeRestaurantConfig: (record, any> | null, expectedInstanceId) => Record<string, any> | null
   - function isTenantBotEnabled: (instanceId) => Promise<boolean>
@@ -113,6 +157,11 @@
   - function getRestaurantConfigByWhatsAppPhone: (phone) => Promise<Record<string, any> | null>
   - function getShporContext: (instanceId, query) => Promise<any[]>
   - _...2 more_
+- `src\services\proactiveSignals.service.ts`
+  - function orderSignature: (order, any> | null) => string
+  - function statusWord: (order, any> | null) => string
+  - function computeProactiveSignals: (ctx) => Promise<ProactiveSignals | null>
+  - interface ProactiveSignals
 - `src\services\receiptDelivery.service.ts`
   - function deliverReceiptToClient: (input, sendReceipt) => Promise<ReceiptDeliveryResult>
   - interface ReceiptDeliveryInput
@@ -124,7 +173,7 @@
   - function savePendingKitchenConsent: (instanceId, phone, policyFingerprint, kind) => Promise<boolean>
   - function getPendingKitchenConsent: (instanceId, phone) => Promise<
   - function clearPendingKitchenConsent: (instanceId, phone) => Promise<void>
-  - _...41 more_
+  - _...43 more_
 - `src\services\tenantAuth.service.ts`
   - function safeCompare: (a, b) => boolean
   - function getIncomingTenantSecret: (req) => void
@@ -133,7 +182,7 @@
 - `src\skills\businessInfo.skill.ts` — function createGetBusinessInfoSkill: (ctx) => void
 - `src\skills\checkOrderStatus.skill.ts` — function createCheckOrderStatusSkill: (ctx) => void
 - `src\skills\crm.skill.ts` — function createUpdateCrmLeadSkill: (ctx) => void
-- `src\skills\escalation.skill.ts` — function createEscalateToAdminSkill: (ctx) => void
+- `src\skills\escalation.skill.ts` — function buildHandoffDigest: (ctx, reason) => string, function createEscalateToAdminSkill: (ctx) => void
 - `src\skills\index.ts` — function createFastFoodSkills: (ctx) => void, const FAST_FOOD_SKILL_NAMES
 - `src\skills\menuLink.skill.ts` — function createSendMenuLinkSkill: (ctx) => void
 - `src\skills\payment.skill.ts` — function createGetPaymentDetailsSkill: (ctx) => void
@@ -147,7 +196,7 @@
   - function drainWhatsProOutbox: (limit) => void
   - function startWhatsProOutboxWorker: () => void
   - function sendWhatsProPresence: (payload) => void
-  - _...2 more_
+  - _...3 more_
 - `src\utils\language.ts`
   - function isLanguageBearingCustomerText: (text) => void
   - function parseGeminiLanguageDecision: (value) => void
@@ -162,6 +211,9 @@
   - function isMenuLinkResendRequest: (text) => boolean
   - function hasExplicitMenuLinkIntent: (text) => boolean
 - `src\utils\orderIntent.ts`
+  - function isOrderTimingQuestion: (text) => void
   - function requestedOrderNumber: (text) => void
   - function isCustomerOrderStatusQuestion: (text) => void
+  - function hasMenuBrowsingIntent: (text) => void
   - function isLikelyOrderStatusFollowUp: (text) => void
+  - function lastDiscussedOrderNumber: (history) => string

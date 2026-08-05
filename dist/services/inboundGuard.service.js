@@ -8,7 +8,7 @@ const SPAM_LIMIT = Number(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE || 15);
 const MUTE_SECONDS = Number(process.env.OPENBOT_SPAM_MUTE_SECONDS || 900);
 const DUPLICATE_TEXT_SECONDS = 5;
 const INBOUND_BUFFER_SECONDS = 5;
-const INBOUND_BUFFER_DELAY_MS = Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 1200);
+const INBOUND_BUFFER_DELAY_MS = Math.max(600, Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 2400));
 const INBOUND_BUFFER_MAX_ITEMS = 8;
 const INBOUND_BUFFER_MAX_CHARS = 2000;
 const PROCESSING_LOCK_SECONDS = 180;
@@ -26,6 +26,81 @@ const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
+const localDone = new Map();
+const localProcessing = new Map();
+const localDuplicateText = new Map();
+const localSpam = new Map();
+const localMediaQuota = new Map();
+const localInboundBuffers = new Map();
+function localKey(instanceId, value) {
+    return `${instanceId}:${value}`;
+}
+function pruneLocalGuardState(now = Date.now()) {
+    for (const [key, expiresAt] of localDone)
+        if (expiresAt <= now)
+            localDone.delete(key);
+    for (const [key, expiresAt] of localProcessing)
+        if (expiresAt <= now)
+            localProcessing.delete(key);
+    for (const [key, item] of localDuplicateText)
+        if (item.expiresAt <= now)
+            localDuplicateText.delete(key);
+    for (const [key, item] of localSpam) {
+        if (item.windowEndsAt <= now && item.mutedUntil <= now)
+            localSpam.delete(key);
+    }
+    for (const [key, item] of localMediaQuota)
+        if (item.windowEndsAt <= now)
+            localMediaQuota.delete(key);
+    for (const [key, item] of localInboundBuffers)
+        if (item.expiresAt <= now)
+            localInboundBuffers.delete(key);
+}
+function guardIncomingMessageInMemory(instanceId, phone, text, messageId) {
+    const now = Date.now();
+    pruneLocalGuardState(now);
+    const messageKey = messageId ? localKey(instanceId, messageId) : "";
+    if (messageKey && localDone.has(messageKey))
+        return { blocked: true, reason: "duplicate_done_local" };
+    if (messageKey && localProcessing.has(messageKey))
+        return { blocked: true, reason: "duplicate_processing_local" };
+    if (messageKey)
+        localProcessing.set(messageKey, now + PROCESSING_LOCK_SECONDS * 1000);
+    const customerKey = localKey(instanceId, phone);
+    const spam = localSpam.get(customerKey);
+    if (spam?.mutedUntil && spam.mutedUntil > now)
+        return { blocked: true, reason: "spam_muted_local" };
+    if (text) {
+        const textHash = sha1(text.toLowerCase());
+        const previous = localDuplicateText.get(customerKey);
+        if (previous?.hash === textHash && previous.expiresAt > now) {
+            if (messageKey) {
+                localProcessing.delete(messageKey);
+                localDone.set(messageKey, now + DONE_SECONDS * 1000);
+            }
+            return { blocked: true, reason: "duplicate_text_local" };
+        }
+        localDuplicateText.set(customerKey, {
+            hash: textHash,
+            expiresAt: now + DUPLICATE_TEXT_SECONDS * 1000,
+        });
+    }
+    const activeSpam = spam?.windowEndsAt && spam.windowEndsAt > now
+        ? spam
+        : { count: 0, windowEndsAt: now + SPAM_WINDOW_SECONDS * 1000, mutedUntil: 0 };
+    activeSpam.count += 1;
+    if (activeSpam.count > SPAM_LIMIT)
+        activeSpam.mutedUntil = now + MUTE_SECONDS * 1000;
+    localSpam.set(customerKey, activeSpam);
+    if (activeSpam.mutedUntil > now) {
+        if (messageKey) {
+            localProcessing.delete(messageKey);
+            localDone.set(messageKey, now + DONE_SECONDS * 1000);
+        }
+        return { blocked: true, reason: "spam_limit_exceeded_local" };
+    }
+    return { blocked: false, source: "redis_fail_open" };
+}
 function sha1(value = "") {
     return crypto.createHash("sha1").update(value).digest("hex");
 }
@@ -513,74 +588,99 @@ export async function guardIncomingMessage(input) {
         return { blocked: true, reason: "private_contact_keyword" };
     if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact))
         return { blocked: true, reason: "private_saved_contact" };
-    await connectRedis();
-    const operatorActive = await getFreshOperatorActive(instanceId, phone);
-    if (operatorActive) {
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "operator_active", source: "operator_override" };
-    }
-    if (messageId) {
-        if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
-            return { blocked: true, reason: "duplicate_done" };
-        }
-        const lock = await redisClient.set(`msg_processing:${instanceId}:${messageId}`, "1", {
-            NX: true,
-            EX: PROCESSING_LOCK_SECONDS,
-        });
-        if (!lock)
-            return { blocked: true, reason: "duplicate_processing" };
-    }
-    const operatorMute = await getFreshOperatorMute(instanceId, phone);
-    if (operatorMute) {
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "muted", source: "operator_override" };
-    }
-    if (await redisClient.get(`mute:${instanceId}:${phone}`)) {
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "muted" };
-    }
-    if (text) {
-        const duplicateKey = `anti_dup:${instanceId}:${phone}`;
-        const textHash = sha1(text.toLowerCase());
-        const previousHash = await redisClient.get(duplicateKey);
-        if (previousHash === textHash) {
+    try {
+        await connectRedis();
+        const operatorActive = await getFreshOperatorActive(instanceId, phone);
+        if (operatorActive) {
             await markInboundDone(instanceId, messageId);
-            return { blocked: true, reason: "duplicate_text" };
+            return { blocked: true, reason: "operator_active", source: "operator_override" };
         }
-        await redisClient.setEx(duplicateKey, DUPLICATE_TEXT_SECONDS, textHash);
+        if (messageId) {
+            if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
+                return { blocked: true, reason: "duplicate_done" };
+            }
+            const lock = await redisClient.set(`msg_processing:${instanceId}:${messageId}`, "1", {
+                NX: true,
+                EX: PROCESSING_LOCK_SECONDS,
+            });
+            if (!lock)
+                return { blocked: true, reason: "duplicate_processing" };
+        }
+        const operatorMute = await getFreshOperatorMute(instanceId, phone);
+        if (operatorMute) {
+            await markInboundDone(instanceId, messageId);
+            return { blocked: true, reason: "muted", source: "operator_override" };
+        }
+        if (await redisClient.get(`mute:${instanceId}:${phone}`)) {
+            await markInboundDone(instanceId, messageId);
+            return { blocked: true, reason: "muted" };
+        }
+        if (text) {
+            const duplicateKey = `anti_dup:${instanceId}:${phone}`;
+            const textHash = sha1(text.toLowerCase());
+            const previousHash = await redisClient.get(duplicateKey);
+            if (previousHash === textHash) {
+                await markInboundDone(instanceId, messageId);
+                return { blocked: true, reason: "duplicate_text" };
+            }
+            await redisClient.setEx(duplicateKey, DUPLICATE_TEXT_SECONDS, textHash);
+        }
+        const spamKey = `spam:${instanceId}:${phone}`;
+        const count = await redisClient.incr(spamKey);
+        if (count === 1)
+            await redisClient.expire(spamKey, SPAM_WINDOW_SECONDS);
+        if (count > SPAM_LIMIT) {
+            await redisClient.setEx(`mute:${instanceId}:${phone}`, MUTE_SECONDS, "spam_blocked");
+            await markInboundDone(instanceId, messageId);
+            return { blocked: true, reason: "spam_limit_exceeded" };
+        }
+        return { blocked: false };
     }
-    const spamKey = `spam:${instanceId}:${phone}`;
-    const count = await redisClient.incr(spamKey);
-    if (count === 1)
-        await redisClient.expire(spamKey, SPAM_WINDOW_SECONDS);
-    if (count > SPAM_LIMIT) {
-        await redisClient.setEx(`mute:${instanceId}:${phone}`, MUTE_SECONDS, "spam_blocked");
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "spam_limit_exceeded" };
+    catch (error) {
+        console.warn(`[OPENBOT:GUARD] Redis unavailable, using tenant-local memory guard instance=${instanceId}:`, error?.message || error);
+        return guardIncomingMessageInMemory(instanceId, phone, text, messageId);
     }
-    return { blocked: false };
 }
 export async function markInboundDone(instanceId, messageId) {
     const safeMessageId = String(messageId || "").trim();
     if (!safeMessageId)
         return;
-    await connectRedis();
-    await redisClient
-        .multi()
-        .setEx(`msg_done:${instanceId}:${safeMessageId}`, DONE_SECONDS, "1")
-        .del(`msg_processing:${instanceId}:${safeMessageId}`)
-        .exec();
+    const key = localKey(instanceId, safeMessageId);
+    localProcessing.delete(key);
+    localDone.set(key, Date.now() + DONE_SECONDS * 1000);
+    try {
+        await connectRedis();
+        await redisClient
+            .multi()
+            .setEx(`msg_done:${instanceId}:${safeMessageId}`, DONE_SECONDS, "1")
+            .del(`msg_processing:${instanceId}:${safeMessageId}`)
+            .exec();
+    }
+    catch {
+        // The local marker keeps WAL replays idempotent until Redis reconnects.
+    }
 }
 export async function clearInboundProcessing(instanceId, messageId) {
     const safeMessageId = String(messageId || "").trim();
     if (!safeMessageId)
         return;
-    await connectRedis();
-    await redisClient.del(`msg_processing:${instanceId}:${safeMessageId}`);
+    localProcessing.delete(localKey(instanceId, safeMessageId));
+    try {
+        await connectRedis();
+        await redisClient.del(`msg_processing:${instanceId}:${safeMessageId}`);
+    }
+    catch {
+        // Best effort: a Redis processing lock has its own short TTL.
+    }
 }
 export async function saveMediaContext(instanceId, phone, mediaContext) {
-    await connectRedis();
-    await redisClient.setEx(`media_context:${instanceId}:${phone}`, MEDIA_CONTEXT_SECONDS, JSON.stringify({ ...safeMediaMetadata(mediaContext), savedAt: Date.now() }));
+    try {
+        await connectRedis();
+        await redisClient.setEx(`media_context:${instanceId}:${phone}`, MEDIA_CONTEXT_SECONDS, JSON.stringify({ ...safeMediaMetadata(mediaContext), savedAt: Date.now() }));
+    }
+    catch {
+        // Media processing can continue from the current request context.
+    }
 }
 export async function bufferInboundText(input) {
     const instanceId = String(input.instanceId || "").trim();
@@ -588,38 +688,195 @@ export async function bufferInboundText(input) {
     const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
     const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
     if (!instanceId || !phone || !text)
-        return { leader: true, text };
-    await connectRedis();
-    const listKey = `inbound_buffer:${instanceId}:${phone}`;
-    const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
-    await redisClient.multi()
-        .rPush(listKey, JSON.stringify({ token, text }))
-        .lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1)
-        .expire(listKey, INBOUND_BUFFER_SECONDS)
-        .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
-        .exec();
-    await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
-    if ((await redisClient.get(latestKey)) !== token)
-        return { leader: false, text: "" };
-    const rows = await redisClient.lRange(listKey, 0, -1);
-    await redisClient.del([listKey, latestKey]);
-    const parts = rows.map((row) => { try {
-        return String(JSON.parse(row)?.text || "").trim();
+        return { leader: true, text, parts: text ? 1 : 0, items: text ? [text] : [] };
+    try {
+        await connectRedis();
+        const listKey = `inbound_buffer:${instanceId}:${phone}`;
+        const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
+        await redisClient.multi()
+            .rPush(listKey, JSON.stringify({ token, text }))
+            .lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1)
+            .expire(listKey, INBOUND_BUFFER_SECONDS)
+            .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
+            .exec();
+        await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+        if ((await redisClient.get(latestKey)) !== token)
+            return { leader: false, text: "", parts: 0, items: [] };
+        const rows = await redisClient.lRange(listKey, 0, -1);
+        await redisClient.del([listKey, latestKey]);
+        const parts = rows.map((row) => { try {
+            return String(JSON.parse(row)?.text || "").trim();
+        }
+        catch {
+            return "";
+        } }).filter(Boolean);
+        return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS), parts: parts.length, items: parts.slice(0, INBOUND_BUFFER_MAX_ITEMS) };
     }
     catch {
-        return "";
-    } }).filter(Boolean);
-    return { leader: true, text: parts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS) };
+        const now = Date.now();
+        pruneLocalGuardState(now);
+        const key = localKey(instanceId, phone);
+        const current = localInboundBuffers.get(key) || { items: [], latestToken: "", expiresAt: 0 };
+        current.items.push({ token, text });
+        current.items = current.items.slice(-INBOUND_BUFFER_MAX_ITEMS);
+        current.latestToken = token;
+        current.expiresAt = now + INBOUND_BUFFER_SECONDS * 1000;
+        localInboundBuffers.set(key, current);
+        await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+        const latest = localInboundBuffers.get(key);
+        if (!latest || latest.latestToken !== token)
+            return { leader: false, text: "", parts: 0, items: [] };
+        localInboundBuffers.delete(key);
+        const localParts = latest.items.map((item) => String(item?.text || "").trim()).filter(Boolean);
+        return {
+            leader: true,
+            text: localParts.join(" ").slice(0, INBOUND_BUFFER_MAX_CHARS),
+            parts: localParts.length,
+            items: localParts.slice(0, INBOUND_BUFFER_MAX_ITEMS),
+        };
+    }
 }
 export async function claimMediaAiQuota(instanceId, phone) {
-    await connectRedis();
-    const key = `media_ai_quota:${instanceId}:${phone}`;
-    const count = await redisClient.incr(key);
-    if (count === 1)
-        await redisClient.expire(key, 5 * 60);
-    return count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
+    try {
+        await connectRedis();
+        const key = `media_ai_quota:${instanceId}:${phone}`;
+        const count = await redisClient.incr(key);
+        if (count === 1)
+            await redisClient.expire(key, 5 * 60);
+        return count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
+    }
+    catch {
+        const key = localKey(instanceId, phone);
+        const now = Date.now();
+        const current = localMediaQuota.get(key);
+        const next = current?.windowEndsAt && current.windowEndsAt > now
+            ? { ...current, count: current.count + 1 }
+            : { count: 1, windowEndsAt: now + 5 * 60 * 1000 };
+        localMediaQuota.set(key, next);
+        return next.count <= MEDIA_AI_LIMIT_PER_5_MINUTES;
+    }
 }
 export async function clearMediaContext(instanceId, phone) {
-    await connectRedis();
-    await redisClient.del(`media_context:${instanceId}:${phone}`);
+    try {
+        await connectRedis();
+        await redisClient.del(`media_context:${instanceId}:${phone}`);
+    }
+    catch {
+        // Best effort cleanup; the Redis key has a short TTL.
+    }
+}
+/**
+ * Turn-level single-flight lock per (tenant, customer).
+ *
+ * The per-messageId lock only stops the SAME message being processed twice;
+ * it never stopped TWO different batches of one customer's split messages from
+ * being answered in parallel - which is exactly how a guest who wrote "сәлем"
+ * then "пицца бар ма" got two replies. One conversation = one turn at a time.
+ */
+const TURN_LOCK_FALLBACK_TTL_MS = 90_000;
+const localTurnLocks = new Map();
+export async function acquireTurnLock(instanceId, phone, ttlMs = TURN_LOCK_FALLBACK_TTL_MS) {
+    const owner = crypto.randomUUID();
+    const key = `turn_lock:${instanceId}:${phone}`;
+    try {
+        await connectRedis();
+        const claimed = await redisClient.set(key, owner, { NX: true, PX: Math.max(5_000, ttlMs) });
+        return claimed ? owner : null;
+    }
+    catch {
+        const now = Date.now();
+        const local = localTurnLocks.get(key);
+        if (local && local.expiresAt > now)
+            return null;
+        localTurnLocks.set(key, { owner, expiresAt: now + Math.max(5_000, ttlMs) });
+        return owner;
+    }
+}
+export async function releaseTurnLock(instanceId, phone, owner) {
+    const key = `turn_lock:${instanceId}:${phone}`;
+    try {
+        await connectRedis();
+        const current = await redisClient.get(key);
+        if (current === owner)
+            await redisClient.del(key);
+        return;
+    }
+    catch {
+        const local = localTurnLocks.get(key);
+        if (local?.owner === owner)
+            localTurnLocks.delete(key);
+    }
+}
+/**
+ * Non-blocking sweep of the fragment buffer. After a reply is sent, anything
+ * left in the buffer belongs to the SAME burst of messages - deleting it is
+ * what stops a leftover part from becoming a second answer a minute later.
+ * Returns the leftover parts so a lock-holding leader can still fold them into
+ * its own turn instead of dropping them.
+ */
+export async function drainInboundBuffer(instanceId, phone) {
+    const listKey = `inbound_buffer:${instanceId}:${phone}`;
+    const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
+    try {
+        await connectRedis();
+        const rows = await redisClient.lRange(listKey, 0, -1);
+        await redisClient.del([listKey, latestKey]);
+        return rows
+            .map((row) => {
+            try {
+                return String(JSON.parse(row)?.text || "").trim();
+            }
+            catch {
+                return "";
+            }
+        })
+            .filter(Boolean);
+    }
+    catch {
+        const key = localKey(instanceId, phone);
+        const current = localInboundBuffers.get(key);
+        if (!current)
+            return [];
+        localInboundBuffers.delete(key);
+        return current.items.map((item) => String(item?.text || "").trim()).filter(Boolean);
+    }
+}
+/**
+ * Outbound duplicate guard. Incoming dedupe only watched the customer side;
+ * nothing watched OUR side, so two parallel turns could send the guest the
+ * same answer twice. The normalized hash of the last reply is remembered for a
+ * short window and an identical resend is skipped.
+ */
+const OUTBOUND_DUP_SECONDS = 60;
+const localOutboundClaims = new Map();
+export function normalizeReplyText(text) {
+    return String(text || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 600);
+}
+export async function claimOutboundReply(instanceId, phone, text) {
+    const normalized = normalizeReplyText(text);
+    if (!normalized)
+        return true;
+    const key = `outbound_dup:${instanceId}:${phone}`;
+    const hash = sha1(normalized);
+    try {
+        await connectRedis();
+        const claimed = await redisClient.set(key, hash, { NX: true, EX: OUTBOUND_DUP_SECONDS });
+        if (claimed)
+            return true;
+        const previous = await redisClient.get(key);
+        if (previous !== hash) {
+            await redisClient.set(key, hash, { EX: OUTBOUND_DUP_SECONDS });
+            return true;
+        }
+        return false;
+    }
+    catch {
+        const now = Date.now();
+        const localKeyFull = `${key}:${hash}`;
+        const expiresAt = localOutboundClaims.get(localKeyFull);
+        if (expiresAt && expiresAt > now)
+            return false;
+        localOutboundClaims.set(localKeyFull, now + OUTBOUND_DUP_SECONDS * 1000);
+        return true;
+    }
 }

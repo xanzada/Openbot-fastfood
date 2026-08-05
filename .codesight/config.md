@@ -2,11 +2,12 @@
 
 ## Environment Variables
 
-- `ADMIN_PHONE` **required** — src\services\complaintRouting.service.ts
 - `ANALYTICS_CRON_EXPR` (has default) — .env.example
 - `ANALYTICS_TIMEZONE` (has default) — .env.example
 - `BOT_IGNORE_SAVED_CONTACTS` (has default) — .env.example
+- `BUFFER_BRAIN_TIMEOUT_MS` **required** — src\services\bufferBrain.service.ts
 - `CHATWOOT_ADAPTER_URL` **required** — src\services\diagnostics.service.ts
+- `CRITIC_BUDGET_MS` **required** — src\agent\fastfoodAgent.ts
 - `CRM_SECRET_TOKEN` **required** — .env.example
 - `DEVELOPER_PHONE` **required** — .env
 - `DLE_WEBHOOK_AUTH_REQUIRED` (has default) — .env.example
@@ -26,6 +27,7 @@
 - `GEMINI_MEDIA_MODEL` (has default) — .env
 - `GEMINI_MODEL` (has default) — .env
 - `GEMINI_ROTATION_ENABLED` (has default) — .env
+- `LEARN_INSTANCE_ID` **required** — scripts\learnFromFailures.ts
 - `LLM_FALLBACK_PROVIDER` (has default) — .env
 - `LLM_PROVIDER` (has default) — .env
 - `MAX_RETRY_PER_KEY` (has default) — .env
@@ -44,7 +46,7 @@
 - `OPENAI_API_KEY` (has default) — .env
 - `OPENAI_BASE_URL` (has default) — .env
 - `OPENBOT_DEV_ALERT_DEDUPE_SECONDS` (has default) — .env.example
-- `OPENBOT_DEVELOPER_PHONE` (has default) — .env.example
+- `OPENBOT_DEVELOPER_PHONE` **required** — .env.example
 - `OPENBOT_INBOUND_BUFFER_MS` (has default) — .env.example
 - `OPENBOT_MAX_AUDIO_BYTES` (has default) — .env.example
 - `OPENBOT_MAX_DOCUMENT_BYTES` (has default) — .env.example
@@ -71,8 +73,10 @@
 - `REDIS_OPERATION_TIMEOUT_MS` (has default) — .env.example
 - `REDIS_PASSWORD` (has default) — .env.example
 - `REDIS_URL` (has default) — .env.example
+- `REGEN_BUDGET_MS` **required** — src\agent\fastfoodAgent.ts
 - `SHPOR_CONTEXT_LIMIT` **required** — src\services\platformConfig.service.ts
 - `SMOKE_INSTANCE_ID` **required** — scripts\agentSmoke.ts
+- `SMOKE_JSONL_PATH` **required** — scripts\agentSmoke.ts
 - `SMOKE_TIMEOUT_MS` **required** — scripts\agentSmoke.ts
 - `TAVILY_API_KEY` **required** — .env.example
 - `TENANTS_PLATFORM_API_TOKEN` **required** — .env.example
@@ -84,10 +88,13 @@
 - `TEXT_PRIMARY_TIMEOUT_MS` (has default) — .env.example
 - `TEXT_RESERVE_MODEL` (has default) — .env.example
 - `TEXT_RESERVE_TIMEOUT_MS` (has default) — .env.example
+- `THINK_MODEL` **required** — src\services\agentThinking.service.ts
+- `THINK_TIMEOUT_MS` **required** — src\services\agentThinking.service.ts
 - `WHATSPRO_API_TOKEN` **required** — .env.example
 - `WHATSPRO_BASE_URL` **required** — .env.example
 - `WHATSPRO_PASSWORD` (has default) — .env
 - `WHATSPRO_PRESENCE_URL` **required** — .env.example
+- `WHATSPRO_READ_STATE` **required** — src\transport\whatspro.client.ts
 - `WHATSPRO_SEND_URL` **required** — .env.example
 - `WHATSPRO_USER` (has default) — .env
 - `WHATSPRO_WEBHOOK_PATH` **required** — src\server.ts

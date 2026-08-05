@@ -30,6 +30,7 @@ export function getTextModels() {
     return {
         primary: envText("TEXT_PRIMARY_MODEL", "deepseek/deepseek-chat"),
         fallback: envText("TEXT_FALLBACK_MODEL", "deepseek/deepseek-chat-v3"),
+        reserve: envText("TEXT_RESERVE_MODEL", "google/gemini-2.5-flash"),
     };
 }
 export function getMediaPrimaryModel() {

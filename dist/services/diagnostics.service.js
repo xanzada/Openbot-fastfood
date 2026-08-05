@@ -1,6 +1,7 @@
 import axios from "axios";
 import { getRedisTarget, pingRedis } from "./redis.service.js";
 import { getMediaFallbackModel, getMediaPrimaryKeys, getMediaPrimaryModel, getTextModels } from "./llm.service.js";
+import { getWhatsProOutboxSummary } from "../transport/whatspro.client.js";
 function now() {
     return Date.now();
 }
@@ -131,6 +132,13 @@ export function getConfigSummary() {
         },
         openrouter_key: envPresent("OPENROUTER_API_KEY") ? "present" : "missing",
         openbot_webhook_secret: envPresent("OPENBOT_WEBHOOK_SECRET") ? "present" : "missing",
+        runtime_controls: {
+            test_mode: String(process.env.TEST_MODE_ENABLED || "false").trim().toLowerCase() === "true",
+            developer_phone: envPresent("OPENBOT_DEVELOPER_PHONE") ? "present" : "missing",
+            receipt_ai_filter: !["false", "0", "off", "no"].includes(String(process.env.RECEIPT_AI_FILTER_ENABLED ?? "true").trim().toLowerCase()),
+            inbound_buffer_ms: Math.max(600, Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 2400)),
+            response_chunk_max: Math.max(180, Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 320)),
+        },
         tenants_platform: {
             source: "tenants_platform_by_instance_id",
             url: hostFromUrl(tenantsPlatform.base),
@@ -150,6 +158,14 @@ export async function runDependencyChecks() {
     const checks = [];
     checks.push(await checkRedis());
     checks.push(await checkTenantsPlatform());
+    const outboxStarted = now();
+    const outbox = await getWhatsProOutboxSummary().catch(() => ({ volatilePending: -1, filePending: -1, redisPending: -1 }));
+    checks.push({
+        name: "whatspro_outbox",
+        ok: outbox.volatilePending >= 0,
+        status: `volatile=${outbox.volatilePending} file=${outbox.filePending} redis=${outbox.redisPending}`,
+        latency_ms: now() - outboxStarted,
+    });
     if (process.env.CHATWOOT_ADAPTER_URL) {
         checks.push(await checkHttp("chatwoot_adapter", endpointFromBase(process.env.CHATWOOT_ADAPTER_URL, "/health")));
     }

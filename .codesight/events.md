@@ -30,6 +30,7 @@
 - `Attempting idempotency lock` [event] — `src/controllers/kanban.ts`
 - `Found existing order/signal lock; ignoring duplicate` [event] — `src/controllers/kanban.ts`
 - `Creating new processing record via Redis lock` [event] — `src/controllers/kanban.ts`
+- `Rejected shift note: empty text` [event] — `src/controllers/kanban.ts`
 - `Saving shift note to AI memory` [event] — `src/controllers/kanban.ts`
 - `Shift note saved` [event] — `src/controllers/kanban.ts`
 - `Deleting shift note from AI memory` [event] — `src/controllers/kanban.ts`

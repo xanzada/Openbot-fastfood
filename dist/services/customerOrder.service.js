@@ -53,6 +53,83 @@ export function customerOrderFromRecord(value, expectedPhone, language) {
     const description = describeOrderStage(stage, language);
     return { state: "found", order: { orderNumber, status, stage, statusLabel: description.label, statusExplanation: description.explanation, items: customerItems(record?.items || value?.items) } };
 }
+function orderIdOf(record) { return String(record?.id || record?.order_id || "").trim(); }
+function createdAtOf(record) { return Date.parse(String(record?.created_at || "").replace(" ", "T")) || 0; }
+function orderPools(context) {
+    if (!context)
+        return [];
+    const pools = [context.recent_orders, context.active_orders, [context.order, context.active_order]];
+    const seen = new Set();
+    const out = [];
+    for (const pool of pools) {
+        if (!Array.isArray(pool))
+            continue;
+        for (const record of pool) {
+            const id = orderIdOf(record);
+            if (!id || seen.has(id))
+                continue;
+            seen.add(id);
+            out.push(record);
+        }
+    }
+    return out;
+}
+function orderItemWords(record) {
+    const items = customerItems(record?.items);
+    const words = [];
+    for (const item of items) {
+        for (const word of String(item.name).toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+            if (word.length >= 4)
+                words.push(word);
+        }
+    }
+    return words;
+}
+// Guests rarely quote an order number. They say "the one with the Caesar".
+// Matching the dishes they name against their own orders lets the bot follow
+// what the person actually means instead of whatever the site calls active.
+export function orderMentionedByItems(context, text) {
+    const haystack = String(text || "").toLowerCase();
+    if (!haystack)
+        return null;
+    let best = null;
+    let bestScore = 0;
+    for (const record of orderPools(context)) {
+        let score = 0;
+        for (const word of orderItemWords(record)) {
+            if (haystack.includes(word.slice(0, Math.max(4, word.length - 2))))
+                score += 1;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            best = record;
+        }
+    }
+    return bestScore > 0 ? best : null;
+}
+// The order the conversation is about wins over whichever order the site calls
+// "active", unless the site knows about a newer one the guest has not mentioned yet.
+export function pickConversationOrder(context, discussedNumber) {
+    if (!context || !discussedNumber)
+        return null;
+    const pools = [context.recent_orders, context.active_orders, [context.order, context.active_order]];
+    let pinned = null;
+    for (const pool of pools) {
+        if (!Array.isArray(pool))
+            continue;
+        const hit = pool.find((record) => orderIdOf(record) === String(discussedNumber).trim());
+        if (hit) {
+            pinned = hit;
+            break;
+        }
+    }
+    if (!pinned)
+        return null;
+    const current = context.order || context.active_order || null;
+    if (current && orderIdOf(current) !== orderIdOf(pinned) && createdAtOf(current) > createdAtOf(pinned))
+        return null;
+    return pinned;
+}
 export function customerOrderFromContext(context, expectedPhone, language, hasRequestedOrderNumber = false) { if (!context)
     return { state: "not_found" }; if (context.is_stale)
     return { state: "unavailable" }; if (Array.isArray(context.active_orders) && context.active_orders.length > 1 && !hasRequestedOrderNumber)
@@ -65,5 +142,22 @@ catch (error) {
     auditError("Customer order lookup failed", error, { instanceId, orderNumber: orderNumber || "", phone: normalizePhone(phone) });
     return { state: "unavailable" };
 } }
+// A status line that stops at the label leaves the guest wondering what to do
+// next, so every answer ends with who moves and when.
+export function orderNextStepLine(order, language) {
+    const label = String(order.statusLabel || "").toLowerCase();
+    // "Дайындалуда" contains "дайын", so the ready branch used to win and sent a
+    // guest to collect food that was still on the stove. In-progress labels are
+    // matched first and "ready" now has to stand as a whole word.
+    if (/готовит|даярла|дайындал|дайындау|принят|қабылдан|жаңа|новый/.test(label))
+        return language === "ru" ? "Как только будет готово, сразу напишем." : "Дайын болған сәтте бірден хабарлаймыз.";
+    if (/пути|достав|жолда|жеткіз/.test(label))
+        return language === "ru" ? "Курьер уже едет к вам." : "Курьер жолға шықты.";
+    if (/отмен|болдыр|бас тарт/.test(label))
+        return language === "ru" ? "Если это ошибка, напишите — сразу разберёмся." : "Егер бұл қате болса, жазыңыз — бірден шешеміз.";
+    if (/(?<!\p{L})готов(?:о|а|ый)?(?!\p{L})|(?<!\p{L})дайын(?!\p{L})|заверш|орындал/u.test(label))
+        return language === "ru" ? "Можете забирать — всё упаковано." : "Алып кетуге болады — бәрі дайын.";
+    return language === "ru" ? "Как только что-то изменится, сразу напишем." : "Жаңалық болса, бірден хабарлаймыз.";
+}
 export function formatCustomerOrderStatus(order, language) { const items = order.items.slice(0, 8).map(i => `${i.name} ×${i.quantity}`).join(", "); if (language === "ru")
-    return items ? `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Состав: ${items}.` : `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}.`; return items ? `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Құрамы: ${items}.` : `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}.`; }
+    return items ? `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Состав: ${items}. ${orderNextStepLine(order, language)}` : `Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${orderNextStepLine(order, language)}`; return items ? `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Құрамы: ${items}. ${orderNextStepLine(order, language)}` : `Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${orderNextStepLine(order, language)}`; }

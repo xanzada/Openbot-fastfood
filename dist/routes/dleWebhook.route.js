@@ -59,7 +59,11 @@ export function normalizeDlePayload(req) {
         reason: firstValue(source.reason, source.cancel_reason, source.reject_reason),
         note_id: firstValue(source.note_id, source.noteId, note.note_id, note.id),
         shift_key: firstValue(source.shift_key, source.shiftKey, note.shift_key),
-        text: firstValue(source.text, source.note_text, source.note, source.message, note.text, note.note_text),
+        // The note payload may arrive as an OBJECT ({note:{id,text}}). Picking the
+        // object itself stringified it to "[object Object]" and that garbage was
+        // saved into AI memory - and could never be deleted by text afterwards.
+        // Only a STRING note field is a valid text candidate.
+        text: firstValue(source.text, source.note_text, note.text, note.note_text, source.message, typeof source.note === "string" ? source.note : ""),
         expires_at: firstValue(source.expires_at, source.expiresAt, source.expires, source.until, note.expires_at),
         created_by: firstValue(source.created_by, source.createdBy, note.created_by),
         created_at: firstValue(source.created_at, source.createdAt, note.created_at),
