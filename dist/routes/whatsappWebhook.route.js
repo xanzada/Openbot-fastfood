@@ -356,6 +356,13 @@ async function processWhatsAppWebhook(body, started) {
                     }
                 }
                 const callConfig = await getRestaurantConfig(instanceId).catch(() => null);
+                // callsDisabled=false means the admin re-enabled live calls (future voice assistant).
+                // Default (undefined/true) keeps the text-redirect behaviour that was already deployed.
+                const callsDisabled = callConfig?.callsDisabled ?? callConfig?.calls_disabled;
+                if (callsDisabled === false) {
+                    console.log(`[OPENBOT:CALL] calls_enabled_passthrough instance=${instanceId} phone=${maskPhone(phone)}`);
+                    return; // admin enabled live calls — let WhatsApp ring through, no text redirect
+                }
                 const callLang = (["ru", "russian"].includes(String(callConfig?.language || "").toLowerCase()) ? "ru" : "kk");
                 const callBrand = String(callConfig?.brand || "").trim() || undefined;
                 await sendWhatsProResponseSequence({
