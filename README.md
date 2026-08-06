@@ -67,3 +67,5 @@ Filtering order before AI:
 4. If `TEST_MODE_ENABLED=true`, allow only `TEST_MODE_ALLOWED_PHONE`.
 5. Drop saved/private contacts when configured.
 6. Drop if `operator_active:{instanceId}:{phone}` exists.
+
+<!-- Antigravity AGY Agent connected -->
