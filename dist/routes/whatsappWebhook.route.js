@@ -241,10 +241,13 @@ function unavailableChannelReply(channel, language) {
         return channel === "delivery" ? "Сейчас доставка временно недоступна, но можно оформить самовывоз." : "Сейчас самовывоз временно недоступен, но можно оформить доставку.";
     return channel === "delivery" ? "Қазір жеткізу уақытша қолжетімсіз, бірақ алып кетуге тапсырыс бере аласыз." : "Қазір алып кету уақытша қолжетімсіз, бірақ жеткізуге тапсырыс бере аласыз.";
 }
-function missedCallReply(language) {
-    return language === "ru"
-        ? "Здравствуйте! К сожалению, мы не можем ответить на звонок — я текстовый ассистент 😊 Напишите, пожалуйста, чем могу помочь? Слушаю вас!"
-        : "Сәлеметсізбе! Қоңырауға жауап бере алмаймыз — мен мәтіндік көмекшімін 😊 Қандай сұрақ болса, жазыңыз, сізді тыңдап тұрмын!";
+function missedCallReply(language, brandName) {
+    if (language === "ru") {
+        const intro = brandName ? `помощник ${brandName}` : "ваш помощник";
+        return `Здравствуйте! К сожалению, не можем ответить на звонок. Я — ${intro} 😊 Чем могу помочь? Напишите — слушаю вас!`;
+    }
+    const intro = brandName ? `${brandName} көмекшісімін` : "сіздің көмекшіңізбін";
+    return `Сәлеметсізбе! Қоңырауға жауап бере алмаймыз. Мен — ${intro} 😊 Қандай сұрағыңыз бар? Жазыңыз, сізге көмектесуге дайынмын!`;
 }
 async function kitchenGateReply(ctx) {
     // An existing order does not silence the kitchen. Questions ABOUT that order
@@ -354,10 +357,11 @@ async function processWhatsAppWebhook(body, started) {
                 }
                 const callConfig = await getRestaurantConfig(instanceId).catch(() => null);
                 const callLang = (["ru", "russian"].includes(String(callConfig?.language || "").toLowerCase()) ? "ru" : "kk");
+                const callBrand = String(callConfig?.brand || "").trim() || undefined;
                 await sendWhatsProResponseSequence({
                     instanceId,
                     phone,
-                    text: missedCallReply(callLang),
+                    text: missedCallReply(callLang, callBrand),
                     requestScope: messageId || `call:${phone}:${Date.now()}`,
                 }).catch((err) => console.warn(`[OPENBOT:CALL] reply_failed instance=${instanceId} phone=${maskPhone(phone)}`, err?.message || err));
                 console.log(`[OPENBOT:CALL] missed_call_replied instance=${instanceId} phone=${maskPhone(phone)} lang=${callLang} elapsed=${Date.now() - started}ms`);

@@ -348,10 +348,13 @@ function unavailableChannelReply(channel: "delivery" | "pickup", language: "kk" 
   if (language === "ru") return channel === "delivery" ? "Сейчас доставка временно недоступна, но можно оформить самовывоз." : "Сейчас самовывоз временно недоступен, но можно оформить доставку.";
   return channel === "delivery" ? "Қазір жеткізу уақытша қолжетімсіз, бірақ алып кетуге тапсырыс бере аласыз." : "Қазір алып кету уақытша қолжетімсіз, бірақ жеткізуге тапсырыс бере аласыз.";
 }
-function missedCallReply(language: "kk" | "ru"): string {
-  return language === "ru"
-    ? "Здравствуйте! К сожалению, мы не можем ответить на звонок — я текстовый ассистент 😊 Напишите, пожалуйста, чем могу помочь? Слушаю вас!"
-    : "Сәлеметсізбе! Қоңырауға жауап бере алмаймыз — мен мәтіндік көмекшімін 😊 Қандай сұрақ болса, жазыңыз, сізді тыңдап тұрмын!";
+function missedCallReply(language: "kk" | "ru", brandName?: string): string {
+  if (language === "ru") {
+    const intro = brandName ? `помощник ${brandName}` : "ваш помощник";
+    return `Здравствуйте! К сожалению, не можем ответить на звонок. Я — ${intro} 😊 Чем могу помочь? Напишите — слушаю вас!`;
+  }
+  const intro = brandName ? `${brandName} көмекшісімін` : "сіздің көмекшіңізбін";
+  return `Сәлеметсізбе! Қоңырауға жауап бере алмаймыз. Мен — ${intro} 😊 Қандай сұрағыңыз бар? Жазыңыз, сізге көмектесуге дайынмын!`;
 }
 async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
   // An existing order does not silence the kitchen. Questions ABOUT that order
@@ -463,10 +466,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
         const callLang = (["ru", "russian"].includes(
           String((callConfig as any)?.language || "").toLowerCase()
         ) ? "ru" : "kk") as "kk" | "ru";
+        const callBrand = String((callConfig as any)?.brand || "").trim() || undefined;
         await sendWhatsProResponseSequence({
           instanceId,
           phone,
-          text: missedCallReply(callLang),
+          text: missedCallReply(callLang, callBrand),
           requestScope: messageId || `call:${phone}:${Date.now()}`,
         }).catch((err: any) =>
           console.warn(`[OPENBOT:CALL] reply_failed instance=${instanceId} phone=${maskPhone(phone)}`, err?.message || err)
