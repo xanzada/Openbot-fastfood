@@ -248,6 +248,21 @@ function isGroupMessage(body: any): boolean {
   );
 }
 
+function isIncomingVoiceCall(body: any): boolean {
+  // WhatsPro / Evolution-API delivers calls two ways:
+  //   1. A dedicated "call" event  → body.event === "call"
+  //   2. A messages.upsert where the message type is "callLogMessage"
+  const event = String(body?.event || "").toLowerCase();
+  if (event === "call") return true;
+  const msg = body?.data?.message || body?.message || {};
+  const inner = msg?.ephemeralMessage?.message || msg || {};
+  if (inner?.callLogMessage) return true;
+  const messageType = String(
+    body?.data?.messageType || body?.messageType || body?.data?.type || body?.type || ""
+  ).toLowerCase();
+  return messageType === "calllogmessage" || messageType === "call";
+}
+
 function isStatusQuestion(text = ""): boolean {
   return STATUS_CONTEXT_RE.test(String(text || ""));
 }
@@ -332,6 +347,11 @@ function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
 function unavailableChannelReply(channel: "delivery" | "pickup", language: "kk" | "ru") {
   if (language === "ru") return channel === "delivery" ? "Сейчас доставка временно недоступна, но можно оформить самовывоз." : "Сейчас самовывоз временно недоступен, но можно оформить доставку.";
   return channel === "delivery" ? "Қазір жеткізу уақытша қолжетімсіз, бірақ алып кетуге тапсырыс бере аласыз." : "Қазір алып кету уақытша қолжетімсіз, бірақ жеткізуге тапсырыс бере аласыз.";
+}
+function missedCallReply(language: "kk" | "ru"): string {
+  return language === "ru"
+    ? "Здравствуйте! К сожалению, мы не можем ответить на звонок — я текстовый ассистент 😊 Напишите, пожалуйста, чем могу помочь? Слушаю вас!"
+    : "Сәлеметсізбе! Қоңырауға жауап бере алмаймыз — мен мәтіндік көмекшімін 😊 Қандай сұрақ болса, жазыңыз, сізді тыңдап тұрмын!";
 }
 async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
   // An existing order does not silence the kitchen. Questions ABOUT that order
@@ -430,9 +450,35 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
   try {
     if (!String(text || "").trim() && !mediaContext) {
-      console.log(
-        `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=empty_message elapsed=${Date.now() - started}ms`
-      );
+      if (isIncomingVoiceCall(body) && instanceId && phone) {
+        // Someone rang the bot's WhatsApp number. Reply with a text redirect
+        // so the customer knows to write instead of call.
+        if (process.env.TEST_MODE_ENABLED === "true") {
+          const devPhone = String(process.env.OPENBOT_DEVELOPER_PHONE || "").replace(/\D/g, "");
+          if (devPhone && phone !== devPhone) {
+            return; // test_mode: only handle developer_phone calls
+          }
+        }
+        const callConfig = await getRestaurantConfig(instanceId).catch(() => null);
+        const callLang = (["ru", "russian"].includes(
+          String((callConfig as any)?.language || "").toLowerCase()
+        ) ? "ru" : "kk") as "kk" | "ru";
+        await sendWhatsProResponseSequence({
+          instanceId,
+          phone,
+          text: missedCallReply(callLang),
+          requestScope: messageId || `call:${phone}:${Date.now()}`,
+        }).catch((err: any) =>
+          console.warn(`[OPENBOT:CALL] reply_failed instance=${instanceId} phone=${maskPhone(phone)}`, err?.message || err)
+        );
+        console.log(
+          `[OPENBOT:CALL] missed_call_replied instance=${instanceId} phone=${maskPhone(phone)} lang=${callLang} elapsed=${Date.now() - started}ms`
+        );
+      } else {
+        console.log(
+          `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=empty_message elapsed=${Date.now() - started}ms`
+        );
+      }
       return;
     }
 
