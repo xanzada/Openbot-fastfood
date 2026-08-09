@@ -1,6 +1,6 @@
 import { redisClient } from "../services/redis.service.js";
 import { callAlemiLegacyAction } from "../services/alemiApi.service.js";
-import { getAllRestaurantConfigs } from "../services/platformConfig.service.js";
+import { getAllRestaurantConfigs, getRestaurantConfig } from "../services/platformConfig.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 
 const ANALYTICS_TIMEZONE = process.env.ANALYTICS_TIMEZONE || "Asia/Almaty";
@@ -118,15 +118,43 @@ async function buildDailyAnalytics(logs: any[] = []) {
   return normalizeAnalyticsPayload({}, logs);
 }
 
+type TenantConfigLoader = (
+  instanceId: string,
+  options?: { forceRefresh?: boolean },
+) => Promise<Record<string, any> | null>;
+
+export async function hydrateAnalyticsTenantConfig(
+  summaryConfig: Record<string, any>,
+  loadConfig: TenantConfigLoader = getRestaurantConfig,
+) {
+  const instanceId = String(summaryConfig?.instance_id || summaryConfig?.instance || "").trim();
+  if (!instanceId) throw new Error("ALEMI_TENANT_INSTANCE_MISSING");
+
+  // The list endpoint may omit secrets and prime the ordinary runtime cache.
+  // Analytics must hydrate the exact tenant record before signing anything.
+  const runtimeConfig = await loadConfig(instanceId, { forceRefresh: true });
+  if (!runtimeConfig) throw new Error("ALEMI_TENANT_CONFIG_NOT_FOUND");
+  const runtimeInstance = String(runtimeConfig.instance_id || runtimeConfig.instance || "").trim();
+  if (runtimeInstance !== instanceId) throw new Error("ALEMI_TENANT_CONFIG_MISMATCH");
+
+  const hydrated: Record<string, any> = { ...summaryConfig, ...runtimeConfig, instance_id: instanceId, instance: instanceId };
+  const tenantSecret = String(
+    hydrated.alemi_secret || hydrated.alemiSecret || hydrated.alemi_api_secret || hydrated.alemiApiSecret || "",
+  ).trim();
+  if (!tenantSecret) throw new Error("ALEMI_TENANT_SECRET_NOT_CONFIGURED");
+  return hydrated;
+}
+
 async function processRestaurantAnalytics(config: Record<string, any>, reportDate: string) {
-  const instanceId = String(config.instance_id || "").trim();
+  const hydratedConfig = await hydrateAnalyticsTenantConfig(config);
+  const instanceId = String(hydratedConfig.instance_id || "").trim();
   if (!instanceId) return;
 
-  const leads = await fetchTodayCrmLeads(config, reportDate);
+  const leads = await fetchTodayCrmLeads(hydratedConfig, reportDate);
   console.log(`[CRON] analytics ${instanceId}: bot_leads=${leads.length}, report_date=${reportDate}`);
 
   const analytics = await buildDailyAnalytics(leads);
-  await sendAnalyticsToSite(config, reportDate, analytics);
+  await sendAnalyticsToSite(hydratedConfig, reportDate, analytics);
 
   console.log(`[CRON] analytics saved: ${instanceId}`);
 }
