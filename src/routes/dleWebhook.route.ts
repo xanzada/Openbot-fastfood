@@ -17,6 +17,20 @@ export function isDleWebhookAuthRequired() {
 
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 
+export function mapIncomingAlemiInstance(value: unknown, env: NodeJS.ProcessEnv = process.env) {
+  const instance = String(value || "").trim();
+  if (!instance) return "";
+  try {
+    const aliases = JSON.parse(String(env.ALEMI_INSTANCE_ALIASES_JSON || "{}"));
+    const mapped = aliases && typeof aliases === "object" && !Array.isArray(aliases)
+      ? String(aliases[instance] || "").trim()
+      : "";
+    return mapped && INSTANCE_RE.test(mapped) ? mapped : instance;
+  } catch {
+    return instance;
+  }
+}
+
 function getRequestInstanceId(req: Request) {
   return String(req.body?.instance || req.query?.instance || "").trim();
 }
@@ -123,7 +137,7 @@ export function normalizeDlePayload(req: Request) {
     event_type: rawEventType,
     event_id: normalizeExternalId(firstValue(valueFrom(records, "event_id", "eventId"), rawEventType ? source.id : "", req.headers?.["x-event-id"])),
     request_id: normalizeExternalId(firstValue(valueFrom(records, "request_id", "requestId", "delivery_id", "deliveryId"), req.headers?.["x-request-id"])),
-    instance: firstValue(valueFrom(records, "instance", "instance_id", "instanceId"), order.instance, note.instance, req.query.instance),
+    instance: mapIncomingAlemiInstance(firstValue(valueFrom(records, "instance", "instance_id", "instanceId"), order.instance, note.instance, req.query.instance)),
     phone: firstValue(
       valueFrom(records, "phone", "client_phone", "clientPhone", "customer_phone", "customerPhone", "recipient", "senderPhone"),
       order.phone,

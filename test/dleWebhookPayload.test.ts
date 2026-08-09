@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   handleDleWebhook,
   isIgnoredAlemiEvent,
+  mapIncomingAlemiInstance,
   normalizeDlePayload,
 } from "../src/routes/dleWebhook.route.js";
 import { isValidOrderId } from "../src/controllers/kanban.js";
@@ -91,6 +92,15 @@ test("Alemi order events flatten envelope data and preserve UUID identifiers", (
   assert.equal(r.body.event_id, "evt-01HX");
   assert.equal(r.body.request_id, "req-01HX");
   assert.equal(isValidOrderId(r.body.order_id), true);
+});
+
+test("Hub restaurant instance aliases to the internal WhatsPro tenant", () => {
+  assert.equal(mapIncomingAlemiInstance("storefront_test_fe6d775", {
+    ALEMI_INSTANCE_ALIASES_JSON: JSON.stringify({ storefront_test_fe6d775: "prestige" }),
+  } as NodeJS.ProcessEnv), "prestige");
+  assert.equal(mapIncomingAlemiInstance("already_internal", {
+    ALEMI_INSTANCE_ALIASES_JSON: "not-json",
+  } as NodeJS.ProcessEnv), "already_internal");
 });
 
 test("order-id validation preserves legacy numbers and accepts only canonical UUIDs", () => {

@@ -51,6 +51,20 @@ test("kanban auth accepts the deployment Alemi secret when tenant config has no 
   }
 });
 
+test("kanban auth resolves the per-tenant Alemi secret after instance aliasing", () => {
+  withEnv({
+    ALEMI_TENANT_SECRETS_JSON: JSON.stringify({
+      prestige: { instance: "storefront_test_fe6d775", secret: "crazy-tenant-secret" },
+    }),
+    ALEMI_SECRET: undefined,
+  }, () => {
+    assert.doesNotThrow(() => assertTenantSecret({
+      body: { instance: "prestige" },
+      query: { token: "crazy-tenant-secret" },
+    }, {}, "kanban"));
+  });
+});
+
 test("query token rejects arrays and objects instead of coercing them", () => {
   assert.equal(getIncomingTenantSecret({ headers: {}, body: {}, query: { token: ["one", "two"] } }), "");
   assert.equal(getIncomingTenantSecret({ headers: {}, body: {}, query: { token: { nested: true } } }), "");

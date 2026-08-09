@@ -56,12 +56,29 @@ function getTenantSecrets(config: Record<string, any> | null | undefined, channe
   return [...new Set(values.map(scalarSecret).filter(Boolean))];
 }
 
+function alemiEnvironmentSecret(instanceId: unknown) {
+  const instance = String(instanceId || "").trim();
+  if (!instance) return "";
+  try {
+    const parsed = JSON.parse(String(process.env.ALEMI_TENANT_SECRETS_JSON || "{}"));
+    const candidate = parsed?.[instance] ?? parsed?.tenants?.[instance];
+    if (typeof candidate === "string") return candidate.trim();
+    return scalarSecret(candidate?.secret ?? candidate?.secret_key);
+  } catch {
+    return "";
+  }
+}
+
 export function getTenantSecret(config: Record<string, any> | null | undefined, channel = "webhook") {
   return getTenantSecrets(config, channel)[0] || "";
 }
 
 export function assertTenantSecret(req: any, config: Record<string, any> | null | undefined, channel = "webhook") {
   const expected = getTenantSecrets(config, channel);
+  if (channel === "kanban") {
+    const environmentSecret = alemiEnvironmentSecret(req?.body?.instance);
+    if (environmentSecret && !expected.includes(environmentSecret)) expected.push(environmentSecret);
+  }
   const incoming = getIncomingTenantSecret(req);
 
   if (!expected.length) {
