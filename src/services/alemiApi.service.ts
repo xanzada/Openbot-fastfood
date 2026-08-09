@@ -167,6 +167,12 @@ function unixTimestamp(nowMs = Date.now()) {
   return String(Math.floor(nowMs / 1000));
 }
 
+export function createAlemiCommandId() {
+  // Alemi's command schema accepts the documented cmd_ + 26 uppercase-hex
+  // operation identifier; a raw RFC 4122 UUID is rejected before auth.
+  return `cmd_${crypto.randomBytes(13).toString("hex").toUpperCase()}`;
+}
+
 function signature(secret: string, timestamp: string, signedBytes: string) {
   return `v1=${crypto.createHmac("sha256", secret).update(`${timestamp}.${signedBytes}`, "utf8").digest("hex")}`;
 }
@@ -187,7 +193,7 @@ export function buildAlemiSignedCommand(input: {
   nowMs?: number;
   commandId?: string;
 }): AlemiSignedCommand {
-  const commandId = firstString(input.commandId) || crypto.randomUUID();
+  const commandId = firstString(input.commandId) || createAlemiCommandId();
   const timestamp = unixTimestamp(input.nowMs);
   const rawBody = JSON.stringify({
     command: input.command,
@@ -385,7 +391,7 @@ export async function uploadOrderDocument(input: UploadOrderDocumentInput, optio
     ? await getRestaurantConfig(input.instanceId).catch(() => null)
     : options.config;
   const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
-  const commandId = firstString(options.commandId) || crypto.randomUUID();
+  const commandId = firstString(options.commandId) || createAlemiCommandId();
   const timestamp = unixTimestamp(options.nowMs);
   const orderId = firstString(input.orderId);
   const sourceMessageId = firstString(input.sourceMessageId);
@@ -434,7 +440,7 @@ export async function reportPrintResult(input: ReportPrintResultInput, options: 
     ? await getRestaurantConfig(input.instanceId).catch(() => null)
     : options.config;
   const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
-  const commandId = firstString(options.commandId) || crypto.randomUUID();
+  const commandId = firstString(options.commandId) || createAlemiCommandId();
   const timestamp = unixTimestamp(options.nowMs);
   const printJobId = firstString(input.printJobId);
   const attemptNumber = Math.max(1, Math.trunc(Number(input.attemptNumber) || 0));

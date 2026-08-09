@@ -7,6 +7,7 @@ import {
   ALEMI_PRINT_RESULTS_PATH,
   buildAlemiSignedCommand,
   callAlemiCommand,
+  createAlemiCommandId,
   issueCustomerAccessLink,
   mapLegacyAlemiAction,
   reportPrintResult,
@@ -26,6 +27,10 @@ const config = {
 function expectedSignature(secret: string, timestamp: string, signedBytes: string) {
   return `v1=${crypto.createHmac("sha256", secret).update(`${timestamp}.${signedBytes}`, "utf8").digest("hex")}`;
 }
+
+test("generated command IDs match the Alemi schema accepted by production", () => {
+  assert.match(createAlemiCommandId(), /^cmd_[A-F0-9]{26}$/);
+});
 
 test("Alemi command signs the exact ordered JSON bytes and emits the contract headers", () => {
   const request = buildAlemiSignedCommand({
