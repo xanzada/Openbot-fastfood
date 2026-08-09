@@ -199,14 +199,18 @@ function platformHeaders() {
   return { authorization: `Bearer ${token}`, "content-type": "application/json" };
 }
 
-export async function getRestaurantConfig(instanceId: string): Promise<Record<string, any> | null> {
+export async function getRestaurantConfig(
+  instanceId: string,
+  options: { forceRefresh?: boolean } = {}
+): Promise<Record<string, any> | null> {
   const safeInstanceId = String(instanceId || "").trim();
+  const forceRefresh = options.forceRefresh === true;
   const memory = runtimeConfigMemory.get(safeInstanceId);
-  if (memory && memory.expiresAt > Date.now()) return memory.value;
+  if (!forceRefresh && memory && memory.expiresAt > Date.now()) return memory.value;
   const key = `config:${safeInstanceId}`;
   const backupKey = `config_backup:${safeInstanceId}`;
-  const cached = await getJsonCache<Record<string, any>>(key);
-  if (cached) {
+  const cached = forceRefresh ? null : await getJsonCache<Record<string, any>>(key);
+  if (!forceRefresh && cached) {
     runtimeConfigMemory.set(safeInstanceId, { value: cached, expiresAt: Date.now() + 60_000 });
     return cached;
   }
@@ -233,12 +237,13 @@ export async function getRestaurantConfig(instanceId: string): Promise<Record<st
   }
 }
 
-export async function getAllRestaurantConfigs(): Promise<Record<string, any>[]> {
-  if (allConfigsMemory && allConfigsMemory.expiresAt > Date.now()) return allConfigsMemory.value;
+export async function getAllRestaurantConfigs(options: { forceRefresh?: boolean } = {}): Promise<Record<string, any>[]> {
+  const forceRefresh = options.forceRefresh === true;
+  if (!forceRefresh && allConfigsMemory && allConfigsMemory.expiresAt > Date.now()) return allConfigsMemory.value;
   const cacheKey = "config:all_restaurants";
   const backupKey = "config_backup:all_restaurants";
-  const cached = await getJsonCache<Record<string, any>[]>(cacheKey);
-  if (cached) {
+  const cached = forceRefresh ? null : await getJsonCache<Record<string, any>[]>(cacheKey);
+  if (!forceRefresh && cached) {
     allConfigsMemory = { value: cached, expiresAt: Date.now() + 60_000 };
     return cached;
   }
@@ -292,6 +297,48 @@ export async function getRestaurantConfigByWhatsAppPhone(phone: string): Promise
       return candidates.some((candidate) => candidate && candidate === normalized);
     }) || null
   );
+}
+
+export function findRestaurantConfigByAlemiInstance(
+  incomingInstance: string,
+  configs: Record<string, any>[]
+): Record<string, any> | null {
+  const incoming = String(incomingInstance || "").trim();
+  if (!incoming) return null;
+  const matches = (Array.isArray(configs) ? configs : []).filter((config) => {
+    const alemiInstance = String(config?.alemi_instance || config?.alemiInstance || "").trim();
+    const internalInstance = String(config?.instance_id || config?.instance || "").trim();
+    return incoming === alemiInstance || incoming === internalInstance;
+  });
+  if (matches.length > 1) {
+    const error: any = new Error("ALEMI_INSTANCE_AMBIGUOUS");
+    error.statusCode = 409;
+    throw error;
+  }
+  return matches[0] || null;
+}
+
+export async function getRestaurantConfigByAlemiInstance(incomingInstance: string) {
+  const configs = await getAllRestaurantConfigs();
+  const cachedMatch = findRestaurantConfigByAlemiInstance(incomingInstance, configs);
+  if (cachedMatch) {
+    const internalInstance = String(cachedMatch.instance_id || cachedMatch.instance || "").trim();
+    // The broad SaaS index intentionally redacts Alemi secrets. Hydrate only
+    // the matched tenant through the master-protected per-instance endpoint.
+    return internalInstance
+      ? await getRestaurantConfig(internalInstance, { forceRefresh: true })
+      : null;
+  }
+  // A newly onboarded restaurant must work without waiting for the five-minute
+  // Redis cache. Only a miss forces one platform refresh, keeping the hot path
+  // cached while meeting the no-redeploy SaaS onboarding contract.
+  const freshConfigs = await getAllRestaurantConfigs({ forceRefresh: true });
+  const freshMatch = findRestaurantConfigByAlemiInstance(incomingInstance, freshConfigs);
+  if (!freshMatch) return null;
+  const internalInstance = String(freshMatch.instance_id || freshMatch.instance || "").trim();
+  return internalInstance
+    ? await getRestaurantConfig(internalInstance, { forceRefresh: true })
+    : null;
 }
 
 function extractShporSearchText(item: Record<string, any>) {

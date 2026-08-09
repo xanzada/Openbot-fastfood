@@ -127,8 +127,8 @@ export function resolveAlemiCredentials(
     config?.alemiInstance,
     tenantEntry?.instance,
     tenantEntry?.instance_id,
-    env.ALEMI_INSTANCE,
-    requestedInstance
+    requestedInstance,
+    env.ALEMI_INSTANCE
   );
   const apiUrl = firstString(
     config?.alemi_api_url,
@@ -142,20 +142,22 @@ export function resolveAlemiCredentials(
     env.ALEMI_API_URL,
     ALEMI_DEFAULT_API_URL
   );
-  const secret = firstString(
+  const tenantSecret = firstString(
     config?.alemi_secret,
     config?.alemiSecret,
     config?.alemi_api_secret,
     config?.alemiApiSecret,
     tenantEntry?.secret,
     tenantEntry?.secret_key,
-    tenantEntry?.secretKey,
-    env.ALEMI_SECRET,
-    config?.secret_key,
-    config?.secretKey,
-    config?.crm_secret_token,
-    config?.crmSecretToken
+    tenantEntry?.secretKey
   );
+  // A process-wide credential is only valid for its explicitly named legacy
+  // restaurant. Falling back to it for an incomplete SaaS tenant would sign a
+  // request as the wrong restaurant and break tenant isolation.
+  const globalInstance = firstString(env.ALEMI_INSTANCE);
+  const secret = tenantSecret || (globalInstance && instance === globalInstance
+    ? firstString(env.ALEMI_SECRET)
+    : "");
 
   if (!instance) throw new Error("ALEMI_INSTANCE_NOT_CONFIGURED");
   if (!secret) throw new Error("ALEMI_SECRET_NOT_CONFIGURED");

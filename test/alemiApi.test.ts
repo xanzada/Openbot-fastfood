@@ -105,9 +105,9 @@ test("legacy actions map to the documented Hub commands and data", () => {
   });
 });
 
-test("single-tenant Alemi env overrides generic WhatsPro instance and secret fields", () => {
-  const credentials = resolveAlemiCredentials("whatspro-local-id", {
-    instance_id: "whatspro-local-id",
+test("single-tenant Alemi env is used only for its explicitly named legacy tenant", () => {
+  const credentials = resolveAlemiCredentials("mack_center", {
+    instance_id: "mack_center",
     secret_key: "unrelated-whatspro-secret",
   }, {
     ALEMI_API_URL: "https://hub.alemi.kz",
@@ -119,6 +119,14 @@ test("single-tenant Alemi env overrides generic WhatsPro instance and secret fie
     instance: "mack_center",
     secret: "alemi-restaurant-secret",
   });
+
+  assert.throws(() => resolveAlemiCredentials("second-restaurant", {
+    instance_id: "second-restaurant",
+  }, {
+    ALEMI_API_URL: "https://hub.alemi.kz",
+    ALEMI_INSTANCE: "mack_center",
+    ALEMI_SECRET: "must-not-cross-tenants",
+  }), /ALEMI_SECRET_NOT_CONFIGURED/);
 });
 
 test("command transport receives exact raw body and common response envelopes unwrap", async () => {

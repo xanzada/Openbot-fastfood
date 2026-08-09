@@ -5,8 +5,10 @@ import {
   isIgnoredAlemiEvent,
   mapIncomingAlemiInstance,
   normalizeDlePayload,
+  resolveIncomingAlemiTenant,
 } from "../src/routes/dleWebhook.route.js";
 import { isValidOrderId } from "../src/controllers/kanban.js";
+import { findRestaurantConfigByAlemiInstance } from "../src/services/platformConfig.service.js";
 
 function req(body: Record<string, any>) {
   return { body, query: {} } as any;
@@ -101,6 +103,63 @@ test("Hub restaurant instance aliases to the internal WhatsPro tenant", () => {
   assert.equal(mapIncomingAlemiInstance("already_internal", {
     ALEMI_INSTANCE_ALIASES_JSON: "not-json",
   } as NodeJS.ProcessEnv), "already_internal");
+});
+
+test("Alemi tenant lookup resolves a second restaurant from runtime config without env aliases", async () => {
+  const configs = [
+    { instance_id: "prestige", alemi_instance: "hub-prestige" },
+    { instance_id: "second-restaurant", alemi_instance: "hub-second", alemi_secret: "test-only-secret" },
+  ];
+  const matched = findRestaurantConfigByAlemiInstance("hub-second", configs);
+  assert.equal(matched?.instance_id, "second-restaurant");
+
+  const r = req({ action: "order.created", instance: "hub-second" });
+  const response = { statusCode: 200, body: undefined as any };
+  const res = {
+    status(code: number) { response.statusCode = code; return this; },
+    json(body: any) { response.body = body; return this; },
+  } as any;
+  let nextCalls = 0;
+  await resolveIncomingAlemiTenant(r, res, (() => { nextCalls += 1; }) as any, async (incoming) => {
+    return findRestaurantConfigByAlemiInstance(incoming, configs);
+  });
+
+  assert.equal(r.body.instance, "second-restaurant");
+  assert.equal((r as any).resolvedRestaurantConfig, matched);
+  assert.equal(nextCalls, 1);
+  assert.equal(response.body, undefined);
+});
+
+test("Alemi tenant lookup accepts an exact internal instance id", () => {
+  const config = { instance_id: "second-restaurant", alemi_instance: "hub-second" };
+  assert.equal(findRestaurantConfigByAlemiInstance("second-restaurant", [config]), config);
+  assert.equal(findRestaurantConfigByAlemiInstance("Hub-Second", [config]), null);
+});
+
+test("Alemi tenant lookup fails closed when an incoming instance is ambiguous", async () => {
+  const configs = [
+    { instance_id: "restaurant-a", alemi_instance: "shared-hub-instance" },
+    { instance_id: "restaurant-b", alemi_instance: "shared-hub-instance" },
+  ];
+  assert.throws(
+    () => findRestaurantConfigByAlemiInstance("shared-hub-instance", configs),
+    /ALEMI_INSTANCE_AMBIGUOUS/,
+  );
+
+  const r = req({ action: "order.created", instance: "shared-hub-instance" });
+  const response = { statusCode: 200, body: undefined as any };
+  const res = {
+    status(code: number) { response.statusCode = code; return this; },
+    json(body: any) { response.body = body; return this; },
+  } as any;
+  let nextCalls = 0;
+  await resolveIncomingAlemiTenant(r, res, (() => { nextCalls += 1; }) as any, async (incoming) => {
+    return findRestaurantConfigByAlemiInstance(incoming, configs);
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body, { ok: false, error: "ALEMI_INSTANCE_AMBIGUOUS" });
+  assert.equal(nextCalls, 0);
 });
 
 test("order-id validation preserves legacy numbers and accepts only canonical UUIDs", () => {

@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { handleKanbanWebhook } from "../controllers/kanban.js";
-import { getRestaurantConfig } from "../services/platformConfig.service.js";
+import { getRestaurantConfig, getRestaurantConfigByAlemiInstance } from "../services/platformConfig.service.js";
 import { assertTenantSecret } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { auditError, auditInbound, auditProcessing, isNewDleAction } from "../services/auditLogger.service.js";
@@ -137,7 +137,7 @@ export function normalizeDlePayload(req: Request) {
     event_type: rawEventType,
     event_id: normalizeExternalId(firstValue(valueFrom(records, "event_id", "eventId"), rawEventType ? source.id : "", req.headers?.["x-event-id"])),
     request_id: normalizeExternalId(firstValue(valueFrom(records, "request_id", "requestId", "delivery_id", "deliveryId"), req.headers?.["x-request-id"])),
-    instance: mapIncomingAlemiInstance(firstValue(valueFrom(records, "instance", "instance_id", "instanceId"), order.instance, note.instance, req.query.instance)),
+    instance: firstValue(valueFrom(records, "instance", "instance_id", "instanceId"), order.instance, note.instance, req.query.instance),
     phone: firstValue(
       valueFrom(records, "phone", "client_phone", "clientPhone", "customer_phone", "customerPhone", "recipient", "senderPhone"),
       order.phone,
@@ -181,6 +181,42 @@ export function normalizeDlePayload(req: Request) {
   req.body = normalized;
 }
 
+type AlemiTenantLookup = (incomingInstance: string) => Promise<Record<string, any> | null>;
+
+export async function resolveIncomingAlemiTenant(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  lookup: AlemiTenantLookup = getRestaurantConfigByAlemiInstance,
+) {
+  const incomingInstance = getRequestInstanceId(req);
+  if (!incomingInstance) return next();
+  try {
+    const config = await lookup(incomingInstance);
+    if (config) {
+      const internalInstance = String(config.instance_id || config.instance || "").trim();
+      if (!internalInstance) {
+        return res.status(401).json({ ok: false, error: "TENANT_RESOLUTION_FAILED" });
+      }
+      req.body.instance = internalInstance;
+      (req as any).resolvedRestaurantConfig = config;
+      return next();
+    }
+    req.body.instance = mapIncomingAlemiInstance(incomingInstance);
+    return next();
+  } catch (error: any) {
+    auditError("Alemi inbound tenant resolution failed", error, {
+      incomingInstance,
+      action: req.body?.action || req.body?.event_type || "",
+    });
+    const ambiguous = error?.message === "ALEMI_INSTANCE_AMBIGUOUS";
+    return res.status(ambiguous ? 409 : 401).json({
+      ok: false,
+      error: ambiguous ? "ALEMI_INSTANCE_AMBIGUOUS" : "TENANT_RESOLUTION_FAILED",
+    });
+  }
+}
+
 async function verifyDleWebhook(req: Request, res: Response, next: NextFunction) {
   if (!isDleWebhookAuthRequired()) {
     auditProcessing("DLE webhook auth bypassed", {
@@ -194,7 +230,7 @@ async function verifyDleWebhook(req: Request, res: Response, next: NextFunction)
   try {
     const instanceId = getRequestInstanceId(req);
     if (!instanceId) return res.status(401).json({ ok: false, error: "unauthorized" });
-    const config = await getRestaurantConfig(instanceId);
+    const config = (req as any).resolvedRestaurantConfig || await getRestaurantConfig(instanceId);
     assertTenantSecret(req, config, "kanban");
     auditProcessing("DLE webhook tenant secret accepted", {
       action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
@@ -293,7 +329,7 @@ export function dleWebhookRoute(): Router {
   router.post("/", (req, _res, next) => {
     normalizeDlePayload(req);
     next();
-  }, requireStrictInstance, verifyDleWebhook, handleDleWebhook);
+  }, resolveIncomingAlemiTenant, requireStrictInstance, verifyDleWebhook, handleDleWebhook);
 
   return router;
 }
