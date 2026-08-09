@@ -10,8 +10,8 @@ OpenBot uses three clearly separated layers:
    operational state, and tool inputs.
 
 NocoDB is not a prompt or configuration source. The Tenants platform owns tenant
-configuration; Redis owns short-lived conversation and operational state; DLE
-and `api_bot.php` remain the source of menu/order/payment business data.
+configuration; Redis owns short-lived conversation and operational state; the
+signed Alemi API is the source of menu/order/payment business data.
 
 `src/agent/universal_platform_prompt.md` and the files named `Бот промп.txt` are
 human-readable references. They are intentionally not loaded as a second system

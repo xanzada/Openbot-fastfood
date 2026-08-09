@@ -3,7 +3,6 @@ import https from "node:https";
 import net from "node:net";
 import * as dnsCallback from "node:dns";
 import dns from "node:dns/promises";
-import axios from "axios";
 import {
   deleteCache,
   getJsonCache,
@@ -14,7 +13,7 @@ import {
   type KitchenStatusState,
 } from "./redis.service.js";
 import { auditError } from "./auditLogger.service.js";
-import { getRestaurantConfig } from "./platformConfig.service.js";
+import { callAlemiLegacyAction } from "./alemiApi.service.js";
 
 const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
 const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;
@@ -158,43 +157,10 @@ export async function normalizePublicDomain(rawDomain = "") {
 }
 
 async function apiBot(domain: string, payload: Record<string, any>, timeout = 10000) {
-  const safeDomain = await normalizePublicDomain(domain);
-  if (!safeDomain) throw new Error("DLE domain is empty");
   const instanceId = String(payload.restaurant_id || payload.instance || payload.instanceId || "").trim();
-  const config = instanceId ? await getRestaurantConfig(instanceId).catch(() => null) : null;
-  const token = firstValue(
-    config?.crm_secret_token,
-    config?.crmSecretToken,
-    config?.secret_token,
-    config?.secretToken,
-    config?.secret_key,
-    config?.secretKey
-  );
-  if (!token) {
-    auditError("DLE api_bot tenant token missing", new Error("TENANT_CRM_SECRET_NOT_CONFIGURED"), {
-      action: payload.action || "",
-      domain: safeDomain,
-      instanceId,
-    });
-    throw new Error("TENANT_CRM_SECRET_NOT_CONFIGURED");
-  }
-  const response = await axios.post(
-    `${safeDomain}/api_bot.php`,
-    {
-      token,
-      ...payload,
-    },
-    {
-      timeout,
-      maxRedirects: 0,
-      httpAgent: safeHttpAgent,
-      httpsAgent: safeHttpsAgent,
-    }
-  );
-  if (response.data?.success === false) {
-    throw new Error(response.data?.error || "api_bot returned success=false");
-  }
-  return response.data;
+  if (!instanceId) throw new Error("ALEMI_INSTANCE_NOT_CONFIGURED");
+  void domain;
+  return callAlemiLegacyAction(payload.action, payload, { timeoutMs: timeout });
 }
 
 function toBool(value: unknown, fallback = false) {
@@ -318,11 +284,6 @@ export async function getRuntimeStatus(
   const cacheKey = `runtime_status:${instanceId}`;
   const backupKey = `runtime_status_backup:${instanceId}`;
 
-  if (!domain) {
-    const redisKitchen = await getKitchenStatus(instanceId);
-    return redisKitchen ? runtimeFromKitchenStatus(instanceId, redisKitchen) : null;
-  }
-
   if (!options.forceFresh) {
     const cached = await getJsonCache<Record<string, any>>(cacheKey);
     if (cached) return cached;
@@ -429,7 +390,7 @@ function isInactiveOrderStatus(status = "") {
 
 export async function getOrderStatus(instanceId: string, phone: string, domain: string) {
   const cleanPhone = normalizePhone(phone);
-  if (!domain || !cleanPhone) return null;
+  if (!cleanPhone) return null;
   const key = `last_order:${instanceId}:${cleanPhone}`;
 
   try {
@@ -478,7 +439,7 @@ export async function getOrderContext(
 ) {
   const cleanPhone = normalizePhone(options.phone || "");
   const orderId = Number(String(options.orderId || "0").replace(/\D/g, "")) || 0;
-  if (!domain || (!cleanPhone && !orderId)) return null;
+  if (!cleanPhone && !orderId) return null;
 
   const key = orderId > 0
     ? `order_context:${instanceId}:id:${orderId}`
@@ -548,7 +509,6 @@ function normalizeMenuItem(item: Record<string, any> = {}) {
 }
 
 export async function getMenuContext(instanceId: string, domain: string, userLang: "kk" | "ru" = "kk") {
-  if (!domain) return { items: [], source: "empty_domain" };
   const lang = userLang === "ru" ? "ru" : "kz";
   const cacheKey = `menu_context:${instanceId}:${lang}`;
   const backupKey = `menu_context_backup:${instanceId}:${lang}`;
@@ -643,23 +603,8 @@ export async function sendOperatorSosSignal(input: {
   urgency?: string;
   source?: string;
 }) {
-  const cleanPhone = normalizePhone(input.phone);
-  if (!input.domain || !input.instanceId || !cleanPhone || !input.signalId) throw new Error("OPERATOR_SOS_INPUT_INVALID");
-  const response = await apiBot(input.domain, {
-    action: "operator_sos",
-    restaurant_id: input.instanceId,
-    phone: cleanPhone,
-    signal_id: String(input.signalId).slice(0, 96),
-    case_id: String(input.caseId || input.signalId).slice(0, 96),
-    kind: String(input.kind || "human_request").slice(0, 40),
-    summary: String(input.summary || "").replace(/\s+/g, " ").trim().slice(0, 500),
-    urgency: String(input.urgency || "normal").slice(0, 20),
-    source: String(input.source || "openbot").slice(0, 80),
-  }, 8000);
-  if (response?.success !== true || String(response?.signal_id || "") !== String(input.signalId)) {
-    throw new Error("DLE_OPERATOR_SOS_UNCONFIRMED");
-  }
-  return response;
+  void input;
+  throw new Error("ALEMI_OPERATOR_SOS_REDIS_ONLY");
 }
 
 export async function updateCrmAction(
@@ -668,9 +613,9 @@ export async function updateCrmAction(
   phone: string,
   data: Record<string, any>
 ) {
-  const domain = data?.config?.domain || "";
   const cleanPhone = normalizePhone(phone);
-  if (!domain || !cleanPhone) return null;
+  if (!cleanPhone) return null;
+  if (actionType === "receipt") throw new Error("ALEMI_RECEIPT_BYTES_REQUIRED");
 
   const payload: Record<string, any> = {
     phone: cleanPhone,
@@ -689,7 +634,7 @@ export async function updateCrmAction(
   }
 
   try {
-    const response = await apiBot(domain, payload, 10000);
+    const response = await apiBot("", payload, 10000);
     await saveDailyLog(instanceId, {
       action: actionType,
       phone: cleanPhone,

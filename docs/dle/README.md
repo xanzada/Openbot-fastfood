@@ -1,4 +1,8 @@
-# DLE Integration
+# Legacy DLE Reference
+
+> Бұл файл миграция алдындағы мінез-құлықты түсіндіру үшін сақталған. OpenBot
+> production runtime енді `api_bot.php` шақырмайды: барлық бизнес командалар
+> `https://hub.alemi.kz/v1/integrations/bot/*` HMAC API арқылы орындалады.
 
 ## DLE api_bot.php
 

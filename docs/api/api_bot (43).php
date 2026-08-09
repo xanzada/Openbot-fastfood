@@ -689,7 +689,7 @@ if (isset($input['action']) && $input['action'] === 'confirm_payment_and_print')
         ];
 
         // 🚀 МАҢЫЗДЫ: 3000 порты ЖОҚ, таза HTTPS
-        $nodejs_server_url = 'https://fastfood.bekaba.com/api/print_trigger'; 
+$nodejs_server_url = 'https://openbot.alemi.kz/api/print_trigger';
         
         $ch = curl_init($nodejs_server_url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);

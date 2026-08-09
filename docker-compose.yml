@@ -3,11 +3,11 @@ services:
     build: .
     restart: unless-stopped
     init: true
+    env_file:
+      - .env
     depends_on:
       redis:
         condition: service_healthy
-    env_file:
-      - .env
     volumes:
       - openbot_state:/app/state
     environment:

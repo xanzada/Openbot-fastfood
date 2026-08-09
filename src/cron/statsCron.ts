@@ -1,6 +1,5 @@
-import axios from "axios";
 import { redisClient } from "../services/redis.service.js";
-import { normalizePublicDomain, safeHttpAgent, safeHttpsAgent } from "../services/dle.service.js";
+import { callAlemiLegacyAction } from "../services/alemiApi.service.js";
 import { getAllRestaurantConfigs } from "../services/platformConfig.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 
@@ -29,24 +28,6 @@ function asText(value: unknown) {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
-}
-
-function firstValue(...values: unknown[]) {
-  for (const value of values) {
-    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value).trim();
-  }
-  return "";
-}
-
-function tenantSecret(config: Record<string, any>) {
-  return firstValue(
-    config.crm_secret_token,
-    config.crmSecretToken,
-    config.secret_token,
-    config.secretToken,
-    config.secret_key,
-    config.secretKey
-  );
 }
 
 function normalizeLeadRows(rows: any[] = []) {
@@ -112,68 +93,24 @@ function normalizeAnalyticsPayload(aiData: Record<string, any> = {}, logs: any[]
 
 async function fetchTodayCrmLeads(config: Record<string, any>, reportDate: string) {
   const instanceId = String(config.instance_id || "").trim();
-  const domain = String(config.domain || "").trim();
-  if (!instanceId || !domain) {
-    throw new Error("missing instance_id or domain");
-  }
-
-  const cleanDomain = await normalizePublicDomain(domain);
-  const token = tenantSecret(config);
-  if (!token) throw new Error("missing tenant CRM secret");
-  const response = await axios.post(
-    `${cleanDomain}/api_bot.php`,
-    {
-      token,
-      action: "get_today_crm",
-      restaurant_id: instanceId,
-      date: reportDate,
-    },
-    {
-      timeout: 15000,
-      maxRedirects: 0,
-      httpAgent: safeHttpAgent,
-      httpsAgent: safeHttpsAgent,
-    }
+  if (!instanceId) throw new Error("missing instance_id");
+  const result = await callAlemiLegacyAction(
+    "get_today_crm",
+    { action: "get_today_crm", restaurant_id: instanceId, date: reportDate },
+    { config, timeoutMs: 15000 }
   );
-
-  if (response.data?.success === false) {
-    throw new Error(response.data.error || "get_today_crm returned success=false");
-  }
-
-  return normalizeLeadRows(response.data?.data || []);
+  const rows = Array.isArray(result) ? result : result?.data || result?.rows || result?.leads || [];
+  return normalizeLeadRows(rows);
 }
 
 async function sendAnalyticsToSite(config: Record<string, any>, reportDate: string, analytics: Record<string, any>) {
   const instanceId = String(config.instance_id || "").trim();
-  const domain = String(config.domain || "").trim();
-  if (!instanceId || !domain) {
-    throw new Error("missing instance_id or domain");
-  }
-
-  const cleanDomain = await normalizePublicDomain(domain);
-  const token = tenantSecret(config);
-  if (!token) throw new Error("missing tenant CRM secret");
-  const response = await axios.post(
-    `${cleanDomain}/api_bot.php`,
-    {
-      token,
-      action: "save_daily_analytics",
-      restaurant_id: instanceId,
-      report_date: reportDate,
-      ...analytics,
-    },
-    {
-      timeout: 15000,
-      maxRedirects: 0,
-      httpAgent: safeHttpAgent,
-      httpsAgent: safeHttpsAgent,
-    }
+  if (!instanceId) throw new Error("missing instance_id");
+  await callAlemiLegacyAction(
+    "save_daily_analytics",
+    { action: "save_daily_analytics", restaurant_id: instanceId, report_date: reportDate, ...analytics },
+    { config, timeoutMs: 15000 }
   );
-
-  if (response.data?.success === false) {
-    throw new Error(response.data.error || "save_daily_analytics returned success=false");
-  }
-
   return true;
 }
 

@@ -157,7 +157,7 @@ test("incidental send wording and media conversation never trigger a menu link",
   assert.equal(hasExplicitMenuLinkIntent("Мәзір сілтемесін қайта жіберіңіз"), true);
   const ctx = {
     language: "kk", text: "Тәтті ғой, жай жіберем ғой қызық болсын деп",
-    magicLink: "https://prestige.bekaba.com/?phone=77000000000&hash=test",
+        magicLink: "https://prestige.alemi.kz/?phone=77000000000&hash=test",
     magicLinkAlreadySent: false, explicitMenuLinkIntent: false,
     config: {}, fetchedSettings: {}, hardRealtimeContext: {}, runtimeStatus: {}, activeOrder: null,
   } as any;

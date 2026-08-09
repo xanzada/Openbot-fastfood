@@ -34,7 +34,7 @@ test("live: a compound availability plus ordering phrase obeys the active note",
   assert.equal(item?.name, "Футомаки");
   const reply = buildBlockedMenuItemReply(item!, "kk");
   assert.match(reply, /уақытша қолжетімсіз/u);
-  assert.doesNotMatch(reply, /https?:\/\/|prestige\.bekaba\.com/iu);
+  assert.doesNotMatch(reply, /https?:\/\/|prestige\.alemi\.kz/iu);
 });
 
 test("live: a text-only payment claim asks for proof and never claims paid", () => {
@@ -78,7 +78,7 @@ test("live: a dish becoming unavailable while it is already in the cart preempts
   );
 
   assert.equal(item?.name, "Донер (или донер-кебаб)");
-  assert.doesNotMatch(buildBlockedMenuItemReply(item!, "kk"), /https?:\/\/|prestige\.bekaba\.com/iu);
+  assert.doesNotMatch(buildBlockedMenuItemReply(item!, "kk"), /https?:\/\/|prestige\.alemi\.kz/iu);
 });
 
 test("live: two hours requires consent while four hours closes new sales", () => {

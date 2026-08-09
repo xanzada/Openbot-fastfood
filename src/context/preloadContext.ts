@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { detectLang, detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
-import { generateSecureMenuUrl, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
+import { hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getMenuContext, getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
+import { issueCustomerAccessLink } from "../services/alemiApi.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
 import {
   connectRedis,
@@ -184,15 +185,13 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal, liveMenu] =
     await Promise.all([
       getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
-      domain
-        ? getOrderStatus(instanceId, phone, domain).catch(() => null)
-        : Promise.resolve(null),
+      getOrderStatus(instanceId, phone, domain).catch(() => null),
       getShporContext(instanceId, text).catch(() => []),
       getCustomerProfile(instanceId, phone).catch(() => null),
       getConversationSummary(instanceId, phone).catch(() => null),
       getTurnTrace(instanceId, phone).catch(() => null),
       getActiveGoal(instanceId, phone).catch(() => null),
-      domain ? getMenuContext(instanceId, domain, language).catch(() => null) : Promise.resolve(null),
+      getMenuContext(instanceId, domain, language).catch(() => null),
     ]);
 
   const menuSnapshot = buildMenuSnapshot(liveMenu);
@@ -257,6 +256,15 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     runtime_available: runtimeAvailable,
     redis_available: redisAvailable,
   };
+  const explicitMenuLinkIntent = hasExplicitMenuLinkIntent(text);
+  const magicLink = explicitMenuLinkIntent
+    ? await issueCustomerAccessLink({
+        instanceId,
+        phone,
+        locale: language,
+        config: safeConfig,
+      }).catch(() => null)
+    : null;
 
   return {
     instanceId,
@@ -292,18 +300,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     activeGoal,
     thinking: null,
     proactiveSignals: null,
-    explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text),
-    magicLink: generateSecureMenuUrl(
-      domain,
-      phone,
-      firstValue(
-        safeConfig.crm_secret_token,
-        safeConfig.crmSecretToken,
-        safeConfig.secret_token,
-        safeConfig.secretToken,
-        safeConfig.secret_key,
-        safeConfig.secretKey
-      )
-    ),
+    explicitMenuLinkIntent,
+    magicLink,
   };
 }

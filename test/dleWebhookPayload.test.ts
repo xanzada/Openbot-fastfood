@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeDlePayload } from "../src/routes/dleWebhook.route.js";
+import {
+  handleDleWebhook,
+  isIgnoredAlemiEvent,
+  normalizeDlePayload,
+} from "../src/routes/dleWebhook.route.js";
+import { isValidOrderId } from "../src/controllers/kanban.js";
 
 function req(body: Record<string, any>) {
   return { body, query: {} } as any;
@@ -55,4 +60,126 @@ test("unknown actions pass through untouched", () => {
   const r = req({ action: "something_future", instance: "prestige" });
   normalizeDlePayload(r);
   assert.equal(r.body.action, "something_future");
+});
+
+test("Alemi order events flatten envelope data and preserve UUID identifiers", () => {
+  const r = req({
+    event_type: "order.created",
+    event_id: "evt-01HX",
+    request_id: "req-01HX",
+    payload: {
+      instance_id: "prestige",
+      data: {
+        order: {
+          id: "018f0df2-11aa-7bb2-8cc3-0123456789ab",
+          customer_phone: "+7 700 111 22 33",
+          total: 5400,
+          items: [{ name: "Doner", qty: 2 }],
+        },
+      },
+    },
+  });
+
+  normalizeDlePayload(r);
+
+  assert.equal(r.body.action, "new_order");
+  assert.equal(r.body.instance, "prestige");
+  assert.equal(r.body.order_id, "018f0df2-11aa-7bb2-8cc3-0123456789ab");
+  assert.equal(r.body.phone, "+7 700 111 22 33");
+  assert.equal(r.body.total_price, 5400);
+  assert.deepEqual(r.body.items, [{ name: "Doner", qty: 2 }]);
+  assert.equal(r.body.event_id, "evt-01HX");
+  assert.equal(r.body.request_id, "req-01HX");
+  assert.equal(isValidOrderId(r.body.order_id), true);
+});
+
+test("order-id validation preserves legacy numbers and accepts only canonical UUIDs", () => {
+  assert.equal(isValidOrderId("456"), true);
+  assert.equal(isValidOrderId("018f0df2-11aa-7bb2-8cc3-0123456789ab"), true);
+  assert.equal(isValidOrderId("018f0df211aa7bb28cc30123456789ab"), false);
+  assert.equal(isValidOrderId("1234567890123"), false);
+});
+
+test("Alemi event aliases map exactly once and normalization is idempotent", () => {
+  const mappings = [
+    ["order.created", "new_order"],
+    ["order.status_changed", "status_changed"],
+    ["order.rejected", "order_rejected"],
+    ["shift_note.created", "shift_note_created"],
+    ["shift_note.deleted", "shift_note_deleted"],
+  ] as const;
+
+  for (const [eventType, action] of mappings) {
+    const r = req({
+      eventType,
+      data: {
+        instanceId: "prestige",
+        order: { id: "018f0df2-11aa-7bb2-8cc3-0123456789ab", phone: "77001112233", status: "paid" },
+        note: { id: "note-1", text: "Kitchen note" },
+      },
+    });
+    normalizeDlePayload(r);
+    normalizeDlePayload(r);
+    assert.equal(r.body.action, action, eventType);
+  }
+});
+
+test("external-document Alemi events are classified for safe acknowledgement", () => {
+  for (const eventType of ["external-document.created", "external_document.updated", "external.document.deleted", "externalDocument.synced"]) {
+    assert.equal(isIgnoredAlemiEvent(eventType), true, eventType);
+  }
+  assert.equal(isIgnoredAlemiEvent("order.created"), false);
+});
+
+test("external-document delivery is acknowledged without entering customer notification flow", async () => {
+  const r = req({
+    event_type: "external-document.created",
+    event_id: "evt-doc-1",
+    data: { instance: "prestige", document: { media: "sensitive-body-must-not-be-logged" } },
+  });
+  normalizeDlePayload(r);
+  const response = { statusCode: 200, body: undefined as any };
+  const res = {
+    status(code: number) { response.statusCode = code; return this; },
+    json(body: any) { response.body = body; return this; },
+  } as any;
+
+  await handleDleWebhook(r, res);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { success: true, ignored: true, event_id: "evt-doc-1" });
+});
+
+test("ignored events still require a strict valid instance", async () => {
+  const r = req({ event_type: "external-document.updated", event_id: "evt-doc-2", data: { instance: "../bad" } });
+  normalizeDlePayload(r);
+  const response = { statusCode: 200, body: undefined as any };
+  const res = {
+    status(code: number) { response.statusCode = code; return this; },
+    json(body: any) { response.body = body; return this; },
+  } as any;
+
+  await handleDleWebhook(r, res);
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, { success: false, error: "BAD_INSTANCE" });
+});
+
+test("Alemi shift-note envelope flattens note fields", () => {
+  const r = req({
+    event_type: "shift_note.created",
+    payload: {
+      instance: "prestige",
+      note: {
+        id: "018f0e00-aaaa-7bbb-8ccc-0123456789ab",
+        text: "No chicken after 22:00",
+        expires_at: "2026-08-10T22:00:00Z",
+      },
+    },
+  });
+  normalizeDlePayload(r);
+  assert.equal(r.body.action, "shift_note_created");
+  assert.equal(r.body.note_id, "018f0e00-aaaa-7bbb-8ccc-0123456789ab");
+  assert.equal(r.body.text, "No chicken after 22:00");
+  assert.equal(r.body.expires_at, "2026-08-10T22:00:00Z");
 });

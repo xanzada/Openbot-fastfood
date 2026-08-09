@@ -2,7 +2,7 @@
 
 ## Express Routes
 
-### POST /webhook/whatsapp
+### POST /whatspro-webhook
 WhatsApp вебхук — негізгі кіру нүктесі.
 
 **Аутентификация:** Authorization Bearer || x-api-key || body.token
@@ -41,28 +41,31 @@ WhatsApp вебхук — негізгі кіру нүктесі.
 ```
 
 ### POST /kanban-webhook
-n8n Kanban вебхук (егер конфигурацияланса).
+Alemi event webhook. `order.*` және `shift_note.*` оқиғалары қазіргі kanban әрекеттеріне нормализацияланады.
 
-**Аутентификация:** body.webhook_secret || body.instance_secret || Authorization Bearer
-**Body:** { event: 'contact', instance_id, phone, ... }
+**Аутентификация:** restaurant Secret Key (`?token=...` немесе tenant secret header), timing-safe compare
+**Body:** Alemi event envelope немесе legacy-compatible payload
 
-## DLE API Endpoints (PHP)
+## Alemi Business API
 
-### POST /api_bot.php
-Ресторан бэкенді.
+### POST https://hub.alemi.kz/v1/integrations/bot/commands
+Ресторанның HMAC-қолтаңбалы командалық API-і.
 
-**Аутентификация:** POST body.token
-**Action параметрі:** action=...
+**Аутентификация:** X-Platform-Instance, X-Command-Id, X-Command-Timestamp және X-Command-Signature.
 
-| Action | Параметрлер | Қайтарады |
-|--------|-------------|-----------|
-| get_runtime_status | licenseKey | { settings, kitchen_status, is_accepting_orders, within_work_hours } |
-| check_status | phone | { order, status, ... } |
-| get_menu_context | lang | [ { cat_id, cat_name, items: [...] } ] |
-| update_crm | phone, interest, sales_stage, psycho_analysis | "success" |
-| add_payment_comment | phone, amount, [order_id] | "success" |
-| get_today_crm | date | [ { phone, interest, sales_stage, ... } ] |
-| save_daily_analytics | date, instance_id, data | "success" |
+| Command | Мақсаты |
+|---------|---------|
+| runtime.status.get | Асхана/жеткізу/төлем статусы |
+| order.context.get | Клиенттің белсенді және соңғы тапсырыстары |
+| order.status.get | Тапсырыс статусын қысқа тексеру |
+| catalog.context.get | Каталог, баға, бонус және тегтер |
+| crm.lead.upsert | CRM лидін сақтау |
+| crm.today.get | Күндік CRM лидтері |
+| analytics.daily.upsert | Күндік AI аналитика |
+| customer.access_link.issue | Қорғалған клиент сілтемесі |
+
+Чек `POST /v1/integrations/bot/order-documents`, ал принтер нәтижесі
+`POST /v1/integrations/bot/print-results` арқылы сол Secret Key-пен жіберіледі.
 
 ## NocoDB API
 

@@ -20,7 +20,7 @@ function contextWith(menuSnapshot: any): any {
     senderMeta: {},
     language: "ru",
     languagePolicy: {},
-    config: { brand: "Crazy Sushi", domain: "https://prestige.bekaba.com" },
+      config: { brand: "Crazy Sushi", domain: "https://prestige.alemi.kz" },
     runtimeStatus: null,
     fetchedSettings: {},
     hardRealtimeContext: {},

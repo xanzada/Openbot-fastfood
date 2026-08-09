@@ -1,4 +1,8 @@
-# DLE Website Webhook Integration Summary
+# Legacy DLE Migration History
+
+> Historical implementation notes. Current production business data uses the
+> HMAC-signed Alemi API; `api_bot.php` is not called at runtime. Alemi events are
+> received on `/kanban-webhook` with fail-closed tenant authentication.
 
 Date: 2026-07-16
 

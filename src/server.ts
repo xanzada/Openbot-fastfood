@@ -10,12 +10,30 @@ import { logStartupDiagnostics } from "./services/diagnostics.service.js";
 import { startDailyCron } from "./cron/statsCron.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "./services/developerNotify.service.js";
 import { startWhatsProOutboxWorker } from "./transport/whatspro.client.js";
+import { safeCompare } from "./services/tenantAuth.service.js";
 
 const app = express();
 const port = Number(process.env.PORT || 4100);
 const httpServer = http.createServer(app);
+const socketAllowedOrigins = String(process.env.SOCKET_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const io = new Server(httpServer, {
-  cors: { origin: "*" },
+  cors: { origin: socketAllowedOrigins.length ? socketAllowedOrigins : false },
+});
+
+io.use((socket, next) => {
+  const expected = String(process.env.SOCKET_API_TOKEN || "");
+  const supplied = socket.handshake.auth?.token || socket.handshake.headers["x-api-key"];
+  const instanceId = String(socket.handshake.auth?.instance || "").trim();
+  if (!expected || !instanceId || !safeCompare(supplied, expected)) {
+    next(new Error("unauthorized"));
+    return;
+  }
+  socket.data.instanceId = instanceId;
+  void socket.join(instanceId);
+  next();
 });
 
 function reportGlobalFailure(scope: string, error: unknown, meta: Record<string, unknown> = {}) {
@@ -61,7 +79,7 @@ app.use((error: any, req: express.Request, res: express.Response, _next: express
 });
 
 io.on("connection", (socket) => {
-  console.log(`[OPENBOT] printer/socket connected: ${socket.id}`);
+  console.log(`[OPENBOT] printer/socket connected: ${socket.id} instance=${socket.data.instanceId}`);
 });
 
 await connectRedis().catch((error) => {

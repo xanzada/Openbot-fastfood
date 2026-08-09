@@ -188,7 +188,7 @@ Bot (Node.js)                    DLE (PHP)                  MySQL
 1. spa_api.php?action=get_menu → кэштелген мәзір
 2. Cookie-based auth (phone + signature)
 3. POST checkout → kitchen_status тексеру → emergency block → wait_time consent → bonus validation → order INSERT → n8n webhook
-4. Принтер тікелей Node.js-ке POST /api/print_trigger (https://fastfood.bekaba.com)
+4. Принтер тікелей Node.js-ке POST /api/print_trigger (https://openbot.alemi.kz)
 
 ---
 

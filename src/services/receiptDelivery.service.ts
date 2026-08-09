@@ -1,5 +1,6 @@
 import { auditError, auditOutbound } from "./auditLogger.service.js";
-import { updateCrmAction } from "./dle.service.js";
+import { uploadOrderDocument } from "./alemiApi.service.js";
+import { MAX_DOCUMENT_BYTES, MAX_IMAGE_BYTES } from "./inboundGuard.service.js";
 
 export interface ReceiptDeliveryInput {
   instanceId: string;
@@ -11,55 +12,76 @@ export interface ReceiptDeliveryInput {
   bankName: string;
   transactionId?: string;
   paidAt?: string;
+  receiptBase64: string;
+  mimeType: string;
+  sourceMessageId: string;
 }
 
 export type ReceiptDeliveryResult =
   | { success: true; deliveryId: string; deliveredAt: string }
   | { success: false; errorCode: string; safeMessage: string };
 
-type ReceiptSender = typeof updateCrmAction;
-
-function receiptText(input: ReceiptDeliveryInput) {
-  const amount = Math.max(0, Number(input.amount) || 0);
-  const sender = String(input.senderName || "").trim().slice(0, 120);
-  const bank = String(input.bankName || "").trim().slice(0, 40).toUpperCase();
-  return `сумма: ${amount}, отправитель: ${sender}${bank ? ` (${bank})` : ""}`;
-}
+type ReceiptSender = typeof uploadOrderDocument;
 
 function failure(errorCode: string, safeMessage: string): ReceiptDeliveryResult {
   return { success: false, errorCode, safeMessage };
 }
 
-export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendReceipt: ReceiptSender = updateCrmAction): Promise<ReceiptDeliveryResult> {
+export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendReceipt: ReceiptSender = uploadOrderDocument): Promise<ReceiptDeliveryResult> {
   const orderNumber = String(input.orderNumber || "").trim();
   const phone = String(input.phone || "").replace(/\D/g, "");
   if (!orderNumber || !phone) return failure("invalid_recipient", "receipt_delivery_target_invalid");
 
-  const response = await sendReceipt("receipt", input.instanceId, phone, {
-    config: input.config,
-    amount: input.amount,
-    amount_paid: input.amount,
-    sender_name: input.senderName,
-    bank_name: input.bankName,
-    transaction_id: input.transactionId,
-    date_time: input.paidAt,
-    order_id: orderNumber,
-    receipt_text: receiptText(input),
-  });
+  const mimeType = String(input.mimeType || "").split(";", 1)[0].trim().toLowerCase();
+  const allowedMimeTypes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf"]);
+  if (!allowedMimeTypes.has(mimeType)) return failure("invalid_receipt_media", "receipt_media_type_invalid");
 
-  const deliveredOrderNumber = String(response?.order_id || "").trim();
-  if (response?.success !== true || deliveredOrderNumber !== orderNumber) {
-    auditError("Receipt delivery was not confirmed by DLE", new Error("RECEIPT_DELIVERY_UNCONFIRMED"), {
+  const encoded = String(input.receiptBase64 || "").replace(/\s+/g, "");
+  if (!encoded || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+    return failure("invalid_receipt_media", "receipt_media_invalid");
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  const maxBytes = mimeType === "application/pdf" ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES;
+  if (!bytes.byteLength || bytes.byteLength > maxBytes) {
+    return failure(bytes.byteLength ? "receipt_too_large" : "invalid_receipt_media", bytes.byteLength ? "receipt_media_too_large" : "receipt_media_invalid");
+  }
+
+  let response: any;
+  try {
+    response = await sendReceipt({
+      instanceId: input.instanceId,
+      orderId: orderNumber,
+      sourceMessageId: String(input.sourceMessageId || "").trim(),
+      bytes,
+      mimeType,
+      documentKind: "receipt",
+    }, { config: input.config });
+  } catch (error) {
+    auditError("Receipt upload to Alemi failed", error, {
       instanceId: input.instanceId,
       orderNumber,
-      responseSuccess: response?.success === true,
+      sourceMessageId: input.sourceMessageId,
+    });
+    return failure("delivery_failed", "receipt_delivery_failed");
+  }
+
+  const deliveredOrderNumber = String(response?.order_id || orderNumber).trim();
+  if (deliveredOrderNumber !== orderNumber) {
+    auditError("Receipt upload was not confirmed by Alemi", new Error("RECEIPT_DELIVERY_UNCONFIRMED"), {
+      instanceId: input.instanceId,
+      orderNumber,
       deliveredOrderNumber,
     });
     return failure("delivery_unconfirmed", "receipt_delivery_unconfirmed");
   }
 
-  const deliveredAt = String(response.delivered_at || new Date().toISOString());
-  const deliveryId = String(response.delivery_id || `receipt:${orderNumber}:${deliveredAt}`);
-  auditOutbound("Receipt delivery confirmed", { instanceId: input.instanceId, orderNumber, deliveryId, deliveredAt });
+  const deliveredAt = String(response?.attached_at || response?.uploaded_at || response?.created_at || new Date().toISOString());
+  const deliveryId = String(response?.document_id || response?.delivery_id || `receipt:${orderNumber}:${input.sourceMessageId}`);
+  auditOutbound("Receipt upload to Alemi confirmed", {
+    instanceId: input.instanceId,
+    orderNumber,
+    deliveryId,
+    deliveredAt,
+  });
   return { success: true, deliveryId, deliveredAt };
 }

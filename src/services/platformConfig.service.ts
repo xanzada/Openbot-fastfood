@@ -95,6 +95,9 @@ export function normalizeRestaurantConfig(
     whatspro_send_url: firstValue(record.whatspro_send_url, record.whatsproSendUrl, record.WHATSPRO_SEND_URL),
     whatspro_presence_url: firstValue(record.whatspro_presence_url, record.whatsproPresenceUrl, record.WHATSPRO_PRESENCE_URL),
     whatspro_api_token: firstValue(record.whatspro_api_token, record.whatsproApiToken, record.WHATSPRO_API_TOKEN),
+    alemi_api_url: firstValue(record.alemi_api_url, record.alemiApiUrl, record.alemi_base_url, record.alemiBaseUrl),
+    alemi_instance: firstValue(record.alemi_instance, record.alemiInstance),
+    alemi_secret: firstValue(record.alemi_secret, record.alemiSecret, record.alemi_api_secret, record.alemiApiSecret),
     crm_secret_token: firstValue(record.crm_secret_token, record.crmSecretToken, record.secret_token, record.secretToken, record.secret_key, record.secretKey),
   };
 }

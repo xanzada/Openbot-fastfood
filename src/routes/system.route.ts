@@ -142,13 +142,19 @@ export function systemRoute(): Router {
     try {
       const io = req.app.get("io");
       const orderData = req.body || {};
+      const instanceId = getRequestInstanceId(req);
+
+      if (!instanceId) {
+        res.status(400).json({ success: false, error: "INSTANCE_REQUIRED" });
+        return;
+      }
 
       if (!io) {
         res.status(500).json({ success: false, error: "Socket server error" });
         return;
       }
 
-      io.emit("print_new_order", orderData);
+      io.to(instanceId).emit("print_new_order", orderData);
       console.info(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
       res.status(200).json({ success: true, message: "Print signal sent to agent" });
     } catch (error: any) {

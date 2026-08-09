@@ -79,7 +79,10 @@ test("receipt is confirmed only after a matching successful backend response", a
     amount: 9700,
     senderName: "Арман Сейітов",
     bankName: "Kaspi",
-  }, async () => ({ success: true, order_id: "1234", delivery_id: "delivery-1", delivered_at: "2026-07-23T10:00:00.000Z" }));
+    receiptBase64: Buffer.from("receipt").toString("base64"),
+    mimeType: "image/jpeg",
+    sourceMessageId: "wa-1",
+  }, async () => ({ document_id: "delivery-1", order_id: "1234", uploaded_at: "2026-07-23T10:00:00.000Z" }));
 
   assert.deepEqual(result, { success: true, deliveryId: "delivery-1", deliveredAt: "2026-07-23T10:00:00.000Z" });
 });
@@ -93,7 +96,10 @@ test("receipt failure, invalid recipient, and retry-safe nonconfirmation never r
     amount: 9700,
     senderName: "Арман Сейітов",
     bankName: "Kaspi",
-  }, async () => ({ success: false, order_id: "1234" }));
+    receiptBase64: Buffer.from("receipt").toString("base64"),
+    mimeType: "image/jpeg",
+    sourceMessageId: "wa-2",
+  }, async () => ({ order_id: "9999" }));
   const invalid = await deliverReceiptToClient({
     instanceId: "restaurant-a",
     phone: "",
@@ -102,6 +108,9 @@ test("receipt failure, invalid recipient, and retry-safe nonconfirmation never r
     amount: 9700,
     senderName: "Арман Сейітов",
     bankName: "Kaspi",
+    receiptBase64: Buffer.from("receipt").toString("base64"),
+    mimeType: "image/jpeg",
+    sourceMessageId: "wa-3",
   });
 
   assert.equal(failed.success, false);

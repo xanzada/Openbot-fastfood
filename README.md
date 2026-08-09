@@ -6,7 +6,7 @@ This service is self-contained. It does not import or require the old `fastfood-
 
 - Redis: chat history, language, magic-link state, active shift notes
 - WhatsPro Platform API: isolated restaurant config, generated tenant keys and second-brain memory
-- DLE `api_bot.php`: runtime status, active order, menu context, CRM/payment updates
+- Alemi HMAC API: runtime status, active order, menu context, CRM/analytics, secure links and receipt uploads
 - WhatsPro HTTP API: outgoing WhatsApp messages
 
 ## Run
@@ -20,7 +20,7 @@ npm run dev
 ## Main endpoint
 
 ```http
-POST /webhook/whatsapp
+POST /whatspro-webhook
 ```
 
 Payload:
@@ -46,7 +46,7 @@ operator_active:{instanceId}:{phone}
 TTL: 60 seconds
 ```
 
-When this key exists, `POST /webhook/whatsapp` silently ignores the inbound customer message before context loading or AI generation.
+When this key exists, `POST /whatspro-webhook` silently ignores the inbound customer message before context loading or AI generation.
 
 Dokploy environment baseline:
 

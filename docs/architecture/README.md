@@ -26,7 +26,7 @@ Layer 0: types/instructions             ← Таза типтер
 ### Express сервер (server.ts)
 - express.json() 15MB лимит
 - socket.io (принтер сигналдары үшін)
-- 3 route: /webhook/whatsapp, /health, /kanban-webhook
+- 3 main routes: /whatspro-webhook, /health, /kanban-webhook
 
 ### WhatsApp Webhook (whatsappWebhook.route.ts)
 - verifySecret() — NocoDB конфигтен tenant secret тексеру
@@ -46,12 +46,12 @@ Layer 0: types/instructions             ← Таза типтер
 - Instructions + FACTS_CONTEXT біріктіреді
 
 ### Context (preloadContext.ts → buildFactsPrompt.ts)
-- 8 параллель дерек көзі: NocoDB, Redis, DLE
+- параллель дерек көздері: Tenants platform, Redis, Alemi API
 - 20 өрісті FastFoodContext объект
 - FACTS_CONTEXT JSON ретінде LLM-ге беріледі
 
 ### Skills (7 tool)
-1. searchMenu — DLE мәзірін іздеу
+1. searchMenu — Alemi каталогын іздеу
 2. getPaymentDetails — төлем реквизиттері
 3. registerPaymentReceipt — чек тіркеу
 4. updateCrmLead — CRM аналитика
@@ -60,8 +60,8 @@ Layer 0: types/instructions             ← Таза типтер
 7. searchWeb — Tavily іздеу
 
 ### Services (9 файл)
-- dle.service — DLE api_bot.php клиент
-- nocodb.service — NocoDB клиент
+- alemiApi.service — HMAC-қолтаңбалы Alemi бизнес API клиенті
+- platformConfig.service — WhatsPro/Tenants platform конфигі мен жады
 - redis.service — Redis клиент
 - inboundGuard.service — Кіру фильтрі
 - tenantAuth.service — Secret тексеру
@@ -75,8 +75,8 @@ Layer 0: types/instructions             ← Таза типтер
 | Жүйе | Протокол | Рөлі |
 |------|----------|------|
 | OpenRouter | HTTP REST | LLM (gemini-2.5-flash, gpt-4o-mini) |
-| DLE api_bot.php | HTTP POST | Ресторан бэкенді |
-| NocoDB | HTTP REST | Конфиг + Shpor |
+| Alemi API | HMAC HTTP | Ресторан бизнес деректері мен командалары |
+| Tenants platform | Bearer HTTP | Конфиг + Shpor |
 | Redis | TCP | Кэш/күй/тарих |
 | WhatsPro API | HTTP REST | WhatsApp шлюз |
 | Tavily | HTTP POST | Веб іздеу |
@@ -100,6 +100,6 @@ Layer 0: types/instructions             ← Таза типтер
 
 2 деңгейлі:
 1. **instructions.ts** — 10 қатаң ереже, код деңгейінде
-2. **NocoDB system_prompt** (Бот промп.txt) — бизнес ережелері, tenant-level
+2. **Tenants platform system_prompt** — бизнес ережелері, tenant-level
 
-Жүйелік код ережелері NocoDB промптынан жоғары тұрады.
+Жүйелік код ережелері tenant промптынан жоғары тұрады.

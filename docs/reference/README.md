@@ -9,16 +9,16 @@
 | PORT | 3000 | HTTP сервер порты |
 | REDIS_URL | - | Redis қосылу URL |
 | REDIS_PASSWORD | - | Redis паролі |
-| NOCODB_URL | - | NocoDB URL |
-| NOCODB_TOKEN | - | NocoDB API токен |
-| NOCODB_TABLE_ID | - | Конфиг таблицасы |
-| NOCODB_SHPOR_TABLE_ID | - | Shpor таблицасы |
+| TENANTS_PLATFORM_BASE_URL | https://whatspro.alemi.kz | Tenant конфигі мен жады |
+| TENANTS_PLATFORM_API_TOKEN | - | Master API токені |
 | WHATSAPP_PRO_URL | - | WhatsPro URL |
 | WHATSAPP_PRO_TOKEN | - | WhatsPro токен |
 | WHATSAPP_PRO_PHONE | - | WhatsApp телефон ID |
 | OPENROUTER_API_KEY | - | OpenRouter API кілті |
 | OPENROUTER_BASE_URL | https://openrouter.ai/api/v1 | OpenRouter base URL |
-| DLE_API_KEY | - | DLE api_bot.php токен |
+| ALEMI_API_URL | https://hub.alemi.kz | Alemi business API base URL |
+| ALEMI_INSTANCE | - | Бір-ресторандық fallback instance |
+| ALEMI_SECRET | - | Бір-ресторандық fallback Secret Key |
 | TAVILY_API_KEY | - | Tavily іздеу токен |
 | NODE_ENV | development | Орта |
 | ENABLE_PRIVATE_IP_BLOCK | true | SSRF қорғаныс |
@@ -54,8 +54,8 @@
 | Код | Сипаттамасы |
 |-----|-------------|
 | REDIS_FAIL | Redis қолжетімсіз, backup қолданылады |
-| DLE_FAIL | DLE API қолжетімсіз, cache қолданылады |
-| NOCODB_FAIL | NocoDB қолжетімсіз, cache қолданылады |
+| ALEMI_FAIL | Alemi API қолжетімсіз, cache қолданылады |
+| TENANTS_PLATFORM_FAIL | Tenant конфиг API қолжетімсіз, cache қолданылады |
 | LLM_FAIL | OpenRouter қатесі, қайталау |
 | WHATSPRO_FAIL | WhatsApp API қатесі, developerNotify |
 | SPAM_BLOCK | Спам фильтрі, mute |

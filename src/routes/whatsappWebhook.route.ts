@@ -719,6 +719,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
             bankName: mediaAnalysis.bank_name,
             transactionId: mediaAnalysis.transaction_id,
             paidAt: mediaAnalysis.date_time,
+            receiptBase64: String(mediaContext.base64 || ""),
+            mimeType: String(mediaContext.mimeType || mediaContext.mediaType || ""),
+            sourceMessageId: messageId,
           });
 
           if (!delivery.success) {
