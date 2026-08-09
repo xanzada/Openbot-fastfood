@@ -58,11 +58,11 @@ test("legacy actions map to the documented Hub commands and data", () => {
   assert.deepEqual(mapLegacyAlemiAction("get_runtime_status", {}), { command: "runtime.status.get", data: {} });
   assert.deepEqual(mapLegacyAlemiAction("get_order_context", { phone: "87001112233", order_id: 41 }), {
     command: "order.context.get",
-    data: { phone_e164: "+77001112233", limit: 5 },
+    data: { phone_e164: "+77001112233", limit: 5, order_id: "41" },
   });
-  assert.deepEqual(mapLegacyAlemiAction("check_status", { phone: "7001112233" }), {
+  assert.deepEqual(mapLegacyAlemiAction("check_status", { phone: "7001112233", order_id: "019fe7ca-1111-7111-8111-111111111111" }), {
     command: "order.status.get",
-    data: { phone_e164: "+77001112233" },
+    data: { phone_e164: "+77001112233", order_id: "019fe7ca-1111-7111-8111-111111111111" },
   });
   assert.deepEqual(mapLegacyAlemiAction("get_menu_context", { lang: "kz" }), {
     command: "catalog.context.get",

@@ -298,6 +298,7 @@ export function mapLegacyAlemiAction(action: AlemiLegacyAction, payload: Record<
   data: Record<string, unknown>;
 } {
   const phone = e164Kazakhstan(payload.phone);
+  const orderId = firstString(payload.order_id, payload.orderId);
   switch (action) {
     case "get_runtime_status":
       return { command: "runtime.status.get", data: {} };
@@ -307,6 +308,7 @@ export function mapLegacyAlemiAction(action: AlemiLegacyAction, payload: Record<
         data: {
           ...(phone ? { phone_e164: phone } : {}),
           limit: 5,
+          ...(orderId ? { order_id: orderId } : {}),
         },
       };
     case "check_status":
@@ -314,6 +316,7 @@ export function mapLegacyAlemiAction(action: AlemiLegacyAction, payload: Record<
         command: "order.status.get",
         data: {
           ...(phone ? { phone_e164: phone } : {}),
+          ...(orderId ? { order_id: orderId } : {}),
         },
       };
     case "get_menu_context":

@@ -688,9 +688,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
             return;
           }
 
-          const receiptOrderNumber = mediaAnalysis.order_id !== "0"
-            ? String(mediaAnalysis.order_id)
-            : String(activeOrder.id || activeOrder.order_id || "");
+          const analyzedOrderReference = String(mediaAnalysis.order_id || "").trim();
+          const receiptOrderNumber = analyzedOrderReference && analyzedOrderReference !== "0"
+            ? analyzedOrderReference
+            : String(activeOrder.display_number || activeOrder.order_number || activeOrder.id || activeOrder.order_id || "");
           const receiptOrder = await getCustomerOrder(
             ctx.instanceId,
             String(ctx.config?.domain || ""),
@@ -712,7 +713,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
           const delivery = await deliverReceiptToClient({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
-            orderNumber: receiptOrder.order.orderNumber,
+            orderNumber: receiptOrder.order.orderId,
             config: ctx.config,
             amount: mediaAnalysis.amount,
             senderName: mediaAnalysis.sender_name,

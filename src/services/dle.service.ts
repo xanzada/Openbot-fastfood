@@ -196,40 +196,63 @@ function normalizePaymentDetails(value: unknown): Array<{ label: string; value: 
     .filter((item) => item.label && item.value);
 }
 
+function firstFiniteNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (value === "" || value === null || value === undefined) continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return 0;
+}
+
 export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
   const settings = safeJsonObject(data.settings, {});
   const rawKitchenSettings = safeJsonObject(settings.kitchen_status, null);
-  const fetchedWaitTime = Number(rawKitchenSettings?.wait_time || 0) || 0;
-  const fetchedEmergency = rawKitchenSettings ? toBool(rawKitchenSettings.is_emergency, false) : false;
+  const current = safeJsonObject(
+    data.current || safeJsonObject(data.runtime, {}).current || safeJsonObject(data.runtime_status, {}).current,
+    null,
+  );
   const nested =
     safeJsonObject(data.runtime_status, null) ||
+    current ||
     safeJsonObject(data.kitchen_status, null) ||
     safeJsonObject(data.status, null) ||
     data;
-  const kitchen = safeJsonObject(nested.kitchen_status || nested.settings || nested, {});
-  const waitTime = Number(kitchen.wait_time ?? nested.wait_time ?? data.wait_time ?? 0) || 0;
+  const kitchen = safeJsonObject(nested.kitchen_status || nested.kitchen || nested.settings || nested.current || nested, {});
+  const waitTime = firstFiniteNumber(
+    kitchen.wait_time, kitchen.wait_minutes, kitchen.current_wait_minutes, kitchen.current_wait_time,
+    nested.wait_time, nested.wait_minutes, nested.current_wait_minutes, nested.current_wait_time,
+    data.wait_time, data.wait_minutes, data.current_wait_minutes, data.current_wait_time,
+  );
   const resetAt = Number(kitchen.reset_at ?? nested.reset_at ?? data.reset_at ?? 0) || 0;
+  const delivery = toBool(kitchen.delivery ?? kitchen.delivery_enabled ?? nested.delivery ?? nested.delivery_enabled ?? data.delivery ?? data.delivery_enabled, true);
+  const pickup = toBool(kitchen.pickup ?? kitchen.pickup_enabled ?? nested.pickup ?? nested.pickup_enabled ?? data.pickup ?? data.pickup_enabled, true);
+  const isEmergency = toBool(kitchen.is_emergency ?? kitchen.emergency ?? nested.is_emergency ?? nested.emergency ?? data.is_emergency ?? data.emergency, false);
+  const fetchedWaitTime = rawKitchenSettings
+    ? firstFiniteNumber(rawKitchenSettings.wait_time, rawKitchenSettings.wait_minutes, rawKitchenSettings.current_wait_minutes)
+    : waitTime;
+  const fetchedEmergency = rawKitchenSettings ? toBool(rawKitchenSettings.is_emergency, false) : isEmergency;
 
   return {
     is_accepting_orders: toBool(nested.is_accepting_orders ?? data.is_accepting_orders, true),
     within_work_hours: toBool(nested.within_work_hours ?? data.within_work_hours, true),
     closed_reason: String(nested.closed_reason || data.closed_reason || "").trim(),
-    delivery: toBool(kitchen.delivery ?? nested.delivery ?? data.delivery, true),
-    pickup: toBool(kitchen.pickup ?? nested.pickup ?? data.pickup, true),
+    delivery,
+    pickup,
     wait_time: waitTime,
     reset_at: resetAt,
-    is_emergency: toBool(kitchen.is_emergency ?? nested.is_emergency ?? data.is_emergency, false),
+    is_emergency: isEmergency,
     kitchen_status: {
       wait_time: waitTime,
       reset_at: resetAt,
-      delivery: toBool(kitchen.delivery ?? nested.delivery ?? data.delivery, true),
-      pickup: toBool(kitchen.pickup ?? nested.pickup ?? data.pickup, true),
-      is_emergency: toBool(kitchen.is_emergency ?? nested.is_emergency ?? data.is_emergency, false),
+      delivery,
+      pickup,
+      is_emergency: isEmergency,
     },
     fetched_settings: {
       wait_time: fetchedWaitTime,
       is_emergency: fetchedEmergency,
-      source: rawKitchenSettings ? "settings.kitchen_status" : "missing_settings.kitchen_status",
+      source: rawKitchenSettings ? "settings.kitchen_status" : current ? "current" : "runtime.status.get",
     },
     payment_details: normalizePaymentDetails(data.payment_details || nested.payment_details || kitchen.payment_details),
     source: data.source || "dle_spa_settings",
@@ -329,6 +352,17 @@ export async function getRuntimeStatus(
   }
 }
 
+function localizedOrderText(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const record = value as Record<string, any>;
+  for (const candidate of [record.ru, record.kk, record.kz, record.name, record.title, record.value]) {
+    const text = localizedOrderText(candidate);
+    if (text) return text;
+  }
+  return "";
+}
+
 function normalizeOrderItems(items: unknown) {
   let raw = items;
   if (typeof items === "string") {
@@ -343,7 +377,9 @@ function normalizeOrderItems(items: unknown) {
     .slice(0, 50)
     .map((item) => ({
       id: Number(item?.id || item?.product_id || item?.item_id || 0) || 0,
-      name: String(item?.name || item?.title || item?.product_name || "").trim().slice(0, 120),
+      name: localizedOrderText(
+        item?.name || item?.title || item?.product_name || item?.product?.name || item?.product?.title,
+      ).slice(0, 120),
       qty: Number(item?.qty || item?.count || item?.quantity || 1) || 1,
       price: Number(item?.price || item?.amount || 0) || 0,
       total: Number(item?.total || item?.sum || 0) || 0,
@@ -354,10 +390,17 @@ function normalizeOrderItems(items: unknown) {
 
 function normalizeOrderPayload(order: Record<string, any> = {}) {
   const items = normalizeOrderItems(order.items);
+  const id = String(order.id || order.order_id || order.uuid || "").trim();
+  const displayNumber = String(
+    order.display_number || order.order_number || order.number || order.order_no || order.public_number || order.display_id || id,
+  ).trim();
   return {
-    id: String(order.id || order.order_id || "").trim(),
-    phone: normalizePhone(order.phone || ""),
-    status: String(order.status || "").trim(),
+    id,
+    order_id: id,
+    display_number: displayNumber,
+    order_number: displayNumber,
+    phone: normalizePhone(order.phone || order.phone_e164 || order.customer_phone || ""),
+    status: String(order.status || order.order_status || order.workflow_status || order.state || "").trim(),
     total_price: Number(order.total_price || order.total || 0) || 0,
     address: String(order.address || "").trim().slice(0, 240),
     comment: String(order.comment || "").trim().slice(0, 500),
@@ -369,16 +412,53 @@ function normalizeOrderPayload(order: Record<string, any> = {}) {
   };
 }
 
-function normalizeOrderContextPayload(data: Record<string, any> = {}) {
-  const activeOrder = normalizeOrderPayload(data.order || data.active_order || {});
-  const hasActiveOrder = Boolean(activeOrder.id);
+function orderMatchesReference(order: Record<string, any>, reference: string) {
+  return [order.id, order.order_id, order.display_number, order.order_number, order.number]
+    .some((value) => String(value || "").trim() === reference);
+}
+
+export function normalizeOrderContextPayload(
+  data: Record<string, any> = {},
+  options: { phone?: string; orderId?: string | number } = {},
+) {
+  const source = safeJsonObject(data.context || data.order_context, data);
+  const requestedPhone = normalizePhone(options.phone || "");
+  const requestedOrder = String(options.orderId || "").trim();
+  const direct = [source.order, source.active_order, data.order, data.active_order]
+    .filter((value) => value && typeof value === "object")
+    .map((value) => normalizeOrderPayload(value));
+  const activeOrders = [source.active_orders, data.active_orders]
+    .filter(Array.isArray)
+    .flat()
+    .map((value) => normalizeOrderPayload(value))
+    .filter((order) => order.id && !isInactiveOrderStatus(order.status))
+    .filter((order, index, list) => list.findIndex((candidate) => candidate.id === order.id) === index);
+  const recentOrders = [source.recent_orders, source.orders, data.recent_orders, data.orders]
+    .filter(Array.isArray)
+    .flat()
+    .map((value) => normalizeOrderPayload(value))
+    .filter((order) => order.id)
+    .filter((order, index, list) => list.findIndex((candidate) => candidate.id === order.id) === index);
+  const allOrders = [...direct, ...activeOrders, ...recentOrders].filter((order, index, list) =>
+    order.id && list.findIndex((candidate) => candidate.id === order.id) === index
+  );
+  const ownedOrders = requestedPhone
+    ? allOrders.filter((order) => !order.phone || order.phone === requestedPhone)
+    : allOrders;
+  const selected = requestedOrder
+    ? ownedOrders.find((order) => orderMatchesReference(order, requestedOrder)) || null
+    : ownedOrders.find((order) => !isInactiveOrderStatus(order.status)) || null;
+  const activeOrder = selected && !isInactiveOrderStatus(selected.status) ? selected : null;
+  const hasActiveOrder = Boolean(activeOrder?.id);
   return {
-    source: data.source || "dle_spa_orders",
-    order_id: hasActiveOrder ? activeOrder.id : String(data.order_id || "0"),
-    status: hasActiveOrder ? activeOrder.status || data.status || "status_unknown" : data.status || null,
-    order: hasActiveOrder ? activeOrder : null,
+    source: source.source || data.source || "alemi_order_context",
+    order_id: selected?.id || String(source.order_id || data.order_id || "0"),
+    display_number: selected?.display_number || "",
+    status: selected?.status || source.status || data.status || null,
+    order: selected,
     active_order: hasActiveOrder ? activeOrder : null,
-    recent_orders: Array.isArray(data.recent_orders) ? data.recent_orders.map(normalizeOrderPayload) : [],
+    active_orders: activeOrders.filter((order) => !requestedPhone || !order.phone || order.phone === requestedPhone),
+    recent_orders: recentOrders,
   };
 }
 
@@ -400,8 +480,9 @@ export async function getOrderStatus(instanceId: string, phone: string, domain: 
       10000
     );
 
-    if (data?.success && data?.order_id && String(data.order_id) !== "0") {
-      const order = normalizeOrderPayload(data.order || data.active_order || { id: data.order_id, status: data.status });
+    const context = normalizeOrderContextPayload(data || {}, { phone: cleanPhone });
+    if (context.active_order) {
+      const order = context.active_order;
       if (!order.id || isInactiveOrderStatus(order.status)) {
         await deleteCache(key);
         return null;
@@ -411,7 +492,8 @@ export async function getOrderStatus(instanceId: string, phone: string, domain: 
         status: order.status || data.status || "status_unknown",
         order,
         active_order: order,
-        recent_orders: Array.isArray(data.recent_orders) ? data.recent_orders.map(normalizeOrderPayload) : [],
+        active_orders: context.active_orders,
+        recent_orders: context.recent_orders,
         items: order.items,
         total_price: order.total_price,
         address: order.address,
@@ -438,10 +520,10 @@ export async function getOrderContext(
   options: { phone?: string; orderId?: string | number } = {}
 ) {
   const cleanPhone = normalizePhone(options.phone || "");
-  const orderId = Number(String(options.orderId || "0").replace(/\D/g, "")) || 0;
+  const orderId = String(options.orderId || "").trim();
   if (!cleanPhone && !orderId) return null;
 
-  const key = orderId > 0
+  const key = orderId
     ? `order_context:${instanceId}:id:${orderId}`
     : `order_context:${instanceId}:phone:${cleanPhone}`;
 
@@ -456,11 +538,11 @@ export async function getOrderContext(
       },
       10000
     );
-    const context = normalizeOrderContextPayload(data || {});
+    const context = normalizeOrderContextPayload(data || {}, { phone: cleanPhone, orderId });
     const activeOrder = context.active_order;
     if (!activeOrder || isInactiveOrderStatus(activeOrder.status)) {
       await deleteCache(key);
-      const exactOrder = activeOrder && orderId > 0 ? activeOrder : null;
+      const exactOrder = context.order && orderId ? context.order : null;
       return {
         ...context,
         found: Boolean(exactOrder),

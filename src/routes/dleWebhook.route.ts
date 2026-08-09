@@ -116,7 +116,11 @@ export function normalizeDlePayload(req: Request) {
   );
   const action = normalizeAction(rawAction);
   const order = firstObject(...records.map((record) => record.order));
-  const note = firstObject(...records.map((record) => record.note));
+  const note = firstObject(
+    ...records.map((record) => record.note),
+    ...records.map((record) => record.shift_note),
+    ...records.map((record) => record.shiftNote),
+  );
   const legacySourceId = rawEventType ? "" : source.id;
   const orderId = normalizeExternalId(firstValue(
     valueFrom(records, "order_id", "orderId"),

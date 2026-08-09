@@ -2,7 +2,7 @@ import { auditError } from "./auditLogger.service.js";
 import { getOrderContext, normalizePhone } from "./dle.service.js";
 
 export type CustomerOrderStage = "awaiting_confirmation" | "awaiting_receipt" | "receipt_review" | "preparing" | "delivery" | "completed" | "cancelled" | "unknown";
-export interface CustomerOrder { orderNumber: string; status: string; stage: CustomerOrderStage; statusLabel: string; statusExplanation: string; items: Array<{ name: string; quantity: number }>; }
+export interface CustomerOrder { orderId: string; orderNumber: string; status: string; stage: CustomerOrderStage; statusLabel: string; statusExplanation: string; items: Array<{ name: string; quantity: number }>; }
 export type CustomerOrderLookup = { state: "found"; order: CustomerOrder } | { state: "not_found" } | { state: "ambiguous" } | { state: "unavailable" };
 
 function statusKey(status: string) { return String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_"); }
@@ -11,8 +11,12 @@ function hasReceiptMarker(aiComment: unknown) {
   const value=String(aiComment||"").trim();
   return /\[RECEIPT(?:_REVIEW)?\]/i.test(value) || /^сумма:\s*.+,\s*отправитель:\s*.+\s+\([^)]+\)$/iu.test(value);
 }
-export function classifyOrderStage(status: string, aiComment: unknown = ""): CustomerOrderStage {
+export function classifyOrderStage(status: string, aiComment: unknown = "", paymentStatus: unknown = ""): CustomerOrderStage {
   const key = statusKey(status);
+  const paymentKey = statusKey(String(paymentStatus || ""));
+  if (["receipt_review", "receipt_uploaded", "waiting_review", "pending_review"].includes(paymentKey) || ["receipt_review", "receipt_uploaded"].includes(key)) return "receipt_review";
+  if (["waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(paymentKey) || ["confirmed", "accepted", "waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(key)) return "awaiting_receipt";
+  if (paymentKey === "paid") return "preparing";
   if (key === "pending") {
     if (hasPaymentRequest(aiComment)) return "awaiting_receipt";
     if (hasReceiptMarker(aiComment)) return "receipt_review";
@@ -33,13 +37,15 @@ export function describeOrderStage(stage: CustomerOrderStage, language: "kk" | "
   const value = labels[stage] as string[]; return { label: value[0], explanation: value[1] };
 }
 export function describeOrderStatus(status: string, language: "kk" | "ru", aiComment: unknown = "") { return describeOrderStage(classifyOrderStage(status, aiComment), language).explanation; }
-function customerItems(value: unknown): Array<{ name: string; quantity: number }> { if (!Array.isArray(value)) return []; return value.map((item:any)=>{const name=String(item?.name||item?.title||"").trim().slice(0,120);const quantity=Math.max(1,Math.min(99,Number(item?.qty||item?.quantity||item?.count||1)||1));return name?{name,quantity}:null;}).filter((x):x is {name:string;quantity:number}=>Boolean(x)); }
+function localizedItemName(value: unknown): string { if(typeof value==="string"||typeof value==="number")return String(value).trim();if(!value||typeof value!=="object"||Array.isArray(value))return"";const record=value as Record<string,any>;for(const candidate of [record.ru,record.kk,record.kz,record.name,record.title,record.value]){const text=localizedItemName(candidate);if(text)return text;}return""; }
+function customerItems(value: unknown): Array<{ name: string; quantity: number }> { if (!Array.isArray(value)) return []; return value.map((item:any)=>{const name=localizedItemName(item?.name||item?.title||item?.product_name||item?.product?.name||item?.product?.title).slice(0,120);const quantity=Math.max(1,Math.min(99,Number(item?.qty||item?.quantity||item?.count||1)||1));return name?{name,quantity}:null;}).filter((x):x is {name:string;quantity:number}=>Boolean(x)); }
 export function customerOrderFromRecord(value: Record<string,any>|null|undefined, expectedPhone:string, language:"kk"|"ru"): CustomerOrderLookup {
-  const record=value?.order||value?.active_order||value||null; const orderNumber=String(record?.id||record?.order_id||value?.order_id||"").trim().slice(0,40); const status=String(record?.status||value?.status||"").trim().slice(0,80); if(!orderNumber||!status)return{state:"not_found"};
-  const ownerPhone=normalizePhone(record?.phone||value?.phone||""); const requestedPhone=normalizePhone(expectedPhone); if(ownerPhone&&requestedPhone&&ownerPhone!==requestedPhone){auditError("Customer order ownership mismatch",new Error("ORDER_PHONE_MISMATCH"),{orderNumber,expectedPhone:requestedPhone,ownerPhone});return{state:"not_found"};}
-  const stage=classifyOrderStage(status,record?.ai_comment||value?.ai_comment); const description=describeOrderStage(stage,language); return{state:"found",order:{orderNumber,status,stage,statusLabel:description.label,statusExplanation:description.explanation,items:customerItems(record?.items||value?.items)}};
+  const record=value?.order||value?.active_order||value||null; const orderId=String(record?.id||record?.order_id||record?.uuid||value?.order_id||"").trim().slice(0,80); const orderNumber=String(record?.display_number||record?.order_number||record?.number||record?.order_no||orderId).trim().slice(0,40); const status=String(record?.status||value?.status||"").trim().slice(0,80); if(!orderId||!status)return{state:"not_found"};
+  const ownerPhone=normalizePhone(record?.phone||record?.phone_e164||value?.phone||value?.phone_e164||""); const requestedPhone=normalizePhone(expectedPhone); if(ownerPhone&&requestedPhone&&ownerPhone!==requestedPhone){auditError("Customer order ownership mismatch",new Error("ORDER_PHONE_MISMATCH"),{orderNumber,expectedPhone:requestedPhone,ownerPhone});return{state:"not_found"};}
+  const stage=classifyOrderStage(status,record?.ai_comment||value?.ai_comment,record?.payment_status||value?.payment_status); const description=describeOrderStage(stage,language); return{state:"found",order:{orderId,orderNumber,status,stage,statusLabel:description.label,statusExplanation:description.explanation,items:customerItems(record?.items||value?.items)}};
 }
 function orderIdOf(record: any) { return String(record?.id || record?.order_id || "").trim(); }
+function orderMatchesNumber(record: any, value: string) { const expected=String(value||"").trim();return [record?.id,record?.order_id,record?.display_number,record?.order_number,record?.number,record?.order_no].some((candidate)=>String(candidate||"").trim()===expected); }
 function createdAtOf(record: any) { return Date.parse(String(record?.created_at || "").replace(" ", "T")) || 0; }
 function orderPools(context: Record<string,any>|null|undefined): any[] {
   if (!context) return [];
@@ -92,7 +98,7 @@ export function pickConversationOrder(context: Record<string,any>|null|undefined
   let pinned: any = null;
   for (const pool of pools) {
     if (!Array.isArray(pool)) continue;
-    const hit = pool.find((record: any) => orderIdOf(record) === String(discussedNumber).trim());
+    const hit = pool.find((record: any) => orderMatchesNumber(record, discussedNumber));
     if (hit) { pinned = hit; break; }
   }
   if (!pinned) return null;

@@ -252,3 +252,22 @@ test("Alemi shift-note envelope flattens note fields", () => {
   assert.equal(r.body.text, "No chicken after 22:00");
   assert.equal(r.body.expires_at, "2026-08-10T22:00:00Z");
 });
+
+test("Hub shift_note field is normalized into the existing note flow", () => {
+  const r = req({
+    event_type: "shift_note.created",
+    data: {
+      instance: "prestige",
+      shift_note: {
+        id: "note-120",
+        note_text: "Күту уақыты 120 минут",
+        expires_at: "2026-08-10T22:00:00Z",
+      },
+    },
+  });
+  normalizeDlePayload(r);
+  assert.equal(r.body.action, "shift_note_created");
+  assert.equal(r.body.note_id, "note-120");
+  assert.equal(r.body.text, "Күту уақыты 120 минут");
+  assert.equal(r.body.expires_at, "2026-08-10T22:00:00Z");
+});
