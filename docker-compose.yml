@@ -57,8 +57,10 @@ services:
     # chatwoot:events:{instanceId}. Without the shared network this service
     # resolves only inside the openbot stack, so the SOS signal never arrives.
     networks:
-      - dokploy-network
-      - default
+      dokploy-network:
+        aliases:
+          - openbot-redis
+      default:
 
   backup:
     build:
