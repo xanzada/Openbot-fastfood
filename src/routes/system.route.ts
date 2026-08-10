@@ -4,6 +4,7 @@ import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.s
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
+import { isDleWebhookAuthRequired } from "./dleWebhook.route.js";
 import { clearUserLang, getActiveShiftNotes, getUserLangState } from "../services/redis.service.js";
 
 function getRequestInstanceId(req: Request) {
@@ -13,12 +14,6 @@ function getRequestInstanceId(req: Request) {
 function getBearerToken(req: Request) {
   const authorization = req.headers.authorization || "";
   return authorization.replace(/^Bearer\s+/i, "");
-}
-
-function envBool(name: string, fallback = false) {
-  const value = String(process.env[name] ?? "").trim().toLowerCase();
-  if (!value) return fallback;
-  return ["1", "true", "yes", "on"].includes(value);
 }
 
 function isLegacyDleAction(value: unknown) {
@@ -46,7 +41,8 @@ function isLegacyDleAction(value: unknown) {
 
 function verifySecret(channel = "webhook") {
   return async (req: Request, res: Response, next: NextFunction) => {
-    if (channel === "kanban" && !envBool("DLE_WEBHOOK_AUTH_REQUIRED", false) && isLegacyDleAction(req.body?.action || req.body?.ajax_action)) {
+    // Shares the DLE webhook's flag so production fails closed here too.
+    if (channel === "kanban" && !isDleWebhookAuthRequired() && isLegacyDleAction(req.body?.action || req.body?.ajax_action)) {
       return next();
     }
 

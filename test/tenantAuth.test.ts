@@ -29,10 +29,18 @@ test("kanban auth accepts the site's scalar ?token= using timing-safe comparison
   assert.doesNotThrow(() => assertTenantSecret(req, { alemi_secret: "alemi-test-secret" }, "kanban"));
 });
 
-test("kanban expected secret supports Alemi, generic key and CRM key fields", () => {
+test("kanban expected secret is limited to the Alemi and legacy kanban keys", () => {
   assert.equal(getTenantSecret({ alemi_secret: "a" }, "kanban"), "a");
-  assert.equal(getTenantSecret({ secret_key: "b" }, "kanban"), "b");
-  assert.equal(getTenantSecret({ crm_secret_token: "c" }, "kanban"), "c");
+  assert.equal(getTenantSecret({ secret_key: "b" }, "kanban"), "");
+  assert.equal(getTenantSecret({ crm_secret_token: "c" }, "kanban"), "");
+  assert.throws(
+    () => assertTenantSecret(
+      { headers: {}, body: {}, query: { token: "unrelated-crm-token" } },
+      { alemi_secret: "alemi", crm_secret_token: "unrelated-crm-token", webhook_secret: "wa" },
+      "kanban",
+    ),
+    (error: any) => error?.message === "INVALID_TENANT_SECRET" && error?.statusCode === 403,
+  );
   assert.doesNotThrow(() => assertTenantSecret(
     { headers: {}, body: {}, query: { token: "alemi" } },
     { kanban_secret: "legacy", alemi_secret: "alemi" },
@@ -40,15 +48,28 @@ test("kanban expected secret supports Alemi, generic key and CRM key fields", ()
   ));
 });
 
-test("kanban auth accepts the deployment Alemi secret when tenant config has no site key", () => {
-  const previous = process.env.ALEMI_SECRET;
-  process.env.ALEMI_SECRET = "deployment-alemi-secret";
-  try {
-    assert.doesNotThrow(() => assertTenantSecret({ query: { token: "deployment-alemi-secret" } }, {}, "kanban"));
-  } finally {
-    if (previous === undefined) delete process.env.ALEMI_SECRET;
-    else process.env.ALEMI_SECRET = previous;
-  }
+test("kanban auth accepts the deployment Alemi secret only for its named instance", () => {
+  withEnv({ ALEMI_SECRET: "deployment-alemi-secret", ALEMI_INSTANCE: "legacy_restaurant" }, () => {
+    assert.doesNotThrow(() => assertTenantSecret(
+      { body: { instance: "legacy_restaurant" }, query: { token: "deployment-alemi-secret" } },
+      {},
+      "kanban",
+    ));
+    assert.throws(
+      () => assertTenantSecret(
+        { body: { instance: "someone_elses_tenant" }, query: { token: "deployment-alemi-secret" } },
+        {},
+        "kanban",
+      ),
+      (error: any) => error?.message === "TENANT_SECRET_NOT_CONFIGURED" && error?.statusCode === 500,
+    );
+  });
+  withEnv({ ALEMI_SECRET: "deployment-alemi-secret", ALEMI_INSTANCE: undefined }, () => {
+    assert.throws(
+      () => assertTenantSecret({ body: {}, query: { token: "deployment-alemi-secret" } }, {}, "kanban"),
+      (error: any) => error?.message === "TENANT_SECRET_NOT_CONFIGURED" && error?.statusCode === 500,
+    );
+  });
 });
 
 test("kanban auth resolves the per-tenant Alemi secret after instance aliasing", () => {

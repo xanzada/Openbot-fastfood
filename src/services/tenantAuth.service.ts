@@ -39,18 +39,11 @@ export function getIncomingTenantSecret(req: any) {
 function getTenantSecrets(config: Record<string, any> | null | undefined, channel = "webhook") {
   if (!config) return [];
 
+  // The kanban webhook only ever presents the Alemi Secret Key, so it must not
+  // accept credentials issued for other integrations (CRM tokens, the DLE
+  // secret_key, the generic webhook secrets) as an authorization value.
   const values = channel === "kanban"
-    ? [
-        config.kanban_secret,
-        config.alemi_secret,
-        config.secret_key,
-        config.crm_secret_token,
-        config.crm_webhook_secret,
-        config.webhook_secret,
-        config.instance_secret,
-        config.tenant_secret,
-        process.env.ALEMI_SECRET,
-      ]
+    ? [config.kanban_secret, config.alemi_secret]
     : [config.webhook_secret, config.instance_secret, config.tenant_secret];
 
   return [...new Set(values.map(scalarSecret).filter(Boolean))];
@@ -73,11 +66,31 @@ export function getTenantSecret(config: Record<string, any> | null | undefined, 
   return getTenantSecrets(config, channel)[0] || "";
 }
 
+function alemiDeploymentSecret(req: any, config: Record<string, any> | null | undefined) {
+  // Same rule as resolveAlemiCredentials(): the process-wide credential belongs
+  // to one explicitly named legacy restaurant, so it may only authorize that
+  // instance. Unlike the signing path the instance is never defaulted to
+  // ALEMI_INSTANCE here, because a request that names no tenant must not be
+  // able to borrow the deployment secret.
+  const globalInstance = scalarSecret(process.env.ALEMI_INSTANCE);
+  if (!globalInstance) return "";
+  const instance = scalarSecret(config?.alemi_instance)
+    || scalarSecret(config?.alemiInstance)
+    || scalarSecret(req?.body?.instance)
+    || scalarSecret(req?.query?.instance)
+    || scalarSecret(config?.instance_id)
+    || scalarSecret(config?.instance);
+  if (!instance || instance !== globalInstance) return "";
+  return scalarSecret(process.env.ALEMI_SECRET);
+}
+
 export function assertTenantSecret(req: any, config: Record<string, any> | null | undefined, channel = "webhook") {
   const expected = getTenantSecrets(config, channel);
   if (channel === "kanban") {
     const environmentSecret = alemiEnvironmentSecret(req?.body?.instance);
     if (environmentSecret && !expected.includes(environmentSecret)) expected.push(environmentSecret);
+    const deploymentSecret = alemiDeploymentSecret(req, config);
+    if (deploymentSecret && !expected.includes(deploymentSecret)) expected.push(deploymentSecret);
   }
   const incoming = getIncomingTenantSecret(req);
 
