@@ -538,9 +538,10 @@ async function processWhatsAppWebhook(body, started) {
                         await sendCustomerReplyAndFinish(ctx, messageId, duplicateReply, "payment_receipt_duplicate");
                         return;
                     }
-                    const receiptOrderNumber = mediaAnalysis.order_id !== "0"
-                        ? String(mediaAnalysis.order_id)
-                        : String(activeOrder.id || activeOrder.order_id || "");
+                    const analyzedOrderReference = String(mediaAnalysis.order_id || "").trim();
+                    const receiptOrderNumber = analyzedOrderReference && analyzedOrderReference !== "0"
+                        ? analyzedOrderReference
+                        : String(activeOrder.display_number || activeOrder.order_number || activeOrder.id || activeOrder.order_id || "");
                     const receiptOrder = await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, receiptOrderNumber);
                     if (receiptOrder.state !== "found") {
                         await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
@@ -550,13 +551,16 @@ async function processWhatsAppWebhook(body, started) {
                     const delivery = await deliverReceiptToClient({
                         instanceId: ctx.instanceId,
                         phone: ctx.phone,
-                        orderNumber: receiptOrder.order.orderNumber,
+                        orderNumber: receiptOrder.order.orderId,
                         config: ctx.config,
                         amount: mediaAnalysis.amount,
                         senderName: mediaAnalysis.sender_name,
                         bankName: mediaAnalysis.bank_name,
                         transactionId: mediaAnalysis.transaction_id,
                         paidAt: mediaAnalysis.date_time,
+                        receiptBase64: String(mediaContext.base64 || ""),
+                        mimeType: String(mediaContext.mimeType || mediaContext.mediaType || ""),
+                        sourceMessageId: messageId,
                     });
                     if (!delivery.success) {
                         await releaseReceiptFingerprint(ctx.instanceId, fingerprint);

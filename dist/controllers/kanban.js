@@ -7,7 +7,11 @@ import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
 import { normalizeSiteLanguage, resolveSiteOutboundLanguage } from "../services/languagePolicy.service.js";
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
-const ORDER_ID_RE = /^\d{1,12}$/;
+const LEGACY_ORDER_ID_RE = /^\d{1,12}$/;
+const UUID_ORDER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export function isValidOrderId(value) {
+    return LEGACY_ORDER_ID_RE.test(value) || UUID_ORDER_ID_RE.test(value);
+}
 const VALID_ACTIONS = new Set([
     "new_order",
     "status_changed",
@@ -371,12 +375,12 @@ async function emitPrintOnPaid(req, body, status) {
         return;
     }
     const io = req.app.get("io");
-    if (io && typeof io.emit === "function") {
+    if (io && typeof io.to === "function") {
         auditDecision("Print trigger emitted for paid status", {
             orderId: body.order_id,
             status,
         });
-        io.emit("print_new_order", body);
+        io.to(String(body.instance || "")).emit("print_new_order", body);
     }
     else {
         auditDecision("Print trigger skipped: socket server unavailable", {
@@ -394,12 +398,12 @@ async function emitPrintOnNewOrder(req, body, action) {
         return;
     }
     const io = req.app.get("io");
-    if (io && typeof io.emit === "function") {
+    if (io && typeof io.to === "function") {
         auditDecision("Print trigger emitted for new order", {
             orderId: body.order_id,
             action,
         });
-        io.emit("print_new_order", body);
+        io.to(String(body.instance || "")).emit("print_new_order", body);
     }
     else {
         auditDecision("Print trigger skipped: socket server unavailable", {
@@ -500,7 +504,7 @@ export async function handleKanbanWebhook(req, res) {
         const newStatus = cleanInline(body.status || body.new_status || body.order_status, 80);
         const isPickup = boolValue(body.is_pickup, false);
         if (!isShiftNoteAction) {
-            if (!ORDER_ID_RE.test(orderId) || orderId === "0") {
+            if (!isValidOrderId(orderId) || orderId === "0") {
                 auditDecision("Rejected webhook: invalid order id", { orderId, action, instance });
                 res.status(400).json({ ok: false, error: "BAD_ORDER_ID" });
                 return;

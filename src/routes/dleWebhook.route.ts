@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { handleKanbanWebhook } from "../controllers/kanban.js";
-import { getRestaurantConfig, getRestaurantConfigByAlemiInstance } from "../services/platformConfig.service.js";
+import { getRestaurantConfig, getRestaurantConfigByAlemiInstance, refreshRestaurantConfig } from "../services/platformConfig.service.js";
 import { assertTenantSecret } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { auditError, auditInbound, auditProcessing, isNewDleAction } from "../services/auditLogger.service.js";
@@ -221,6 +221,36 @@ export async function resolveIncomingAlemiTenant(
   }
 }
 
+type RestaurantConfigLoader = (instanceId: string) => Promise<Record<string, any> | null>;
+
+export async function verifyTenantSecretWithRotationRefresh(
+  req: Request,
+  instanceId: string,
+  options: {
+    config?: Record<string, any> | null;
+    loadConfig?: RestaurantConfigLoader;
+    refreshConfig?: RestaurantConfigLoader;
+  } = {},
+): Promise<Record<string, any> | null> {
+  const loadConfig = options.loadConfig || ((id: string) => getRestaurantConfig(id));
+  const refreshConfig = options.refreshConfig || refreshRestaurantConfig;
+  const config = options.config || await loadConfig(instanceId);
+  try {
+    assertTenantSecret(req, config, "kanban");
+    return config;
+  } catch (error: any) {
+    // A rotated Alemi Secret Key must not lock the tenant out for the lifetime of
+    // the cached config. One forced re-read, one re-check, then the original 403.
+    // A missing secret (TENANT_SECRET_NOT_CONFIGURED) still denies immediately.
+    if (error?.message !== "INVALID_TENANT_SECRET") throw error;
+    const fresh = await refreshConfig(instanceId);
+    if (!fresh) throw error;
+    assertTenantSecret(req, fresh, "kanban");
+    auditProcessing("DLE webhook tenant secret accepted after forced config refresh", { instanceId });
+    return fresh;
+  }
+}
+
 async function verifyDleWebhook(req: Request, res: Response, next: NextFunction) {
   if (!isDleWebhookAuthRequired()) {
     auditProcessing("DLE webhook auth bypassed", {
@@ -234,8 +264,10 @@ async function verifyDleWebhook(req: Request, res: Response, next: NextFunction)
   try {
     const instanceId = getRequestInstanceId(req);
     if (!instanceId) return res.status(401).json({ ok: false, error: "unauthorized" });
-    const config = (req as any).resolvedRestaurantConfig || await getRestaurantConfig(instanceId);
-    assertTenantSecret(req, config, "kanban");
+    const config = await verifyTenantSecretWithRotationRefresh(req, instanceId, {
+      config: (req as any).resolvedRestaurantConfig,
+    });
+    if (config) (req as any).resolvedRestaurantConfig = config;
     auditProcessing("DLE webhook tenant secret accepted", {
       action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
       instanceId,

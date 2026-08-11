@@ -1,0 +1,371 @@
+import crypto from "node:crypto";
+import axios from "axios";
+import { getRestaurantConfig, refreshRestaurantConfig } from "./platformConfig.service.js";
+export const ALEMI_DEFAULT_API_URL = "https://hub.alemi.kz";
+export const ALEMI_COMMAND_PATH = "/v1/integrations/bot/commands";
+export const ALEMI_ORDER_DOCUMENT_PATH = "/v1/integrations/bot/order-documents";
+export const ALEMI_PRINT_RESULTS_PATH = "/v1/integrations/bot/print-results";
+export const ALEMI_SIGNATURE_WINDOW_SECONDS = 5 * 60;
+function firstString(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null && String(value).trim())
+            return String(value).trim();
+    }
+    return "";
+}
+function safeJsonObject(value) {
+    if (value && typeof value === "object" && !Array.isArray(value))
+        return value;
+    if (typeof value !== "string" || !value.trim())
+        return null;
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
+function endpoint(baseUrl, path) {
+    const clean = String(baseUrl || ALEMI_DEFAULT_API_URL).trim().replace(/\/+$/, "");
+    return clean.endsWith(path) ? clean : `${clean}${path}`;
+}
+function tenantEnvironmentEntry(instanceId, env) {
+    const parsed = safeJsonObject(env.ALEMI_TENANT_SECRETS_JSON);
+    if (!parsed)
+        return null;
+    const candidate = parsed[instanceId] ?? safeJsonObject(parsed.tenants)?.[instanceId];
+    if (typeof candidate === "string")
+        return { secret: candidate };
+    return safeJsonObject(candidate);
+}
+export function resolveAlemiCredentials(instanceId, config, env = process.env) {
+    const requestedInstance = firstString(instanceId, config?.instance_id, config?.instance, env.ALEMI_INSTANCE);
+    const tenantEntry = tenantEnvironmentEntry(requestedInstance, env);
+    const instance = firstString(config?.alemi_instance, config?.alemiInstance, tenantEntry?.instance, tenantEntry?.instance_id, requestedInstance, env.ALEMI_INSTANCE);
+    const apiUrl = firstString(config?.alemi_api_url, config?.alemiApiUrl, config?.alemi_base_url, config?.alemiBaseUrl, tenantEntry?.api_url, tenantEntry?.apiUrl, tenantEntry?.base_url, tenantEntry?.baseUrl, env.ALEMI_API_URL, ALEMI_DEFAULT_API_URL);
+    const tenantSecret = firstString(config?.alemi_secret, config?.alemiSecret, config?.alemi_api_secret, config?.alemiApiSecret, tenantEntry?.secret, tenantEntry?.secret_key, tenantEntry?.secretKey);
+    // A process-wide credential is only valid for its explicitly named legacy
+    // restaurant. Falling back to it for an incomplete SaaS tenant would sign a
+    // request as the wrong restaurant and break tenant isolation.
+    const globalInstance = firstString(env.ALEMI_INSTANCE);
+    const secret = tenantSecret || (globalInstance && instance === globalInstance
+        ? firstString(env.ALEMI_SECRET)
+        : "");
+    if (!instance)
+        throw new Error("ALEMI_INSTANCE_NOT_CONFIGURED");
+    if (!secret)
+        throw new Error("ALEMI_SECRET_NOT_CONFIGURED");
+    return { apiUrl, instance, secret };
+}
+function unixTimestamp(nowMs = Date.now()) {
+    if (!Number.isFinite(nowMs) || nowMs <= 0)
+        throw new Error("ALEMI_INVALID_TIMESTAMP");
+    return String(Math.floor(nowMs / 1000));
+}
+export function createAlemiCommandId() {
+    // Alemi's command schema accepts the documented cmd_ + 26 uppercase-hex
+    // operation identifier; a raw RFC 4122 UUID is rejected before auth.
+    return `cmd_${crypto.randomBytes(13).toString("hex").toUpperCase()}`;
+}
+function signature(secret, timestamp, signedBytes) {
+    return `v1=${crypto.createHmac("sha256", secret).update(`${timestamp}.${signedBytes}`, "utf8").digest("hex")}`;
+}
+function commonHeaders(credentials, commandId, timestamp, signedBytes) {
+    return {
+        "X-Platform-Instance": credentials.instance,
+        "X-Command-Id": commandId,
+        "X-Command-Timestamp": timestamp,
+        "X-Command-Signature": signature(credentials.secret, timestamp, signedBytes),
+    };
+}
+export function buildAlemiSignedCommand(input) {
+    const commandId = firstString(input.commandId) || createAlemiCommandId();
+    const timestamp = unixTimestamp(input.nowMs);
+    const rawBody = JSON.stringify({
+        command: input.command,
+        command_id: commandId,
+        data: input.data,
+        instance: input.credentials.instance,
+        schema_version: 1,
+    });
+    return {
+        url: endpoint(input.credentials.apiUrl, ALEMI_COMMAND_PATH),
+        rawBody,
+        headers: {
+            "content-type": "application/json",
+            ...commonHeaders(input.credentials, commandId, timestamp, rawBody),
+        },
+        commandId,
+        timestamp,
+    };
+}
+const axiosTransport = async (request) => {
+    const response = await axios.post(request.url, request.body, {
+        headers: request.headers,
+        timeout: request.timeoutMs,
+        maxRedirects: 0,
+    });
+    return { status: response.status, data: response.data };
+};
+export function unwrapAlemiResponse(value) {
+    let current = value;
+    for (let depth = 0; depth < 3; depth += 1) {
+        if (!current || typeof current !== "object" || Array.isArray(current))
+            return current;
+        if (current.result !== undefined) {
+            current = current.result;
+            continue;
+        }
+        if (current.data !== undefined) {
+            current = current.data;
+            continue;
+        }
+        return current;
+    }
+    return current;
+}
+function assertAlemiResponse(response) {
+    if (response.status < 200 || response.status >= 300) {
+        const error = new Error(`ALEMI_HTTP_${response.status}`);
+        error.statusCode = response.status;
+        throw error;
+    }
+    const raw = response.data;
+    const unwrapped = unwrapAlemiResponse(response.data);
+    if (raw?.ok === false || raw?.success === false || unwrapped?.ok === false || unwrapped?.success === false) {
+        const error = new Error("ALEMI_COMMAND_REJECTED");
+        error.statusCode = response.status;
+        error.code = firstString(raw?.error?.code, raw?.error_code, raw?.code, unwrapped?.error?.code, unwrapped?.error_code, unwrapped?.code);
+        throw error;
+    }
+    return unwrapped;
+}
+function isAlemiAuthRejection(error) {
+    const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
+    return status === 401;
+}
+// The hub answers 401 when the request was signed with a secret the operator has
+// already rotated in the WhatsPro UI. The cached tenant config is re-read once,
+// authoritatively, and the request is signed and sent again exactly once - never
+// in a loop. Anything else, including a second 401, surfaces unchanged.
+async function withRotatedSecretRetry(instanceId, options, send) {
+    const config = options.config === undefined
+        ? await getRestaurantConfig(instanceId).catch(() => null)
+        : options.config;
+    try {
+        return await send(config);
+    }
+    catch (error) {
+        if (!isAlemiAuthRejection(error))
+            throw error;
+        const refresh = options.refreshConfig || refreshRestaurantConfig;
+        const fresh = await refresh(instanceId).catch(() => null);
+        if (!fresh)
+            throw error;
+        return await send(fresh);
+    }
+}
+export async function callAlemiCommand(instanceId, command, data, options = {}) {
+    return withRotatedSecretRetry(instanceId, options, async (config) => {
+        const credentials = resolveAlemiCredentials(instanceId, config, options.env || process.env);
+        const request = buildAlemiSignedCommand({
+            command,
+            data,
+            credentials,
+            nowMs: options.nowMs,
+            commandId: options.commandId,
+        });
+        const response = await (options.transport || axiosTransport)({
+            url: request.url,
+            body: request.rawBody,
+            headers: request.headers,
+            timeoutMs: options.timeoutMs || 10_000,
+        });
+        return assertAlemiResponse(response);
+    });
+}
+function e164Kazakhstan(value) {
+    let digits = String(value || "").replace(/\D/g, "");
+    if (digits.length === 10)
+        digits = `7${digits}`;
+    if (digits.length === 11 && digits.startsWith("8"))
+        digits = `7${digits.slice(1)}`;
+    if (!/^7\d{10}$/.test(digits))
+        return "";
+    return `+${digits}`;
+}
+export function mapLegacyAlemiAction(action, payload) {
+    const phone = e164Kazakhstan(payload.phone);
+    const orderId = firstString(payload.order_id, payload.orderId);
+    switch (action) {
+        case "get_runtime_status":
+            return { command: "runtime.status.get", data: {} };
+        case "get_order_context":
+            return {
+                command: "order.context.get",
+                data: {
+                    ...(phone ? { phone_e164: phone } : {}),
+                    limit: 5,
+                    ...(orderId ? { order_id: orderId } : {}),
+                },
+            };
+        case "check_status":
+            return {
+                command: "order.status.get",
+                data: {
+                    ...(phone ? { phone_e164: phone } : {}),
+                    ...(orderId ? { order_id: orderId } : {}),
+                },
+            };
+        case "get_menu_context":
+            return {
+                command: "catalog.context.get",
+                data: { locale: String(payload.lang || "").toLowerCase() === "ru" ? "ru" : "kk" },
+            };
+        case "update_crm":
+            return {
+                command: "crm.lead.upsert",
+                data: {
+                    phone_e164: phone,
+                    interest: String(payload.interest || ""),
+                    sales_stage: String(payload.sales_stage || ""),
+                    psycho_analysis: String(payload.psycho_analysis || ""),
+                },
+            };
+        case "get_today_crm":
+            return { command: "crm.today.get", data: { date: String(payload.date || "") } };
+        case "save_daily_analytics":
+            return {
+                command: "analytics.daily.upsert",
+                data: {
+                    report_date: String(payload.report_date || ""),
+                    total_chats: Number(payload.total_chats || 0),
+                    total_complaints: Number(payload.total_complaints || 0),
+                    total_canceled: Number(payload.total_canceled || 0),
+                    conversion_rate: Number(payload.conversion_rate || 0),
+                    popular_items: payload.popular_items ?? "",
+                    critical_alert: payload.critical_alert ?? "",
+                    ai_daily_advice: payload.ai_daily_advice ?? "",
+                },
+            };
+        default:
+            throw new Error("ALEMI_ACTION_UNSUPPORTED");
+    }
+}
+export async function callAlemiLegacyAction(action, payload, options = {}) {
+    const instanceId = firstString(payload.restaurant_id, payload.instance, payload.instanceId, options.config?.instance_id, options.config?.instance);
+    const mapped = mapLegacyAlemiAction(action, payload);
+    return callAlemiCommand(instanceId, mapped.command, mapped.data, options);
+}
+export async function issueCustomerAccessLink(input, options = {}) {
+    const phone = e164Kazakhstan(input.phone);
+    if (!phone)
+        return null;
+    const result = await callAlemiCommand(input.instanceId, "customer.access_link.issue", { phone_e164: phone, locale: input.locale }, { ...options, config: options.config === undefined ? input.config : options.config });
+    if (typeof result === "string")
+        return result.trim() || null;
+    return firstString(result?.url, result?.access_url, result?.link) || null;
+}
+function extensionForMime(mimeType) {
+    const mime = String(mimeType || "").toLowerCase();
+    if (mime === "image/png")
+        return "png";
+    if (mime === "image/webp")
+        return "webp";
+    if (mime === "application/pdf")
+        return "pdf";
+    return "jpg";
+}
+export async function uploadOrderDocument(input, options = {}) {
+    return withRotatedSecretRetry(input.instanceId, options, async (config) => {
+        const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
+        const commandId = firstString(options.commandId) || createAlemiCommandId();
+        const timestamp = unixTimestamp(options.nowMs);
+        const orderId = firstString(input.orderId);
+        const sourceMessageId = firstString(input.sourceMessageId);
+        const kind = input.documentKind || "receipt";
+        const mimeType = firstString(input.mimeType);
+        if (!orderId)
+            throw new Error("ALEMI_ORDER_ID_REQUIRED");
+        if (!sourceMessageId)
+            throw new Error("ALEMI_SOURCE_MESSAGE_ID_REQUIRED");
+        if (!mimeType || !input.bytes?.byteLength)
+            throw new Error("ALEMI_RECEIPT_BYTES_REQUIRED");
+        const contentSha256 = crypto.createHash("sha256").update(input.bytes).digest("hex");
+        const canonical = [
+            "order-document-upload-v1",
+            commandId,
+            credentials.instance,
+            orderId,
+            sourceMessageId,
+            kind,
+            mimeType,
+            contentSha256,
+        ].join("\n");
+        const form = new FormData();
+        const blobBytes = new ArrayBuffer(input.bytes.byteLength);
+        new Uint8Array(blobBytes).set(input.bytes);
+        form.append("file", new Blob([blobBytes], { type: mimeType }), input.fileName || `receipt.${extensionForMime(mimeType)}`);
+        const response = await (options.transport || axiosTransport)({
+            url: endpoint(credentials.apiUrl, ALEMI_ORDER_DOCUMENT_PATH),
+            body: form,
+            headers: {
+                ...commonHeaders(credentials, commandId, timestamp, canonical),
+                "X-Order-Id": orderId,
+                "X-Source-Message-Id": sourceMessageId,
+                "X-Document-Kind": kind,
+                "X-Document-Mime-Type": mimeType,
+                "X-Content-SHA256": contentSha256,
+            },
+            timeoutMs: options.timeoutMs || 15_000,
+        });
+        return assertAlemiResponse(response);
+    });
+}
+export async function reportPrintResult(input, options = {}) {
+    return withRotatedSecretRetry(input.instanceId, options, async (config) => {
+        const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
+        const commandId = firstString(options.commandId) || createAlemiCommandId();
+        const timestamp = unixTimestamp(options.nowMs);
+        const printJobId = firstString(input.printJobId);
+        const attemptNumber = Math.max(1, Math.trunc(Number(input.attemptNumber) || 0));
+        const status = input.status;
+        const externalReference = firstString(input.externalReference);
+        const errorCode = firstString(input.errorCode);
+        const errorMessage = firstString(input.errorMessage);
+        if (!printJobId)
+            throw new Error("ALEMI_PRINT_JOB_ID_REQUIRED");
+        if (status !== "completed" && status !== "failed")
+            throw new Error("ALEMI_PRINT_STATUS_INVALID");
+        const canonical = [
+            "print-result-v1",
+            commandId,
+            credentials.instance,
+            printJobId,
+            String(attemptNumber),
+            status,
+            externalReference,
+            errorCode,
+            errorMessage,
+        ].join("\n");
+        const rawBody = JSON.stringify({
+            print_job_id: printJobId,
+            attempt_number: attemptNumber,
+            status,
+            external_reference: externalReference,
+            error_code: errorCode,
+            error_message: errorMessage,
+        });
+        const response = await (options.transport || axiosTransport)({
+            url: endpoint(credentials.apiUrl, ALEMI_PRINT_RESULTS_PATH),
+            body: rawBody,
+            headers: {
+                "content-type": "application/json",
+                ...commonHeaders(credentials, commandId, timestamp, canonical),
+            },
+            timeoutMs: options.timeoutMs || 10_000,
+        });
+        return assertAlemiResponse(response);
+    });
+}

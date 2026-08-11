@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import axios from "axios";
-import { getRestaurantConfig } from "./platformConfig.service.js";
+import { getRestaurantConfig, refreshRestaurantConfig } from "./platformConfig.service.js";
 
 export const ALEMI_DEFAULT_API_URL = "https://hub.alemi.kz";
 export const ALEMI_COMMAND_PATH = "/v1/integrations/bot/commands";
@@ -41,10 +41,13 @@ export interface AlemiTransportResponse {
 
 export type AlemiTransport = (request: AlemiTransportRequest) => Promise<AlemiTransportResponse>;
 
+export type AlemiConfigRefresher = (instanceId: string) => Promise<Record<string, any> | null>;
+
 export interface AlemiCallOptions {
   config?: Record<string, any> | null;
   env?: Record<string, string | undefined>;
   transport?: AlemiTransport;
+  refreshConfig?: AlemiConfigRefresher;
   nowMs?: number;
   commandId?: string;
   timeoutMs?: number;
@@ -259,30 +262,57 @@ function assertAlemiResponse(response: AlemiTransportResponse) {
   return unwrapped;
 }
 
+function isAlemiAuthRejection(error: any) {
+  const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
+  return status === 401;
+}
+
+// The hub answers 401 when the request was signed with a secret the operator has
+// already rotated in the WhatsPro UI. The cached tenant config is re-read once,
+// authoritatively, and the request is signed and sent again exactly once - never
+// in a loop. Anything else, including a second 401, surfaces unchanged.
+async function withRotatedSecretRetry<T>(
+  instanceId: string,
+  options: AlemiCallOptions,
+  send: (config: Record<string, any> | null | undefined) => Promise<T>
+): Promise<T> {
+  const config = options.config === undefined
+    ? await getRestaurantConfig(instanceId).catch(() => null)
+    : options.config;
+  try {
+    return await send(config);
+  } catch (error: any) {
+    if (!isAlemiAuthRejection(error)) throw error;
+    const refresh = options.refreshConfig || refreshRestaurantConfig;
+    const fresh = await refresh(instanceId).catch(() => null);
+    if (!fresh) throw error;
+    return await send(fresh);
+  }
+}
+
 export async function callAlemiCommand(
   instanceId: string,
   command: AlemiCommandName,
   data: Record<string, unknown>,
   options: AlemiCallOptions = {}
 ) {
-  const config = options.config === undefined
-    ? await getRestaurantConfig(instanceId).catch(() => null)
-    : options.config;
-  const credentials = resolveAlemiCredentials(instanceId, config, options.env || process.env);
-  const request = buildAlemiSignedCommand({
-    command,
-    data,
-    credentials,
-    nowMs: options.nowMs,
-    commandId: options.commandId,
+  return withRotatedSecretRetry(instanceId, options, async (config) => {
+    const credentials = resolveAlemiCredentials(instanceId, config, options.env || process.env);
+    const request = buildAlemiSignedCommand({
+      command,
+      data,
+      credentials,
+      nowMs: options.nowMs,
+      commandId: options.commandId,
+    });
+    const response = await (options.transport || axiosTransport)({
+      url: request.url,
+      body: request.rawBody,
+      headers: request.headers,
+      timeoutMs: options.timeoutMs || 10_000,
+    });
+    return assertAlemiResponse(response);
   });
-  const response = await (options.transport || axiosTransport)({
-    url: request.url,
-    body: request.rawBody,
-    headers: request.headers,
-    timeoutMs: options.timeoutMs || 10_000,
-  });
-  return assertAlemiResponse(response);
 }
 
 function e164Kazakhstan(value: unknown) {
@@ -392,96 +422,94 @@ function extensionForMime(mimeType: string) {
 }
 
 export async function uploadOrderDocument(input: UploadOrderDocumentInput, options: AlemiCallOptions = {}) {
-  const config = options.config === undefined
-    ? await getRestaurantConfig(input.instanceId).catch(() => null)
-    : options.config;
-  const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
-  const commandId = firstString(options.commandId) || createAlemiCommandId();
-  const timestamp = unixTimestamp(options.nowMs);
-  const orderId = firstString(input.orderId);
-  const sourceMessageId = firstString(input.sourceMessageId);
-  const kind = input.documentKind || "receipt";
-  const mimeType = firstString(input.mimeType);
-  if (!orderId) throw new Error("ALEMI_ORDER_ID_REQUIRED");
-  if (!sourceMessageId) throw new Error("ALEMI_SOURCE_MESSAGE_ID_REQUIRED");
-  if (!mimeType || !input.bytes?.byteLength) throw new Error("ALEMI_RECEIPT_BYTES_REQUIRED");
-  const contentSha256 = crypto.createHash("sha256").update(input.bytes).digest("hex");
-  const canonical = [
-    "order-document-upload-v1",
-    commandId,
-    credentials.instance,
-    orderId,
-    sourceMessageId,
-    kind,
-    mimeType,
-    contentSha256,
-  ].join("\n");
-  const form = new FormData();
-  const blobBytes = new ArrayBuffer(input.bytes.byteLength);
-  new Uint8Array(blobBytes).set(input.bytes);
-  form.append(
-    "file",
-    new Blob([blobBytes], { type: mimeType }),
-    input.fileName || `receipt.${extensionForMime(mimeType)}`
-  );
-  const response = await (options.transport || axiosTransport)({
-    url: endpoint(credentials.apiUrl, ALEMI_ORDER_DOCUMENT_PATH),
-    body: form,
-    headers: {
-      ...commonHeaders(credentials, commandId, timestamp, canonical),
-      "X-Order-Id": orderId,
-      "X-Source-Message-Id": sourceMessageId,
-      "X-Document-Kind": kind,
-      "X-Document-Mime-Type": mimeType,
-      "X-Content-SHA256": contentSha256,
-    },
-    timeoutMs: options.timeoutMs || 15_000,
+  return withRotatedSecretRetry(input.instanceId, options, async (config) => {
+    const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
+    const commandId = firstString(options.commandId) || createAlemiCommandId();
+    const timestamp = unixTimestamp(options.nowMs);
+    const orderId = firstString(input.orderId);
+    const sourceMessageId = firstString(input.sourceMessageId);
+    const kind = input.documentKind || "receipt";
+    const mimeType = firstString(input.mimeType);
+    if (!orderId) throw new Error("ALEMI_ORDER_ID_REQUIRED");
+    if (!sourceMessageId) throw new Error("ALEMI_SOURCE_MESSAGE_ID_REQUIRED");
+    if (!mimeType || !input.bytes?.byteLength) throw new Error("ALEMI_RECEIPT_BYTES_REQUIRED");
+    const contentSha256 = crypto.createHash("sha256").update(input.bytes).digest("hex");
+    const canonical = [
+      "order-document-upload-v1",
+      commandId,
+      credentials.instance,
+      orderId,
+      sourceMessageId,
+      kind,
+      mimeType,
+      contentSha256,
+    ].join("\n");
+    const form = new FormData();
+    const blobBytes = new ArrayBuffer(input.bytes.byteLength);
+    new Uint8Array(blobBytes).set(input.bytes);
+    form.append(
+      "file",
+      new Blob([blobBytes], { type: mimeType }),
+      input.fileName || `receipt.${extensionForMime(mimeType)}`
+    );
+    const response = await (options.transport || axiosTransport)({
+      url: endpoint(credentials.apiUrl, ALEMI_ORDER_DOCUMENT_PATH),
+      body: form,
+      headers: {
+        ...commonHeaders(credentials, commandId, timestamp, canonical),
+        "X-Order-Id": orderId,
+        "X-Source-Message-Id": sourceMessageId,
+        "X-Document-Kind": kind,
+        "X-Document-Mime-Type": mimeType,
+        "X-Content-SHA256": contentSha256,
+      },
+      timeoutMs: options.timeoutMs || 15_000,
+    });
+    return assertAlemiResponse(response);
   });
-  return assertAlemiResponse(response);
 }
 
 export async function reportPrintResult(input: ReportPrintResultInput, options: AlemiCallOptions = {}) {
-  const config = options.config === undefined
-    ? await getRestaurantConfig(input.instanceId).catch(() => null)
-    : options.config;
-  const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
-  const commandId = firstString(options.commandId) || createAlemiCommandId();
-  const timestamp = unixTimestamp(options.nowMs);
-  const printJobId = firstString(input.printJobId);
-  const attemptNumber = Math.max(1, Math.trunc(Number(input.attemptNumber) || 0));
-  const status = input.status;
-  const externalReference = firstString(input.externalReference);
-  const errorCode = firstString(input.errorCode);
-  const errorMessage = firstString(input.errorMessage);
-  if (!printJobId) throw new Error("ALEMI_PRINT_JOB_ID_REQUIRED");
-  if (status !== "completed" && status !== "failed") throw new Error("ALEMI_PRINT_STATUS_INVALID");
-  const canonical = [
-    "print-result-v1",
-    commandId,
-    credentials.instance,
-    printJobId,
-    String(attemptNumber),
-    status,
-    externalReference,
-    errorCode,
-    errorMessage,
-  ].join("\n");
-  const rawBody = JSON.stringify({
-    print_job_id: printJobId,
-    attempt_number: attemptNumber,
-    status,
-    external_reference: externalReference,
-    error_code: errorCode,
-    error_message: errorMessage,
+  return withRotatedSecretRetry(input.instanceId, options, async (config) => {
+    const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
+    const commandId = firstString(options.commandId) || createAlemiCommandId();
+    const timestamp = unixTimestamp(options.nowMs);
+    const printJobId = firstString(input.printJobId);
+    const attemptNumber = Math.max(1, Math.trunc(Number(input.attemptNumber) || 0));
+    const status = input.status;
+    const externalReference = firstString(input.externalReference);
+    const errorCode = firstString(input.errorCode);
+    const errorMessage = firstString(input.errorMessage);
+    if (!printJobId) throw new Error("ALEMI_PRINT_JOB_ID_REQUIRED");
+    if (status !== "completed" && status !== "failed") throw new Error("ALEMI_PRINT_STATUS_INVALID");
+    const canonical = [
+      "print-result-v1",
+      commandId,
+      credentials.instance,
+      printJobId,
+      String(attemptNumber),
+      status,
+      externalReference,
+      errorCode,
+      errorMessage,
+    ].join("\n");
+    const rawBody = JSON.stringify({
+      print_job_id: printJobId,
+      attempt_number: attemptNumber,
+      status,
+      external_reference: externalReference,
+      error_code: errorCode,
+      error_message: errorMessage,
+    });
+    const response = await (options.transport || axiosTransport)({
+      url: endpoint(credentials.apiUrl, ALEMI_PRINT_RESULTS_PATH),
+      body: rawBody,
+      headers: {
+        "content-type": "application/json",
+        ...commonHeaders(credentials, commandId, timestamp, canonical),
+      },
+      timeoutMs: options.timeoutMs || 10_000,
+    });
+    return assertAlemiResponse(response);
   });
-  const response = await (options.transport || axiosTransport)({
-    url: endpoint(credentials.apiUrl, ALEMI_PRINT_RESULTS_PATH),
-    body: rawBody,
-    headers: {
-      "content-type": "application/json",
-      ...commonHeaders(credentials, commandId, timestamp, canonical),
-    },
-    timeoutMs: options.timeoutMs || 10_000,
-  });
-  return assertAlemiResponse(response);
 }

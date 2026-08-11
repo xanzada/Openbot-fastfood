@@ -3,6 +3,7 @@ import { getConfigSummary, runDependencyChecks } from "../services/diagnostics.s
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
+import { isDleWebhookAuthRequired } from "./dleWebhook.route.js";
 import { clearUserLang, getActiveShiftNotes, getUserLangState } from "../services/redis.service.js";
 function getRequestInstanceId(req) {
     return String(req.body?.instance || "").trim();
@@ -10,12 +11,6 @@ function getRequestInstanceId(req) {
 function getBearerToken(req) {
     const authorization = req.headers.authorization || "";
     return authorization.replace(/^Bearer\s+/i, "");
-}
-function envBool(name, fallback = false) {
-    const value = String(process.env[name] ?? "").trim().toLowerCase();
-    if (!value)
-        return fallback;
-    return ["1", "true", "yes", "on"].includes(value);
 }
 function isLegacyDleAction(value) {
     return new Set([
@@ -41,7 +36,8 @@ function isLegacyDleAction(value) {
 }
 function verifySecret(channel = "webhook") {
     return async (req, res, next) => {
-        if (channel === "kanban" && !envBool("DLE_WEBHOOK_AUTH_REQUIRED", false) && isLegacyDleAction(req.body?.action || req.body?.ajax_action)) {
+        // Shares the DLE webhook's flag so production fails closed here too.
+        if (channel === "kanban" && !isDleWebhookAuthRequired() && isLegacyDleAction(req.body?.action || req.body?.ajax_action)) {
             return next();
         }
         const expected = process.env.OPENBOT_WEBHOOK_SECRET;
@@ -130,11 +126,16 @@ export function systemRoute() {
         try {
             const io = req.app.get("io");
             const orderData = req.body || {};
+            const instanceId = getRequestInstanceId(req);
+            if (!instanceId) {
+                res.status(400).json({ success: false, error: "INSTANCE_REQUIRED" });
+                return;
+            }
             if (!io) {
                 res.status(500).json({ success: false, error: "Socket server error" });
                 return;
             }
-            io.emit("print_new_order", orderData);
+            io.to(instanceId).emit("print_new_order", orderData);
             console.info(`[SOCKET] Print signal sent. Order: #${orderData.order_id || orderData.id || "-"}`);
             res.status(200).json({ success: true, message: "Print signal sent to agent" });
         }

@@ -201,10 +201,14 @@ function platformHeaders() {
 
 export async function getRestaurantConfig(
   instanceId: string,
-  options: { forceRefresh?: boolean } = {}
+  options: { forceRefresh?: boolean; bypassBackup?: boolean } = {}
 ): Promise<Record<string, any> | null> {
   const safeInstanceId = String(instanceId || "").trim();
   const forceRefresh = options.forceRefresh === true;
+  // Auth paths need an authoritative read: the stale-tolerant fallbacks (the
+  // in-process value and the seven-day config_backup) may still carry a secret
+  // the operator has already rotated away.
+  const bypassBackup = options.bypassBackup === true;
   const memory = runtimeConfigMemory.get(safeInstanceId);
   if (!forceRefresh && memory && memory.expiresAt > Date.now()) return memory.value;
   const key = `config:${safeInstanceId}`;
@@ -230,11 +234,25 @@ export async function getRestaurantConfig(
       return config;
     }
     // Keep the tenant alive with the last known-good platform config during a network interruption.
+    if (bypassBackup) return null;
     return memory?.value || await getJsonCache<Record<string, any>>(backupKey);
   } catch (error: any) {
     console.error(`[PLATFORM] config read failed (${safeInstanceId}):`, error?.message || error);
+    if (bypassBackup) return null;
     return memory?.value || await getJsonCache<Record<string, any>>(backupKey);
   }
+}
+
+// An operator can rotate a restaurant's Alemi Secret Key at any moment. Both auth
+// directions ask for exactly one authoritative re-read here, which bypasses the
+// in-process value, the 300s `config:` entry and the seven-day `config_backup:`
+// entry, and rewrites all of them so the next normal read is already correct.
+// The secret itself is never logged.
+export async function refreshRestaurantConfig(instanceId: string): Promise<Record<string, any> | null> {
+  const safeInstanceId = String(instanceId || "").trim();
+  if (!safeInstanceId) return null;
+  console.warn(`[PLATFORM] forced config refresh (${safeInstanceId})`);
+  return getRestaurantConfig(safeInstanceId, { forceRefresh: true, bypassBackup: true });
 }
 
 export async function getAllRestaurantConfigs(options: { forceRefresh?: boolean } = {}): Promise<Record<string, any>[]> {

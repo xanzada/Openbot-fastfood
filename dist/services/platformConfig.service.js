@@ -74,6 +74,9 @@ export function normalizeRestaurantConfig(record, expectedInstanceId = "") {
         whatspro_send_url: firstValue(record.whatspro_send_url, record.whatsproSendUrl, record.WHATSPRO_SEND_URL),
         whatspro_presence_url: firstValue(record.whatspro_presence_url, record.whatsproPresenceUrl, record.WHATSPRO_PRESENCE_URL),
         whatspro_api_token: firstValue(record.whatspro_api_token, record.whatsproApiToken, record.WHATSPRO_API_TOKEN),
+        alemi_api_url: firstValue(record.alemi_api_url, record.alemiApiUrl, record.alemi_base_url, record.alemiBaseUrl),
+        alemi_instance: firstValue(record.alemi_instance, record.alemiInstance),
+        alemi_secret: firstValue(record.alemi_secret, record.alemiSecret, record.alemi_api_secret, record.alemiApiSecret),
         crm_secret_token: firstValue(record.crm_secret_token, record.crmSecretToken, record.secret_token, record.secretToken, record.secret_key, record.secretKey),
     };
 }
@@ -169,15 +172,20 @@ function platformHeaders() {
         throw new Error("Tenants platform API is not configured");
     return { authorization: `Bearer ${token}`, "content-type": "application/json" };
 }
-export async function getRestaurantConfig(instanceId) {
+export async function getRestaurantConfig(instanceId, options = {}) {
     const safeInstanceId = String(instanceId || "").trim();
+    const forceRefresh = options.forceRefresh === true;
+    // Auth paths need an authoritative read: the stale-tolerant fallbacks (the
+    // in-process value and the seven-day config_backup) may still carry a secret
+    // the operator has already rotated away.
+    const bypassBackup = options.bypassBackup === true;
     const memory = runtimeConfigMemory.get(safeInstanceId);
-    if (memory && memory.expiresAt > Date.now())
+    if (!forceRefresh && memory && memory.expiresAt > Date.now())
         return memory.value;
     const key = `config:${safeInstanceId}`;
     const backupKey = `config_backup:${safeInstanceId}`;
-    const cached = await getJsonCache(key);
-    if (cached) {
+    const cached = forceRefresh ? null : await getJsonCache(key);
+    if (!forceRefresh && cached) {
         runtimeConfigMemory.set(safeInstanceId, { value: cached, expiresAt: Date.now() + 60_000 });
         return cached;
     }
@@ -193,20 +201,37 @@ export async function getRestaurantConfig(instanceId) {
             return config;
         }
         // Keep the tenant alive with the last known-good platform config during a network interruption.
+        if (bypassBackup)
+            return null;
         return memory?.value || await getJsonCache(backupKey);
     }
     catch (error) {
         console.error(`[PLATFORM] config read failed (${safeInstanceId}):`, error?.message || error);
+        if (bypassBackup)
+            return null;
         return memory?.value || await getJsonCache(backupKey);
     }
 }
-export async function getAllRestaurantConfigs() {
-    if (allConfigsMemory && allConfigsMemory.expiresAt > Date.now())
+// An operator can rotate a restaurant's Alemi Secret Key at any moment. Both auth
+// directions ask for exactly one authoritative re-read here, which bypasses the
+// in-process value, the 300s `config:` entry and the seven-day `config_backup:`
+// entry, and rewrites all of them so the next normal read is already correct.
+// The secret itself is never logged.
+export async function refreshRestaurantConfig(instanceId) {
+    const safeInstanceId = String(instanceId || "").trim();
+    if (!safeInstanceId)
+        return null;
+    console.warn(`[PLATFORM] forced config refresh (${safeInstanceId})`);
+    return getRestaurantConfig(safeInstanceId, { forceRefresh: true, bypassBackup: true });
+}
+export async function getAllRestaurantConfigs(options = {}) {
+    const forceRefresh = options.forceRefresh === true;
+    if (!forceRefresh && allConfigsMemory && allConfigsMemory.expiresAt > Date.now())
         return allConfigsMemory.value;
     const cacheKey = "config:all_restaurants";
     const backupKey = "config_backup:all_restaurants";
-    const cached = await getJsonCache(cacheKey);
-    if (cached) {
+    const cached = forceRefresh ? null : await getJsonCache(cacheKey);
+    if (!forceRefresh && cached) {
         allConfigsMemory = { value: cached, expiresAt: Date.now() + 60_000 };
         return cached;
     }
@@ -259,6 +284,45 @@ export async function getRestaurantConfigByWhatsAppPhone(phone) {
         ].map((value) => normalizePhone(value));
         return candidates.some((candidate) => candidate && candidate === normalized);
     }) || null);
+}
+export function findRestaurantConfigByAlemiInstance(incomingInstance, configs) {
+    const incoming = String(incomingInstance || "").trim();
+    if (!incoming)
+        return null;
+    const matches = (Array.isArray(configs) ? configs : []).filter((config) => {
+        const alemiInstance = String(config?.alemi_instance || config?.alemiInstance || "").trim();
+        const internalInstance = String(config?.instance_id || config?.instance || "").trim();
+        return incoming === alemiInstance || incoming === internalInstance;
+    });
+    if (matches.length > 1) {
+        const error = new Error("ALEMI_INSTANCE_AMBIGUOUS");
+        error.statusCode = 409;
+        throw error;
+    }
+    return matches[0] || null;
+}
+export async function getRestaurantConfigByAlemiInstance(incomingInstance) {
+    const configs = await getAllRestaurantConfigs();
+    const cachedMatch = findRestaurantConfigByAlemiInstance(incomingInstance, configs);
+    if (cachedMatch) {
+        const internalInstance = String(cachedMatch.instance_id || cachedMatch.instance || "").trim();
+        // The broad SaaS index intentionally redacts Alemi secrets. Hydrate only
+        // the matched tenant through the master-protected per-instance endpoint.
+        return internalInstance
+            ? await getRestaurantConfig(internalInstance, { forceRefresh: true })
+            : null;
+    }
+    // A newly onboarded restaurant must work without waiting for the five-minute
+    // Redis cache. Only a miss forces one platform refresh, keeping the hot path
+    // cached while meeting the no-redeploy SaaS onboarding contract.
+    const freshConfigs = await getAllRestaurantConfigs({ forceRefresh: true });
+    const freshMatch = findRestaurantConfigByAlemiInstance(incomingInstance, freshConfigs);
+    if (!freshMatch)
+        return null;
+    const internalInstance = String(freshMatch.instance_id || freshMatch.instance || "").trim();
+    return internalInstance
+        ? await getRestaurantConfig(internalInstance, { forceRefresh: true })
+        : null;
 }
 function extractShporSearchText(item) {
     const memory = safeJsonObject(item.ideal_answer, null);

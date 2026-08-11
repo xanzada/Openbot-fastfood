@@ -1,14 +1,34 @@
 import { Router as createRouter } from "express";
 import { handleKanbanWebhook } from "../controllers/kanban.js";
-import { getRestaurantConfig } from "../services/platformConfig.service.js";
+import { getRestaurantConfig, getRestaurantConfigByAlemiInstance, refreshRestaurantConfig } from "../services/platformConfig.service.js";
 import { assertTenantSecret } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { auditError, auditInbound, auditProcessing, isNewDleAction } from "../services/auditLogger.service.js";
-function envBool(name, fallback = false) {
-    const value = String(process.env[name] ?? "").trim().toLowerCase();
-    if (!value)
-        return fallback;
-    return ["1", "true", "yes", "on"].includes(value);
+export function isDleWebhookAuthRequired() {
+    const configured = String(process.env.DLE_WEBHOOK_AUTH_REQUIRED ?? "").trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(configured))
+        return true;
+    if (["0", "false", "no", "off"].includes(configured))
+        return false;
+    // Production must never silently expose the webhook when the flag is absent
+    // or misspelled. Development and tests retain legacy opt-in behavior.
+    return process.env.NODE_ENV === "production";
+}
+const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
+export function mapIncomingAlemiInstance(value, env = process.env) {
+    const instance = String(value || "").trim();
+    if (!instance)
+        return "";
+    try {
+        const aliases = JSON.parse(String(env.ALEMI_INSTANCE_ALIASES_JSON || "{}"));
+        const mapped = aliases && typeof aliases === "object" && !Array.isArray(aliases)
+            ? String(aliases[instance] || "").trim()
+            : "";
+        return mapped && INSTANCE_RE.test(mapped) ? mapped : instance;
+    }
+    catch {
+        return instance;
+    }
 }
 function getRequestInstanceId(req) {
     return String(req.body?.instance || req.query?.instance || "").trim();
@@ -21,8 +41,13 @@ function firstValue(...values) {
     return "";
 }
 function normalizeAction(value) {
-    const action = String(value || "").trim();
+    const action = String(value || "").trim().toLowerCase();
     const aliases = {
+        "order.created": "new_order",
+        "order.status_changed": "status_changed",
+        "order.rejected": "order_rejected",
+        "shift_note.created": "shift_note_created",
+        "shift_note.deleted": "shift_note_deleted",
         create_order: "new_order",
         order_created: "new_order",
         update_status: "status_changed",
@@ -38,45 +63,147 @@ function normalizeAction(value) {
     };
     return aliases[action] || action;
 }
+function objectRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function firstObject(...values) {
+    for (const value of values) {
+        const record = objectRecord(value);
+        if (Object.keys(record).length)
+            return record;
+    }
+    return {};
+}
+function valueFrom(records, ...keys) {
+    for (const record of records) {
+        for (const key of keys) {
+            const value = record[key];
+            if (value !== undefined && value !== null && String(value).trim() !== "")
+                return value;
+        }
+    }
+    return "";
+}
+function normalizeExternalId(value) {
+    if (typeof value === "number" && Number.isSafeInteger(value))
+        return value;
+    const id = String(value ?? "").trim();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+        return id.toLowerCase();
+    }
+    return id;
+}
+export function isIgnoredAlemiEvent(value) {
+    return /^external(?:[-_.]?document)(?:[-_.]|$)/i.test(String(value || "").trim());
+}
 export function normalizeDlePayload(req) {
     const source = (req.body || {});
-    const action = normalizeAction(firstValue(source.action, source.ajax_action, req.query.action));
-    const order = source.order && typeof source.order === "object" ? source.order : {};
-    const note = source.note && typeof source.note === "object" ? source.note : {};
+    const payload = objectRecord(source.payload);
+    const data = objectRecord(source.data);
+    const payloadData = objectRecord(payload.data);
+    const dataPayload = objectRecord(data.payload);
+    const records = [source, payload, data, payloadData, dataPayload];
+    const rawEventType = valueFrom(records, "event_type", "eventType");
+    const rawAction = firstValue(rawEventType, valueFrom(records, "action", "ajax_action"), req.query.action);
+    const action = normalizeAction(rawAction);
+    const order = firstObject(...records.map((record) => record.order));
+    const note = firstObject(...records.map((record) => record.note), ...records.map((record) => record.shift_note), ...records.map((record) => record.shiftNote));
+    const legacySourceId = rawEventType ? "" : source.id;
+    const orderId = normalizeExternalId(firstValue(valueFrom(records, "order_id", "orderId"), legacySourceId, order.order_id, order.orderId, order.id, req.query.order_id));
     const normalized = {
+        ...dataPayload,
+        ...payloadData,
+        ...data,
+        ...payload,
         ...source,
         action,
-        instance: firstValue(source.instance, req.query.instance),
-        phone: firstValue(source.phone, source.client_phone, source.clientPhone, source.customer_phone, source.customerPhone, source.recipient, source.senderPhone, order.phone, req.query.phone),
-        order_id: firstValue(source.order_id, source.orderId, source.id, order.order_id, order.id, req.query.order_id),
-        new_status: firstValue(source.new_status, source.status, source.order_status, source.orderStatus, order.status),
-        total_price: firstValue(source.total_price, source.total, source.amount, source.sum, order.total_price, order.total),
-        address: firstValue(source.address, order.address),
-        comment: firstValue(source.comment, source.info, order.comment),
-        items: firstValue(source.items, source.goods, source.products, order.items),
-        lang: firstValue(source.lang, source.language, source.lang_code, source.locale),
-        is_pickup: firstValue(source.is_pickup, source.isPickup, source.pickup, source.delivery_type, source.deliveryType, order.is_pickup),
-        reason: firstValue(source.reason, source.cancel_reason, source.reject_reason),
-        note_id: firstValue(source.note_id, source.noteId, note.note_id, note.id),
-        shift_key: firstValue(source.shift_key, source.shiftKey, note.shift_key),
+        event_type: rawEventType,
+        event_id: normalizeExternalId(firstValue(valueFrom(records, "event_id", "eventId"), rawEventType ? source.id : "", req.headers?.["x-event-id"])),
+        request_id: normalizeExternalId(firstValue(valueFrom(records, "request_id", "requestId", "delivery_id", "deliveryId"), req.headers?.["x-request-id"])),
+        instance: firstValue(valueFrom(records, "instance", "instance_id", "instanceId"), order.instance, note.instance, req.query.instance),
+        phone: firstValue(valueFrom(records, "phone", "client_phone", "clientPhone", "customer_phone", "customerPhone", "recipient", "senderPhone"), order.phone, order.client_phone, order.clientPhone, order.customer_phone, order.customerPhone, req.query.phone),
+        order_id: orderId,
+        new_status: firstValue(valueFrom(records, "new_status", "status", "order_status", "orderStatus"), order.status),
+        total_price: firstValue(valueFrom(records, "total_price", "total", "amount", "sum"), order.total_price, order.total, order.amount),
+        address: firstValue(valueFrom(records, "address"), order.address),
+        comment: firstValue(valueFrom(records, "comment", "info"), order.comment),
+        items: firstValue(valueFrom(records, "items", "goods", "products"), order.items, order.goods, order.products),
+        lang: valueFrom(records, "lang", "language", "lang_code", "locale"),
+        is_pickup: firstValue(valueFrom(records, "is_pickup", "isPickup", "pickup", "delivery_type", "deliveryType"), order.is_pickup, order.isPickup),
+        reason: firstValue(valueFrom(records, "reason", "cancel_reason", "reject_reason"), order.reason),
+        note_id: normalizeExternalId(firstValue(valueFrom(records, "note_id", "noteId"), note.note_id, note.noteId, note.id)),
+        shift_key: firstValue(valueFrom(records, "shift_key", "shiftKey"), note.shift_key, note.shiftKey),
         // The note payload may arrive as an OBJECT ({note:{id,text}}). Picking the
         // object itself stringified it to "[object Object]" and that garbage was
         // saved into AI memory - and could never be deleted by text afterwards.
         // Only a STRING note field is a valid text candidate.
-        text: firstValue(source.text, source.note_text, note.text, note.note_text, source.message, typeof source.note === "string" ? source.note : ""),
-        expires_at: firstValue(source.expires_at, source.expiresAt, source.expires, source.until, note.expires_at),
-        created_by: firstValue(source.created_by, source.createdBy, note.created_by),
-        created_at: firstValue(source.created_at, source.createdAt, note.created_at),
-        deleted_at: firstValue(source.deleted_at, source.deletedAt, note.deleted_at),
+        text: firstValue(valueFrom(records, "text", "note_text"), note.text, note.note_text, valueFrom(records, "message"), typeof source.note === "string" ? source.note : ""),
+        expires_at: firstValue(valueFrom(records, "expires_at", "expiresAt", "expires", "until"), note.expires_at, note.expiresAt),
+        created_by: firstValue(valueFrom(records, "created_by", "createdBy"), note.created_by, note.createdBy),
+        created_at: firstValue(valueFrom(records, "created_at", "createdAt"), note.created_at, note.createdAt),
+        deleted_at: firstValue(valueFrom(records, "deleted_at", "deletedAt"), note.deleted_at, note.deletedAt),
     };
     if (action === "status_changed" && !normalized.status)
         normalized.status = normalized.new_status;
-    if (action === "new_order" && source.wait_time !== undefined)
-        normalized.wait_time = source.wait_time;
+    const waitTime = valueFrom(records, "wait_time", "waitTime");
+    if (action === "new_order" && waitTime !== "")
+        normalized.wait_time = waitTime;
     req.body = normalized;
 }
+export async function resolveIncomingAlemiTenant(req, res, next, lookup = getRestaurantConfigByAlemiInstance) {
+    const incomingInstance = getRequestInstanceId(req);
+    if (!incomingInstance)
+        return next();
+    try {
+        const config = await lookup(incomingInstance);
+        if (config) {
+            const internalInstance = String(config.instance_id || config.instance || "").trim();
+            if (!internalInstance) {
+                return res.status(401).json({ ok: false, error: "TENANT_RESOLUTION_FAILED" });
+            }
+            req.body.instance = internalInstance;
+            req.resolvedRestaurantConfig = config;
+            return next();
+        }
+        req.body.instance = mapIncomingAlemiInstance(incomingInstance);
+        return next();
+    }
+    catch (error) {
+        auditError("Alemi inbound tenant resolution failed", error, {
+            incomingInstance,
+            action: req.body?.action || req.body?.event_type || "",
+        });
+        const ambiguous = error?.message === "ALEMI_INSTANCE_AMBIGUOUS";
+        return res.status(ambiguous ? 409 : 401).json({
+            ok: false,
+            error: ambiguous ? "ALEMI_INSTANCE_AMBIGUOUS" : "TENANT_RESOLUTION_FAILED",
+        });
+    }
+}
+export async function verifyTenantSecretWithRotationRefresh(req, instanceId, options = {}) {
+    const loadConfig = options.loadConfig || ((id) => getRestaurantConfig(id));
+    const refreshConfig = options.refreshConfig || refreshRestaurantConfig;
+    const config = options.config || await loadConfig(instanceId);
+    try {
+        assertTenantSecret(req, config, "kanban");
+        return config;
+    }
+    catch (error) {
+        // A rotated Alemi Secret Key must not lock the tenant out for the lifetime of
+        // the cached config. One forced re-read, one re-check, then the original 403.
+        // A missing secret (TENANT_SECRET_NOT_CONFIGURED) still denies immediately.
+        if (error?.message !== "INVALID_TENANT_SECRET")
+            throw error;
+        const fresh = await refreshConfig(instanceId);
+        if (!fresh)
+            throw error;
+        assertTenantSecret(req, fresh, "kanban");
+        auditProcessing("DLE webhook tenant secret accepted after forced config refresh", { instanceId });
+        return fresh;
+    }
+}
 async function verifyDleWebhook(req, res, next) {
-    if (!envBool("DLE_WEBHOOK_AUTH_REQUIRED", false)) {
+    if (!isDleWebhookAuthRequired()) {
         auditProcessing("DLE webhook auth bypassed", {
             action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
             authRequired: false,
@@ -88,8 +215,11 @@ async function verifyDleWebhook(req, res, next) {
         const instanceId = getRequestInstanceId(req);
         if (!instanceId)
             return res.status(401).json({ ok: false, error: "unauthorized" });
-        const config = await getRestaurantConfig(instanceId);
-        assertTenantSecret(req, config, "kanban");
+        const config = await verifyTenantSecretWithRotationRefresh(req, instanceId, {
+            config: req.resolvedRestaurantConfig,
+        });
+        if (config)
+            req.resolvedRestaurantConfig = config;
         auditProcessing("DLE webhook tenant secret accepted", {
             action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
             instanceId,
@@ -105,22 +235,42 @@ async function verifyDleWebhook(req, res, next) {
         return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
     }
 }
-async function handleDleWebhook(req, res) {
+function requireStrictInstance(req, res, next) {
+    const instance = getRequestInstanceId(req);
+    if (!instance || !INSTANCE_RE.test(instance)) {
+        res.status(400).json({ success: false, error: instance ? "BAD_INSTANCE" : "MISSING_INSTANCE" });
+        return;
+    }
+    next();
+}
+export async function handleDleWebhook(req, res) {
     try {
-        const rawAction = req.body?.action || req.body?.ajax_action || req.query?.action || "";
-        auditInbound("Raw DLE webhook received", {
-            action: rawAction,
-            matchesNewDleLogic: isNewDleAction(rawAction),
-            sourceFiles: ["spa-internet-magazin - new.xml", "api_bot new.php"],
-            payload: req.body,
+        const action = req.body?.action || "";
+        auditInbound("DLE/Alemi webhook received", {
+            action,
+            eventType: req.body?.event_type || "",
+            eventId: req.body?.event_id || "",
+            requestId: req.body?.request_id || "",
+            matchesNewDleLogic: isNewDleAction(action),
         });
-        normalizeDlePayload(req);
-        if (!req.body?.instance) {
-            auditError("DLE webhook rejected: missing strict body.instance", new Error("MISSING_INSTANCE"), {
-                action: req.body?.action || rawAction,
-                payload: req.body,
+        if (!req.body?.instance || !INSTANCE_RE.test(String(req.body.instance))) {
+            const errorCode = req.body?.instance ? "BAD_INSTANCE" : "MISSING_INSTANCE";
+            auditError("DLE webhook rejected: invalid strict body.instance", new Error(errorCode), {
+                action,
+                eventType: req.body?.event_type || "",
+                eventId: req.body?.event_id || "",
             });
-            res.status(400).json({ success: false, error: "MISSING_INSTANCE" });
+            res.status(400).json({ success: false, error: errorCode });
+            return;
+        }
+        if (isIgnoredAlemiEvent(req.body?.event_type)) {
+            auditProcessing("Alemi external-document event acknowledged without customer notification", {
+                instance: req.body.instance,
+                eventType: req.body.event_type,
+                eventId: req.body.event_id || "",
+                requestId: req.body.request_id || "",
+            });
+            res.status(200).json({ success: true, ignored: true, event_id: req.body.event_id || undefined });
             return;
         }
         auditInbound("DLE webhook normalized", {
@@ -137,7 +287,8 @@ async function handleDleWebhook(req, res) {
             shift_key: req.body?.shift_key,
             source: req.body?.source,
             event_time: req.body?.event_time,
-            payload: req.body,
+            event_id: req.body?.event_id,
+            request_id: req.body?.request_id,
         });
         await handleKanbanWebhook(req, res);
     }
@@ -160,6 +311,9 @@ async function handleDleWebhook(req, res) {
 }
 export function dleWebhookRoute() {
     const router = createRouter();
-    router.post("/", verifyDleWebhook, handleDleWebhook);
+    router.post("/", (req, _res, next) => {
+        normalizeDlePayload(req);
+        next();
+    }, resolveIncomingAlemiTenant, requireStrictInstance, verifyDleWebhook, handleDleWebhook);
     return router;
 }

@@ -1,7 +1,6 @@
-import axios from "axios";
 import { redisClient } from "../services/redis.service.js";
-import { normalizePublicDomain, safeHttpAgent, safeHttpsAgent } from "../services/dle.service.js";
-import { getAllRestaurantConfigs } from "../services/platformConfig.service.js";
+import { callAlemiLegacyAction } from "../services/alemiApi.service.js";
+import { getAllRestaurantConfigs, getRestaurantConfig } from "../services/platformConfig.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 const ANALYTICS_TIMEZONE = process.env.ANALYTICS_TIMEZONE || "Asia/Almaty";
 const ANALYTICS_CRON_EXPR = process.env.ANALYTICS_CRON_EXPR || "59 23 * * *";
@@ -27,16 +26,6 @@ function asText(value) {
     if (typeof value === "number" || typeof value === "boolean")
         return String(value);
     return JSON.stringify(value);
-}
-function firstValue(...values) {
-    for (const value of values) {
-        if (value !== undefined && value !== null && String(value).trim() !== "")
-            return String(value).trim();
-    }
-    return "";
-}
-function tenantSecret(config) {
-    return firstValue(config.crm_secret_token, config.crmSecretToken, config.secret_token, config.secretToken, config.secret_key, config.secretKey);
 }
 function normalizeLeadRows(rows = []) {
     return (Array.isArray(rows) ? rows : [])
@@ -95,68 +84,49 @@ function normalizeAnalyticsPayload(aiData = {}, logs = []) {
 }
 async function fetchTodayCrmLeads(config, reportDate) {
     const instanceId = String(config.instance_id || "").trim();
-    const domain = String(config.domain || "").trim();
-    if (!instanceId || !domain) {
-        throw new Error("missing instance_id or domain");
-    }
-    const cleanDomain = await normalizePublicDomain(domain);
-    const token = tenantSecret(config);
-    if (!token)
-        throw new Error("missing tenant CRM secret");
-    const response = await axios.post(`${cleanDomain}/api_bot.php`, {
-        token,
-        action: "get_today_crm",
-        restaurant_id: instanceId,
-        date: reportDate,
-    }, {
-        timeout: 15000,
-        maxRedirects: 0,
-        httpAgent: safeHttpAgent,
-        httpsAgent: safeHttpsAgent,
-    });
-    if (response.data?.success === false) {
-        throw new Error(response.data.error || "get_today_crm returned success=false");
-    }
-    return normalizeLeadRows(response.data?.data || []);
+    if (!instanceId)
+        throw new Error("missing instance_id");
+    const result = await callAlemiLegacyAction("get_today_crm", { action: "get_today_crm", restaurant_id: instanceId, date: reportDate }, { config, timeoutMs: 15000 });
+    const rows = Array.isArray(result) ? result : result?.data || result?.rows || result?.leads || [];
+    return normalizeLeadRows(rows);
 }
 async function sendAnalyticsToSite(config, reportDate, analytics) {
     const instanceId = String(config.instance_id || "").trim();
-    const domain = String(config.domain || "").trim();
-    if (!instanceId || !domain) {
-        throw new Error("missing instance_id or domain");
-    }
-    const cleanDomain = await normalizePublicDomain(domain);
-    const token = tenantSecret(config);
-    if (!token)
-        throw new Error("missing tenant CRM secret");
-    const response = await axios.post(`${cleanDomain}/api_bot.php`, {
-        token,
-        action: "save_daily_analytics",
-        restaurant_id: instanceId,
-        report_date: reportDate,
-        ...analytics,
-    }, {
-        timeout: 15000,
-        maxRedirects: 0,
-        httpAgent: safeHttpAgent,
-        httpsAgent: safeHttpsAgent,
-    });
-    if (response.data?.success === false) {
-        throw new Error(response.data.error || "save_daily_analytics returned success=false");
-    }
+    if (!instanceId)
+        throw new Error("missing instance_id");
+    await callAlemiLegacyAction("save_daily_analytics", { action: "save_daily_analytics", restaurant_id: instanceId, report_date: reportDate, ...analytics }, { config, timeoutMs: 15000 });
     return true;
 }
 async function buildDailyAnalytics(logs = []) {
     return normalizeAnalyticsPayload({}, logs);
 }
+export async function hydrateAnalyticsTenantConfig(summaryConfig, loadConfig = getRestaurantConfig) {
+    const instanceId = String(summaryConfig?.instance_id || summaryConfig?.instance || "").trim();
+    if (!instanceId)
+        throw new Error("ALEMI_TENANT_INSTANCE_MISSING");
+    // The list endpoint may omit secrets and prime the ordinary runtime cache.
+    // Analytics must hydrate the exact tenant record before signing anything.
+    const runtimeConfig = await loadConfig(instanceId, { forceRefresh: true });
+    if (!runtimeConfig)
+        throw new Error("ALEMI_TENANT_CONFIG_NOT_FOUND");
+    const runtimeInstance = String(runtimeConfig.instance_id || runtimeConfig.instance || "").trim();
+    if (runtimeInstance !== instanceId)
+        throw new Error("ALEMI_TENANT_CONFIG_MISMATCH");
+    const hydrated = { ...summaryConfig, ...runtimeConfig, instance_id: instanceId, instance: instanceId };
+    const tenantSecret = String(hydrated.alemi_secret || hydrated.alemiSecret || hydrated.alemi_api_secret || hydrated.alemiApiSecret || "").trim();
+    if (!tenantSecret)
+        throw new Error("ALEMI_TENANT_SECRET_NOT_CONFIGURED");
+    return hydrated;
+}
 async function processRestaurantAnalytics(config, reportDate) {
-    const instanceId = String(config.instance_id || "").trim();
+    const hydratedConfig = await hydrateAnalyticsTenantConfig(config);
+    const instanceId = String(hydratedConfig.instance_id || "").trim();
     if (!instanceId)
         return;
-    const leads = await fetchTodayCrmLeads(config, reportDate);
+    const leads = await fetchTodayCrmLeads(hydratedConfig, reportDate);
     console.log(`[CRON] analytics ${instanceId}: bot_leads=${leads.length}, report_date=${reportDate}`);
     const analytics = await buildDailyAnalytics(leads);
-    await sendAnalyticsToSite(config, reportDate, analytics);
+    await sendAnalyticsToSite(hydratedConfig, reportDate, analytics);
     console.log(`[CRON] analytics saved: ${instanceId}`);
 }
 export async function processDailyAnalytics() {

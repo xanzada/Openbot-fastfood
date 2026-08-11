@@ -6,8 +6,15 @@ function hasReceiptMarker(aiComment) {
     const value = String(aiComment || "").trim();
     return /\[RECEIPT(?:_REVIEW)?\]/i.test(value) || /^сумма:\s*.+,\s*отправитель:\s*.+\s+\([^)]+\)$/iu.test(value);
 }
-export function classifyOrderStage(status, aiComment = "") {
+export function classifyOrderStage(status, aiComment = "", paymentStatus = "") {
     const key = statusKey(status);
+    const paymentKey = statusKey(String(paymentStatus || ""));
+    if (["receipt_review", "receipt_uploaded", "waiting_review", "pending_review"].includes(paymentKey) || ["receipt_review", "receipt_uploaded"].includes(key))
+        return "receipt_review";
+    if (["waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(paymentKey) || ["confirmed", "accepted", "waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(key))
+        return "awaiting_receipt";
+    if (paymentKey === "paid")
+        return "preparing";
     if (key === "pending") {
         if (hasPaymentRequest(aiComment))
             return "awaiting_receipt";
@@ -35,25 +42,34 @@ export function describeOrderStage(stage, language) {
     return { label: value[0], explanation: value[1] };
 }
 export function describeOrderStatus(status, language, aiComment = "") { return describeOrderStage(classifyOrderStage(status, aiComment), language).explanation; }
+function localizedItemName(value) { if (typeof value === "string" || typeof value === "number")
+    return String(value).trim(); if (!value || typeof value !== "object" || Array.isArray(value))
+    return ""; const record = value; for (const candidate of [record.ru, record.kk, record.kz, record.name, record.title, record.value]) {
+    const text = localizedItemName(candidate);
+    if (text)
+        return text;
+} return ""; }
 function customerItems(value) { if (!Array.isArray(value))
-    return []; return value.map((item) => { const name = String(item?.name || item?.title || "").trim().slice(0, 120); const quantity = Math.max(1, Math.min(99, Number(item?.qty || item?.quantity || item?.count || 1) || 1)); return name ? { name, quantity } : null; }).filter((x) => Boolean(x)); }
+    return []; return value.map((item) => { const name = localizedItemName(item?.name || item?.title || item?.product_name || item?.product?.name || item?.product?.title).slice(0, 120); const quantity = Math.max(1, Math.min(99, Number(item?.qty || item?.quantity || item?.count || 1) || 1)); return name ? { name, quantity } : null; }).filter((x) => Boolean(x)); }
 export function customerOrderFromRecord(value, expectedPhone, language) {
     const record = value?.order || value?.active_order || value || null;
-    const orderNumber = String(record?.id || record?.order_id || value?.order_id || "").trim().slice(0, 40);
+    const orderId = String(record?.id || record?.order_id || record?.uuid || value?.order_id || "").trim().slice(0, 80);
+    const orderNumber = String(record?.display_number || record?.order_number || record?.number || record?.order_no || orderId).trim().slice(0, 40);
     const status = String(record?.status || value?.status || "").trim().slice(0, 80);
-    if (!orderNumber || !status)
+    if (!orderId || !status)
         return { state: "not_found" };
-    const ownerPhone = normalizePhone(record?.phone || value?.phone || "");
+    const ownerPhone = normalizePhone(record?.phone || record?.phone_e164 || value?.phone || value?.phone_e164 || "");
     const requestedPhone = normalizePhone(expectedPhone);
     if (ownerPhone && requestedPhone && ownerPhone !== requestedPhone) {
         auditError("Customer order ownership mismatch", new Error("ORDER_PHONE_MISMATCH"), { orderNumber, expectedPhone: requestedPhone, ownerPhone });
         return { state: "not_found" };
     }
-    const stage = classifyOrderStage(status, record?.ai_comment || value?.ai_comment);
+    const stage = classifyOrderStage(status, record?.ai_comment || value?.ai_comment, record?.payment_status || value?.payment_status);
     const description = describeOrderStage(stage, language);
-    return { state: "found", order: { orderNumber, status, stage, statusLabel: description.label, statusExplanation: description.explanation, items: customerItems(record?.items || value?.items) } };
+    return { state: "found", order: { orderId, orderNumber, status, stage, statusLabel: description.label, statusExplanation: description.explanation, items: customerItems(record?.items || value?.items) } };
 }
 function orderIdOf(record) { return String(record?.id || record?.order_id || "").trim(); }
+function orderMatchesNumber(record, value) { const expected = String(value || "").trim(); return [record?.id, record?.order_id, record?.display_number, record?.order_number, record?.number, record?.order_no].some((candidate) => String(candidate || "").trim() === expected); }
 function createdAtOf(record) { return Date.parse(String(record?.created_at || "").replace(" ", "T")) || 0; }
 function orderPools(context) {
     if (!context)
@@ -117,7 +133,7 @@ export function pickConversationOrder(context, discussedNumber) {
     for (const pool of pools) {
         if (!Array.isArray(pool))
             continue;
-        const hit = pool.find((record) => orderIdOf(record) === String(discussedNumber).trim());
+        const hit = pool.find((record) => orderMatchesNumber(record, discussedNumber));
         if (hit) {
             pinned = hit;
             break;
