@@ -29,8 +29,23 @@ test("kanban auth accepts the site's scalar ?token= using timing-safe comparison
   assert.doesNotThrow(() => assertTenantSecret(req, { alemi_secret: "alemi-test-secret" }, "kanban"));
 });
 
-test("kanban expected secret is limited to the Alemi and legacy kanban keys", () => {
+function captureInfo(run: () => void): string[] {
+  const lines: string[] = [];
+  const before = console.info;
+  console.info = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    run();
+  } finally {
+    console.info = before;
+  }
+  return lines;
+}
+
+const RETIRED_MARK = "retired_kanban_secret";
+
+test("kanban expected secret is the Alemi key only; the retired kanban_secret is rejected", () => {
   assert.equal(getTenantSecret({ alemi_secret: "a" }, "kanban"), "a");
+  assert.equal(getTenantSecret({ kanban_secret: "legacy" }, "kanban"), "");
   assert.equal(getTenantSecret({ secret_key: "b" }, "kanban"), "");
   assert.equal(getTenantSecret({ crm_secret_token: "c" }, "kanban"), "");
   assert.throws(
@@ -46,6 +61,53 @@ test("kanban expected secret is limited to the Alemi and legacy kanban keys", ()
     { kanban_secret: "legacy", alemi_secret: "alemi" },
     "kanban",
   ));
+});
+
+test("the retired kanban_secret fails like any wrong token and logs one instance-only line", () => {
+  const config = { kanban_secret: "legacy-kanban-token", alemi_secret: "alemi", alemi_instance: "storefront_test_fe6d775" };
+  const retired = captureInfo(() => {
+    assert.throws(
+      () => assertTenantSecret({ headers: {}, body: {}, query: { token: "legacy-kanban-token" } }, config, "kanban"),
+      (error: any) => error?.message === "INVALID_TENANT_SECRET" && error?.statusCode === 403,
+    );
+  });
+  const flagged = retired.filter((line) => line.includes(RETIRED_MARK));
+  assert.equal(flagged.length, 1);
+  assert.match(flagged[0], /still using the retired kanban_secret token/);
+  assert.match(flagged[0], /storefront_test_fe6d775/);
+  assert.ok(!flagged[0].includes("legacy-kanban-token"), "log line must never contain the token value");
+
+  // Any other wrong token must not raise the retired-token flag.
+  const other = captureInfo(() => {
+    assert.throws(
+      () => assertTenantSecret({ headers: {}, body: {}, query: { token: "some-other-wrong" } }, config, "kanban"),
+      (error: any) => error?.message === "INVALID_TENANT_SECRET" && error?.statusCode === 403,
+    );
+  });
+  assert.equal(other.filter((line) => line.includes(RETIRED_MARK)).length, 0);
+
+  // A correct Alemi token must not raise it either.
+  const accepted = captureInfo(() => {
+    assert.doesNotThrow(() => assertTenantSecret({ headers: {}, body: {}, query: { token: "alemi" } }, config, "kanban"));
+  });
+  assert.equal(accepted.filter((line) => line.includes(RETIRED_MARK)).length, 0);
+});
+
+test("a tenant with only kanban_secret still denies, and the retired token is flagged", () => {
+  const lines = captureInfo(() => {
+    assert.throws(
+      () => assertTenantSecret(
+        { headers: {}, body: { instance: "kanban_only_tenant" }, query: { token: "legacy-kanban-token" } },
+        { kanban_secret: "legacy-kanban-token" },
+        "kanban",
+      ),
+      (error: any) => error?.message === "TENANT_SECRET_NOT_CONFIGURED" && error?.statusCode === 500,
+    );
+  });
+  const flagged = lines.filter((line) => line.includes(RETIRED_MARK));
+  assert.equal(flagged.length, 1);
+  assert.match(flagged[0], /kanban_only_tenant/);
+  assert.ok(!flagged[0].includes("legacy-kanban-token"));
 });
 
 test("kanban auth accepts the deployment Alemi secret only for its named instance", () => {

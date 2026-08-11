@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { auditDecision } from "./auditLogger.service.js";
 
 export function safeCompare(a: unknown, b: unknown): boolean {
   const left = Buffer.from(String(a || ""), "utf8");
@@ -42,8 +43,10 @@ function getTenantSecrets(config: Record<string, any> | null | undefined, channe
   // The kanban webhook only ever presents the Alemi Secret Key, so it must not
   // accept credentials issued for other integrations (CRM tokens, the DLE
   // secret_key, the generic webhook secrets) as an authorization value.
+  // kanban_secret is retired: WhatsPro auto-generated it for itself and rotates
+  // it silently, so the hub never holds it and it can no longer authorize.
   const values = channel === "kanban"
-    ? [config.kanban_secret, config.alemi_secret]
+    ? [config.alemi_secret]
     : [config.webhook_secret, config.instance_secret, config.tenant_secret];
 
   return [...new Set(values.map(scalarSecret).filter(Boolean))];
@@ -66,6 +69,16 @@ export function getTenantSecret(config: Record<string, any> | null | undefined, 
   return getTenantSecrets(config, channel)[0] || "";
 }
 
+function resolveInstanceId(req: any, config: Record<string, any> | null | undefined) {
+  return scalarSecret(config?.alemi_instance)
+    || scalarSecret(config?.alemiInstance)
+    || scalarSecret(req?.body?.instance)
+    || scalarSecret(req?.query?.instance)
+    || scalarSecret(config?.instance_id)
+    || scalarSecret(config?.instance)
+    || "unknown";
+}
+
 function alemiDeploymentSecret(req: any, config: Record<string, any> | null | undefined) {
   // Same rule as resolveAlemiCredentials(): the process-wide credential belongs
   // to one explicitly named legacy restaurant, so it may only authorize that
@@ -84,6 +97,24 @@ function alemiDeploymentSecret(req: any, config: Record<string, any> | null | un
   return scalarSecret(process.env.ALEMI_SECRET);
 }
 
+function noteRetiredKanbanToken(
+  req: any,
+  config: Record<string, any> | null | undefined,
+  channel: string,
+  incoming: string,
+) {
+  // Diagnostic only: never changes the outcome. Records that some caller is
+  // still presenting the retired auto-generated kanban token so it can be
+  // identified after deploy. The token value itself is never logged.
+  if (channel !== "kanban") return;
+  if (!safeCompare(incoming, scalarSecret(config?.kanban_secret))) return;
+  auditDecision("kanban caller is still using the retired kanban_secret token; request denied", {
+    instance: resolveInstanceId(req, config),
+    channel,
+    reason: "retired_kanban_secret",
+  });
+}
+
 export function assertTenantSecret(req: any, config: Record<string, any> | null | undefined, channel = "webhook") {
   const expected = getTenantSecrets(config, channel);
   if (channel === "kanban") {
@@ -95,6 +126,7 @@ export function assertTenantSecret(req: any, config: Record<string, any> | null 
   const incoming = getIncomingTenantSecret(req);
 
   if (!expected.length) {
+    noteRetiredKanbanToken(req, config, channel, incoming);
     const error: any = new Error("TENANT_SECRET_NOT_CONFIGURED");
     error.statusCode = 500;
     throw error;
@@ -107,6 +139,7 @@ export function assertTenantSecret(req: any, config: Record<string, any> | null 
     matches = safeCompare(incoming, candidate) || matches;
   }
   if (!matches) {
+    noteRetiredKanbanToken(req, config, channel, incoming);
     const error: any = new Error("INVALID_TENANT_SECRET");
     error.statusCode = 403;
     throw error;
