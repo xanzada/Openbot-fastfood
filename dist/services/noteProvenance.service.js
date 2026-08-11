@@ -1,5 +1,5 @@
 const STOP_WORDS = new Set([
-    "уақытша", "уакытша", "временно", "қазір", "казир", "сейчас", "бүгін", "бугин", "сегодня", "болмайды", "жоқ", "жок", "нет", "нету", "мин", "минут", "сағат", "сагат", "час", "дейін", "дейин", "до", "қабылдамаймыз", "кабылдамаймыз", "сатылмайды", "нельзя", "недоступен", "недоступна", "недоступны", "закончился", "закончилась", "закончились", "отсутствует", "отсутствуют", "не", "бар", "есть",
+    "уақытша", "уакытша", "временно", "қазір", "казир", "сейчас", "бүгін", "бугин", "сегодня", "болмайды", "жоқ", "жок", "нет", "нету", "мин", "минут", "сағат", "сагат", "час", "дейін", "дейин", "до", "қабылдамаймыз", "кабылдамаймыз", "сатылмайды", "нельзя", "недоступен", "недоступна", "недоступны", "закончился", "закончилась", "закончились", "отсутствует", "отсутствуют", "не", "бар", "есть", "стоп", "стоплист", "лист",
 ]);
 function normalize(value) {
     return String(value || "").toLowerCase().replace(/[ё]/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
@@ -7,18 +7,33 @@ function normalize(value) {
 function noteId(note) {
     return String(note?.noteId || note?.id || "").trim();
 }
+const UNAVAILABLE_MARKER_RE = /(?:временно|уақытша|уакытша|нету?|жоқ|жок|болмайды|недоступ|законч|отсутств|сатылмайды|бітті|битти|таусыл|қалмады|калмады|стоп)/iu;
 export function noteConstraintTerms(text) {
     return normalize(text).split(" ")
-        .filter((token) => token.length >= 3 && !STOP_WORDS.has(token) && !/^\d+$/.test(token))
+        // A marker of unavailability is never part of what is unavailable. STOP_WORDS
+        // covers the common spellings by hand, but an inflected one ("таусылды",
+        // "бітті") slipped through and was then required to appear in the dish text,
+        // so the note matched nothing at all.
+        .filter((token) => token.length >= 3 && !STOP_WORDS.has(token) && !UNAVAILABLE_MARKER_RE.test(token) && !/^\d+$/.test(token))
         .slice(0, 12);
 }
-const UNAVAILABLE_MARKER_RE = /(?:временно|уақытша|уакытша|нету?|жоқ|жок|болмайды|недоступ|законч|отсутств|сатылмайды)/iu;
+// A shift note is not always an availability fact. Operators also leave purely
+// informational ones ("Бүгін Цезарь салаты қосылды", "Жаңа промо: 2+1"), and
+// there is no marker of unavailability in those at all. Falling back to the
+// first clause turned such a note into a constraint, so publicNoteConstraints()
+// published the newly ADDED dish as `unavailable_now` and the bot told guests it
+// was out - the one failure mode that costs a sale outright. A note now
+// constrains the menu only when it actually says something is unavailable;
+// anything else contributes nothing, which is the safe direction because raw
+// note text never reaches the model either way.
 function availabilityConstraintTerms(text) {
     const raw = String(text || "").trim();
     const clauses = raw.split(/[.!?;\r\n]+/u).map((part) => part.trim()).filter(Boolean);
     // Operators often append an instruction or audit marker after the actual
     // availability fact. Only the factual clause may define menu constraints.
-    const factualClause = clauses.find((clause) => UNAVAILABLE_MARKER_RE.test(clause)) || clauses[0] || raw;
+    const factualClause = clauses.find((clause) => UNAVAILABLE_MARKER_RE.test(clause));
+    if (!factualClause)
+        return [];
     return noteConstraintTerms(factualClause);
 }
 export function matchingNoteIds(notes = [], value) {

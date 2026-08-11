@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { menuItemBlockedByNotes } from "../src/services/noteProvenance.service.js";
+import { menuItemBlockedByNotes, publicNoteConstraints } from "../src/services/noteProvenance.service.js";
 
 // Real rows from the live tenant menu: the doner never names "лаваш" in its
 // title, only deep inside the description, which is exactly where an honest
@@ -50,4 +50,23 @@ test("a one-word category note still clears that category", () => {
 test("an empty note list blocks nothing", () => {
   assert.equal(menuItemBlockedByNotes([], DONER).blocked, false);
   assert.equal(menuItemBlockedByNotes([{ id: "1", text: "жоқ" }], DONER).blocked, false);
+});
+
+// An operator note is not always an availability fact. This one announces an
+// ADDITION, and treating its words as constraints published the new dish as
+// unavailable_now - so the bot told guests the dish the note was advertising had
+// run out.
+test("an informational note constrains nothing at all", () => {
+  const notes = [{ id: "77", text: "Бүгін Пицца пеперони акцияда, 2+1. Клиенттерге айт." }];
+  assert.equal(menuItemBlockedByNotes(notes, PEPPERONI).blocked, false);
+  assert.equal(menuItemBlockedByNotes(notes, DONER).blocked, false);
+  assert.deepEqual(publicNoteConstraints(notes), []);
+});
+
+test("an unavailability fact still constrains, whichever word the operator used", () => {
+  for (const text of ["Пицца пеперони бітті", "Пицца пеперони таусылды", "Пицца пеперони стоп-лист"]) {
+    const notes = [{ id: "78", text }];
+    assert.equal(menuItemBlockedByNotes(notes, PEPPERONI).blocked, true, text);
+    assert.equal(menuItemBlockedByNotes(notes, FOUR_SEASONS).blocked, false, text);
+  }
 });
