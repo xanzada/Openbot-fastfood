@@ -7,6 +7,10 @@ const DIRECT_MENU_LINK_RE = /(сілтеме|ссылка|link|линк|ката
 const PAYMENT_DETAILS_RE = /(реквизит|kaspi|каспи|halyk|халық|оплат\p{L}*|төлем|аудар\p{L}*|перевод).*(?:қалай|қайда|как|куда|номер|счет|шот|сілтеме|ссылка)?/iu;
 const RECEIPT_EVENT_RE = /(чек(?:ті|ті\s+жібер| отправ| скин)|receipt|түбірте[кг]|квитанц|ақшаны\s+аудар|деньги\s+перев[её]л)/iu;
 const BUSINESS_INFO_RE = /(мекенжай|адрес|қайда\s*(?:орналас|тұр)|қай\s*жерде|орналасқан|где\s*(?:находит|вы)|жұмыс\s*уақыт|жұмыс\s*істей|график|режим\s*работ|до\s*скольк|сколько.{0,30}(?:работ|открыт)|сағат\s*нешеге|телефон|номер\s*(?:рестора|заведен)|қалай\s*табам|бүгін\s*ашық|сегодня\s*открыт|түнде\s*жұмыс|работа\p{L}*\s*ночью)/iu;
+// The kitchen's live state is the first thing the operator changes and the last
+// thing a cached snapshot knows. Any question about waiting, closure or whether
+// an order can be taken right now must re-read it instead of trusting context.
+const KITCHEN_STATUS_RE = /(қанша\s*(?:уақыт|минут)|неше\s*минут|күтем|күту\s*уақыт|дайын\s*бол|сколько\s*(?:ждать|минут|по\s*времени)|ждать|ожидан|как\s*(?:долго|быстро)|быстро\s*ли|жеткіз\p{L}*\s*(?:бар|қанша|уақыт)|доставка\s*(?:работает|есть|сколько)|өзім\s*алып|самовывоз|навынос|қабылдай\s*(?:ма|сыз\s*ба)|принима\p{L}*\s*заказ|ашық\s*па|жабық\s*па|закрыт\p{L}*\s*ли|открыт\p{L}*\s*ли|жұмыс\s*(?:істеп\s*)?(?:тұр\s*ма|жасай\s*ма))/iu;
 function add(plan, tool, reason) {
     if (plan.requiredTools.includes(tool))
         return;
@@ -37,6 +41,9 @@ export function resolveAgentToolPlan(ctx) {
     }
     if (intentMatches(BUSINESS_INFO_RE, text)) {
         add(plan, "getBusinessInfo", "current_business_information");
+    }
+    if (intentMatches(KITCHEN_STATUS_RE, text)) {
+        add(plan, "getKitchenStatus", "live_kitchen_status");
     }
     if (!immediateServiceIncident && intentMatches(MENU_LOOKUP_RE, text)) {
         add(plan, "searchMenu", "live_menu_lookup");

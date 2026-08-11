@@ -89,8 +89,13 @@ test("customer order projection excludes internal and private order fields", () 
 
   assert.equal(lookup.state, "found");
   assert.deepEqual(Object.keys(lookup.state === "found" ? lookup.order : {}).sort(), ["items", "orderId", "orderNumber", "stage", "status", "statusExplanation", "statusLabel"]);
-  assert.ok(!FAST_FOOD_SKILL_NAMES.includes("getKitchenStatus" as never));
-  assert.ok(!FAST_FOOD_SKILL_NAMES.includes("getShiftNotes" as never));
+  // These two tools were once deliberately left unregistered to keep kitchen
+  // internals away from the guest. The projection above is what actually enforces
+  // that, and the tools only expose the same live runtime facts the prompt already
+  // carries — so they are registered now, and the operator's kitchen state is
+  // re-readable mid-conversation instead of frozen at boot.
+  assert.ok(FAST_FOOD_SKILL_NAMES.includes("getKitchenStatus" as never));
+  assert.ok(FAST_FOOD_SKILL_NAMES.includes("getShiftNotes" as never));
 });
 
 test("menu projection exposes only customer-facing fields", () => {

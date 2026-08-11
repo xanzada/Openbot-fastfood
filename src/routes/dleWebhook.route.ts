@@ -5,6 +5,7 @@ import { getRestaurantConfig, getRestaurantConfigByAlemiInstance, refreshRestaur
 import { assertTenantSecret } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { auditError, auditInbound, auditProcessing, isNewDleAction } from "../services/auditLogger.service.js";
+import { describeBodyShape } from "../utils/bodyShape.js";
 
 export function isDleWebhookAuthRequired() {
   const configured = String(process.env.DLE_WEBHOOK_AUTH_REQUIRED ?? "").trim().toLowerCase();
@@ -52,6 +53,28 @@ function normalizeAction(value: unknown) {
     "order.rejected": "order_rejected",
     "shift_note.created": "shift_note_created",
     "shift_note.deleted": "shift_note_deleted",
+    // The operator's «подтверждение» press is the successor of the legacy
+    // request_payment step: the guest is told the food is available and how much
+    // to pay. Without these three lines the confirm produced a 400 BAD_ACTION and
+    // the guest heard nothing after "ожидайте 1-2 минуты".
+    "order.confirmed": "request_payment",
+    "order.accepted": "request_payment",
+    "payment.requested": "request_payment",
+    "payment.request": "request_payment",
+    // Everything else hub can emit about an order is a status transition; routing
+    // it here means an unknown status is answered 200-and-silent instead of a 400
+    // that hub counts as a webhook error and retries for hours.
+    "order.paid": "status_changed",
+    "payment.received": "status_changed",
+    "order.updated": "status_changed",
+    "order.ready": "status_changed",
+    "order.completed": "status_changed",
+    "order.delivered": "status_changed",
+    "order.cancelled": "order_rejected",
+    "order.canceled": "order_rejected",
+    "kitchen.status_changed": "update_kitchen_status",
+    "kitchen.updated": "update_kitchen_status",
+    "shift_note.updated": "shift_note_created",
     create_order: "new_order",
     order_created: "new_order",
     update_status: "status_changed",
@@ -67,6 +90,11 @@ function normalizeAction(value: unknown) {
   };
   return aliases[action] || action;
 }
+
+// Hub emits the confirm both as its own event and as a status transition. Both
+// must land on one internal action with one lock key, or a restaurant that sends
+// both shapes would ask the guest to pay twice.
+const CONFIRM_STATUSES = new Set(["confirmed", "accepted", "approved"]);
 
 function objectRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
@@ -200,6 +228,13 @@ export function normalizeDlePayload(req: Request) {
   };
 
   if (action === "status_changed" && !normalized.status) normalized.status = normalized.new_status;
+  // A confirm delivered as `order.status_changed` + status=confirmed is the same
+  // operator press as `order.confirmed`. Collapsing it here (not in the controller)
+  // keeps one action name, one lock key and one guest message for both shapes.
+  if (normalized.action === "status_changed"
+    && CONFIRM_STATUSES.has(String(normalized.new_status || normalized.status || "").trim().toLowerCase())) {
+    normalized.action = "request_payment";
+  }
   const waitTime = firstValue(
     valueFrom(records, "wait_time", "waitTime", "wait_time_minutes", "waitTimeMinutes"),
     valueFrom([order], "wait_time", "wait_time_minutes", "waitTimeMinutes"),
@@ -209,24 +244,10 @@ export function normalizeDlePayload(req: Request) {
 }
 
 /**
- * Keys and value types only — never values. A real order.created was thrown away
- * with `invalid phone` and nothing in the logs said what hub had actually sent,
- * because no raw body is logged anywhere. This is the smallest thing that makes
- * the next unknown field name visible without putting guest data in the log.
+ * Re-exported from utils so existing importers (and tests) keep one entry point
+ * while the controller can use it without a circular import.
  */
-export function describeBodyShape(value: unknown, depth = 0): string {
-  if (Array.isArray(value)) {
-    return depth >= 2 ? "array" : `array<${value.length ? describeBodyShape(value[0], depth + 1) : "empty"}>`;
-  }
-  if (value && typeof value === "object") {
-    if (depth >= 2) return "object";
-    return `{${Object.entries(value as Record<string, any>)
-      .slice(0, 60)
-      .map(([key, item]) => `${key}:${describeBodyShape(item, depth + 1)}`)
-      .join(",")}}`;
-  }
-  return value === null ? "null" : typeof value;
-}
+export { describeBodyShape } from "../utils/bodyShape.js";
 
 type AlemiTenantLookup = (incomingInstance: string) => Promise<Record<string, any> | null>;
 

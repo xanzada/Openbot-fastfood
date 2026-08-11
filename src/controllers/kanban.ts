@@ -19,6 +19,7 @@ import { notifyDeveloperSystemFailure } from "../services/developerNotify.servic
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
 import { normalizeSiteLanguage, resolveSiteOutboundLanguage } from "../services/languagePolicy.service.js";
+import { describeBodyShape } from "../utils/bodyShape.js";
 
 type Language = "kk" | "ru";
 type PaymentDetail = { label: string; value: string; source?: string };
@@ -361,6 +362,8 @@ export const legacyStatusTemplates: Record<Language, Record<string, string>> = {
   kk: {
     review: "⏳ Чек тексерілуде. Оператор растаған соң дайындаймыз.",
     paid: "✅ Төлем расталды, тапсырысыңыз қабылданды. Дайындалуда! 🍳",
+    preparing: "🍳 Тапсырысыңыз дайындалып жатыр. Дайын болғанда хабарлаймыз.",
+    ready_delivery: "✅ Тапсырысыңыз дайын, курьерге беруге дайындалып жатыр.",
     delivery: "🛵 Тапсырысыңыз курьерге берілді, жеткізу жолында.",
     completed: "🎉 Тапсырыс сәтті аяқталды, асыңыз дәмді болсын!",
     pickup_ready: "✅ Тапсырысыңыз дайын! Келіп алып кетуіңізге болады.",
@@ -369,12 +372,49 @@ export const legacyStatusTemplates: Record<Language, Record<string, string>> = {
   ru: {
     review: "⏳ Чек проверяется. Как только оператор подтвердит, начнём готовить.",
     paid: "✅ Оплата подтверждена, заказ принят. Готовим! 🍳",
+    preparing: "🍳 Ваш заказ готовится. Сообщим, когда будет готов.",
+    ready_delivery: "✅ Ваш заказ готов, передаём курьеру.",
     delivery: "🛵 Ваш заказ передан курьеру и уже в пути.",
     completed: "🎉 Заказ успешно завершён, приятного аппетита!",
     pickup_ready: "✅ Ваш заказ готов! Можете забирать.",
     cancelled: "❌ Ваш заказ отменён. При необходимости можете оформить новый заказ через меню.",
   },
 };
+
+// Hub's status vocabulary is wider than the template table. Every synonym that
+// means the same thing to a guest is folded onto one key here, so a rename on the
+// site side cannot turn a real transition into a silent 200.
+const STATUS_ALIASES: Record<string, string> = {
+  on_the_way: "delivery",
+  on_delivery: "delivery",
+  in_delivery: "delivery",
+  delivering: "delivery",
+  courier: "delivery",
+  cooking: "preparing",
+  in_progress: "preparing",
+  preparation: "preparing",
+  accepted_kitchen: "preparing",
+  done: "completed",
+  finished: "completed",
+  delivered: "completed",
+  closed: "completed",
+  canceled: "cancelled",
+  rejected: "cancelled",
+  refunded: "cancelled",
+  payment_review: "review",
+  waiting_payment: "review",
+};
+
+export function resolveStatusTemplateKey(status: string, isPickup: boolean): string {
+  const raw = String(status || "").trim().toLowerCase();
+  const normalized = STATUS_ALIASES[raw] || raw;
+  // "Ready" is two different guest messages: pickup means come and get it,
+  // delivery means the courier is next. "Completed" on a pickup order is the
+  // legacy way hub said "ready to collect".
+  if (normalized === "ready") return isPickup ? "pickup_ready" : "ready_delivery";
+  if (normalized === "completed" && isPickup) return "pickup_ready";
+  return normalized;
+}
 
 function extractShiftNotePayload(body: Record<string, unknown>) {
   const noteId = cleanInline(body.note_id || body.noteId || body.id, 80);
@@ -517,7 +557,17 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       return;
     }
     if (!VALID_ACTIONS.has(action)) {
-      auditDecision("Rejected webhook: invalid action", { orderId: rawOrderId, action, instance });
+      // A signal the site emits and the bot does not understand is a dropped
+      // guest message, not a routine decision: it must be visible as an error
+      // with the payload shape needed to add the alias.
+      auditError("Rejected webhook: invalid action", new Error("BAD_ACTION"), {
+        orderId: rawOrderId,
+        action,
+        instance,
+        eventType: body.event_type || "",
+        eventId: body.event_id || "",
+        bodyShape: (req as any).inboundBodyShape || describeBodyShape(body),
+      });
       res.status(400).json({ ok: false, error: "BAD_ACTION" });
       return;
     }
@@ -658,11 +708,18 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       textMessage = buildLegacyRejectedMessage(body, lang);
     }
     if (action === "status_changed") {
-      const effectiveStatus = newStatus === "completed" && isPickup ? "pickup_ready" : newStatus;
+      const effectiveStatus = resolveStatusTemplateKey(newStatus, isPickup);
       auditDecision("Resolving status_changed template", { orderId, action, instance, lang, newStatus, effectiveStatus });
       textMessage = legacyStatusTemplates[lang][effectiveStatus] || "";
       if (!textMessage) {
-        auditDecision("Status ignored: no client template configured", { orderId, action, instance, lang, newStatus, effectiveStatus });
+        // Nothing was sent, so nothing must be suppressed: a 24 h lock left behind
+        // here would swallow the retry of this very order+status once a template
+        // for it exists, or once the operator moves it forward again.
+        if (lockAcquired && lockKey) {
+          await redisClient.del(lockKey).catch(() => undefined);
+          lockAcquired = false;
+        }
+        auditDecision("Status ignored: no client template configured", { orderId, action, instance, lang, newStatus, effectiveStatus, lockReleased: true });
         res.status(200).json({ success: true, message: "Ignored status not intended for client" });
         return;
       }

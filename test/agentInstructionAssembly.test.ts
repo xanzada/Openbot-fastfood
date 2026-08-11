@@ -20,5 +20,9 @@ test("tenant voice is injected exactly once and remains bounded", () => {
 
   assert.equal(instructions.split(marker).length - 1, 1);
   assert.ok(!instructions.includes("TENANT_INSTRUCTIONS_START"));
-  assert.ok(instructions.length < 16_000, `assembled prompt is unexpectedly large: ${instructions.length}`);
+  // The bound guards against a runaway prompt, not against a specific number.
+  // Raised from 16 000 when getKitchenStatus/getShiftNotes were registered: two
+  // more tool descriptions are ~250 chars, and the old ceiling sat ~60 chars above
+  // the then-current size, so any real addition would have tripped it.
+  assert.ok(instructions.length < 16_500, `assembled prompt is unexpectedly large: ${instructions.length}`);
 });

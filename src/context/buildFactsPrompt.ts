@@ -353,6 +353,8 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           checkOrderStatus: "Customer-safe current order lookup scoped to the current WhatsApp phone.",
       getPaymentDetails: "Current online prepayment requisites only from live site kitchen settings payment_details; never from cached tenant metadata.",
       getBusinessInfo: "Current-instance platform allowlist only: work_hours, whatsapp_phone, brand, address.",
+      getKitchenStatus: "Live kitchen re-read (accepting orders, work hours, wait time, emergency, delivery/pickup). Use before answering about waiting or closure; operational_runtime may be stale.",
+      getShiftNotes: "Live operator shift-notes re-read. Use before claiming an item is unavailable.",
         },
         ...menuSnapshotBlock(ctx),
         payment_policy: ONLINE_PREPAYMENT_POLICY,

@@ -147,7 +147,7 @@ test("high-confidence live intents are code-gated to the correct tools", () => {
   assert.deepEqual(plan("Заказ №123 қайда?"), ["checkOrderStatus"]);
   assert.deepEqual(plan("Kaspi-ге қалай төлеймін?"), ["getPaymentDetails"]);
   assert.deepEqual(plan("Мекенжай мен жұмыс уақыты қандай?"), ["getBusinessInfo"]);
-  assert.deepEqual(plan("Қанша уақыт күтемін?"), []);
+  assert.deepEqual(plan("Қанша уақыт күтемін?"), ["getKitchenStatus"]);
   assert.deepEqual(plan("Сколько вы сегодня работаете?"), ["getBusinessInfo"]);
   assert.deepEqual(plan("Сәлем, бүгін көңіл-күй қалай?"), []);
 });

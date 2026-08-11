@@ -8,6 +8,7 @@ import { systemRoute } from "./routes/system.route.js";
 import { connectRedis } from "./services/redis.service.js";
 import { logStartupDiagnostics } from "./services/diagnostics.service.js";
 import { startDailyCron } from "./cron/statsCron.js";
+import { startRuntimeWatcher } from "./cron/runtimeWatch.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "./services/developerNotify.service.js";
 import { startWhatsProOutboxWorker } from "./transport/whatspro.client.js";
 import { safeCompare } from "./services/tenantAuth.service.js";
@@ -77,6 +78,7 @@ await connectRedis().catch((error) => {
 });
 startDailyCron();
 startWhatsProOutboxWorker();
+startRuntimeWatcher();
 httpServer.listen(port, () => {
     console.log(`[OPENBOT] VoltAgent FastFood agent listening on ${port}`);
     console.log(`[OPENBOT] WhatsPro webhook mounted at ${whatsproWebhookPath}`);
