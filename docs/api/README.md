@@ -1,5 +1,8 @@
 # API Endpoints
 
+> Сайт жағын жазатын әзірлеуші үшін толық келісімшарт (қолтаңба, өріс атаулары,
+> міндетті өрістер, қателер): [../integration/site-integration.md](../integration/site-integration.md)
+
 ## Express Routes
 
 ### POST /whatspro-webhook

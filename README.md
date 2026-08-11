@@ -9,6 +9,15 @@ This service is self-contained. It does not import or require the old `fastfood-
 - Alemi HMAC API: runtime status, active order, menu context, CRM/analytics, secure links and receipt uploads
 - WhatsPro HTTP API: outgoing WhatsApp messages
 
+## Connecting a website to this bot
+
+If you are implementing the site/platform side of this integration, start here:
+
+**[docs/integration/site-integration.md](docs/integration/site-integration.md)** — the full
+contract in one file: HMAC signing scheme, all 8 signed commands with the exact response
+fields the bot reads, the inbound event webhook, the file upload endpoints, and how the
+shared Secret Key is generated and configured.
+
 ## Run
 
 ```bash
