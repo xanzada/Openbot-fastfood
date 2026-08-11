@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { getRestaurantConfig } from "../services/platformConfig.service.js";
+import { reportPrintResult } from "../services/alemiApi.service.js";
 import { connectRedis, clearKitchenCheckoutState, deleteShiftNote, getKitchenStatus, getSiteLanguageHint, getUserLang, redisClient, saveKitchenStatus, saveSiteLanguageHint, saveShiftNote, saveToHistory, } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
@@ -25,24 +26,6 @@ const VALID_ACTIONS = new Set([
     "developer_alert",
     "complaint",
 ]);
-const statusTemplates = {
-    kk: {
-        review: "Чек тексерілуде. Оператор растаған соң дайындаймыз.",
-        paid: "Төлем расталды, тапсырысыңыз қабылданды. Дайындалып жатыр.",
-        delivery: "Тапсырысыңыз курьерге берілді, жеткізу жолында.",
-        completed: "Тапсырыс сәтті аяқталды, асыңыз дәмді болсын!",
-        pickup_ready: "Тапсырысыңыз дайын. Келіп алып кетуіңізге болады.",
-        cancelled: "Тапсырысыңыздан бас тартылды. Қажет болса, мәзір арқылы жаңа тапсырыс бере аласыз.",
-    },
-    ru: {
-        review: "Чек проверяется. Как только оператор подтвердит, начнем готовить.",
-        paid: "Оплата подтверждена, заказ принят. Готовим.",
-        delivery: "Ваш заказ передан курьеру и уже в пути.",
-        completed: "Заказ успешно завершен, приятного аппетита!",
-        pickup_ready: "Ваш заказ готов. Можете забирать.",
-        cancelled: "Ваш заказ отменен. При необходимости можете оформить новый заказ через меню.",
-    },
-};
 function textValue(value, fallback = "") {
     return String(value ?? fallback).trim();
 }
@@ -421,6 +404,46 @@ async function notifyComplaint(body, config, instance) {
     await sendWhatsProMessage({ instanceId: instance, phone: adminPhone, text: message });
     return true;
 }
+// Hub exposes a print-results endpoint and, until now, was never told anything:
+// a ticket that never reached a printer looked identical to one that printed.
+// We can only speak for our own boundary, so `completed` means "handed to a
+// connected printer client" and `failed` means "nobody was there to take it".
+function printJobIdOf(body) {
+    const order = body.order && typeof body.order === "object" ? body.order : {};
+    return textValue(body.print_job_id || body.printJobId || order.print_job_id || order.printJobId);
+}
+async function reportPrintDispatch(io, body, scope) {
+    const instance = textValue(body.instance);
+    const printJobId = printJobIdOf(body);
+    // Hub keys the result on its own print_job_id; without one there is nothing
+    // it could match the report to, so staying silent is the honest option.
+    if (!instance || !printJobId)
+        return;
+    let listeners = 0;
+    try {
+        listeners = io?.sockets?.adapter?.rooms?.get?.(instance)?.size || 0;
+    }
+    catch {
+        listeners = 0;
+    }
+    const delivered = Boolean(io) && listeners > 0;
+    try {
+        await reportPrintResult({
+            instanceId: instance,
+            printJobId,
+            attemptNumber: 1,
+            status: delivered ? "completed" : "failed",
+            externalReference: textValue(body.order_id),
+            ...(delivered
+                ? {}
+                : { errorCode: io ? "printer_offline" : "socket_server_unavailable", errorMessage: "No printer client connected" }),
+        });
+        auditOutbound("Print result reported to hub", { instance, printJobId, scope, delivered, listeners });
+    }
+    catch (error) {
+        auditError("Print result report failed", error, { instance, printJobId, scope, delivered });
+    }
+}
 async function emitPrintOnPaid(req, body, status) {
     if (status !== "paid") {
         auditDecision("Print trigger skipped: status is not paid", {
@@ -436,12 +459,14 @@ async function emitPrintOnPaid(req, body, status) {
             status,
         });
         io.to(String(body.instance || "")).emit("print_new_order", body);
+        await reportPrintDispatch(io, body, "paid");
     }
     else {
         auditDecision("Print trigger skipped: socket server unavailable", {
             orderId: body.order_id,
             status,
         });
+        await reportPrintDispatch(null, body, "paid");
     }
 }
 async function emitPrintOnNewOrder(req, body, action) {
@@ -459,12 +484,14 @@ async function emitPrintOnNewOrder(req, body, action) {
             action,
         });
         io.to(String(body.instance || "")).emit("print_new_order", body);
+        await reportPrintDispatch(io, body, "new_order");
     }
     else {
         auditDecision("Print trigger skipped: socket server unavailable", {
             orderId: body.order_id,
             action,
         });
+        await reportPrintDispatch(null, body, "new_order");
     }
 }
 async function sendAndRemember(instance, phone, text) {

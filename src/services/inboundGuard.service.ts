@@ -596,9 +596,36 @@ async function getFreshOperatorActive(instanceId: string, phone: string) {
   return value;
 }
 
-async function getTestModeDevPhone(instanceId: string) {
+// Test mode used to admit exactly one number, the tenant's `dev_phone`. The
+// owner testing from their own handset was silently dropped as
+// `test_mode_blocked`, which looks identical to a dead bot. Extra numbers can
+// now be allow-listed per tenant (`test_phones`) or per deployment
+// (TEST_MODE_ALLOWED_PHONES) without opening the bot to everyone.
+function digitsOf(value: unknown) {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function phoneListOf(value: unknown): string[] {
+  // Split on separators only, never on whitespace: "+7 776 915 6184" is one
+  // number written the way a human writes it, not four numbers.
+  const raw = Array.isArray(value) ? value : String(value ?? "").split(/[,;|]+/);
+  return raw.map((entry) => digitsOf(entry)).filter((entry) => PHONE_RE.test(entry));
+}
+
+export function testModeAllowedPhones(
+  config: Record<string, any> | null | undefined,
+  env: Record<string, string | undefined> = process.env
+) {
+  return new Set([
+    ...phoneListOf(config?.dev_phone),
+    ...phoneListOf(config?.test_phones ?? config?.testPhones),
+    ...phoneListOf(env.TEST_MODE_ALLOWED_PHONES),
+  ]);
+}
+
+async function getTestModeAllowedPhones(instanceId: string) {
   const config = await getRestaurantConfig(instanceId).catch(() => null);
-  return String(config?.dev_phone || "").replace(/\D/g, "");
+  return testModeAllowedPhones(config);
 }
 
 export async function setOperatorAutoMute(instanceId: string, phone: string): Promise<void> {
@@ -633,8 +660,8 @@ export async function guardIncomingMessage(input: {
   if (!PHONE_RE.test(phone)) return { blocked: true, reason: "bad_phone" };
 
   if (process.env.TEST_MODE_ENABLED === "true") {
-    const devPhone = await getTestModeDevPhone(instanceId);
-    if (!devPhone || phone !== devPhone) {
+    const allowed = await getTestModeAllowedPhones(instanceId);
+    if (!allowed.size || !allowed.has(phone)) {
       return { blocked: true, reason: "test_mode_blocked" };
     }
   }
