@@ -97,6 +97,33 @@ function alemiDeploymentSecret(req: any, config: Record<string, any> | null | un
   return scalarSecret(process.env.ALEMI_SECRET);
 }
 
+/**
+ * Diagnostic only: never changes the outcome, and never logs a credential value.
+ *
+ * `getIncomingTenantSecret` reads `?token=` and the `X-*-Key` headers, so a caller
+ * that puts its key in the JSON body instead is denied with exactly the same
+ * INVALID_TENANT_SECRET as a caller holding a wrong key. The two are the same
+ * three words in the log and a completely different fix - one is a rotated secret,
+ * the other is a caller reading the contract wrong - and the body field is the
+ * easier mistake to make: the whole rest of this webhook is JSON. Naming the
+ * field that was found tells whoever is integrating where to move it.
+ */
+const BODY_CREDENTIAL_FIELDS = ["token", "secret", "secret_key", "api_key", "apikey", "key", "auth"];
+
+function noteBodyCarriedCredential(req: any, config: Record<string, any> | null | undefined, channel: string) {
+  const body = req?.body;
+  if (!body || typeof body !== "object") return;
+  const found = BODY_CREDENTIAL_FIELDS.filter((field) => scalarSecret(body[field]));
+  if (!found.length) return;
+  auditDecision("caller presented its credential in the JSON body; this webhook reads ?token= or X-Tenant-Key only", {
+    instance: resolveInstanceId(req, config),
+    channel,
+    reason: "credential_in_body",
+    // Field names only. The values are exactly the credential we must not log.
+    fields: found.join(","),
+  });
+}
+
 function noteRetiredKanbanToken(
   req: any,
   config: Record<string, any> | null | undefined,
@@ -127,6 +154,7 @@ export function assertTenantSecret(req: any, config: Record<string, any> | null 
 
   if (!expected.length) {
     noteRetiredKanbanToken(req, config, channel, incoming);
+    if (!incoming) noteBodyCarriedCredential(req, config, channel);
     const error: any = new Error("TENANT_SECRET_NOT_CONFIGURED");
     error.statusCode = 500;
     throw error;
@@ -140,6 +168,7 @@ export function assertTenantSecret(req: any, config: Record<string, any> | null 
   }
   if (!matches) {
     noteRetiredKanbanToken(req, config, channel, incoming);
+    if (!incoming) noteBodyCarriedCredential(req, config, channel);
     const error: any = new Error("INVALID_TENANT_SECRET");
     error.statusCode = 403;
     throw error;

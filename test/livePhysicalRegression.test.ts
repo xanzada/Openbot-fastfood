@@ -12,6 +12,7 @@ import {
   isProspectiveOrderTimingQuestion,
 } from "../src/utils/orderIntent.js";
 import { classifyKitchenSalesPolicy } from "../src/services/kitchenPolicy.service.js";
+import { boolValue, legacyStatusTemplates, resolveStatusTemplateKey } from "../src/controllers/kanban.js";
 
 test("live: a new-order ETA question is not hijacked by an older active order", () => {
   assert.equal(
@@ -91,4 +92,42 @@ test("live: two hours requires consent while four hours closes new sales", () =>
   assert.equal(twoHours.blocksAllSales, false);
   assert.equal(fourHours.mode, "critical");
   assert.equal(fourHours.blocksAllSales, true);
+});
+
+// Sent through the production webhook 2026-08-12 as three real hub-shaped
+// `order.status_changed` events. The audit log resolved them to pickup_ready,
+// ready_delivery and pickup_ready respectively, and WhatsPro delivered all three.
+// The two pickup ones are the fix being defended: before it, only the literal
+// "pickup" was recognised, so a guest coming to collect their order was told the
+// courier was on the way. This pins the whole chain the guest actually meets -
+// the hub's fulfilment word, through boolValue, to the template key.
+test("live: every fulfilment word hub sent resolves to the template the guest should get", () => {
+  const cases: Array<[string, string, string]> = [
+    ["takeaway", "ready", "pickup_ready"],
+    ["delivery", "ready", "ready_delivery"],
+    ["Самовывоз", "completed", "pickup_ready"],
+    ["self_pickup", "ready", "pickup_ready"],
+    ["курьер", "ready", "ready_delivery"],
+    ["delivery", "completed", "completed"],
+  ];
+
+  for (const [fulfillment, status, expected] of cases) {
+    const isPickup = boolValue(fulfillment, false);
+    const key = resolveStatusTemplateKey(status, isPickup);
+    assert.equal(key, expected, `${fulfillment} + ${status}`);
+    assert.ok(legacyStatusTemplates.kk[key], `a Kazakh template must exist for ${key}`);
+    assert.ok(legacyStatusTemplates.ru[key], `a Russian template must exist for ${key}`);
+  }
+});
+
+// Also from the 2026-08-12 production run: `update_kitchen_status` with
+// wait_time 37 answered wait_time 0, which reads like a dropped write and is not
+// one - under the threshold the kitchen is simply normal and the guest is told
+// nothing about waiting. wait_time 65 was stored as 65. Pinned because the next
+// person to probe this will suspect the write path, as I did.
+test("live: a wait time under the threshold is normal, not a lost write", () => {
+  const base = { delivery: true, pickup: true, is_emergency: false, reset_at: 0 };
+  assert.equal(classifyKitchenSalesPolicy({ kitchen_status: { ...base, wait_time: 0 } }).mode, "normal");
+  assert.equal(classifyKitchenSalesPolicy({ kitchen_status: { ...base, wait_time: 37 } }).mode, "normal");
+  assert.notEqual(classifyKitchenSalesPolicy({ kitchen_status: { ...base, wait_time: 65 } }).mode, "normal");
 });

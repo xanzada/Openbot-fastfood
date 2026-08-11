@@ -403,6 +403,14 @@ Content-Type: application/json
 `X-Restaurant-Key` тақырыбы, немесе денедегі `tenant_secret`
 (`tenantAuth.service.ts:18-37`). Мәні — 2-бөлімдегі сол Secret Key.
 
+Денеде кілт **`token` деген атпен қабылданбайды** — денеде тек `tenant_secret`,
+`instance_secret`, `restaurant_secret` оқылады. `{"token": "..."}` жіберілсе жауап
+`403 INVALID_TENANT_SECRET` болады, яғни кілт қате болғандағы жауаппен бірдей.
+Айырып тану үшін бот мұндай жағдайда журналға `reason=credential_in_body` және
+табылған өріс атауын жазады (кілттің өзін ешқашан жазбайды) — журналда осы жол
+болса, кілтті сұрау жолына (`?token=`) немесе `X-Tenant-Key` тақырыбына көшіру
+керек.
+
 Дене:
 
 ```json
