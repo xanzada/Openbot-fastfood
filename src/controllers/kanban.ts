@@ -228,6 +228,20 @@ function paymentDetailsRuntimeSource(runtimeStatus: Record<string, unknown> | nu
   return paymentDetailsFromRuntime(runtimeStatus).length ? "site_kitchen_settings" : "not_configured";
 }
 
+/**
+ * hub.alemi.kz sends the dish name as a locale object (`{ru: "…", kk: "…"}`).
+ * Passing that straight into the message printed "[object Object]" for every
+ * line of the cart, so the guest saw a receipt with no dishes on it.
+ */
+function itemName(value: unknown, lang: Language): string {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const localized = value as Record<string, unknown>;
+    const picked = localized[lang] ?? localized.ru ?? localized.kk ?? localized.en ?? Object.values(localized)[0];
+    return String(picked ?? "");
+  }
+  return String(value ?? "");
+}
+
 export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: Language, orderId: string, isPickup: boolean): string {
   let rawComment = String(body.comment || body.info || "");
   let extractedBonus = 0;
@@ -271,10 +285,11 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
 
   if (Array.isArray(items) && items.length > 0) {
     cartText = items.slice(0, 50).map((item: any) => {
-      const name = cleanInline(item?.name || item?.title || (lang === "ru" ? "Товар" : "Тауар"), 80);
+      const resolved = itemName(item?.name ?? item?.title, lang);
+      const name = cleanInline(resolved || (lang === "ru" ? "Товар" : "Тауар"), 80);
       const qty = Math.min(99, Math.max(1, Number(item?.qty || item?.count || item?.quantity || 1)));
-      const price = Math.max(0, Number(item?.price || 0));
-      const total = Math.max(0, Number(item?.total || item?.sum || price * qty));
+      const price = Math.max(0, Number(item?.price || item?.price_amount_minor || item?.unit_price_amount_minor || 0));
+      const total = Math.max(0, Number(item?.total || item?.sum || item?.line_total_amount_minor || price * qty));
       return `▪️ ${name} x${qty} = ${total} ₸`;
     }).join("\n");
   } else if (typeof body.cart_list === "string" && body.cart_list.length > 2) {
@@ -629,7 +644,10 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     if (action === "new_order") {
       await clearKitchenCheckoutState(instance, phone).catch(() => undefined);
       auditDecision("Building new_order WhatsApp template", { orderId, action, instance, lang, isPickup });
-      textMessage = buildLegacyNewOrderMessage(body, lang, orderId, isPickup);
+      // The guest gets the short human order number when hub sends one; the UUID
+      // stays internal (it is what Redis and the kitchen keys are built on).
+      const displayOrderId = cleanInline(body.order_number || body.orderNumber || orderId, 40);
+      textMessage = buildLegacyNewOrderMessage(body, lang, displayOrderId, isPickup);
     }
     if (action === "request_payment") {
       auditDecision("Building request_payment WhatsApp template", { orderId, action, instance, lang });

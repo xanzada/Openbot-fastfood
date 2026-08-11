@@ -17,6 +17,8 @@ export function isDleWebhookAuthRequired() {
 
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 
+const ORDER_ACTIONS = new Set(["new_order", "status_changed", "request_payment", "order_rejected"]);
+
 export function mapIncomingAlemiInstance(value: unknown, env: NodeJS.ProcessEnv = process.env) {
   const instance = String(value || "").trim();
   if (!instance) return "";
@@ -116,6 +118,18 @@ export function normalizeDlePayload(req: Request) {
   );
   const action = normalizeAction(rawAction);
   const order = firstObject(...records.map((record) => record.order));
+  // hub.alemi.kz serialises the guest inside the order, and names every money
+  // field `*_amount_minor` while the value is whole tenge. The first real
+  // order.created event was rejected with `invalid phone` because none of these
+  // names existed in the lists below: the event was delivered and authenticated,
+  // and then thrown away here. This block is the translation layer, so nothing
+  // downstream has to learn two vocabularies.
+  const customer = firstObject(
+    ...records.map((record) => record.customer),
+    ...records.map((record) => record.client),
+    order.customer,
+    order.client,
+  );
   const note = firstObject(
     ...records.map((record) => record.note),
     ...records.map((record) => record.shift_note),
@@ -143,22 +157,28 @@ export function normalizeDlePayload(req: Request) {
     request_id: normalizeExternalId(firstValue(valueFrom(records, "request_id", "requestId", "delivery_id", "deliveryId"), req.headers?.["x-request-id"])),
     instance: firstValue(valueFrom(records, "instance", "instance_id", "instanceId"), order.instance, note.instance, req.query.instance),
     phone: firstValue(
-      valueFrom(records, "phone", "client_phone", "clientPhone", "customer_phone", "customerPhone", "recipient", "senderPhone"),
-      order.phone,
-      order.client_phone,
-      order.clientPhone,
-      order.customer_phone,
-      order.customerPhone,
+      valueFrom(records, "phone", "phone_e164", "phoneE164", "client_phone", "clientPhone", "customer_phone", "customerPhone", "recipient", "senderPhone"),
+      valueFrom([order, customer], "phone", "phone_e164", "phoneE164", "client_phone", "clientPhone", "customer_phone", "customerPhone"),
       req.query.phone
     ),
     order_id: orderId,
+    order_number: firstValue(valueFrom(records, "order_number", "orderNumber"), order.order_number, order.orderNumber),
     new_status: firstValue(valueFrom(records, "new_status", "status", "order_status", "orderStatus"), order.status),
-    total_price: firstValue(valueFrom(records, "total_price", "total", "amount", "sum"), order.total_price, order.total, order.amount),
+    total_price: firstValue(
+      valueFrom(records, "total_price", "total", "amount", "sum", "total_amount_minor", "totalAmountMinor", "total_amount"),
+      valueFrom([order], "total_price", "total", "amount", "total_amount_minor", "totalAmountMinor", "total_amount"),
+    ),
+    delivery_price: firstValue(valueFrom(records, "delivery_price", "delivery_amount_minor", "deliveryAmountMinor"), order.delivery_amount_minor),
+    bonus: firstValue(valueFrom(records, "bonus", "bonus_spent_amount_minor", "bonusSpentAmountMinor"), order.bonus_spent_amount_minor),
+    persons: firstValue(valueFrom(records, "persons", "cutlery_count", "cutleryCount"), order.cutlery_count),
     address: firstValue(valueFrom(records, "address"), order.address),
     comment: firstValue(valueFrom(records, "comment", "info"), order.comment),
-    items: firstValue(valueFrom(records, "items", "goods", "products"), order.items, order.goods, order.products),
+    items: firstValue(valueFrom(records, "items", "goods", "products", "order_items", "orderItems"), order.items, order.goods, order.products, order.order_items),
     lang: valueFrom(records, "lang", "language", "lang_code", "locale"),
-    is_pickup: firstValue(valueFrom(records, "is_pickup", "isPickup", "pickup", "delivery_type", "deliveryType"), order.is_pickup, order.isPickup),
+    is_pickup: firstValue(
+      valueFrom(records, "is_pickup", "isPickup", "pickup", "delivery_type", "deliveryType", "fulfillment_type", "fulfillmentType"),
+      valueFrom([order], "is_pickup", "isPickup", "delivery_type", "fulfillment_type", "fulfillmentType"),
+    ),
     reason: firstValue(valueFrom(records, "reason", "cancel_reason", "reject_reason"), order.reason),
     note_id: normalizeExternalId(firstValue(valueFrom(records, "note_id", "noteId"), note.note_id, note.noteId, note.id)),
     shift_key: firstValue(valueFrom(records, "shift_key", "shiftKey"), note.shift_key, note.shiftKey),
@@ -180,9 +200,32 @@ export function normalizeDlePayload(req: Request) {
   };
 
   if (action === "status_changed" && !normalized.status) normalized.status = normalized.new_status;
-  const waitTime = valueFrom(records, "wait_time", "waitTime");
+  const waitTime = firstValue(
+    valueFrom(records, "wait_time", "waitTime", "wait_time_minutes", "waitTimeMinutes"),
+    valueFrom([order], "wait_time", "wait_time_minutes", "waitTimeMinutes"),
+  );
   if (action === "new_order" && waitTime !== "") normalized.wait_time = waitTime;
   req.body = normalized;
+}
+
+/**
+ * Keys and value types only — never values. A real order.created was thrown away
+ * with `invalid phone` and nothing in the logs said what hub had actually sent,
+ * because no raw body is logged anywhere. This is the smallest thing that makes
+ * the next unknown field name visible without putting guest data in the log.
+ */
+export function describeBodyShape(value: unknown, depth = 0): string {
+  if (Array.isArray(value)) {
+    return depth >= 2 ? "array" : `array<${value.length ? describeBodyShape(value[0], depth + 1) : "empty"}>`;
+  }
+  if (value && typeof value === "object") {
+    if (depth >= 2) return "object";
+    return `{${Object.entries(value as Record<string, any>)
+      .slice(0, 60)
+      .map(([key, item]) => `${key}:${describeBodyShape(item, depth + 1)}`)
+      .join(",")}}`;
+  }
+  return value === null ? "null" : typeof value;
 }
 
 type AlemiTenantLookup = (incomingInstance: string) => Promise<Record<string, any> | null>;
@@ -339,6 +382,14 @@ export async function handleDleWebhook(req: Request, res: Response) {
       event_id: req.body?.event_id,
       request_id: req.body?.request_id,
     });
+    if (!req.body?.phone && ORDER_ACTIONS.has(String(req.body?.action || ""))) {
+      auditError("DLE webhook order event carries no recognisable phone field", new Error("PHONE_FIELD_UNMAPPED"), {
+        action: req.body?.action || "",
+        instance: req.body?.instance || "",
+        eventId: req.body?.event_id || "",
+        bodyShape: (req as any).inboundBodyShape || describeBodyShape(req.body),
+      });
+    }
     await handleKanbanWebhook(req, res);
   } catch (error: any) {
     const instanceId = getRequestInstanceId(req);
@@ -363,6 +414,7 @@ export function dleWebhookRoute(): Router {
   const router = createRouter();
 
   router.post("/", (req, _res, next) => {
+    (req as any).inboundBodyShape = describeBodyShape(req.body);
     normalizeDlePayload(req);
     next();
   }, resolveIncomingAlemiTenant, requireStrictInstance, verifyDleWebhook, handleDleWebhook);
