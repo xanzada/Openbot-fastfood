@@ -118,6 +118,17 @@ export function splitWhatsProResponse(text = "") {
         return [];
     // Extract all URLs
     const urls = Array.from(new Set((cleanText.match(URL_RE) || []).map(normalizeUrlForSeparateMessage).filter(Boolean)));
+    // "Міне мәзір сілтемесі:" followed by the link arrived as two WhatsApp
+    // messages - the intro, then a bare URL. A person sends that as one message.
+    // Splitting only earns its keep when there is more than one link or the prose
+    // is long enough to need chunking anyway, so a short one-link answer stays
+    // whole, with the link on its own line so it still renders as a preview. The
+    // URL's own length does not count: a magic-link token cannot be chunked.
+    if (urls.length === 1) {
+        const intro = cleanText.replace(URL_RE, "").replace(/\s+/g, " ").trim();
+        if (intro.length <= RESPONSE_CHUNK_MAX)
+            return [intro ? `${intro}\n${urls[0]}` : urls[0]];
+    }
     // Remove URLs from text body
     const textOnly = cleanText.replace(URL_RE, "").replace(/[ \t]+\n/g, "\n").replace(/\s{2,}/g, " ").trim();
     const chunks = [];
