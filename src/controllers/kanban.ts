@@ -401,14 +401,20 @@ export function resolveStatusTemplateKey(status: string, isPickup: boolean): str
   return normalized;
 }
 
-function extractShiftNotePayload(body: Record<string, unknown>) {
+export function extractShiftNotePayload(body: Record<string, unknown>) {
   const noteId = cleanInline(body.note_id || body.noteId || body.id, 80);
   const text = textValue(body.text || body.note_text || body.note || body.message);
   const expiresAt = cleanInline(body.expires_at || body.expiresAt || body.expires || body.until, 80);
   const shiftKey = cleanInline(body.shift_key || body.shiftKey, 80);
+  // The lock exists to swallow a redelivery of the SAME note, so it has to be
+  // keyed on the note's content as well as its id. Keyed on the id alone, an
+  // edit ("кола жоқ" -> "кола бар") arriving within the 5s window was answered
+  // "Ignored duplicate signal" and the kitchen's correction never reached the
+  // AI memory - verified against the live webhook 2026-08-11.
+  const contentHash = crypto.createHash("sha1").update(`${text}|${expiresAt}`).digest("hex").slice(0, 16);
   const stableLockId =
     noteId && noteId !== "0"
-      ? noteId
+      ? `${noteId}:${contentHash}`
       : `fallback_${crypto.createHash("sha1").update(`${body.action || ""}|${shiftKey}|${text}|${expiresAt}`).digest("hex").slice(0, 16)}`;
   return { noteId, text, expiresAt, shiftKey, stableLockId };
 }
