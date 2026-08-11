@@ -131,6 +131,19 @@ test("single-tenant Alemi env is used only for its explicitly named legacy tenan
     ALEMI_INSTANCE: "mack_center",
     ALEMI_SECRET: "must-not-cross-tenants",
   }), /ALEMI_SECRET_NOT_CONFIGURED/);
+
+  // env.ALEMI_INSTANCE used to stand in for a missing instance, so a call whose
+  // tenant could not be determined was signed as the legacy restaurant with the
+  // legacy secret - a cross-tenant write that looked like a successful call.
+  assert.throws(() => resolveAlemiCredentials("", null, {
+    ALEMI_API_URL: "https://hub.alemi.kz",
+    ALEMI_INSTANCE: "mack_center",
+    ALEMI_SECRET: "must-not-be-borrowed",
+  }), /ALEMI_INSTANCE_NOT_CONFIGURED/);
+  assert.throws(() => resolveAlemiCredentials("", { domain: "https://prestige.bekaba.com" }, {
+    ALEMI_INSTANCE: "mack_center",
+    ALEMI_SECRET: "must-not-be-borrowed",
+  }), /ALEMI_INSTANCE_NOT_CONFIGURED/);
 });
 
 test("command transport receives exact raw body and common response envelopes unwrap", async () => {

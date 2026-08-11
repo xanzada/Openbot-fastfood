@@ -123,15 +123,21 @@ export function resolveAlemiCredentials(
   config: Record<string, any> | null | undefined,
   env: Record<string, string | undefined> = process.env
 ): AlemiCredentials {
-  const requestedInstance = firstString(instanceId, config?.instance_id, config?.instance, env.ALEMI_INSTANCE);
+  // env.ALEMI_INSTANCE deliberately does NOT appear in these two chains. It
+  // names the one legacy restaurant the process-wide secret belongs to (used
+  // below), and letting it stand in for a missing instance meant a call whose
+  // tenant could not be determined - an empty instanceId, a config with no
+  // instance - was signed as that legacy restaurant instead of failing. Every
+  // caller already knows which tenant it is acting for; if it does not, the
+  // right answer is ALEMI_INSTANCE_NOT_CONFIGURED.
+  const requestedInstance = firstString(instanceId, config?.instance_id, config?.instance);
   const tenantEntry = tenantEnvironmentEntry(requestedInstance, env);
   const instance = firstString(
     config?.alemi_instance,
     config?.alemiInstance,
     tenantEntry?.instance,
     tenantEntry?.instance_id,
-    requestedInstance,
-    env.ALEMI_INSTANCE
+    requestedInstance
   );
   const apiUrl = firstString(
     config?.alemi_api_url,
