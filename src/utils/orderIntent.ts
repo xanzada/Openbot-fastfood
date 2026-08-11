@@ -26,6 +26,24 @@ export function isProspectiveOrderTimingQuestion(text = "") {
   return intentMatches(PROSPECTIVE_ORDER_TIMING_RE, text);
 }
 
+// "Қанша уақыт күтемін, тапсырыс дайын болуы қанша минут?" reads as a status
+// question ("тапсырыс ... дайын") and used to be answered with "no active order
+// on this number, send the order number". The guest had not ordered yet: the
+// only honest answer is the kitchen wait time. The prospective wording
+// ("заказ берсем") is just one way to ask it, so the deciding fact is that no
+// order is in play at all - none on the phone, none quoted, none discussed.
+export function isUnownedOrderTimingQuestion(options: {
+  text?: string;
+  hasActiveOrder?: boolean;
+  quotedOrderNumber?: string;
+  discussedOrderNumber?: string;
+}) {
+  if (options.hasActiveOrder) return false;
+  if (options.quotedOrderNumber || options.discussedOrderNumber) return false;
+  const text = options.text || "";
+  return isOrderTimingQuestion(text) || isProspectiveOrderTimingQuestion(text);
+}
+
 export function requestedOrderNumber(text = "") {
   return String(String(text || "").match(ORDER_NUMBER_RE)?.[1] || "");
 }

@@ -66,7 +66,7 @@ import {
 import { getTextModels } from "../services/llm.service.js";
 import { classifyKitchenSalesPolicy,
   formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, isUnownedOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
 import {
@@ -287,24 +287,39 @@ function missingOrderReply(language: "kk" | "ru") {
     : "Бұл нөмір бойынша белсенді тапсырыс табылмады. Тапсырыс нөмірін жіберіңіз.";
 }
 
+// The guest already wrote "№13". Asking them to "send the order number" reads as
+// if we did not read their message. Name the number back, say plainly that it is
+// not on this phone, and give the two ways forward.
+function missingQuotedOrderReply(language: "kk" | "ru", orderNumber: string) {
+  return language === "ru"
+    ? `Заказ №${orderNumber} по этому номеру не найден. Если он оформлен с другого номера — напишите с него, либо я передам оператору.`
+    : `№${orderNumber} тапсырысы осы нөмір бойынша табылмады. Басқа нөмірмен жасалған болса, сол нөмірден жазыңыз — немесе операторға жалғастырамын.`;
+}
+
 async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> {
   // "заказ 59 холодный привезли" names an order, but the guest is not asking where it is —
   // they are angry about it. Answering with a status line would bury a real
   // complaint and never raise the operator flag, so anger and human requests
   // are left to the escalation path further down instead of being short-circuited here.
   if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text)) return null;
-  // "Қанша уақыт күтемін, тапсырыс қанша минутта дайын болады?" from a guest who
-  // has not ordered yet is a question about preparation time, not about a
-  // waiting order. The status route used to claim it and answer "no active order
-  // on this number, send the order number", which reads as a brush-off. With no
-  // order and no quoted number, the runtime wait time answers this instead.
-  if (!ctx.activeOrder && !requestedOrderNumber(ctx.text) && isProspectiveOrderTimingQuestion(ctx.text)) return null;
+  // A timing question with no order in play at all belongs to the runtime wait
+  // time, not to the status route - see isUnownedOrderTimingQuestion.
+  const quotedNumber = requestedOrderNumber(ctx.text);
+  const priorNumber = quotedNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
+  if (isUnownedOrderTimingQuestion({
+    text: ctx.text,
+    hasActiveOrder: Boolean(ctx.activeOrder),
+    quotedOrderNumber: quotedNumber,
+    discussedOrderNumber: priorNumber,
+  })) {
+    return null;
+  }
   const timingAsked = Boolean(ctx.activeOrder)
     && isOrderTimingQuestion(ctx.text)
     && !isProspectiveOrderTimingQuestion(ctx.text);
   if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked) return null;
-  const orderNumber = requestedOrderNumber(ctx.text);
-  const discussedNumber = orderNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
+  const orderNumber = quotedNumber;
+  const discussedNumber = priorNumber;
   const discussedRecord = discussedNumber ? pickConversationOrder(ctx.activeOrder, discussedNumber) : null;
   const lookup = orderNumber
     ? await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, orderNumber)
@@ -313,7 +328,8 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
       : customerOrderFromRecord(discussedRecord || ctx.activeOrder, ctx.phone, ctx.language);
   if (lookup.state === "found") return formatCustomerOrderStatus(lookup.order, ctx.language);
   if (lookup.state === "unavailable") return unavailableOrderReply(ctx.language);
-  return missingOrderReply(ctx.language);
+  const referenced = orderNumber || discussedNumber;
+  return referenced ? missingQuotedOrderReply(ctx.language, referenced) : missingOrderReply(ctx.language);
 }
 
 function operationalPreemptionReply(ctx: FastFoodContext): string | null {

@@ -246,8 +246,13 @@ Timeout: командалар бойынша 8-10 секунд, файл жүк�
 
 #### `order.context.get` — клиенттің тапсырыстары
 
-Сұраныс: `data: { "phone_e164": "+77001234567", "limit": 5, "order_id": "..." }`
-(`order_id` тек нақты тапсырыс сұралғанда болады).
+Сұраныс: `data: { "phone_e164": "+77001234567", "limit": 5 }`
+
+> **`order_id` жіберілмейді.** hub бұл өрісті қабылдамайды: ол болса бүкіл команда
+> `400 INTEGRATION_COMMAND_INVALID` болып қайтады (2026-08-11 тірі hub-та тексерілді).
+> Клиент нақты нөмірді айтса (`«№13 қайда?»`), бот жауаптағы `recent_orders` /
+> `active_orders` ішінен өзі тауып алады (`normalizeOrderContextPayload`).
+> Телефон **міндетті** — онсыз команда жіберілмейді.
 
 Телефон форматы — әрқашан `+7XXXXXXXXXX` (`e164Kazakhstan`, `alemiApi.service.ts:288-294`).
 
@@ -305,8 +310,9 @@ completed, done, finished, closed, cancelled, canceled, refunded
 
 #### `order.status.get` — статусты жылдам тексеру
 
-Сұраныс: `data: { "phone_e164": "+7...", "order_id": "..." }`. Жауабы —
-`order.context.get`-пен бірдей формада, бірақ бір тапсырыс жетеді.
+Сұраныс: `data: { "phone_e164": "+7..." }` — мұнда да `order_id` жіберілмейді.
+Жауабы: `{ "has_active_order": bool, "active_order_id": "...", "status": "..." }`
+немесе `order.context.get`-пен бірдей толық форма.
 
 #### `crm.lead.upsert`
 
