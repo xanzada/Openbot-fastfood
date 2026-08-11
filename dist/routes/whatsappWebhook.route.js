@@ -185,6 +185,13 @@ async function customerOrderReply(ctx) {
     // are left to the escalation path further down instead of being short-circuited here.
     if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text))
         return null;
+    // "Қанша уақыт күтемін, тапсырыс қанша минутта дайын болады?" from a guest who
+    // has not ordered yet is a question about preparation time, not about a
+    // waiting order. The status route used to claim it and answer "no active order
+    // on this number, send the order number", which reads as a brush-off. With no
+    // order and no quoted number, the runtime wait time answers this instead.
+    if (!ctx.activeOrder && !requestedOrderNumber(ctx.text) && isProspectiveOrderTimingQuestion(ctx.text))
+        return null;
     const timingAsked = Boolean(ctx.activeOrder)
         && isOrderTimingQuestion(ctx.text)
         && !isProspectiveOrderTimingQuestion(ctx.text);

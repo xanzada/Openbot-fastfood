@@ -13,10 +13,20 @@ export function createGetKitchenStatusSkill(ctx: FastFoodContext) {
     execute: async () => {
       const runtime = await getRuntimeStatus(ctx.instanceId, ctx.config?.domain || "", { forceFresh: true });
       const status = runtime || ctx.runtimeStatus || ctx.hardRealtimeContext || null;
+      // A hub outage falls back to the last state pushed into Redis or to a
+      // 10-minute backup. That is the right answer to give, but the model used
+      // to see `runtime_available: true` and present a remembered "we are open"
+      // as a fact checked just now. These flags let it say "last known".
+      const source = String(status?.source || "runtime_unavailable");
+      const fromFallback = Boolean(
+        status?.redis_runtime_fallback || status?.stale_runtime_backup || /fallback|stale|backup/.test(source)
+      );
       return {
-        source: status?.source || "runtime_unavailable",
+        source,
         fetched_at: status?.fetched_at || new Date().toISOString(),
         runtime_available: Boolean(runtime || ctx.runtimeStatus),
+        live: Boolean(runtime) && !fromFallback,
+        is_last_known: fromFallback,
         is_accepting_orders: status?.is_accepting_orders ?? null,
         within_work_hours: status?.within_work_hours ?? null,
         closed_reason: status?.closed_reason || "",

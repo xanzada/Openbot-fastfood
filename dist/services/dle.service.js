@@ -472,7 +472,10 @@ export async function getOrderStatus(instanceId, phone, domain) {
 export async function getOrderContext(instanceId, domain, options = {}) {
     const cleanPhone = normalizePhone(options.phone || "");
     const orderId = String(options.orderId || "").trim();
-    if (!cleanPhone && !orderId)
+    // Hub resolves orders by phone only. An order-number-only lookup used to be
+    // sent anyway and came back 400, which the catch below reported as an outage;
+    // without a phone there is genuinely nothing to read, so say so cheaply.
+    if (!cleanPhone)
         return null;
     const key = orderId
         ? `order_context:${instanceId}:id:${orderId}`

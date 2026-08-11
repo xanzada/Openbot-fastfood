@@ -216,26 +216,29 @@ function e164Kazakhstan(value) {
 }
 export function mapLegacyAlemiAction(action, payload) {
     const phone = e164Kazakhstan(payload.phone);
-    const orderId = firstString(payload.order_id, payload.orderId);
     switch (action) {
         case "get_runtime_status":
             return { command: "runtime.status.get", data: {} };
+        // Both order commands are keyed on the guest's phone and reject `order_id`
+        // outright: hub answers 400 INTEGRATION_COMMAND_INVALID for the whole
+        // command as soon as the field is present. So a guest who quoted their
+        // order number ("заказым №13 қайда?") got "cannot read status" while the
+        // same question without a number worked. The number is still honoured -
+        // normalizeOrderContextPayload picks the matching order out of the pools
+        // the hub returns - so it must never reach the wire.
         case "get_order_context":
+            if (!phone)
+                throw new Error("ALEMI_ORDER_CONTEXT_PHONE_REQUIRED");
             return {
                 command: "order.context.get",
-                data: {
-                    ...(phone ? { phone_e164: phone } : {}),
-                    limit: 5,
-                    ...(orderId ? { order_id: orderId } : {}),
-                },
+                data: { phone_e164: phone, limit: 5 },
             };
         case "check_status":
+            if (!phone)
+                throw new Error("ALEMI_ORDER_STATUS_PHONE_REQUIRED");
             return {
                 command: "order.status.get",
-                data: {
-                    ...(phone ? { phone_e164: phone } : {}),
-                    ...(orderId ? { order_id: orderId } : {}),
-                },
+                data: { phone_e164: phone },
             };
         case "get_menu_context":
             return {

@@ -56,13 +56,17 @@ test("Alemi command signs the exact ordered JSON bytes and emits the contract he
 
 test("legacy actions map to the documented Hub commands and data", () => {
   assert.deepEqual(mapLegacyAlemiAction("get_runtime_status", {}), { command: "runtime.status.get", data: {} });
+  // The integration doc lists `order_id` on both order commands, but the live
+  // hub answers 400 INTEGRATION_COMMAND_INVALID whenever it is present
+  // (verified 2026-08-11). The requested order is selected from the returned
+  // pools instead, so the field must not reach the wire.
   assert.deepEqual(mapLegacyAlemiAction("get_order_context", { phone: "87001112233", order_id: 41 }), {
     command: "order.context.get",
-    data: { phone_e164: "+77001112233", limit: 5, order_id: "41" },
+    data: { phone_e164: "+77001112233", limit: 5 },
   });
   assert.deepEqual(mapLegacyAlemiAction("check_status", { phone: "7001112233", order_id: "019fe7ca-1111-7111-8111-111111111111" }), {
     command: "order.status.get",
-    data: { phone_e164: "+77001112233", order_id: "019fe7ca-1111-7111-8111-111111111111" },
+    data: { phone_e164: "+77001112233" },
   });
   assert.deepEqual(mapLegacyAlemiAction("get_menu_context", { lang: "kz" }), {
     command: "catalog.context.get",
