@@ -45,6 +45,23 @@ function firstValue(...values: unknown[]) {
   return "";
 }
 
+// Every audit site fed the RAW event name to isNewDleAction, so a hub event
+// ("order.created", "shift_note.created", "kitchen.status_changed") was logged
+// as matchesNewDleLogic=false while being handled perfectly - the flag read as
+// "this signal is not recognised" in exactly the place someone debugging a lost
+// signal looks first. Normalise the name the same way the handler does.
+function recognisedDleAction(req: Request) {
+  return isNewDleAction(normalizeAction(firstValue(
+    req.body?.action,
+    req.body?.ajax_action,
+    req.body?.event_type,
+    req.body?.eventType,
+    req.body?.event,
+    req.body?.type,
+    req.query?.action,
+  )));
+}
+
 function normalizeAction(value: unknown) {
   const action = String(value || "").trim().toLowerCase();
   const aliases: Record<string, string> = {
@@ -325,7 +342,7 @@ async function verifyDleWebhook(req: Request, res: Response, next: NextFunction)
     auditProcessing("DLE webhook auth bypassed", {
       action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
       authRequired: false,
-      matchesNewDleLogic: isNewDleAction(req.body?.action || req.body?.ajax_action || req.query?.action),
+      matchesNewDleLogic: recognisedDleAction(req),
     });
     return next();
   }
@@ -340,7 +357,7 @@ async function verifyDleWebhook(req: Request, res: Response, next: NextFunction)
     auditProcessing("DLE webhook tenant secret accepted", {
       action: req.body?.action || req.body?.ajax_action || req.query?.action || "",
       instanceId,
-      matchesNewDleLogic: isNewDleAction(req.body?.action || req.body?.ajax_action || req.query?.action),
+      matchesNewDleLogic: recognisedDleAction(req),
     });
     return next();
   } catch (error: any) {
@@ -369,7 +386,7 @@ export async function handleDleWebhook(req: Request, res: Response) {
       eventType: req.body?.event_type || "",
       eventId: req.body?.event_id || "",
       requestId: req.body?.request_id || "",
-      matchesNewDleLogic: isNewDleAction(action),
+      matchesNewDleLogic: recognisedDleAction(req),
     });
     if (!req.body?.instance || !INSTANCE_RE.test(String(req.body.instance))) {
       const errorCode = req.body?.instance ? "BAD_INSTANCE" : "MISSING_INSTANCE";
@@ -393,7 +410,7 @@ export async function handleDleWebhook(req: Request, res: Response) {
     }
     auditInbound("DLE webhook normalized", {
       action: req.body?.action,
-      matchesNewDleLogic: isNewDleAction(req.body?.action),
+      matchesNewDleLogic: recognisedDleAction(req),
       instance: req.body?.instance,
       phone: req.body?.phone,
       order_id: req.body?.order_id,

@@ -5,6 +5,10 @@ const NEW_DLE_ACTIONS = new Set([
   "order_rejected",
   "shift_note_created",
   "shift_note_deleted",
+  // Kitchen state is handled by the same webhook and the same controller, so
+  // leaving it out made a handled signal log matchesNewDleLogic=false.
+  "update_kitchen_status",
+  "get_kitchen_status",
 ]);
 
 type AuditStage = "INBOUND" | "PROCESSING" | "DECISION" | "OUTBOUND" | "ERROR";
