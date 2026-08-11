@@ -138,7 +138,12 @@ export function normalizeDlePayload(req: Request) {
   const payloadData = objectRecord(payload.data);
   const dataPayload = objectRecord(data.payload);
   const records = [source, payload, data, payloadData, dataPayload];
-  const rawEventType = valueFrom(records, "event_type", "eventType");
+  // `event_type` is what hub sends today, but a webhook that names its event
+  // `event` or `type` - the two other spellings every integration reaches for -
+  // was answered 400 BAD_ACTION and the signal was thrown away. Accept all
+  // three: normalizeAction() still decides what is a known action, so an
+  // unrecognised name is rejected exactly as before.
+  const rawEventType = valueFrom(records, "event_type", "eventType", "event", "type");
   const rawAction = firstValue(
     rawEventType,
     valueFrom(records, "action", "ajax_action"),

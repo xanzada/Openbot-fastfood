@@ -271,3 +271,27 @@ test("Hub shift_note field is normalized into the existing note flow", () => {
   assert.equal(r.body.text, "Күту уақыты 120 минут");
   assert.equal(r.body.expires_at, "2026-08-10T22:00:00Z");
 });
+
+// 2026-08-12: a note posted with `event` instead of `event_type` was answered
+// 400 BAD_ACTION and dropped. Only the spelling differed, so an integration
+// that names its field the obvious way lost every note it sent.
+test("an event named `event` or `type` is recognised, not dropped as BAD_ACTION", () => {
+  const byEvent = req({ instance: "prestige", event: "shift_note.created", note: { id: "n1", text: "Лаваш жоқ" } });
+  normalizeDlePayload(byEvent);
+  assert.equal(byEvent.body.action, "shift_note_created");
+  assert.equal(byEvent.body.text, "Лаваш жоқ");
+
+  const byType = req({ instance: "prestige", type: "shift_note.deleted", note: { id: "n1" } });
+  normalizeDlePayload(byType);
+  assert.equal(byType.body.action, "shift_note_deleted");
+
+  // event_type still wins when both are present, and an unknown name is still
+  // not silently promoted to a known action.
+  const both = req({ instance: "prestige", event_type: "order.created", event: "shift_note.created" });
+  normalizeDlePayload(both);
+  assert.equal(both.body.action, "new_order");
+
+  const unknown = req({ instance: "prestige", event: "something.else" });
+  normalizeDlePayload(unknown);
+  assert.equal(unknown.body.action, "something.else");
+});
