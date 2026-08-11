@@ -2,7 +2,7 @@ import axios from "axios";
 import { getRedisTarget, pingRedis } from "./redis.service.js";
 import { getMediaFallbackModel, getMediaPrimaryKeys, getMediaPrimaryModel, getTextModels } from "./llm.service.js";
 import { getWhatsProOutboxSummary } from "../transport/whatspro.client.js";
-import { getAllRestaurantConfigs } from "./platformConfig.service.js";
+import { getAllRestaurantConfigs, getRestaurantConfig } from "./platformConfig.service.js";
 import { callAlemiCommand } from "./alemiApi.service.js";
 import { envNumber } from "../utils/envNumber.js";
 function now() {
@@ -163,39 +163,38 @@ export function getConfigSummary() {
 // being told "белсенді тапсырыс табылмады", never as a startup failure. The
 // credential is per tenant, so the check is per tenant, and it is deliberately
 // read-only (runtime.status.get) and never fatal.
-export async function checkAlemiHub(loadConfigs = () => getAllRestaurantConfigs(), call = callAlemiCommand) {
-    const configs = await loadConfigs().catch(() => []);
-    const tenants = configs.filter((config) => String(config?.alemi_secret || "").trim());
-    if (!tenants.length) {
-        return [{
-                name: "alemi_hub",
-                ok: false,
-                message: configs.length
-                    ? `no tenant carries alemi_secret (tenants=${configs.length})`
-                    : "no tenant config could be loaded",
-            }];
+//
+// The multi-tenant index REDACTS alemi_secret, so its records are only good for
+// enumerating instance ids - reading the secret from them made the first version
+// of this check report "no tenant carries alemi_secret" for a tenant that is
+// configured correctly. Each instance is re-read authoritatively by id, which is
+// the same repair withRotatedSecretRetry() performs.
+export async function checkAlemiHub(loadConfigs = () => getAllRestaurantConfigs(), call = callAlemiCommand, hydrate = getRestaurantConfig) {
+    const indexed = await loadConfigs().catch(() => []);
+    const instances = [...new Set(indexed.map((config) => String(config?.instance_id || config?.instance || "").trim()).filter(Boolean))];
+    if (!instances.length) {
+        return [{ name: "alemi_hub", ok: false, message: "no tenant config could be loaded" }];
     }
-    return Promise.all(tenants.map(async (config) => {
-        const instance = String(config.instance_id || config.instance || "unknown");
+    return Promise.all(instances.map(async (instance) => {
+        const name = `alemi_hub[${instance}]`;
         const started = now();
+        const config = await hydrate(instance).catch(() => null);
+        const target = hostFromUrl(String(config?.alemi_api_url || ""));
+        if (!String(config?.alemi_secret || "").trim()) {
+            return { name, ok: false, target, message: "tenant carries no alemi_secret", latency_ms: now() - started };
+        }
         try {
             const status = await call(instance, "runtime.status.get", {}, { config, timeoutMs: 7000 });
             return {
-                name: `alemi_hub[${instance}]`,
+                name,
                 ok: true,
-                target: hostFromUrl(String(config.alemi_api_url || "")),
+                target,
                 status: `accepting_orders=${status?.accepting_orders ?? status?.is_accepting_orders ?? "-"}`,
                 latency_ms: now() - started,
             };
         }
         catch (error) {
-            return {
-                name: `alemi_hub[${instance}]`,
-                ok: false,
-                target: hostFromUrl(String(config.alemi_api_url || "")),
-                message: String(error?.message || error),
-                latency_ms: now() - started,
-            };
+            return { name, ok: false, target, message: String(error?.message || error), latency_ms: now() - started };
         }
     }));
 }
