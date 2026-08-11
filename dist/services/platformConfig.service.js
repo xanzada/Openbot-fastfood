@@ -260,6 +260,14 @@ export async function getAllRestaurantConfigs(options = {}) {
             // and make every hub call fail with ALEMI_SECRET_NOT_CONFIGURED for the
             // next 60s. Carry the known-good secret fields over instead.
             const previous = runtimeConfigMemory.get(instance)?.value;
+            // With no previous entry there is nothing to carry over - a cold boot, or
+            // the first index read after the 60s memory expired. Seeding the redacted
+            // record then is exactly the failure the merge above prevents, and it is
+            // how the boot check reported "tenant carries no alemi_secret" for a
+            // tenant whose per-instance config does carry one. Leaving the tenant
+            // unseeded costs one by-id read and returns the authoritative record.
+            if (!previous)
+                continue;
             const merged = { ...config };
             for (const field of REDACTED_INDEX_FIELDS) {
                 if (!merged[field] && previous?.[field])

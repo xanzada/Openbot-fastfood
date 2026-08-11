@@ -14,12 +14,22 @@ function firstValue(...values) {
     }
     return "";
 }
+/**
+ * `secret_key` used to be in this chain. On a tenant like `prestige` that field
+ * IS the Alemi HMAC secret, so configuring any n8n/kanban webhook URL would
+ * have posted the tenant's signing key to that third party in plain text. Only
+ * tokens minted for this outbound hook belong here; without one the hook is
+ * called untokenised, which is the receiver's problem to reject.
+ */
+export function pickWebhookToken(config = {}) {
+    return firstValue(config.n8n_webhook_token, config.n8nWebhookToken, config.n8n_token, config.n8nToken, config.kanban_webhook_token, config.kanbanWebhookToken);
+}
 export async function syncKanbanEvent(ctx, event) {
     const url = pickWebhookUrl(ctx.config);
     if (!url)
         return { skipped: true };
     const payload = {
-        token: firstValue(ctx.config.n8n_webhook_token, ctx.config.n8nWebhookToken, ctx.config.crm_secret_token, ctx.config.secret_token, ctx.config.secret_key, ctx.config.n8n_token, ctx.config.n8nToken),
+        token: pickWebhookToken(ctx.config),
         instance: ctx.instanceId,
         instanceId: ctx.instanceId,
         phone: ctx.phone,
