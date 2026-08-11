@@ -1,4 +1,5 @@
 import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { envNumber } from "../utils/envNumber.js";
 
 /**
  * The buffer's brain.
@@ -57,7 +58,7 @@ export async function mergeBufferedParts(parts: string[], language: "kk" | "ru" 
   if (!needsSmartMerge(clean)) return fallback;
   try {
     const { generateText } = await import("ai");
-    const timeoutMs = Math.max(2_500, Math.min(8_000, Number(process.env.BUFFER_BRAIN_TIMEOUT_MS || 4_000)));
+    const timeoutMs = envNumber(process.env.BUFFER_BRAIN_TIMEOUT_MS, 4_000, { min: 2_500, max: 8_000 });
     const result = await Promise.race([
       generateText({
         model: brainModel() as any,

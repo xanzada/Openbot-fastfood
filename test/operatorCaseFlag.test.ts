@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { decideCaseFlag, CASE_FLAG_QUIET_MS } from "../src/services/operatorCase.service.js";
 
 const NOW = 1_700_000_000_000;
@@ -24,4 +25,16 @@ test("a case nobody touched for half a day stops flagging a guest who moved on",
 test("a case touched just inside the quiet window is still live", () => {
   const data = { createdAt: NOW - 40 * 60 * 60 * 1000, updatedAt: NOW - (CASE_FLAG_QUIET_MS - 60_000) };
   assert.equal(decideCaseFlag(data, NOW), "flag");
+});
+
+// 2026-08-11 outbound audit: creating the case wrote records the operator panel
+// never reads, and bumpOperatorCaseSignal - the only writer of the red
+// "Оператор қажет" row - had no callers at all. Every escalation was silent.
+test("an escalation pushes the operator flag, not just the case record", async () => {
+  const source = await readFile(new URL("../src/services/complaintRouting.service.ts", import.meta.url), "utf8");
+  assert.match(source, /import \{ bumpOperatorCaseSignal, createOperatorCase/);
+  assert.match(source, /await bumpOperatorCaseSignal\(ctx\.instanceId, ctx\.phone\)/);
+  // Only for a case that actually exists, and never fatal to the guest's reply.
+  assert.match(source, /operatorCase\s*\n?\s*\?\s*await bumpOperatorCaseSignal/);
+  assert.match(source, /operatorFlagged: flagged/);
 });

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { envNumber } from "../utils/envNumber.js";
 function pickWebhookUrl(config = {}) {
     return String(config.n8n_webhook_url ||
         config.n8nWebhookUrl ||
@@ -29,7 +30,7 @@ export async function syncKanbanEvent(ctx, event) {
     };
     try {
         const response = await axios.post(url, payload, {
-            timeout: Number(process.env.N8N_WEBHOOK_TIMEOUT_MS || 5000),
+            timeout: envNumber(process.env.N8N_WEBHOOK_TIMEOUT_MS, 5000, { min: 1000 }),
             maxRedirects: 0,
         });
         return { ok: true, status: response.status };

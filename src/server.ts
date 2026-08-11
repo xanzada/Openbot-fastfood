@@ -12,9 +12,10 @@ import { startRuntimeWatcher } from "./cron/runtimeWatch.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "./services/developerNotify.service.js";
 import { startWhatsProOutboxWorker } from "./transport/whatspro.client.js";
 import { safeCompare } from "./services/tenantAuth.service.js";
+import { envNumber } from "./utils/envNumber.js";
 
 const app = express();
-const port = Number(process.env.PORT || 4100);
+const port = envNumber(process.env.PORT, 4100, { min: 1 });
 const httpServer = http.createServer(app);
 const socketAllowedOrigins = String(process.env.SOCKET_ALLOWED_ORIGINS || "")
   .split(",")

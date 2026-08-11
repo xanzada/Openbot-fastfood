@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { clearComplaintMedia, getComplaintMedia } from "./redis.service.js";
-import { createOperatorCase, detectOperatorCaseKind } from "./operatorCase.service.js";
+import { bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind } from "./operatorCase.service.js";
 import { auditError } from "./auditLogger.service.js";
 import { intentMatches } from "../utils/intentText.js";
 const ESCALATION_SIGNAL_RE = /\[(ESCALATE_ADMIN|ESCALATE_DEVELOPER)\]/giu;
@@ -117,9 +117,22 @@ export async function routeComplaintToAdmin(ctx, input) {
     if (savedMedia?.base64 && operatorCase) {
         await clearComplaintMedia(ctx.instanceId, ctx.phone).catch(() => undefined);
     }
+    // Creating the case only writes records the panel does not read. The one thing
+    // an operator actually sees - the red "Оператор қажет" row at the top of the
+    // inbox - is pushed by bumpOperatorCaseSignal, and nothing was calling it, so
+    // every escalation since it was written has been silent: the guest was told a
+    // person would come and no person was told anything. It carries its own
+    // already-flagged/stale guard, so calling it here cannot double-flag.
+    const flagged = operatorCase
+        ? await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch((error) => {
+            auditError("Operator case flag push failed", error, { instanceId: ctx.instanceId, signalId, kind });
+            return false;
+        })
+        : false;
     return {
         action: "operator_case_created",
         caseId: operatorCase?.id || null,
+        operatorFlagged: flagged,
         queuedForChat: Boolean(operatorCase),
         escalationAvailable: Boolean(operatorCase),
         signaledToDle: false,

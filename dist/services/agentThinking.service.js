@@ -1,4 +1,5 @@
 import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { envNumber } from "../utils/envNumber.js";
 const TRIVIAL_TEXT_RE = /^(сәлем|салем|сәлеметсіз\s*бе|сәлеметсiz\s*бе|қайырлы\s*(?:таң|күні|кеш)|рақмет|рахмет|рахимет|жақсы|жарайды|болды|ок|okay|ok|иә|ия|жоқ|қош|сау\s*бол|привет|здравствуй(?:те)?|добрый\s*(?:день|вечер|утро)|спасибо|благодарю|хорошо|ладно|понял|понятно|да|нет|пока|до\s*свидания|\+|-|👍|🙏|🙂)[\s!.🙂👍🙏]*$/iu;
 const THINK_WORTHY_RE = /(заказ|тапсырыс|оплат|төлем|чек|түбіртек|курьер|достав|жеткіз|кешік|опозд|задерж|шағым|жалоб|претенз|возврат|қайтар|отмен|болдырма|не\s+при|келмед|не\s+тот|қате|ошиб|холодн|салқын|испорч|бұзыл|бузыл|улан|отрав|волос|шаш|гряз|лас|оператор|админ|менеджер|адам|человек|ақша\s+қайт|деньги\s+верн|әлі\s+келмеді|еще\s+не|досихпор|почему|неге|неліктен)/iu;
 /**
@@ -84,7 +85,7 @@ No markdown, no commentary, JSON only.`;
 export async function analyzeTurnSituation(ctx, toolPlan) {
     if (!shouldThink(ctx, toolPlan))
         return null;
-    const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 5_000)));
+    const timeoutMs = envNumber(process.env.THINK_TIMEOUT_MS, 5_000, { min: 3_000, max: 15_000 });
     try {
         const historyLines = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
             .slice(-6)
@@ -141,7 +142,7 @@ export async function critiqueDraftReply(input) {
     const { ctx, analysis, draft } = input;
     if (!draft.trim())
         return null;
-    const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 5_000)));
+    const timeoutMs = envNumber(process.env.THINK_TIMEOUT_MS, 5_000, { min: 3_000, max: 15_000 });
     try {
         const result = await generateWithTimeout(thinkModel(), {
             system: CRITIC_SYSTEM_PROMPT,

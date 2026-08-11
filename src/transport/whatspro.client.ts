@@ -5,8 +5,9 @@ import { auditDecision, auditError, auditOutbound } from "../services/auditLogge
 import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import crypto from "node:crypto";
 import { connectRedis, redisClient, scanKeys } from "../services/redis.service.js";
+import { envNumber } from "../utils/envNumber.js";
 
-const RESPONSE_CHUNK_MAX = Math.max(180, Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 320));
+const RESPONSE_CHUNK_MAX = envNumber(process.env.OPENBOT_RESPONSE_CHUNK_MAX, 320, { min: 180 });
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 const volatileOutbox = new Map<string, WhatsProOutboxRecord>();
 let outboxTimer: ReturnType<typeof setInterval> | null = null;
@@ -392,7 +393,7 @@ export function startWhatsProOutboxWorker() {
     void drainWhatsProOutbox().catch((error) => {
       auditError("WhatsPro outbox drain failed", error, { failedStep: "whatspro_outbox_drain" });
     });
-  }, Math.max(2_000, Number(process.env.OPENBOT_OUTBOX_INTERVAL_MS || 10_000)));
+  }, envNumber(process.env.OPENBOT_OUTBOX_INTERVAL_MS, 10_000, { min: 2_000 }));
   outboxTimer.unref?.();
   return outboxTimer;
 }

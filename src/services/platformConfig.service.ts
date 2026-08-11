@@ -3,8 +3,9 @@ import { generateText, stepCountIs, tool } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
+import { envNumber } from "../utils/envNumber.js";
 
-const SHPOR_CONTEXT_LIMIT = Number(process.env.SHPOR_CONTEXT_LIMIT || 8);
+const SHPOR_CONTEXT_LIMIT = envNumber(process.env.SHPOR_CONTEXT_LIMIT, 8, { min: 1 });
 const runtimeConfigMemory = new Map<string, { value: Record<string, any>; expiresAt: number }>();
 // Fields the platform's multi-tenant index blanks out on purpose; only the
 // per-instance endpoint returns them.

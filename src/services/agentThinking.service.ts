@@ -1,5 +1,6 @@
 import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
+import { envNumber } from "../utils/envNumber.js";
 
 /**
  * The agent's silent pre-pass.
@@ -120,7 +121,7 @@ No markdown, no commentary, JSON only.`;
  */
 export async function analyzeTurnSituation(ctx: FastFoodContext, toolPlan?: { requiredTools?: string[] }): Promise<TurnAnalysis | null> {
   if (!shouldThink(ctx, toolPlan)) return null;
-  const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 5_000)));
+  const timeoutMs = envNumber(process.env.THINK_TIMEOUT_MS, 5_000, { min: 3_000, max: 15_000 });
   try {
     const historyLines = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
       .slice(-6)
@@ -190,7 +191,7 @@ export async function critiqueDraftReply(input: {
 }): Promise<DraftCritique | null> {
   const { ctx, analysis, draft } = input;
   if (!draft.trim()) return null;
-  const timeoutMs = Math.max(3_000, Math.min(15_000, Number(process.env.THINK_TIMEOUT_MS || 5_000)));
+  const timeoutMs = envNumber(process.env.THINK_TIMEOUT_MS, 5_000, { min: 3_000, max: 15_000 });
   try {
     const result = await generateWithTimeout(
       thinkModel(),

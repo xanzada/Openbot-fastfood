@@ -1,26 +1,27 @@
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
 import { getRestaurantConfig } from "./platformConfig.service.js";
+import { envNumber } from "../utils/envNumber.js";
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const PHONE_RE = /^\d{10,15}$/;
 const SPAM_WINDOW_SECONDS = 60;
-const SPAM_LIMIT = Number(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE || 15);
-const MUTE_SECONDS = Number(process.env.OPENBOT_SPAM_MUTE_SECONDS || 900);
+const SPAM_LIMIT = envNumber(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE, 15, { min: 1 });
+const MUTE_SECONDS = envNumber(process.env.OPENBOT_SPAM_MUTE_SECONDS, 900, { min: 1 });
 const DUPLICATE_TEXT_SECONDS = 5;
 const INBOUND_BUFFER_SECONDS = 5;
-const INBOUND_BUFFER_DELAY_MS = Math.max(600, Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 2400));
+const INBOUND_BUFFER_DELAY_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_MS, 2400, { min: 600 });
 const INBOUND_BUFFER_MAX_ITEMS = 8;
 const INBOUND_BUFFER_MAX_CHARS = 2000;
 const PROCESSING_LOCK_SECONDS = 180;
 const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
-const OPERATOR_MUTE_MAX_SECONDS = Number(process.env.OPERATOR_MUTE_MAX_SECONDS || 300);
-const OPERATOR_ACTIVE_SECONDS = Number(process.env.OPERATOR_ACTIVE_SECONDS || 60);
-export const MAX_IMAGE_BYTES = Number(process.env.OPENBOT_MAX_IMAGE_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
-export const MAX_DOCUMENT_BYTES = Number(process.env.OPENBOT_MAX_DOCUMENT_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES || 5 * 1024 * 1024);
-export const MAX_AUDIO_BYTES = Number(process.env.OPENBOT_MAX_AUDIO_BYTES || 8 * 1024 * 1024);
-export const MAX_VOICE_SECONDS = Number(process.env.OPENBOT_MAX_VOICE_SECONDS || 180);
-const MEDIA_AI_LIMIT_PER_5_MINUTES = Number(process.env.OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES || 6);
+const OPERATOR_MUTE_MAX_SECONDS = envNumber(process.env.OPERATOR_MUTE_MAX_SECONDS, 300, { min: 1 });
+const OPERATOR_ACTIVE_SECONDS = envNumber(process.env.OPERATOR_ACTIVE_SECONDS, 60, { min: 1 });
+export const MAX_IMAGE_BYTES = envNumber(process.env.OPENBOT_MAX_IMAGE_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES, 5 * 1024 * 1024, { min: 1024 });
+export const MAX_DOCUMENT_BYTES = envNumber(process.env.OPENBOT_MAX_DOCUMENT_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES, 5 * 1024 * 1024, { min: 1024 });
+export const MAX_AUDIO_BYTES = envNumber(process.env.OPENBOT_MAX_AUDIO_BYTES, 8 * 1024 * 1024, { min: 1024 });
+export const MAX_VOICE_SECONDS = envNumber(process.env.OPENBOT_MAX_VOICE_SECONDS, 180, { min: 1 });
+const MEDIA_AI_LIMIT_PER_5_MINUTES = envNumber(process.env.OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES, 6, { min: 1 });
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
 const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
     .split(",")

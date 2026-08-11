@@ -2,6 +2,7 @@ import axios from "axios";
 import { getRedisTarget, pingRedis } from "./redis.service.js";
 import { getMediaFallbackModel, getMediaPrimaryKeys, getMediaPrimaryModel, getTextModels } from "./llm.service.js";
 import { getWhatsProOutboxSummary } from "../transport/whatspro.client.js";
+import { envNumber } from "../utils/envNumber.js";
 function now() {
     return Date.now();
 }
@@ -120,7 +121,7 @@ export function getConfigSummary() {
     const textModels = getTextModels();
     const tenantsPlatform = tenantsPlatformEnv();
     return {
-        port: Number(process.env.PORT || 4100),
+        port: envNumber(process.env.PORT, 4100, { min: 1 }),
         redis: `${redis.host}:${redis.port}`,
         text_models: textModels,
         media_models: {
@@ -136,8 +137,8 @@ export function getConfigSummary() {
             test_mode: String(process.env.TEST_MODE_ENABLED || "false").trim().toLowerCase() === "true",
             developer_phone: envPresent("OPENBOT_DEVELOPER_PHONE") ? "present" : "missing",
             receipt_ai_filter: !["false", "0", "off", "no"].includes(String(process.env.RECEIPT_AI_FILTER_ENABLED ?? "true").trim().toLowerCase()),
-            inbound_buffer_ms: Math.max(600, Number(process.env.OPENBOT_INBOUND_BUFFER_MS || 2400)),
-            response_chunk_max: Math.max(180, Number(process.env.OPENBOT_RESPONSE_CHUNK_MAX || 320)),
+            inbound_buffer_ms: envNumber(process.env.OPENBOT_INBOUND_BUFFER_MS, 2400, { min: 600 }),
+            response_chunk_max: envNumber(process.env.OPENBOT_RESPONSE_CHUNK_MAX, 320, { min: 180 }),
         },
         tenants_platform: {
             source: "tenants_platform_by_instance_id",

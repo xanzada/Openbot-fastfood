@@ -5,6 +5,7 @@ import { validateFinalText } from "./finalValidator.js";
 import { buildAgentInstructions } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
+import { envNumber } from "../utils/envNumber.js";
 function enforceExplicitMagicLink(text, ctx) {
     if (!ctx.explicitMenuLinkIntent || !ctx.magicLink || text.includes(ctx.magicLink))
         return text;
@@ -34,8 +35,8 @@ export async function runFastFoodAgent(ctx) {
     // intelligence layers only run while there is time left. A turn that already
     // burned its budget on model failover answers with the plain (already good)
     // pipeline instead of stacking more calls on top.
-    const CRITIC_BUDGET_MS = Math.max(10_000, Math.min(60_000, Number(process.env.CRITIC_BUDGET_MS || 20_000)));
-    const REGEN_BUDGET_MS = Math.max(CRITIC_BUDGET_MS + 5_000, Math.min(90_000, Number(process.env.REGEN_BUDGET_MS || 38_000)));
+    const CRITIC_BUDGET_MS = envNumber(process.env.CRITIC_BUDGET_MS, 20_000, { min: 10_000, max: 60_000 });
+    const REGEN_BUDGET_MS = envNumber(process.env.REGEN_BUDGET_MS, 38_000, { min: CRITIC_BUDGET_MS + 5_000, max: 90_000 });
     const toolPlan = resolveAgentToolPlan(ctx);
     // Silent pre-pass: on non-trivial turns the think layer reads the situation
     // first (goal, mood, risk) and lands in FACTS_CONTEXT as advisory guidance.

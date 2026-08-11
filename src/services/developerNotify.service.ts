@@ -2,8 +2,9 @@ import crypto from "node:crypto";
 import { getAllRestaurantConfigs, getRestaurantConfig } from "./platformConfig.service.js";
 import { redisClient } from "./redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
+import { envNumber } from "../utils/envNumber.js";
 
-const ALERT_DEDUPE_SECONDS = Math.max(10, Number(process.env.OPENBOT_DEV_ALERT_DEDUPE_SECONDS || 60));
+const ALERT_DEDUPE_SECONDS = envNumber(process.env.OPENBOT_DEV_ALERT_DEDUPE_SECONDS, 60, { min: 10 });
 const localDedupe = new Map<string, number>();
 
 function normalizePhone(value = "") {
