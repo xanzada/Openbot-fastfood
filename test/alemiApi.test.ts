@@ -16,7 +16,7 @@ import {
   uploadOrderDocument,
   type AlemiTransportRequest,
 } from "../src/services/alemiApi.service.js";
-import { updateCrmAction } from "../src/services/dle.service.js";
+import { crmDailyLogEntry, updateCrmAction } from "../src/services/dle.service.js";
 
 const config = {
   instance_id: "prestige",
@@ -214,6 +214,27 @@ test("legacy receipt action fails explicitly until raw bytes are wired to the up
     updateCrmAction("receipt", "prestige", "77001112233", { order_id: "77" }),
     /ALEMI_RECEIPT_BYTES_REQUIRED/
   );
+});
+
+// The CRM skill passes its whole tenant config so the hub call can sign without
+// a second platform read. saveDailyLog JSON-stringifies its argument into
+// `daily_logs:<instance>`, so spreading that config wrote alemi_secret into
+// Redis, where crm.today.get and the analytics cron read from.
+test("the CRM daily log carries the lead fields and no tenant credential", () => {
+  const entry = crmDailyLogEntry("update_crm", "77001112233", {
+    config,
+    interest: "пицца",
+    sales_stage: "MENU_SENT",
+    psycho_analysis: "спешит",
+  });
+  assert.deepEqual(entry, {
+    action: "update_crm",
+    phone: "77001112233",
+    interest: "пицца",
+    sales_stage: "MENU_SENT",
+    psycho_analysis: "спешит",
+  });
+  assert.doesNotMatch(JSON.stringify(entry), /test-secret|alemi_secret|hub\.alemi\.kz/);
 });
 
 test("customer access-link helper maps phone/locale and unwraps common URL keys", async () => {

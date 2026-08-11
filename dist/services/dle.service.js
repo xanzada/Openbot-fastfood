@@ -140,12 +140,18 @@ export async function normalizePublicDomain(rawDomain = "") {
     }
     return `${parsed.protocol}//${parsed.host}`;
 }
-async function apiBot(domain, payload, timeout = 10000) {
+async function apiBot(domain, payload, timeout = 10000, options = {}) {
     const instanceId = String(payload.restaurant_id || payload.instance || payload.instanceId || "").trim();
     if (!instanceId)
         throw new Error("ALEMI_INSTANCE_NOT_CONFIGURED");
     void domain;
-    return callAlemiLegacyAction(payload.action, payload, { timeoutMs: timeout });
+    // `config` is spread conditionally: callAlemiCommand reads the tenant config
+    // itself when the key is absent, but treats an explicit `undefined` as "the
+    // caller already resolved it", which would strip the credential.
+    return callAlemiLegacyAction(payload.action, payload, {
+        timeoutMs: timeout,
+        ...(options.config ? { config: options.config } : {}),
+    });
 }
 function toBool(value, fallback = false) {
     if (typeof value === "boolean")
@@ -662,12 +668,27 @@ export async function sendOperatorSosSignal(input) {
     void input;
     throw new Error("ALEMI_OPERATOR_SOS_REDIS_ONLY");
 }
+// updateCrmLead hands over its whole tenant config so the hub call can sign
+// without a second platform read - and it was being dropped on the way to the
+// hub while `...data` carried it straight into Redis. saveDailyLog
+// JSON-stringifies what it is given into `daily_logs:<instance>`, so
+// alemi_secret and every other tenant credential was written there, to be read
+// back by crm.today.get and the analytics cron. The config now goes to the
+// signer and nowhere near the log.
+export function crmDailyLogEntry(actionType, phone, data) {
+    const { config, ...loggable } = data;
+    void config;
+    return { action: actionType, phone, ...loggable };
+}
 export async function updateCrmAction(actionType, instanceId, phone, data) {
     const cleanPhone = normalizePhone(phone);
     if (!cleanPhone)
         return null;
     if (actionType === "receipt")
         throw new Error("ALEMI_RECEIPT_BYTES_REQUIRED");
+    // updateCrmLead hands over its whole tenant config so the hub call can sign
+    // without a second platform read; crmDailyLogEntry() keeps it out of Redis.
+    const tenantConfig = data.config;
     const payload = {
         phone: cleanPhone,
         restaurant_id: instanceId,
@@ -684,12 +705,8 @@ export async function updateCrmAction(actionType, instanceId, phone, data) {
         Object.assign(payload, buildReceiptCrmPayload(data));
     }
     try {
-        const response = await apiBot("", payload, 10000);
-        await saveDailyLog(instanceId, {
-            action: actionType,
-            phone: cleanPhone,
-            ...data,
-        }).catch((error) => {
+        const response = await apiBot("", payload, 10000, { config: tenantConfig });
+        await saveDailyLog(instanceId, crmDailyLogEntry(actionType, cleanPhone, data)).catch((error) => {
             auditError("CRM daily log save failed", error, { instanceId, actionType, phone: cleanPhone });
         });
         return response;
