@@ -50,14 +50,18 @@ Layer 0: types/instructions             ← Таза типтер
 - 20 өрісті FastFoodContext объект
 - FACTS_CONTEXT JSON ретінде LLM-ге беріледі
 
-### Skills (7 tool)
+### Skills (9 tool)
 1. searchMenu — Alemi каталогын іздеу
 2. getPaymentDetails — төлем реквизиттері
-3. registerPaymentReceipt — чек тіркеу
-4. updateCrmLead — CRM аналитика
-5. escalateToAdmin — админге эскалация
-6. sendMenuLink — магиялық сілтеме
-7. searchWeb — Tavily іздеу
+3. updateCrmLead — CRM аналитика
+4. escalateToAdmin — админге эскалация
+5. sendMenuLink — магиялық сілтеме
+6. checkOrderStatus — тапсырыс күйі
+7. getBusinessInfo — мекенжай/жұмыс уақыты
+8. getKitchenStatus — ас үйдің тірі күйі
+9. getShiftNotes — ауысым ескертпелері
+
+searchWeb (Tavily) коды бар, бірақ әдейі тіркелмеген — `docs/skills/README.md`.
 
 ### Services (9 файл)
 - alemiApi.service — HMAC-қолтаңбалы Alemi бизнес API клиенті

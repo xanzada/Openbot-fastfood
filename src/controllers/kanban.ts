@@ -550,6 +550,24 @@ async function emitPrintOnNewOrder(req: Request, body: Record<string, unknown>, 
   }
 }
 
+/**
+ * The integration contract promises the site may retry a failed delivery
+ * because the bot filters duplicates by `event_id`. It did not: the only guard
+ * was keyed on order+action+status, which covers a retry by accident and covers
+ * nothing at all for a signal carrying no order id. This claim is taken first
+ * and is ADDITIONAL to the order lock, never a replacement - a site that mints
+ * a fresh event_id per retry is still deduped by the order lock below. A signal
+ * with no event_id is claimed trivially, which is why `key` is returned too:
+ * only a real claim may be released when processing fails.
+ */
+export async function claimInboundEvent(instance: string, rawEventId: unknown) {
+  const eventId = cleanInline(String(rawEventId ?? ""), 80);
+  if (!eventId) return { eventId: "", key: "", claimed: true };
+  const key = `kanban_event_lock:${instance}:${eventId}`;
+  const claimed = Boolean(await redisClient.set(key, "1", { NX: true, EX: 86400 }));
+  return { eventId, key: claimed ? key : "", claimed };
+}
+
 async function sendAndRemember(instance: string, phone: string, text: string): Promise<void> {
   auditOutbound("Triggering WhatsApp customer notification", {
     instance,
@@ -572,6 +590,8 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
   const rawOrderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
   let lockKey = "";
   let lockAcquired = false;
+  let eventLockKey = "";
+  let eventLockAcquired = false;
 
   auditProcessing("Kanban webhook processing started", {
     orderId: rawOrderId,
@@ -679,6 +699,14 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
 
     auditDecision("Connecting Redis for lock and memory operations", { orderId, action, instance });
     await connectRedis();
+    const eventClaim = await claimInboundEvent(instance, body.event_id || body.eventId);
+    if (!eventClaim.claimed) {
+      auditDecision("Found existing event_id lock; ignoring duplicate", { orderId: rawOrderId, action, instance, eventId: eventClaim.eventId });
+      res.status(200).json({ success: true, message: "Ignored duplicate signal", event_id: eventClaim.eventId });
+      return;
+    }
+    eventLockKey = eventClaim.key;
+    eventLockAcquired = Boolean(eventClaim.key);
     const shiftNotePayload = isShiftNoteAction ? extractShiftNotePayload(body) : null;
     const lockId = shiftNotePayload?.stableLockId || orderId;
     const lockScope = action === "status_changed" ? `${action}:${newStatus || "unknown"}` : action;
@@ -791,6 +819,12 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     if (lockAcquired && lockKey) {
       auditDecision("Releasing idempotency lock after failure", { orderId: body.order_id || rawOrderId, action, instance, lockKey });
       await redisClient.del(lockKey).catch(() => undefined);
+    }
+    // Without this the site's retry of a signal that failed mid-processing would
+    // be answered "ignored duplicate" and the guest would never hear about it.
+    if (eventLockAcquired && eventLockKey) {
+      auditDecision("Releasing event_id lock after failure", { orderId: body.order_id || rawOrderId, action, instance, eventLockKey });
+      await redisClient.del(eventLockKey).catch(() => undefined);
     }
 
     await notifyDeveloper(instance, error, {
