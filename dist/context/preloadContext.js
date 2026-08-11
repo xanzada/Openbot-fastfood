@@ -31,6 +31,9 @@ function buildMenuSnapshot(menu) {
             price: item?.price ?? null,
             category: String(item?.category_name || item?.category || "").trim(),
             composition: String(item?.composition || item?.description || "").trim().slice(0, 160),
+            // Only the exception is carried: a sold-out dish must not be offered, and
+            // saying "available: true" 60 times would spend context on the default.
+            ...(item?.available === false ? { available: false } : {}),
         })).filter((item) => item.name),
     };
 }

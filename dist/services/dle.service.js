@@ -522,23 +522,60 @@ export async function getOrderContext(instanceId, domain, options = {}) {
         return backup ? { ...backup, is_stale: true, status: backup.status || "last_known_order_offline" } : null;
     }
 }
-function normalizeMenuItem(item = {}) {
+// hub.alemi.kz answers catalog.context.get with its own field names, and reading
+// only the legacy ones silently zeroed the whole menu: every dish reached the
+// model with id 0 and price 0, because hub sends a UUID id and the price under
+// price_amount_minor. A guest asking the price was then answered from a fact
+// that said zero.
+//
+// On the money: hub labels the field "minor" but stores whole tenge. Verified
+// 2026-08-11 against the live storefront — Неаполитанская reads
+// price_amount_minor: 3000 in the API and "3 000 тг" on the page. So the value
+// is used as-is; dividing by 100 would under-price the menu 100-fold.
+//
+// The id stays a string: a UUID is not a number, and Number() on it is 0.
+function firstNumber(...values) {
+    for (const value of values) {
+        if (value === null || value === undefined || value === "")
+            continue;
+        const parsed = Number(value);
+        if (Number.isFinite(parsed))
+            return parsed;
+    }
+    return 0;
+}
+export function normalizeMenuItem(item = {}) {
+    const price = firstNumber(item.price, item.price_amount_minor, item.price_amount, item.amount);
+    const compareAt = firstNumber(item.compare_at_price_amount_minor, item.compare_at_price, item.old_price);
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean) : [];
     return {
-        id: Number(item.id) || 0,
-        category_id: Number(item.category_id) || 0,
+        id: String(item.id ?? "").trim(),
+        category_id: String(item.category_id ?? "").trim(),
         category_name: String(item.category_name || item.category || "").trim(),
         name: String(item.name || item.title || "").trim(),
         description: String(item.description || "").trim(),
         composition: String(item.composition || "").trim(),
-        price: Number(item.price) || 0,
-        promo_price: Number(item.promo_price) || 0,
-        label: String(item.label || "").trim(),
+        price,
+        // compare_at is hub's crossed-out "was" price, so the discount is on price
+        // itself. Reporting it as promo_price would invert the two and quote the
+        // higher number as the offer.
+        compare_at_price: compareAt > price ? compareAt : 0,
+        promo_price: firstNumber(item.promo_price),
+        bonus: firstNumber(item.bonus_earn_amount_minor, item.bonus),
+        // Availability was dropped here, so searchMenu's `typeof available ===
+        // "boolean"` check could never be true and a sold-out dish looked orderable.
+        available: typeof item.available === "boolean" ? item.available : true,
+        tags,
+        label: String(item.label || tags[0] || "").trim(),
     };
 }
 export async function getMenuContext(instanceId, domain, userLang = "kk") {
     const lang = userLang === "ru" ? "ru" : "kz";
-    const cacheKey = `menu_context:${instanceId}:${lang}`;
-    const backupKey = `menu_context_backup:${instanceId}:${lang}`;
+    // v2 because the v1 payloads cached under the old key hold the zeroed prices
+    // this mapping fixes, and the backup copy lives for 24h: reusing that key
+    // would keep serving price 0 for a day after the fix ships.
+    const cacheKey = `menu_context:v2:${instanceId}:${lang}`;
+    const backupKey = `menu_context_backup:v2:${instanceId}:${lang}`;
     const cached = await getJsonCache(cacheKey);
     if (cached)
         return cached;
