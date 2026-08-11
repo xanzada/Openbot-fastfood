@@ -701,6 +701,22 @@ async function processWhatsAppWebhook(body: any, started: number) {
           );
           if (receiptOrder.state !== "found") {
             await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+            // A guest who has actually paid must never be told their order does
+            // not exist just because the hub lookup was unreachable. "unavailable"
+            // means we could not read, not that there is nothing to read.
+            if (receiptOrder.state === "unavailable") {
+              const lookupRetryReply =
+                ctx.language === "ru"
+                  ? "Чек получил, но сейчас не могу проверить заказ — база временно недоступна. Отправьте чек ещё раз через пару минут, пожалуйста."
+                  : "Чекті алдым, бірақ тапсырысты қазір тексере алмай тұрмын — база уақытша қолжетімсіз. Бір-екі минуттан кейін чекті қайта жіберіңізші.";
+              await sendCustomerReplyAndFinish(
+                ctx,
+                messageId,
+                lookupRetryReply,
+                "payment_receipt_lookup_unavailable"
+              );
+              return;
+            }
             await sendCustomerReplyAndFinish(
               ctx,
               messageId,

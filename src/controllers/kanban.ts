@@ -134,8 +134,10 @@ function paymentDetailsFromRuntime(runtimeStatus: Record<string, unknown> | null
 }
 
 async function getLiveRuntimeStatus(instance: string, config: Record<string, unknown>) {
+  // `domain` is informational for the hub, which keys everything on the
+  // instance. Bailing out without it silently disabled payment details and
+  // wait-time for any tenant that has no storefront URL configured.
   const domain = textValue(config.domain || config.website || config.url);
-  if (!domain) return null;
   return getRuntimeStatus(instance, domain, { forceFresh: true }).catch((error: unknown) => {
     auditError("Runtime status read failed", error, { instance, domain });
     return null;

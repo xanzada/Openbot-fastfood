@@ -141,6 +141,18 @@ function assertAlemiResponse(response) {
     }
     return unwrapped;
 }
+function hasTenantAlemiSecret(instanceId, config, env) {
+    // Ask the real resolver rather than re-listing field names here, so a tenant
+    // that legitimately signs with the env credential is not refreshed on every
+    // call and no future secret field is missed.
+    try {
+        resolveAlemiCredentials(instanceId, config, env);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 function isAlemiAuthRejection(error) {
     const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
     return status === 401;
@@ -153,8 +165,15 @@ async function withRotatedSecretRetry(instanceId, options, send) {
     const config = options.config === undefined
         ? await getRestaurantConfig(instanceId).catch(() => null)
         : options.config;
+    // The platform's multi-tenant index redacts Alemi secrets, so a cached config
+    // that came from there would make every hub call throw
+    // ALEMI_SECRET_NOT_CONFIGURED even though the tenant is configured correctly.
+    // One authoritative re-read repairs the cache instead of failing the call.
+    const hydrated = hasTenantAlemiSecret(instanceId, config, options.env || process.env)
+        ? config
+        : (await (options.refreshConfig || refreshRestaurantConfig)(instanceId).catch(() => null)) || config;
     try {
-        return await send(config);
+        return await send(hydrated);
     }
     catch (error) {
         if (!isAlemiAuthRejection(error))

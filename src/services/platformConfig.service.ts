@@ -6,6 +6,9 @@ import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
 
 const SHPOR_CONTEXT_LIMIT = Number(process.env.SHPOR_CONTEXT_LIMIT || 8);
 const runtimeConfigMemory = new Map<string, { value: Record<string, any>; expiresAt: number }>();
+// Fields the platform's multi-tenant index blanks out on purpose; only the
+// per-instance endpoint returns them.
+const REDACTED_INDEX_FIELDS = ["alemi_secret", "crm_secret_token", "webhook_secret"] as const;
 const botControlMemory = new Map<string, { enabled: boolean; expiresAt: number }>();
 let allConfigsMemory: { value: Record<string, any>[]; expiresAt: number } | null = null;
 const openrouter = createOpenAI({
@@ -280,7 +283,17 @@ export async function getAllRestaurantConfigs(options: { forceRefresh?: boolean 
     allConfigsMemory = { value: records, expiresAt: Date.now() + 60_000 };
     for (const config of records) {
       const instance = String(config.instance_id || config.instance || "");
-      if (instance) runtimeConfigMemory.set(instance, { value: config, expiresAt: Date.now() + 60_000 });
+      if (!instance) continue;
+      // The broad index redacts Alemi secrets, so seeding this record verbatim
+      // would blank the secret every caller of getRestaurantConfig() relies on
+      // and make every hub call fail with ALEMI_SECRET_NOT_CONFIGURED for the
+      // next 60s. Carry the known-good secret fields over instead.
+      const previous = runtimeConfigMemory.get(instance)?.value;
+      const merged: Record<string, any> = { ...config };
+      for (const field of REDACTED_INDEX_FIELDS) {
+        if (!merged[field] && previous?.[field]) merged[field] = previous[field];
+      }
+      runtimeConfigMemory.set(instance, { value: merged, expiresAt: Date.now() + 60_000 });
     }
     void Promise.all([
       setJsonCache(cacheKey, 300, records),

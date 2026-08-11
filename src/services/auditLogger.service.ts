@@ -17,6 +17,10 @@ function sanitizeAudit(value: unknown, key = "", depth = 0): unknown {
   if (SECRET_KEY_RE.test(key)) return "[REDACTED]";
   if (typeof value === "string") {
     if (key.toLowerCase().includes("phone") || ["to","from"].includes(key.toLowerCase())) return maskAuditPhone(value);
+    // Already-redacted values pass through untouched. Without this a value that
+    // was sanitized by an earlier audit call gets re-measured here and the log
+    // reports 13 ("[REDACTED:51]".length) instead of the real 51 characters.
+    if (/^\[REDACTED(?::\d+)?\]$/.test(value)) return value;
     if (PII_KEY_RE.test(key)) return `[REDACTED:${value.length}]`;
     return value.length > 500 ? `${value.slice(0,500)}…` : value;
   }

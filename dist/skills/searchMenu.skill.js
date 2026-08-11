@@ -83,13 +83,9 @@ export function createSearchMenuSkill(ctx) {
             offset: z.number().int().min(0).max(5000).optional().describe("Pagination offset"),
         }),
         execute: async ({ query, category, limit, offset }) => {
+            // Hub resolves the catalog by instance and ignores `domain`, so a tenant
+            // without a storefront URL must still see its own menu.
             const domain = ctx.config?.domain || "";
-            if (!domain) {
-                return {
-                    source: "domain_not_configured",
-                    items: [],
-                };
-            }
             const menu = await getMenuContext(ctx.instanceId, domain, ctx.language);
             const items = Array.isArray(menu?.items) ? menu.items : [];
             const allowedItems = items.filter((item) => !menuItemBlockedByNotes(ctx.activeShiftNotes, item).blocked);
@@ -116,6 +112,10 @@ export function createSearchMenuSkill(ctx) {
                 : [];
             return {
                 items: matches,
+                // An unreachable catalog used to look exactly like an empty one, so the
+                // bot confidently told guests a dish does not exist. The model needs to
+                // see the difference to say "I cannot check right now" instead.
+                ...(menu?.source === "menu_unavailable" ? { menu_lookup: "unavailable" } : {}),
                 ...(safeAlternatives.length ? { safe_alternatives: safeAlternatives } : {}),
                 offset: start,
                 nextOffset: start + matches.length < allMatches.length ? start + matches.length : null,

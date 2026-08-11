@@ -9,9 +9,10 @@ export function createCheckOrderStatusSkill(ctx) {
             orderId: z.string().regex(/^\d{1,12}$/).optional().describe("Order number supplied by the current customer"),
         }),
         execute: async ({ orderId }) => {
+            // The hub resolves the order by instance + phone and ignores `domain`
+            // entirely, so refusing to look up a tenant that has no storefront URL
+            // configured made the bot answer "unavailable" forever for that tenant.
             const domain = ctx.config?.domain || "";
-            if (!domain)
-                return { lookup: "unavailable" };
             const result = await getCustomerOrder(ctx.instanceId, domain, ctx.phone, ctx.language, orderId);
             if (result.state !== "found")
                 return { lookup: result.state };

@@ -519,7 +519,13 @@ export async function getOrderContext(instanceId, domain, options = {}) {
     catch (error) {
         auditError("DLE order context read failed", error, { instanceId, phone: cleanPhone, orderId });
         const backup = await getJsonCache(key);
-        return backup ? { ...backup, is_stale: true, status: backup.status || "last_known_order_offline" } : null;
+        if (backup)
+            return { ...backup, is_stale: true, status: backup.status || "last_known_order_offline" };
+        // Returning null here made an unreachable hub indistinguishable from "this
+        // guest has no order", and the guest was told their order does not exist -
+        // including a guest who had just paid. `is_stale` routes to the honest
+        // "temporarily unavailable" answer instead.
+        return { is_stale: true, lookup_unavailable: true, status: "order_lookup_unavailable" };
     }
 }
 // hub.alemi.kz answers catalog.context.get with its own field names, and reading
