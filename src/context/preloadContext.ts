@@ -260,13 +260,20 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     redis_available: redisAvailable,
   };
   const explicitMenuLinkIntent = hasExplicitMenuLinkIntent(text);
+  let magicLinkFailed = false;
   const magicLink = explicitMenuLinkIntent
     ? await issueCustomerAccessLink({
         instanceId,
         phone,
         locale: language,
         config: safeConfig,
-      }).catch(() => null)
+      }).catch((error) => {
+        // A silent null here once hid a rotated hub secret for days: the guest was
+        // told the previous link still worked while no link had ever been issued.
+        magicLinkFailed = true;
+        console.warn(`[MAGIC LINK] issue failed instance=${instanceId} reason=${String(error?.message || error).slice(0, 200)}`);
+        return null;
+      })
     : null;
 
   return {
@@ -305,5 +312,6 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     proactiveSignals: null,
     explicitMenuLinkIntent,
     magicLink,
+    magicLinkFailed,
   };
 }

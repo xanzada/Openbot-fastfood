@@ -19,6 +19,11 @@ export interface FastFoodContext {
   magicLinkAlreadySent: boolean;
   explicitMenuLinkIntent: boolean;
   magicLink: string | null;
+  // Set when the guest asked for the link and issuing it actually failed (hub
+  // unreachable, secret rotated). Without this the skill could not tell an
+  // outage apart from "the link was already sent" and reassured the guest about
+  // a link that had never been issued.
+  magicLinkFailed?: boolean;
   // Long-term memory. Optional so every existing caller, test, and smoke script
   // keeps compiling and behaves exactly as before when Redis has nothing yet.
   customerProfile?: Record<string, any> | null;
