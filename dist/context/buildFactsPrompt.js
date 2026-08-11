@@ -261,11 +261,26 @@ function menuSnapshotBlock(ctx) {
             },
         };
     }
+    // The snapshot carries at most 60 dishes, but the count printed here was the
+    // length of that slice, so a restaurant with 214 items showed "count: 60" and
+    // the rule below turned that slice into the whole truth: dishes 61 and up were
+    // "absent from this list" and were announced as non-existent. The real total
+    // travels with the snapshot, so the prompt states both numbers and, when they
+    // differ, forbids reading absence here as absence from the menu.
+    const total = Number(snapshot?.count || 0) || items.length;
+    const partial = total > items.length;
     return {
         menu_snapshot: {
             count: items.length,
+            total_on_menu: total,
             items,
             rule: "This is the live menu of this restaurant. A dish listed here EXISTS and can be sold at the price shown, unless unavailable_now blocks it. You may call a dish unavailable ONLY when it is absent from this list or blocked by an operator constraint - never from memory or assumption. When something is blocked, say so and in the same message offer a real replacement by name and price, chosen from this list and never a dish whose composition mentions the missing thing. Use composition to answer what is inside a dish and to judge whether a replacement is honest.",
+            ...(partial
+                ? {
+                    truncated: true,
+                    truncation_rule: `This snapshot shows ${items.length} of ${total} menu items. It is a sample, not the full menu: absence from it proves nothing. Before saying a dish does not exist, or listing what we sell, or answering "what do you have", call searchMenu and use its totalMatched, hasMore and categories.`,
+                }
+                : {}),
         },
     };
 }

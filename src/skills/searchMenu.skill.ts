@@ -36,11 +36,38 @@ function scoreMenuItem(item: Record<string, any>, tokens: string[], query: strin
   return score;
 }
 
+/**
+ * Every distinct category the guest is allowed to see, with how many items sits
+ * in each. "Қандай категориялар бар?" used to be answered from whatever page of
+ * items the model happened to hold, and with an empty query the ranking sorts
+ * by price, so the answer was the categories of the cheapest handful of dishes -
+ * a real section of the menu simply did not exist as far as the guest was told.
+ */
+export function summarizePublicCategories(items: Record<string, any>[], limit = 40) {
+  const counts = new Map<string, { name: string; items: number }>();
+  for (const item of items) {
+    const name = String(item?.category_name || item?.category || "").trim();
+    if (!name) continue;
+    const key = normalizeText(name);
+    const entry = counts.get(key);
+    if (entry) entry.items += 1;
+    else counts.set(key, { name, items: 1 });
+  }
+  return Array.from(counts.values())
+    .sort((left, right) => right.items - left.items || left.name.localeCompare(right.name))
+    .slice(0, Math.max(1, Number(limit) || 40));
+}
+
 export function selectPublicMenuItems(items: Record<string, any>[], query = "", category = "", limit = 12) {
   const normalizedQuery = normalizeText(query);
   const normalizedCategory = normalizeText(category);
   const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-  const max = Math.min(50, Math.max(1, Number(limit) || 12));
+  // The 50 that used to be hard-wired here was not only a page size: the skill
+  // asked for 50 to learn how many matches exist, so a category with 120 dishes
+  // reported exactly 50 matches and no next page. The model then answered "that
+  // is our whole menu" while two thirds of it were never counted. The ceiling is
+  // now the caller's business - the tool pages the ranked list itself.
+  const max = Math.max(1, Number(limit) || 12);
   return items
     .map((item) => ({ item, score: scoreMenuItem(item, tokens, normalizedQuery) }))
     .filter((entry) => {
@@ -70,10 +97,38 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
     });
 }
 
+/**
+ * One page of the ranked matches, plus the truth about what was left out. The
+ * page and the total used to be the same number by construction, so a guest
+ * asking "барлығын көрсетші" got 50 items and `nextOffset: null` and was told
+ * that was the entire menu. Kept pure so the arithmetic can be tested without a
+ * catalog, Redis or the agent.
+ */
+export function pageMenuMatches(allMatches: Record<string, any>[], limit?: number, offset?: number) {
+  const requested = Math.min(50, Math.max(1, Number(limit || 50)));
+  const start = Math.max(0, Number(offset || 0));
+  const items = allMatches.slice(start, start + requested);
+  const nextOffset = start + items.length < allMatches.length ? start + items.length : null;
+  return {
+    items,
+    offset: start,
+    nextOffset,
+    totalMatched: allMatches.length,
+    returned: items.length,
+    hasMore: nextOffset !== null,
+    ...(nextOffset !== null
+      ? {
+          truncated: true,
+          more_hint: `Showing ${items.length} of ${allMatches.length} matching items. This list is INCOMPLETE - never say or imply it is everything we have. Call searchMenu again with offset=${nextOffset} for the next page, or with a category to narrow it down.`,
+        }
+      : {}),
+  };
+}
+
 export function createSearchMenuSkill(ctx: FastFoodContext) {
   return createTool({
     name: "searchMenu",
-    description: "Read customer-facing menu items, prices, ingredients, categories, and public availability from the live menu.",
+    description: "Read customer-facing menu items, prices, ingredients, categories, and public availability from the live menu. Results are paged: at most 50 items per call. When the result says hasMore, the list is only part of the menu - page on with offset or narrow by category before answering, and never present a page as the full menu. The `categories` field lists every section of the catalog with its item count.",
     parameters: z.object({
       query: z.string().max(80).optional().describe("Food name or ingredient to search"),
       category: z.string().max(80).optional().describe("Customer-facing menu category to filter"),
@@ -88,10 +143,12 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       const menu = await getMenuContext(ctx.instanceId, domain, ctx.language);
       const items = Array.isArray(menu?.items) ? menu.items : [];
       const allowedItems = items.filter((item: any) => !menuItemBlockedByNotes(ctx.activeShiftNotes, item).blocked);
-      const requested = limit || 50;
-      const allMatches = selectPublicMenuItems(allowedItems, query, category, 50);
-      const start = Math.max(0, Number(offset || 0));
-      const matches = allMatches.slice(start, start + requested);
+      // The ranked list behind the page is built in full: `totalMatched` has to be
+      // the real number of matches, or the page and the total agree and nothing
+      // tells the model that more of the menu exists.
+      const allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
+      const page = pageMenuMatches(allMatches, limit, offset);
+      const matches = page.items;
       const filteringApplied = items.length !== allowedItems.length;
       // Why an item vanished, without ever handing the model the operator's raw
       // wording: only the derived unavailable terms, which are safe to reason
@@ -110,15 +167,18 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
           })).filter((item: any) => item.name)
         : [];
       return {
-        items: matches,
         // An unreachable catalog used to look exactly like an empty one, so the
         // bot confidently told guests a dish does not exist. The model needs to
         // see the difference to say "I cannot check right now" instead.
         ...(menu?.source === "menu_unavailable" ? { menu_lookup: "unavailable" } : {}),
         ...(safeAlternatives.length ? { safe_alternatives: safeAlternatives } : {}),
-        offset: start,
-        nextOffset: start + matches.length < allMatches.length ? start + matches.length : null,
-        totalMatched: allMatches.length,
+        // items / offset / nextOffset / totalMatched / returned / hasMore, and the
+        // truncation hint whenever the page is shorter than the total.
+        ...page,
+        // The catalog's own section list, taken from every item the guest may be
+        // shown - not from the page above. It is what makes "what categories do
+        // you have?" answerable without paging the whole menu.
+        categories: summarizePublicCategories(allowedItems),
         noteRestrictionsApplied: filteringApplied,
         ...(unavailableNow.length ? { unavailable_now: unavailableNow } : {}),
       };

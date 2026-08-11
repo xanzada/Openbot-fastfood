@@ -22,12 +22,30 @@ interface Tool {
 
 ### 1. searchMenu
 - **Триггер:** Клиент мәзір туралы сұрағанда
-- **Параметр:** `query: string, lang: 'kk' | 'ru'`
-- **Дерек көзі:** Alemi hub `catalog.context.get` (cached)
-- **Логика:** Каталогтан іздеу, топтау
-- **Entity Map:** local_aliases (шашлык/шашлычки → "Шашлык")
-- **Шектеу:** Қайтару өлшемі (tok_cap: 1500)
-- **Fail case:** "Мәзір қазіргі уақытта қолжетімсіз"
+- **Параметр:** `query?: string (≤80)`, `category?: string (≤80)`,
+  `limit?: 1..50`, `offset?: 0..5000` — тілді контекст береді (`ctx.language`),
+  параметр емес
+- **Дерек көзі:** Alemi hub `get_menu_context` (Redis кэші 300s, backup 24h)
+- **Логика:** Скорингпен іздеу (name/category/label/description/composition),
+  ауысым ескертпелері блоктаған тағамдар алдын-ала шығарылады
+- **Беттеу (pagination):** бір шақыруда ең көбі **50** позиция
+  (`limit` default 50, 50-ден жоғары мән 50-ге қысылады). Рейтингтелген тізім
+  толық саналады, сондықтан:
+  - `totalMatched` — шындықтағы сәйкестік саны (шектелмеген),
+  - `returned` — осы беттегі саны,
+  - `hasMore` / `nextOffset` — қалғаны бар ма және қайдан жалғастыру керек,
+  - `truncated: true` + `more_hint` — тізім толық емес екенін модельге тікелей
+    айтады («never say or imply it is everything we have»).
+  Бұрын рейтингтелген тізімнің өзі де 50-ге қысылатын, сондықтан 120 позициялы
+  каталог `totalMatched: 50, nextOffset: null` беріп, бот қонаққа «бізде бары
+  осы» деп жауап беретін. Бұл түзетілді.
+- **Категориялар:** `categories: [{ name, items }]` — беттен емес, бүкіл
+  көрінетін каталогтан жиналады (ең көбі 40 бөлім), сондықтан «қандай
+  категориялар бар?» сұрағына толық жауап беруге болады
+- **Entity Map:** ингредиент бойынша тапылған сәйкестік `matched_as_ingredient`
+  жалауымен белгіленеді (мыс. «лаваш» → Донер)
+- **Fail case:** каталог оқылмаса `menu_lookup: "unavailable"` (бос мәзірден
+  ажыратылады), нөл сәйкестік болса `safe_alternatives` (≤3)
 
 ### 2. getPaymentDetails
 - **Триггер:** Клиент төлем туралы сұрағанда
@@ -95,7 +113,14 @@ interface Tool {
 ## Skill Limits
 
 - **maxSteps:** 6 (`src/agent/fastfoodAgent.ts`)
-- **searchMenu limits:** tok_cap: 1500 (үлкен мәзір үшін)
+- **searchMenu:** бір бетте ≤50 позиция; `totalMatched` шектелмейді;
+  толық емес бет `hasMore`/`nextOffset`/`more_hint` арқылы жарияланады
+  (`tok_cap` деген шектеу кодта жоқ — бұрынғы құжат қате жазған)
+- **Preload menu snapshot:** әр кезеңде FACTS_CONTEXT ішіне ≤60 позиция кіреді
+  (`src/context/preloadContext.ts` → `buildMenuSnapshot`), бірақ
+  `total_on_menu` нақты санды көрсетеді және 60-тан асса `truncated: true` +
+  `truncation_rule` қосылады, сондықтан модель тізімде жоқ тағамды «жоқ» деп
+  жарияламайды, searchMenu-ды шақырады
 - **escalation cooldown:** 30 секунд
 - **sendMenuLink:** күніне 1 рет (30-day TTL)
 

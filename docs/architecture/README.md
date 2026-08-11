@@ -51,7 +51,9 @@ Layer 0: types/instructions             ← Таза типтер
 - FACTS_CONTEXT JSON ретінде LLM-ге беріледі
 
 ### Skills (9 tool)
-1. searchMenu — Alemi каталогын іздеу
+1. searchMenu — Alemi каталогын іздеу (бір бетте ≤50 позиция, толық емес бет
+   `totalMatched`/`hasMore`/`nextOffset` арқылы жарияланады, `categories`
+   бүкіл каталогтан)
 2. getPaymentDetails — төлем реквизиттері
 3. updateCrmLead — CRM аналитика
 4. escalateToAdmin — админге эскалация
