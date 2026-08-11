@@ -190,6 +190,21 @@ function normalizePaymentDetails(value) {
     }))
         .filter((item) => item.label && item.value);
 }
+// `a || b || c` over arrays is dead code: [] is truthy, so an empty top-level
+// payment_details won the chain and the requisites the operator types into the
+// site's kitchen settings screen - which hub returns nested under
+// kitchen_status.payment_details - were never read. On the money path the guest
+// was told "реквизиттер бапталмаған" while the site did have them. The chain
+// keeps its order and now picks the first entry that normalizes to a non-empty
+// list.
+function firstPaymentDetails(...values) {
+    for (const value of values) {
+        const normalized = normalizePaymentDetails(value);
+        if (normalized.length)
+            return normalized;
+    }
+    return [];
+}
 function firstFiniteNumber(...values) {
     for (const value of values) {
         if (value === "" || value === null || value === undefined)
@@ -240,7 +255,7 @@ export function normalizeRuntimeStatus(data = {}) {
             is_emergency: fetchedEmergency,
             source: rawKitchenSettings ? "settings.kitchen_status" : current ? "current" : "runtime.status.get",
         },
-        payment_details: normalizePaymentDetails(data.payment_details || nested.payment_details || kitchen.payment_details),
+        payment_details: firstPaymentDetails(data.payment_details, nested.payment_details, kitchen.payment_details),
         source: data.source || "dle_spa_settings",
         fetched_at: new Date().toISOString(),
     };

@@ -432,6 +432,17 @@ export async function callAlemiLegacyAction(
   return callAlemiCommand(instanceId, mapped.command, mapped.data, options);
 }
 
+// A 200 whose body is not a link is not a link. The helper used to hand back
+// whatever string the body contained, and callers treat any non-null return as
+// the guest's personal menu URL: a proxy error page or a "pending" placeholder
+// answered with 200 was sent to the guest as their link, and menuLink.skill
+// reported the link as issued. Returning null instead routes to the honest
+// "link could not be issued" answer that already exists.
+function httpUrlOrNull(value: string) {
+  if (!/^https?:\/\/\S+$/i.test(value)) return null;
+  return value;
+}
+
 export async function issueCustomerAccessLink(input: {
   instanceId: string;
   phone: string;
@@ -446,8 +457,8 @@ export async function issueCustomerAccessLink(input: {
     { phone_e164: phone, locale: input.locale },
     { ...options, config: options.config === undefined ? input.config : options.config }
   );
-  if (typeof result === "string") return result.trim() || null;
-  return firstString(result?.url, result?.access_url, result?.link) || null;
+  if (typeof result === "string") return httpUrlOrNull(result.trim());
+  return httpUrlOrNull(firstString(result?.url, result?.access_url, result?.link));
 }
 
 function extensionForMime(mimeType: string) {
@@ -459,9 +470,13 @@ function extensionForMime(mimeType: string) {
 }
 
 export async function uploadOrderDocument(input: UploadOrderDocumentInput, options: AlemiCallOptions = {}) {
+  // Minted once, OUTSIDE the retry: it used to be created inside the callback,
+  // so the 401 re-send arrived with a fresh command_id and hub could not tell it
+  // apart from a second receipt. The guest's payment proof was attached twice to
+  // the same order and the operator saw two payments for one transfer.
+  const commandId = firstString(options.commandId) || createAlemiCommandId();
   return withRotatedSecretRetry(input.instanceId, options, async (config) => {
     const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
-    const commandId = firstString(options.commandId) || createAlemiCommandId();
     const timestamp = unixTimestamp(options.nowMs);
     const orderId = firstString(input.orderId);
     const sourceMessageId = firstString(input.sourceMessageId);
@@ -507,9 +522,13 @@ export async function uploadOrderDocument(input: UploadOrderDocumentInput, optio
 }
 
 export async function reportPrintResult(input: ReportPrintResultInput, options: AlemiCallOptions = {}) {
+  // Same reason as uploadOrderDocument: the id identifies the attempt, so it is
+  // minted before the retry can re-enter this callback. A fresh id on the 401
+  // re-send logged the same print attempt twice on hub's side, which is exactly
+  // how a ticket that printed once looks like it printed twice.
+  const commandId = firstString(options.commandId) || createAlemiCommandId();
   return withRotatedSecretRetry(input.instanceId, options, async (config) => {
     const credentials = resolveAlemiCredentials(input.instanceId, config, options.env || process.env);
-    const commandId = firstString(options.commandId) || createAlemiCommandId();
     const timestamp = unixTimestamp(options.nowMs);
     const printJobId = firstString(input.printJobId);
     const attemptNumber = Math.max(1, Math.trunc(Number(input.attemptNumber) || 0));

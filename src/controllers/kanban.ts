@@ -132,7 +132,12 @@ function paymentDetailsFromRuntime(runtimeStatus: Record<string, unknown> | null
   const kitchen = runtimeStatus.kitchen_status && typeof runtimeStatus.kitchen_status === "object"
     ? (runtimeStatus.kitchen_status as Record<string, unknown>)
     : {};
-  return normalizePaymentDetails(runtimeStatus.payment_details || kitchen.payment_details);
+  // `top || nested` cannot work here: hub sends payment_details: [] at the top
+  // level and [] is truthy, so the requisites the operator typed into the site's
+  // kitchen settings (returned under kitchen_status) never won the fallback and
+  // the guest got "реквизиттер бапталмаған" on the money path.
+  const fromRuntime = normalizePaymentDetails(runtimeStatus.payment_details);
+  return fromRuntime.length ? fromRuntime : normalizePaymentDetails(kitchen.payment_details);
 }
 
 async function getLiveRuntimeStatus(instance: string, config: Record<string, unknown>) {
