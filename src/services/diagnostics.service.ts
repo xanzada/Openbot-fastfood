@@ -2,6 +2,8 @@ import axios from "axios";
 import { getRedisTarget, pingRedis } from "./redis.service.js";
 import { getMediaFallbackModel, getMediaPrimaryKeys, getMediaPrimaryModel, getTextModels } from "./llm.service.js";
 import { getWhatsProOutboxSummary } from "../transport/whatspro.client.js";
+import { getAllRestaurantConfigs } from "./platformConfig.service.js";
+import { callAlemiCommand } from "./alemiApi.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 type CheckResult = {
@@ -174,10 +176,61 @@ export function getConfigSummary() {
   };
 }
 
+// hub.alemi.kz is the one dependency a guest notices immediately - it answers
+// kitchen state, order status and the menu - and it was the only one missing
+// from boot. A rotated secret or a moved API URL surfaced hours later as guests
+// being told "белсенді тапсырыс табылмады", never as a startup failure. The
+// credential is per tenant, so the check is per tenant, and it is deliberately
+// read-only (runtime.status.get) and never fatal.
+export async function checkAlemiHub(
+  loadConfigs: () => Promise<Record<string, any>[]> = () => getAllRestaurantConfigs(),
+  call = callAlemiCommand
+): Promise<CheckResult[]> {
+  const configs = await loadConfigs().catch(() => [] as Record<string, any>[]);
+  const tenants = configs.filter((config) => String(config?.alemi_secret || "").trim());
+  if (!tenants.length) {
+    return [{
+      name: "alemi_hub",
+      ok: false,
+      message: configs.length
+        ? `no tenant carries alemi_secret (tenants=${configs.length})`
+        : "no tenant config could be loaded",
+    }];
+  }
+
+  return Promise.all(tenants.map(async (config) => {
+    const instance = String(config.instance_id || config.instance || "unknown");
+    const started = now();
+    try {
+      const status: any = await call(instance, "runtime.status.get", {}, { config, timeoutMs: 7000 });
+      return {
+        name: `alemi_hub[${instance}]`,
+        ok: true,
+        target: hostFromUrl(String(config.alemi_api_url || "")),
+        status: `accepting_orders=${status?.accepting_orders ?? status?.is_accepting_orders ?? "-"}`,
+        latency_ms: now() - started,
+      };
+    } catch (error: any) {
+      return {
+        name: `alemi_hub[${instance}]`,
+        ok: false,
+        target: hostFromUrl(String(config.alemi_api_url || "")),
+        message: String(error?.message || error),
+        latency_ms: now() - started,
+      };
+    }
+  }));
+}
+
 export async function runDependencyChecks() {
   const checks: CheckResult[] = [];
   checks.push(await checkRedis());
   checks.push(await checkTenantsPlatform());
+  checks.push(...await checkAlemiHub().catch((error: any) => [{
+    name: "alemi_hub",
+    ok: false,
+    message: String(error?.message || error),
+  }]));
   const outboxStarted = now();
   const outbox = await getWhatsProOutboxSummary().catch(() => ({ volatilePending: -1, filePending: -1, redisPending: -1 }));
   checks.push({

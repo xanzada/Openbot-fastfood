@@ -111,6 +111,12 @@ test("a hub 401 triggers one forced refresh and exactly one resigned retry", asy
   assert.equal(sent[0].url, `https://hub.alemi.kz${ALEMI_COMMAND_PATH}`);
   assert.equal(signatureOf(sent[0]), expectedSignature("old-secret", "1700000000", String(sent[0].body)));
   assert.equal(signatureOf(sent[1]), expectedSignature("new-secret", "1700000000", String(sent[1].body)));
+  // The retry must BE a retry. It used to re-enter buildAlemiSignedCommand with
+  // no id and mint a new command_id, so a write the hub had already accepted
+  // before the secret rotated came back looking like a different command and
+  // hub-side idempotency could not dedupe it.
+  assert.equal(sent[0].headers["X-Command-Id"], sent[1].headers["X-Command-Id"]);
+  assert.equal(JSON.parse(String(sent[0].body)).command_id, JSON.parse(String(sent[1].body)).command_id);
 });
 
 test("a second hub 401 surfaces instead of retrying again", async () => {

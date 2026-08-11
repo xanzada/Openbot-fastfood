@@ -186,6 +186,13 @@ async function withRotatedSecretRetry(instanceId, options, send) {
     }
 }
 export async function callAlemiCommand(instanceId, command, data, options = {}) {
+    // Both attempts must present the SAME command_id. The 401 retry re-signs the
+    // request with a freshly read secret, and it used to re-enter
+    // buildAlemiSignedCommand with no id, which minted a new one - so a write the
+    // hub had in fact accepted before the secret rotated arrived a second time
+    // looking like a different command, defeating hub-side idempotency. Minting it
+    // here, once, makes the retry a retry rather than a second command.
+    const commandId = firstString(options.commandId) || createAlemiCommandId();
     return withRotatedSecretRetry(instanceId, options, async (config) => {
         const credentials = resolveAlemiCredentials(instanceId, config, options.env || process.env);
         const request = buildAlemiSignedCommand({
@@ -193,7 +200,7 @@ export async function callAlemiCommand(instanceId, command, data, options = {}) 
             data,
             credentials,
             nowMs: options.nowMs,
-            commandId: options.commandId,
+            commandId,
         });
         const response = await (options.transport || axiosTransport)({
             url: request.url,
