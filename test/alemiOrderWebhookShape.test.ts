@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { describeBodyShape, normalizeDlePayload } from "../src/routes/dleWebhook.route.js";
-import { buildLegacyNewOrderMessage } from "../src/controllers/kanban.js";
+import { buildLegacyNewOrderMessage, boolValue } from "../src/controllers/kanban.js";
 
 // The verbatim vocabulary hub.alemi.kz sends. The first real order was dropped
 // with `invalid phone` because every one of these names was unknown to us, so
@@ -67,6 +67,28 @@ test("A pickup order is recognised from fulfillment_type", () => {
   const body = normalize(hubOrderCreated({ fulfillment_type: "pickup" }));
 
   assert.equal(body.is_pickup, "pickup");
+});
+
+// `is_pickup` carries whatever fulfillment word the hub used, and only the exact
+// string "pickup" was read as pickup. Every other spelling fell through to the
+// `false` fallback, so a guest coming to collect their order was told a courier
+// was on the way - and the pickup templates never fired.
+test("every pickup spelling the hub can send is read as pickup, in either language", () => {
+  for (const value of [
+    "pickup", "PICK_UP", "self-pickup", "selfpickup", "takeaway", "TAKE AWAY",
+    "dine_in", "Самовывоз", "өзі алып кету", true, 1,
+  ]) {
+    assert.equal(boolValue(value, false), true, `expected pickup for ${String(value)}`);
+  }
+});
+
+test("delivery words stay delivery and an unknown word falls back, never flips", () => {
+  for (const value of ["delivery", "COURIER", "доставка", "жеткізу", false, 0]) {
+    assert.equal(boolValue(value, false), false, `expected delivery for ${String(value)}`);
+  }
+  assert.equal(boolValue("something_new", false), false);
+  assert.equal(boolValue("something_new", true), true);
+  assert.equal(boolValue(undefined, false), false);
 });
 
 test("A guest phone stored on a separate customer object is still found", () => {

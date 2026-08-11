@@ -65,12 +65,31 @@ function numberValue(value: unknown, fallback = 0): number {
   return Number.isFinite(num) ? num : fallback;
 }
 
-function boolValue(value: unknown, fallback = false): boolean {
+// The only caller is `is_pickup`, and dleWebhook.route.ts fills that field from
+// `fulfillment_type`/`delivery_type` when the hub sends no boolean. Only the
+// literal "pickup" was recognised, so "takeaway", "self_pickup", "самовывоз" and
+// friends fell through to the `false` fallback and the guest was told a courier
+// was on the way for an order they were coming to collect. Delivery words are
+// listed explicitly too, so a new spelling on either side is a fallback rather
+// than a silent flip.
+const PICKUP_WORDS = [
+  "1", "true", "yes", "on",
+  "pickup", "pick_up", "pick-up", "selfpickup", "self_pickup", "self-pickup",
+  "takeaway", "take_away", "take-away", "dine_in", "dinein",
+  "самовывоз", "самовынос", "себя", "өзіалыпкету", "озиалыпкету",
+];
+const DELIVERY_WORDS = [
+  "0", "false", "no", "off",
+  "delivery", "courier", "доставка", "курьер", "жеткізу", "жеткизу",
+];
+
+export function boolValue(value: unknown, fallback = false): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
   const normalized = textValue(value).toLowerCase();
-  if (["1", "true", "yes", "on", "pickup"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  const collapsed = normalized.replace(/\s+/g, "");
+  if (PICKUP_WORDS.includes(normalized) || PICKUP_WORDS.includes(collapsed)) return true;
+  if (DELIVERY_WORDS.includes(normalized) || DELIVERY_WORDS.includes(collapsed)) return false;
   return fallback;
 }
 
