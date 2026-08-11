@@ -66,7 +66,7 @@ import {
 import { getTextModels } from "../services/llm.service.js";
 import { classifyKitchenSalesPolicy,
   formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, isUnownedOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
+import { hasMenuBrowsingIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, isUnownedOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
 import {
@@ -428,6 +428,37 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
       : `Қазір тапсырыс көп, дайындалуы шамамен ${label} болады. Күте аласыз ба? Күтсеңіз, тапсырысты жалғастыра берейін.`;
   }
   return null;
+}
+
+// "Тапсырыс дайын болуы қанша минут?" from a guest with no order is a question
+// about the kitchen, and the kitchen's answer is a number the code holds. Left to
+// the model it replied with the menu link - a real answer to a different
+// question (live round, 2026-08-11). The busy and closed states are already
+// answered by kitchenGateReply above, so this only speaks for a working kitchen.
+function prepTimeReply(ctx: FastFoodContext): string | null {
+  if (!isUnownedOrderTimingQuestion({
+    text: ctx.text,
+    hasActiveOrder: Boolean(ctx.activeOrder),
+    quotedOrderNumber: requestedOrderNumber(ctx.text),
+    discussedOrderNumber: lastDiscussedOrderNumber(ctx.chatHistory),
+  })) return null;
+  // A mixed message ("суши қанша тұрады, қанша уақытта жетеді?") needs the menu
+  // too, so it stays with the model rather than getting half an answer here.
+  if (hasMenuBrowsingIntent(ctx.text)) return null;
+  // Without a live kitchen state there is no number to give; the runtime
+  // fallback reply further down says that honestly.
+  if (!ctx.runtimeStatus) return null;
+  const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+  const language = ctx.language === "ru" ? "ru" : "kk";
+  if (policy.waitMinutes > 0) {
+    const label = formatKitchenWait(policy.waitMinutes, language);
+    return language === "ru"
+      ? `Сейчас приготовление занимает примерно ${label}. Оформим заказ — сразу напишем точное время.`
+      : `Қазір дайындау шамамен ${label} алады. Тапсырыс рәсімделген соң нақты уақытты бірден жазамыз.`;
+  }
+  return language === "ru"
+    ? "Кухня работает в обычном режиме — готовим без задержек. Как только оформите заказ, сразу напишем точное время."
+    : "Асүй қалыпты режимде жұмыс істеп жатыр — кешіктірмей дайындаймыз. Тапсырыс рәсімделген соң нақты уақытты бірден жазамыз.";
 }
 
 function hasMeaningfulMediaDescription(text = "", mediaContext: Record<string, any> | null = null) {
@@ -891,6 +922,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
     const kitchenReply = await kitchenGateReply(ctx);
     if (kitchenReply) { await sendCustomerReplyAndFinish(ctx, messageId, kitchenReply, "kitchen_policy"); return; }
+
+    const prepReply = prepTimeReply(ctx);
+    if (prepReply) { await sendCustomerReplyAndFinish(ctx, messageId, prepReply, "kitchen_prep_time"); return; }
 
     // Pre-LLM short-circuit: if runtime is unavailable and customer asks about kitchen
     const runtimeReply = runtimeUnavailableReply(ctx);

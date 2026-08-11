@@ -48,3 +48,26 @@ test("a quoted order number that cannot be found is named back, not asked for ag
   assert.doesNotMatch(body, /Тапсырыс нөмірін жіберіңіз|Отправьте номер заказа/);
   assert.match(body, /\$\{orderNumber\}/);
 });
+
+// Round 3, 2026-08-11: the status route correctly stood down for the prep-time
+// question and the model answered it with the menu link - a real answer to a
+// different question. The kitchen's wait time is a number the code holds, so it
+// answers deterministically, after the busy/closed gate and before the model.
+test("a prep-time question is answered from the kitchen state, not by the model", async () => {
+  const source = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  const start = source.indexOf("function prepTimeReply");
+  assert.ok(start > 0, "prepTimeReply must exist");
+  const body = source.slice(start, source.indexOf("\n}", start));
+  // It speaks only when nothing is being looked up and the kitchen state is live.
+  assert.match(body, /isUnownedOrderTimingQuestion/);
+  assert.match(body, /if \(!ctx\.runtimeStatus\) return null/);
+  // A mixed menu+timing message keeps the model, which can answer both halves.
+  assert.match(body, /hasMenuBrowsingIntent/);
+  assert.match(body, /formatKitchenWait/);
+  // It runs after the busy/closed gate so a long queue still asks for consent.
+  const gate = source.indexOf('"kitchen_policy"');
+  const prep = source.indexOf('"kitchen_prep_time"');
+  assert.ok(gate > 0 && prep > gate, "prep-time reply must come after the kitchen gate");
+  // And before the agent call, or the model would answer first.
+  assert.ok(prep < source.indexOf("runFastFoodAgent(ctx)"));
+});
