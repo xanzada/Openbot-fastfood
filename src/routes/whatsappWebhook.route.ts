@@ -643,18 +643,30 @@ async function processWhatsAppWebhook(body: any, started: number) {
       `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`
     );
 
+    // Every early exit below - video, a file we cannot read, a rejected or
+    // duplicate receipt - used to return before the inbound message was written
+    // to history, so the next turn saw our own refusal with nothing before it and
+    // the guest had to explain themselves twice. The turn is recorded once, here,
+    // whatever happens to it afterwards.
+    let inboundRecorded = false;
+    const recordInboundTurn = async () => {
+      if (inboundRecorded) return;
+      inboundRecorded = true;
+      await saveToHistory(ctx.instanceId, ctx.phone, "user", ctx.text, {
+        source: "openbot-agent",
+        media: safeMediaMetadata(mediaContext),
+      });
+    };
+    await recordInboundTurn();
+
     if (mediaContext?.kind === "video") {
       const reply =
         ctx.language === "ru"
           ? "Извините, я не принимаю видео. Пожалуйста, опишите, что произошло, текстом или отправьте фото."
           : "Кешіріңіз, видео қабылдай алмаймын. Не болғанын мәтінмен түсіндіріңіз немесе фото жіберіңіз.";
-      await sendWhatsProResponseSequence({
-        instanceId: ctx.instanceId,
-        phone: ctx.phone,
-        text: reply,
-        requestScope: messageId,
-      });
-      await markInboundDone(ctx.instanceId, messageId);
+      // Sent through the same helper as every other reply, so the refusal is in
+      // history too and a waiting operator case still gets its signal bumped.
+      await sendCustomerReplyAndFinish(ctx, messageId, reply, "media_rejected:video");
       return;
     }
 
@@ -874,10 +886,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       await saveMediaContext(ctx.instanceId, ctx.phone, mediaContext);
     }
 
-    await saveToHistory(ctx.instanceId, ctx.phone, "user", ctx.text, {
-      source: "openbot-agent",
-      media: safeMediaMetadata(mediaContext),
-    });
+    await recordInboundTurn();
 
     if (mediaDeveloperError) {
       await notifyDeveloperSystemFailure(ctx.instanceId, new Error(mediaDeveloperError), {

@@ -162,3 +162,18 @@ test("the operator case is summarised with the guest's words, not our reply", as
     `guest text must be preferred over the AI line: ${summaryLine}`,
   );
 });
+
+// A video, an unreadable file and a rejected receipt all returned before the
+// inbound message was written to history, so the next turn saw our own refusal
+// with nothing before it and the guest had to explain themselves twice.
+test("the inbound turn is recorded before any early exit can return", async () => {
+  const source = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  const recorded = source.indexOf("await recordInboundTurn();");
+  assert.ok(recorded > 0, "recordInboundTurn must be called");
+  assert.ok(recorded < source.indexOf('mediaContext?.kind === "video"'), "it must run before the video exit");
+  assert.ok(recorded < source.indexOf("if (mediaContext && !mediaContext.valid)"), "and before the invalid-media exit");
+  // Guarded so the later call on the normal path cannot double-write the turn.
+  assert.match(source, /if \(inboundRecorded\) return;\s*\n\s*inboundRecorded = true;/);
+  // The video refusal goes through the shared sender, so it lands in history too.
+  assert.match(source, /sendCustomerReplyAndFinish\(ctx, messageId, reply, "media_rejected:video"\)/);
+});
