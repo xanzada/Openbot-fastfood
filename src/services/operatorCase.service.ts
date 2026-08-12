@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
 
-export type OperatorCaseKind = "complaint" | "human_request" | "courier_request" | "long_voice" | "unresolved" | "critical";
+export type OperatorCaseKind = "complaint" | "human_request" | "courier_request" | "cancel_request" | "long_voice" | "unresolved" | "critical";
 export const CASE_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const SOS_TTL_SECONDS = 60 * 60;
 
@@ -15,8 +15,20 @@ export function sosIndexKey(instanceId: string) { return `chatwoot:sos:${instanc
 export function sosMarkerKey(instanceId: string, customerPhone: string) { return `chatwoot:sos:${instanceId}:${customerPhone}`; }
 export function sosUnreadKey(instanceId: string, customerPhone: string) { return `chatwoot:sos-unread:${instanceId}:${customerPhone}`; }
 
+// "Я передумал, отмените мой заказ" was answered "Активный заказ по этому номеру
+// не найден. Отправьте номер заказа" - an ask that leads nowhere, because the bot
+// may never change order state at all. Cancelling is an operator action, so the
+// request is an operator case in its own right (live round, 2026-08-12).
+const CANCEL_ORDER_RE =
+  /((?:отмен\p{L}*|отказ\p{L}*|откаж\p{L}*|cancel)\s*(?:от\s*)?(?:мо[йея]\s*|наш\p{L}*\s*)?(?:заказ\p{L}*|order|тапсырыс\p{L}*)|(?:заказ\p{L}*|order|тапсырыс\p{L}*)\s*(?:отмен\p{L}*|болдырма\p{L}*|болдырыл\p{L}*|жой\p{L}*|бас\s*тарт\p{L}*|cancel)|(?:заказ\p{L}*|тапсырыс\p{L}*)\p{L}*\s*(?:бас\s*тарт|жойып|жоя)|бас\s*тарт(?:қым|амын|айын|сам|уды)\p{L}*)/iu;
+
+export function isOrderCancellationRequest(text = ""): boolean {
+  return CANCEL_ORDER_RE.test(clean(text).toLowerCase());
+}
+
 export function detectOperatorCaseKind(text = ""): OperatorCaseKind | null {
   const value = clean(text).toLowerCase();
+  if (CANCEL_ORDER_RE.test(value)) return "cancel_request";
   if (/(курьер.*(номер|нөмір|номерін|телефон)|номер.*курьер|курьерге хабарлас)/iu.test(value)) return "courier_request";
   if (/(оператор|админ|администратор|менеджер|адаммен|человек|живой человек|шақыр|шакыр|позовите|соедините)/iu.test(value)) return "human_request";
   if (/(шағым|жалоб|претензи|волос|шаш|гряз|лас|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|қате тапсырыс|сапа|качест)/iu.test(value)) return "complaint";

@@ -75,7 +75,7 @@ import {
   findBlockedMenuItemMention,
   isUnverifiedPaymentClaim,
 } from "../services/operationalPreemption.service.js";
-import { bumpOperatorCaseSignal, detectOperatorCaseKind } from "../services/operatorCase.service.js";
+import { bumpOperatorCaseSignal, detectOperatorCaseKind, isOrderCancellationRequest } from "../services/operatorCase.service.js";
 import { computeProactiveSignals } from "../services/proactiveSignals.service.js";
 import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
 import { recordLearningEvent } from "../services/learningLoop.service.js";
@@ -294,6 +294,19 @@ function missingQuotedOrderReply(language: "kk" | "ru", orderNumber: string) {
   return language === "ru"
     ? `Заказ №${orderNumber} по этому номеру не найден. Если он оформлен с другого номера — напишите с него, либо я передам оператору.`
     : `№${orderNumber} тапсырысы осы нөмір бойынша табылмады. Басқа нөмірмен жасалған болса, сол нөмірден жазыңыз — немесе операторға жалғастырамын.`;
+}
+
+// The bot may never change order state, so a cancellation request is answered by
+// saying exactly that and handing it to a human - never by asking for an order
+// number the guest cannot use for anything.
+function cancellationHandoffReply(ctx: FastFoodContext): string {
+  const number = String(
+    ctx.activeOrder?.order_number || ctx.activeOrder?.order_id || ctx.activeOrder?.id || "",
+  ).replace(/\D/g, "");
+  const label = number ? (ctx.language === "ru" ? `Заказ №${number}: ` : `№${number} тапсырысы: `) : "";
+  return ctx.language === "ru"
+    ? `${label}отменить заказ сам я не могу — уже передал оператору, он свяжется с вами и оформит отмену. Ничего больше делать не нужно.`
+    : `${label}тапсырысты өзім жоя алмаймын — операторға дереу бердім, ол сізбен байланысып бас тартуды рәсімдейді. Басқа ештеңе жасау қажет емес.`;
 }
 
 async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> {
@@ -917,6 +930,38 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
+    // A cancellation is an operator action. It is settled here, before the status
+    // route, so the guest is never told "send the order number" for something the
+    // bot could not do with the number anyway (live round, 2026-08-12).
+    if (isOrderCancellationRequest(ctx.text)) {
+      const cancelReply = cancellationHandoffReply(ctx);
+      const routing = await routeComplaintToAdmin(ctx, {
+        summary: stripEscalationSignals(ctx.text),
+        customerText: ctx.text,
+        customerReply: cancelReply,
+        urgency: "high",
+        source: "cancel_request",
+      });
+      await saveToHistory(ctx.instanceId, ctx.phone, "system", "operator case created", {
+        source: "operator-case", caseId: routing.caseId, mediaAttached: routing.mediaAttached,
+      });
+      void bumpMetric(ctx.instanceId, "escalations");
+      void recordLearningEvent(ctx.instanceId, {
+        type: "escalation",
+        detail: "cancel_request",
+        phone: maskPhone(ctx.phone),
+      });
+      if (!routing.escalationAvailable) {
+        await notifyDeveloperSystemFailure(ctx.instanceId, new Error("ADMIN_PHONE_NOT_CONFIGURED_FOR_COMPLAINT"), {
+          scope: "cancel-request",
+          messageId,
+          customerPhone: maskPhone(ctx.phone),
+        }).catch(() => undefined);
+      }
+      await sendCustomerReplyAndFinish(ctx, messageId, routing.customerReply || cancelReply, "cancel_request");
+      return;
+    }
+
     const orderReply = await customerOrderReply(ctx);
     if (orderReply) {
       await sendCustomerReplyAndFinish(ctx, messageId, orderReply, "customer_order_status");
@@ -1006,9 +1051,16 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
     if (shouldRouteComplaint) {
       const routing = await routeComplaintToAdmin(ctx, {
-        // The first message named the problem, this one adds the detail. The
-        // operator needs both, not whichever half arrived last.
-        summary: [awaitingDetail, stripEscalationSignals(rawAiText || finalText || ctx.text)].filter(Boolean).join(" — "),
+        // The summary is what the operator reads on the SOS card, so it has to be
+        // the guest's own words. It used to prefer rawAiText, which meant a refund
+        // demand showed up in the panel as our own apology back to them and the
+        // operator had to open the chat to learn what happened (live round,
+        // 2026-08-12). The first message named the problem and this one adds the
+        // detail, so both halves are kept, guest text first. The AI line is only
+        // a fallback for a turn with no customer text at all, such as media.
+        summary: [awaitingDetail, stripEscalationSignals(ctx.text) || stripEscalationSignals(rawAiText || finalText)]
+          .filter(Boolean)
+          .join(" — "),
         customerText: [awaitingDetail, ctx.text].filter(Boolean).join(" — "),
         customerReply: finalText,
         urgency: needsAdminEscalation ? "high" : "normal",

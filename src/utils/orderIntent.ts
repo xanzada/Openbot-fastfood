@@ -32,6 +32,13 @@ export function isProspectiveOrderTimingQuestion(text = "") {
 // only honest answer is the kitchen wait time. The prospective wording
 // ("заказ берсем") is just one way to ask it, so the deciding fact is that no
 // order is in play at all - none on the phone, none quoted, none discussed.
+// "Менің тапсырысым қайда? Қашан жетеді?" claims an order exists. The timing
+// words made the status route stand down and the guest was told the kitchen
+// cooks without delays - never that no order was found on their number (live
+// round, 2026-08-12). Naming an order as theirs is a status question first.
+const OWNED_ORDER_CLAIM_RE =
+  /(тапсырысым|тапсырысымды|тапсырысымның|заказым|заказымды|мо[йея]\s+заказ|моего\s+заказа|мои\s+заказы|наш\s+заказ)/iu;
+
 export function isUnownedOrderTimingQuestion(options: {
   text?: string;
   hasActiveOrder?: boolean;
@@ -41,6 +48,7 @@ export function isUnownedOrderTimingQuestion(options: {
   if (options.hasActiveOrder) return false;
   if (options.quotedOrderNumber || options.discussedOrderNumber) return false;
   const text = options.text || "";
+  if (intentMatches(OWNED_ORDER_CLAIM_RE, text)) return false;
   return isOrderTimingQuestion(text) || isProspectiveOrderTimingQuestion(text);
 }
 
