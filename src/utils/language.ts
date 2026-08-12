@@ -41,6 +41,28 @@ export function detectLang(text: string, storedLang?: string | null): "kk" | "ru
   return KAZAKH_RE.test(text || "") ? "kk" : "ru";
 }
 
+// "👍👍👍" after a Russian dialogue was answered in Kazakh: the caller looked at
+// the single previous customer entry, and when that one carried no language
+// signal either ("ок", a number, an emoji) the whole history was discarded and
+// the default won. The language of a conversation is the last language the guest
+// actually used, so the scan walks back until it finds one (live round,
+// 2026-08-12).
+export function lastCustomerLanguage(history: unknown, lookback = 12): "kk" | "ru" | null {
+  if (!Array.isArray(history)) return null;
+  let scanned = 0;
+  for (let index = history.length - 1; index >= 0 && scanned < lookback; index -= 1) {
+    const entry: any = history[index];
+    const role = String(entry?.role || "").toLowerCase();
+    const isCustomer = role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+    if (!isCustomer) continue;
+    scanned += 1;
+    const value = String(entry?.text || entry?.content || "");
+    if (!isLanguageBearingCustomerText(value)) continue;
+    return detectLang(value);
+  }
+  return null;
+}
+
 export function resolveLockedLanguage(storedLang: string | null | undefined, detected: "kk" | "ru"): "kk" | "ru" {
   return storedLang === "kk" || storedLang === "ru" ? storedLang : detected;
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectLanguageDecision, detectLang, parseGeminiLanguageDecision } from "../src/utils/language.js";
+import { detectLanguageDecision, detectLang, lastCustomerLanguage, parseGeminiLanguageDecision } from "../src/utils/language.js";
 import { detectNameLanguage, resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
@@ -137,4 +137,34 @@ test("a weak signal still needs a second message before the lock moves", () => {
   assert.equal(shouldSwitchLockedLanguage("ru", "ru", "kk", false), false);
   assert.equal(shouldSwitchLockedLanguage("ru", "kk", "kk", false), true);
   assert.equal(shouldSwitchLockedLanguage("kk", "ru", "kk", true), false);
+});
+
+// Live round 2026-08-12: after several Russian turns a bare "👍👍👍" was answered
+// in Kazakh, because the only entry consulted was the previous customer message
+// and that one carried no language signal either.
+test("a signal-free message keeps the language the guest last actually used", () => {
+  const history = [
+    { role: "user", text: "Здравствуйте, что есть из суши?" },
+    { role: "assistant", text: "Есть роллы..." },
+    { role: "user", text: "ок" },
+    { role: "assistant", text: "Хорошо" },
+    { role: "user", text: "👍" },
+  ];
+  assert.equal(lastCustomerLanguage(history), "ru");
+});
+
+test("the scan reads only customer messages and gives up rather than guessing", () => {
+  assert.equal(lastCustomerLanguage([{ role: "assistant", text: "Сәлеметсіз бе" }]), null);
+  assert.equal(lastCustomerLanguage([]), null);
+  assert.equal(lastCustomerLanguage(null), null);
+  assert.equal(
+    lastCustomerLanguage([{ role: "user", text: "Сәлем, мәзір бар ма?" }, { role: "user", text: "👍" }]),
+    "kk",
+  );
+});
+
+test("a language used long ago stops deciding", () => {
+  const history: any[] = [{ role: "user", text: "Здравствуйте, меню есть?" }];
+  for (let index = 0; index < 12; index += 1) history.push({ role: "user", text: "👍" });
+  assert.equal(lastCustomerLanguage(history), null);
 });

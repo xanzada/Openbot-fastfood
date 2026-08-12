@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { detectLang, detectLanguageDecision, isLanguageBearingCustomerText } from "../utils/language.js";
+import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage } from "../utils/language.js";
 import { hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getMenuContext, getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
 import { issueCustomerAccessLink } from "../services/alemiApi.service.js";
@@ -112,15 +112,12 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // the site already told us their language. A guest who wrote straight to
   // WhatsApp gets their language resolved again on every message instead.
   const siteOriginated = Boolean(siteLanguageHint);
+  // A signal-free message ("👍", "ок", a bare number) keeps the language the
+  // guest last actually used - see lastCustomerLanguage.
+  const priorCustomerLanguage = lastCustomerLanguage(chatHistory);
   if (siteOriginated && storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
     const decision = await detectLanguageDecision(languageCandidateText);
-    const previousCustomerText = [...chatHistory].reverse().find((entry: any) => {
-      const role = String(entry?.role || "").toLowerCase();
-      return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
-    })?.text;
-    const previousLanguage = previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
-      ? detectLang(String(previousCustomerText))
-      : null;
+    const previousLanguage = priorCustomerLanguage;
     const decisiveNow = textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language);
     if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language, decisiveNow)) {
       const switched = await replaceUserLang(instanceId, phone, decision.language).catch(() => false);
@@ -153,14 +150,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     const decision = isLanguageBearingCustomerText(languageCandidateText)
       ? await detectLanguageDecision(languageCandidateText)
       : null;
-    const previousCustomerText = [...chatHistory].reverse().find((entry: any) => {
-      const role = String(entry?.role || "").toLowerCase();
-      return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
-    })?.text;
-    const priorLanguage = storedLang
-      || (previousCustomerText && isLanguageBearingCustomerText(String(previousCustomerText))
-        ? detectLang(String(previousCustomerText))
-        : null);
+    const priorLanguage = storedLang || priorCustomerLanguage;
     const resolved = resolveOrganicLanguage({
       detected: decision?.lockable ? decision.language : null,
       priorLanguage,
