@@ -1,4 +1,4 @@
-import { menuItemBlockedByNotes } from "./noteProvenance.service.js";
+import { menuItemBlockedByNotes, menuVocabulary } from "./noteProvenance.service.js";
 
 export type GuestLanguage = "kk" | "ru";
 
@@ -41,10 +41,13 @@ export function findBlockedMenuItemMention(
   customerText = "",
 ): BlockedMenuItemMention | null {
   if (!notes.length || !menuItems.length || !normalize(customerText)) return null;
+  // Narrative words in a note ("бітіп қалды") name nothing in the catalog and
+  // must not disable the note - see menuVocabulary.
+  const vocabulary = menuVocabulary(menuItems);
   for (const item of menuItems) {
     const name = String(item?.name || item?.title || "").trim();
     if (!name || !messageNamesItem(customerText, name)) continue;
-    const blocked = menuItemBlockedByNotes(notes, item);
+    const blocked = menuItemBlockedByNotes(notes, item, vocabulary);
     if (!blocked.blocked) continue;
     return {
       name,

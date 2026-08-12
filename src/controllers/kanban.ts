@@ -426,7 +426,12 @@ export function resolveStatusTemplateKey(status: string, isPickup: boolean): str
 }
 
 export function extractShiftNotePayload(body: Record<string, unknown>) {
-  const noteId = cleanInline(body.note_id || body.noteId || body.id, 80);
+  // `body.id` is deliberately not a candidate: normalizeDlePayload spreads the
+  // envelope, so a note that carries no id of its own would be stored under the
+  // EVENT id, and the matching delete - a different event, a different id - then
+  // only worked through the exact-text fallback (audit, 2026-08-12). With no note
+  // id at all, saveShiftNote derives a stable one from the content instead.
+  const noteId = cleanInline(body.note_id || body.noteId, 80);
   const text = textValue(body.text || body.note_text || body.note || body.message);
   const expiresAt = cleanInline(body.expires_at || body.expiresAt || body.expires || body.until, 80);
   const shiftKey = cleanInline(body.shift_key || body.shiftKey, 80);
@@ -760,10 +765,23 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     }
 
     if (action === "shift_note_deleted" && shiftNotePayload) {
+      // A delete that names neither an id nor a text used to answer 200 "Note
+      // removed from AI memory" while removing nothing, so an operator who saw
+      // that reply believed a stale note was gone and the bot kept quoting it
+      // until the TTL expired (audit, 2026-08-12).
+      if (!shiftNotePayload.noteId && !shiftNotePayload.text.trim()) {
+        auditDecision("Rejected shift note delete: nothing identified", { instance, shiftNotePayload });
+        res.status(400).json({ ok: false, error: "NOTE_ID_OR_TEXT_REQUIRED" });
+        return;
+      }
       auditDecision("Deleting shift note from AI memory", { instance, shiftNotePayload });
-      await deleteShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text);
-      auditDecision("Shift note deleted", { instance, shiftNotePayload });
-      res.status(200).json({ success: true, message: "Note removed from AI memory" });
+      const deleted = await deleteShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text);
+      auditDecision("Shift note delete finished", { instance, shiftNotePayload, deleted });
+      res.status(200).json({
+        success: true,
+        deleted,
+        message: deleted ? "Note removed from AI memory" : "No matching note found in AI memory",
+      });
       return;
     }
 

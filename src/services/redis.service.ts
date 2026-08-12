@@ -669,8 +669,12 @@ const SHIFT_NOTE_DEFAULT_TTL_SECONDS = 24 * 60 * 60;
  * Date.parse as garbage (NaN in V8), so every note with an epoch expiry
  * silently lived the default 24h instead of its real lifetime. Numeric strings
  * are now detected explicitly: >=1e12 is treated as milliseconds, >=1e9 as
- * seconds; anything else falls back to Date.parse; past or invalid values fall
- * back to the 24h default.
+ * seconds; anything else falls back to Date.parse; unreadable values fall back
+ * to the 24h default.
+ *
+ * A timestamp that is already in the past returns 0: the operator meant the note
+ * to be over, and defaulting it to a full day kept a stale restriction alive for
+ * 24 hours (audit, 2026-08-12). Only an unreadable expiry gets the default.
  */
 export function resolveShiftNoteTtlSeconds(expiresAtString?: string, nowMs = Date.now()): number {
   const raw = String(expiresAtString || "").trim();
@@ -683,7 +687,8 @@ export function resolveShiftNoteTtlSeconds(expiresAtString?: string, nowMs = Dat
     const parsed = Date.parse(raw);
     if (Number.isFinite(parsed)) expiresAtMs = parsed;
   }
-  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return SHIFT_NOTE_DEFAULT_TTL_SECONDS;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= 0) return SHIFT_NOTE_DEFAULT_TTL_SECONDS;
+  if (expiresAtMs <= nowMs) return 0;
   return Math.max(60, Math.ceil((expiresAtMs - nowMs) / 1000));
 }
 
@@ -701,6 +706,9 @@ export async function saveShiftNote(
       `fallback_${crypto.createHash("sha1").update(`${instanceId}|${noteText}|${expiresAtString || ""}`).digest("hex").slice(0, 16)}`;
 
     const ttlSeconds = resolveShiftNoteTtlSeconds(expiresAtString);
+    // An expiry already in the past means the note is over before it arrives.
+    // Storing it would restrict the menu for a shift that has ended.
+    if (ttlSeconds <= 0) return false;
 
     await redisClient.setEx(
       `shift_note:${instanceId}:${safeNoteId}`,
@@ -715,8 +723,8 @@ export async function deleteShiftNote(
   instanceId: string,
   noteId?: string | number,
   text = ""
-): Promise<void> {
-  await safeRedis(undefined, async () => {
+): Promise<number> {
+  return safeRedis(0, async () => {
     const safeNoteId = String(noteId || "").trim();
     const expectedText = String(text || "").trim().toLowerCase();
     const deletedIds: string[] = [];
@@ -736,6 +744,9 @@ export async function deleteShiftNote(
       }
     }
     await purgeShiftNoteIdsFromHistory(instanceId, deletedIds);
+    // The count is what lets the webhook stop answering "note removed" when it
+    // removed nothing at all (audit, 2026-08-12).
+    return deletedIds.length;
   });
 }
 
@@ -746,7 +757,12 @@ export async function getActiveShiftNotes(instanceId: string): Promise<Array<{ n
     for (const key of keys) {
       const note = parseShiftNoteRecord((await redisClient.get(key)) || "");
       if (!note.text || note.expired || note.plain) {
+        const noteId = key.split(":").pop() || "";
         await redisClient.del(key).catch(() => undefined);
+        // An explicit delete purges the note's trace from history and the rolling
+        // summary; expiry used to drop only the key, so the summary kept telling
+        // the next turn that drinks were unavailable for another 30 days.
+        if (noteId) await purgeShiftNoteIdsFromHistory(instanceId, [noteId]).catch(() => undefined);
         continue;
       }
       notes.push({ noteId: key.split(":").pop() || "", text: note.text, expiresAt: note.expiresAt || undefined });

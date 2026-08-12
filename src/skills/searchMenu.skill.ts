@@ -2,7 +2,7 @@ import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
-import { publicNoteConstraints, menuItemBlockedByNotes } from "../services/noteProvenance.service.js";
+import { publicNoteConstraints, menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
 
 function normalizeText(value: unknown) {
   return String(value || "")
@@ -142,7 +142,8 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
 
       const menu = await getMenuContext(ctx.instanceId, domain, ctx.language);
       const items = Array.isArray(menu?.items) ? menu.items : [];
-      const allowedItems = items.filter((item: any) => !menuItemBlockedByNotes(ctx.activeShiftNotes, item).blocked);
+      const vocabulary = menuVocabulary(items);
+      const allowedItems = items.filter((item: any) => !menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked);
       // The ranked list behind the page is built in full: `totalMatched` has to be
       // the real number of matches, or the page and the total agree and nothing
       // tells the model that more of the menu exists.
@@ -152,10 +153,13 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       const filteringApplied = items.length !== allowedItems.length;
       // Why an item vanished, without ever handing the model the operator's raw
       // wording: only the derived unavailable terms, which are safe to reason
-      // about and useless to quote.
-      const unavailableNow = filteringApplied
-        ? Array.from(new Set(publicNoteConstraints(ctx.activeShiftNotes).flatMap((entry: any) => entry.blocked_terms || []))).slice(0, 12)
-        : [];
+      // about and useless to quote. Reported whenever a note constrains anything,
+      // not only when this catalog happened to lose an item: when the terms match
+      // no dish (another language, a wording the filter cannot see) the model is
+      // the last chance to notice, and silence here told it everything was fine.
+      const unavailableNow = Array.from(
+        new Set(publicNoteConstraints(ctx.activeShiftNotes).flatMap((entry: any) => entry.blocked_terms || [])),
+      ).slice(0, 12);
       // A sales-minded agent never answers a plain "we don't have it". These are
       // drawn from allowedItems, which already dropped everything a note blocks,
       // so an alternative can never contain the missing ingredient itself.

@@ -47,7 +47,10 @@ export function matchingNoteIds(notes: any[] = [], value: unknown): string[] {
   const haystack = normalize(value);
   if (!haystack) return [];
   return notes.filter((note) => {
-    const terms = noteConstraintTerms(note?.text);
+    // Only a note that actually says something is unavailable may be reported as
+    // hit by the message: an informational note ("Бүгін Цезарь салаты қосылды")
+    // counted as a hit made the model announce a newly added dish as out.
+    const terms = availabilityConstraintTerms(note?.text);
     return terms.length > 0 && terms.some((term) => haystack.includes(term));
   }).map(noteId).filter(Boolean);
 }
@@ -72,15 +75,43 @@ function textCarriesTerm(words: string[], term: string) {
   return words.some((word) => word.startsWith(stem));
 }
 
-export function menuItemBlockedByNotes(notes: any[] = [], item: Record<string, any> = {}) {
+// "лаваш бітіп қалды, донер жоқ" blocked nothing at all: every content word of
+// the note - including "бітіп" and "қалды", words no dish name contains - had to
+// appear in the item, so the sold-out Донер stayed on sale and could even be
+// recommended as a safe alternative (audit, 2026-08-12). Terms that name nothing
+// in this catalog are therefore dropped before the all-terms rule is applied,
+// which keeps the precision that rule exists for ("пицца пеперони жоқ" still
+// hides only pepperoni) without letting narrative words disable the note.
+export function menuVocabulary(items: any[] = []): string[] {
+  const words = new Set<string>();
+  for (const item of items || []) {
+    const text = normalize([
+      item?.name, item?.title, item?.category_name, item?.category, item?.composition, item?.description,
+    ].filter(Boolean).join(" "));
+    for (const word of text.split(" ")) if (word) words.add(word);
+  }
+  return Array.from(words);
+}
+
+function catalogTerms(terms: string[], vocabulary?: string[]): string[] {
+  if (!vocabulary || !vocabulary.length) return terms;
+  const named = terms.filter((term) => textCarriesTerm(vocabulary, term));
+  return named.length ? named : terms;
+}
+
+export function menuItemBlockedByNotes(
+  notes: any[] = [],
+  item: Record<string, any> = {},
+  vocabulary?: string[],
+) {
   const itemText = normalize([item.name, item.title, item.category_name, item.category, item.composition, item.description].filter(Boolean).join(" "));
   // A note like "пицца пеперони жоқ" names one dish, not the whole category, so every
-  // content word has to be present before an item disappears. Single-word notes
-  // ("лаваш жоқ") still hide every dish that lists the word anywhere,
-  // including dishes that only mention it inside their composition.
+  // content word that names something in the catalog has to be present before an
+  // item disappears. Single-word notes ("лаваш жоқ") still hide every dish that
+  // lists the word anywhere, including inside their composition.
   const words = itemText.split(" ").filter(Boolean);
   const matched = notes.filter((note) => {
-    const terms = availabilityConstraintTerms(note?.text);
+    const terms = catalogTerms(availabilityConstraintTerms(note?.text), vocabulary);
     return terms.length > 0 && terms.every((term) => textCarriesTerm(words, term));
   });
   return { blocked: matched.length > 0, noteIds: matched.map(noteId).filter(Boolean) };

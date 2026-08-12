@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { menuItemBlockedByNotes, publicNoteConstraints } from "../src/services/noteProvenance.service.js";
+import { menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints } from "../src/services/noteProvenance.service.js";
 
 // Real rows from the live tenant menu: the doner never names "лаваш" in its
 // title, only deep inside the description, which is exactly where an honest
@@ -69,4 +69,36 @@ test("an unavailability fact still constrains, whichever word the operator used"
     assert.equal(menuItemBlockedByNotes(notes, PEPPERONI).blocked, true, text);
     assert.equal(menuItemBlockedByNotes(notes, FOUR_SEASONS).blocked, false, text);
   }
+});
+
+// Audit 2026-08-12: the sold-out Донер stayed on sale, because "бітіп" and
+// "қалды" - words no dish contains - were required to appear in the item too.
+test("a note written as a sentence still blocks the dish it names", () => {
+  const catalog = [DONER, PEPPERONI, FOUR_SEASONS];
+  const vocabulary = menuVocabulary(catalog);
+  const notes = [{ id: "80", text: "лаваш бітіп қалды, донер жоқ" }];
+  assert.equal(menuItemBlockedByNotes(notes, DONER, vocabulary).blocked, true);
+  assert.equal(menuItemBlockedByNotes(notes, PEPPERONI, vocabulary).blocked, false);
+  assert.equal(menuItemBlockedByNotes(notes, FOUR_SEASONS, vocabulary).blocked, false);
+});
+
+test("narrative words never widen a note beyond the dish it names", () => {
+  const catalog = [DONER, PEPPERONI, FOUR_SEASONS];
+  const vocabulary = menuVocabulary(catalog);
+  const notes = [{ id: "81", text: "Свет өшіп кетті, пицца пеперони жоқ" }];
+  assert.equal(menuItemBlockedByNotes(notes, PEPPERONI, vocabulary).blocked, true);
+  // The category as a whole is still sellable: the note named one pizza.
+  assert.equal(menuItemBlockedByNotes(notes, FOUR_SEASONS, vocabulary).blocked, false);
+  assert.equal(menuItemBlockedByNotes(notes, DONER, vocabulary).blocked, false);
+});
+
+test("a note naming nothing in the catalog is left as written, not widened", () => {
+  const vocabulary = menuVocabulary([DONER, PEPPERONI, FOUR_SEASONS]);
+  // "напитки жоқ" names no item in this Kazakh catalog: it must not silently
+  // block a dish just because none of its terms could be verified.
+  const notes = [{ id: "82", text: "напитки жоқ" }];
+  assert.equal(menuItemBlockedByNotes(notes, PEPPERONI, vocabulary).blocked, false);
+  assert.equal(menuItemBlockedByNotes(notes, DONER, vocabulary).blocked, false);
+  // But it is still published as a constraint, so the model can see it.
+  assert.deepEqual(publicNoteConstraints(notes), [{ note_id: "82", blocked_terms: ["напитки"], expires_at: null }]);
 });

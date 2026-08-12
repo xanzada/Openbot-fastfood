@@ -21,9 +21,13 @@ test("an ISO datetime string works", () => {
   assert.equal(ttl, DAY);
 });
 
-test("a past expiry falls back to the default instead of dying instantly", () => {
-  assert.equal(resolveShiftNoteTtlSeconds("2020-01-01T00:00:00Z", NOW), DAY);
-  assert.equal(resolveShiftNoteTtlSeconds(String(Math.floor(NOW / 1000) - 100), NOW), DAY);
+// An operator who set the expiry to a time that has already passed said the note
+// is over. Giving it the 24h default kept an expired note alive for a whole day,
+// so the bot quoted a constraint the shift had already lifted (audit,
+// 2026-08-12). A readable past expiry now means "do not store it at all".
+test("a past expiry is honoured, not turned into a fresh 24 hours", () => {
+  assert.equal(resolveShiftNoteTtlSeconds("2020-01-01T00:00:00Z", NOW), 0);
+  assert.equal(resolveShiftNoteTtlSeconds(String(Math.floor(NOW / 1000) - 100), NOW), 0);
 });
 
 test("empty or garbage input gets the default TTL", () => {
