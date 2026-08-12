@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { hasExplicitMenuLinkIntent, wantsMenuAsText } from "../src/utils/magicLink.js";
 import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
+import { validateFinalText } from "../src/agent/finalValidator.js";
 import { lastDiscussedOrderNumber, isUnownedOrderTimingQuestion } from "../src/utils/orderIntent.js";
 import { isOrderCancellationRequest, detectOperatorCaseKind } from "../src/services/operatorCase.service.js";
 
@@ -48,7 +49,53 @@ test("the cancellation reply names the operator and never asks for the order num
   );
   // And it raises a real operator case rather than replying into the void.
   const branch = source.slice(source.indexOf("if (isOrderCancellationRequest(ctx.text)) {"));
-  assert.match(branch.slice(0, 900), /routeComplaintToAdmin\(ctx, \{[\s\S]*source: "cancel_request"/);
+  assert.match(branch.slice(0, 1600), /routeComplaintToAdmin\(ctx, \{[\s\S]*source: "cancel_request"/);
+});
+
+// User correction 2026-08-12: a cancellation only means something once an order
+// exists. The bot handed the request to an operator without ever looking, so a
+// guest who had never ordered still burned a human's attention.
+test("the cancellation branch looks the order up before it decides", async () => {
+  const source = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  const branch = source.slice(
+    source.indexOf("if (isOrderCancellationRequest(ctx.text)) {"),
+    source.indexOf("const orderReply = await customerOrderReply(ctx);"),
+  );
+  assert.ok(branch.length > 0, "the cancellation branch must precede the status route");
+  // The lookup happens first, and its result decides the answer.
+  assert.ok(
+    branch.indexOf("resolveCancellationTarget(ctx)") < branch.indexOf("routeComplaintToAdmin"),
+    "the order lookup must run before any escalation",
+  );
+  assert.match(branch, /target\.state === "missing" && !insists/);
+  assert.match(branch, /nothingToCancelReply\(ctx\), "cancel_request:no_order"/);
+  // With no order there is no operator case at all.
+  assert.ok(
+    branch.indexOf('"cancel_request:no_order"') < branch.indexOf("routeComplaintToAdmin"),
+    "the no-order path must return before the escalation",
+  );
+  // The lookup uses the same sources as the status route.
+  const resolver = source.slice(source.indexOf("async function resolveCancellationTarget"));
+  const resolverBody = resolver.slice(0, resolver.indexOf("\n}\n"));
+  assert.match(resolverBody, /requestedOrderNumber\(ctx\.text\)/);
+  assert.match(resolverBody, /lastDiscussedOrderNumber\(ctx\.chatHistory\)/);
+  assert.match(resolverBody, /getCustomerOrder\(/);
+  // And when an order is found, the guest is told its real state, not just "handed over".
+  assert.match(branch, /target\.statusLine, cancellationHandoffReply\(ctx, target\.orderNumber\)/);
+});
+
+test("with no order the guest is told so honestly and still offered a human", async () => {
+  const source = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  const start = source.indexOf("function nothingToCancelReply");
+  assert.ok(start > 0, "nothingToCancelReply must exist");
+  const body = source.slice(start, source.indexOf("\n}", start));
+  assert.doesNotMatch(body, /Тапсырыс нөмірін жіберіңіз|Отправьте номер заказа/);
+  assert.match(body, /белсенді тапсырыс жоқ/u);
+  assert.match(body, /активного заказа на этом номере нет/u);
+  assert.match(body, /оператор/iu);
+  // Asking a second time is enough to reach a human.
+  const insist = source.slice(source.indexOf("function repeatedCancellationRequest"));
+  assert.match(insist.slice(0, insist.indexOf("\n}\n")), /isOrderCancellationRequest\(String\(entry\?\.text/);
 });
 
 
@@ -75,6 +122,58 @@ test("a menu-in-writing request asks for searchMenu and suppresses the link tool
   const plan = resolveAgentToolPlan(ctx("Сілтемені ашқым жоқ, жазып жіберіңіз мәзірді"));
   assert.ok(plan.requiredTools.includes("searchMenu"), JSON.stringify(plan));
   assert.ok(!plan.requiredTools.includes("sendMenuLink"), JSON.stringify(plan));
+});
+
+// The allergy turn ran with called_tools=none, so the model answered "these
+// dishes contain no seafood or nuts" naming no dish at all.
+test("an allergy or recommendation request forces a menu lookup", () => {
+  for (const text of [
+    "Балама аллергия бар, теңіз өнімдері мен жаңғақ жоқ тағам керек. Не ұсынасыз?",
+    "что посоветуете, у ребенка аллергия на орехи",
+    "глютен жоқ тағам бар ма",
+    "порекомендуйте что-нибудь без морепродуктов",
+    "кеңес беріңізші, не алсам жақсы",
+  ]) {
+    const plan = resolveAgentToolPlan(ctx(text));
+    assert.ok(plan.requiredTools.includes("searchMenu"), `${text}: ${JSON.stringify(plan)}`);
+  }
+});
+
+test("an ungrounded allergen assurance never reaches the guest", () => {
+  const base = { language: "kk" as const, instanceId: "prestige", phone: "77476884956" } as any;
+  const result = validateFinalText(
+    "Бұл тағамдардың құрамында теңіз өнімдері мен жаңғақтар жоқ.",
+    base,
+    { toolsCalled: [] },
+  );
+  assert.ok(result.warnings.includes("ungrounded_allergen_assurance_removed"), JSON.stringify(result));
+  assert.doesNotMatch(result.text, /жаңғақтар жоқ/u);
+  assert.match(result.text, /құрамын/u, result.text);
+});
+
+test("a grounded composition answer is left alone", () => {
+  const base = { language: "ru" as const, instanceId: "prestige", phone: "77476884956" } as any;
+  const result = validateFinalText(
+    "В роллах Филадельфия нет орехов, состав подтвержден.",
+    base,
+    { toolsCalled: ["searchMenu"] },
+  );
+  assert.ok(!result.warnings.includes("ungrounded_allergen_assurance_removed"), JSON.stringify(result));
+  assert.match(result.text, /нет орехов/u);
+});
+
+// Cutting the priced sentence used to leave "these dishes..." pointing at a list
+// that no longer existed.
+test("a reference left pointing at a removed list is cut too", () => {
+  const base = { language: "ru" as const, instanceId: "prestige", phone: "77476884956" } as any;
+  const result = validateFinalText(
+    "Цезарь стоит 3000 тенге. Эти блюда подойдут вам лучше всего.",
+    base,
+    { toolsCalled: [] },
+  );
+  assert.ok(result.warnings.includes("ungrounded_price_claim_removed"), JSON.stringify(result));
+  assert.ok(result.warnings.includes("dangling_reference_removed"), JSON.stringify(result));
+  assert.doesNotMatch(result.text, /Эти блюда/u);
 });
 
 // The worst reply of the round: a refund demand answered with nothing but a URL.

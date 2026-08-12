@@ -299,15 +299,65 @@ function missingQuotedOrderReply(language: "kk" | "ru", orderNumber: string) {
 // The bot may never change order state, so a cancellation request is answered by
 // saying exactly that and handing it to a human - never by asking for an order
 // number the guest cannot use for anything.
-function cancellationHandoffReply(ctx: FastFoodContext): string {
+function cancellationHandoffReply(ctx: FastFoodContext, orderNumber = ""): string {
   const number = String(
-    ctx.activeOrder?.order_number || ctx.activeOrder?.order_id || ctx.activeOrder?.id || "",
+    orderNumber || ctx.activeOrder?.order_number || ctx.activeOrder?.order_id || ctx.activeOrder?.id || "",
   ).replace(/\D/g, "");
   const label = number ? (ctx.language === "ru" ? `Заказ №${number}: ` : `№${number} тапсырысы: `) : "";
   return ctx.language === "ru"
     ? `${label}отменить заказ сам я не могу — уже передал оператору, он свяжется с вами и оформит отмену. Ничего больше делать не нужно.`
     : `${label}тапсырысты өзім жоя алмаймын — операторға дереу бердім, ол сізбен байланысып бас тартуды рәсімдейді. Басқа ештеңе жасау қажет емес.`;
 }
+
+// There is nothing to cancel until an order exists. Saying so plainly - and
+// offering the operator instead of demanding a number - is the honest answer;
+// raising an operator case for an order nobody placed wastes a human's time
+// (user correction, 2026-08-12).
+function nothingToCancelReply(ctx: FastFoodContext): string {
+  return ctx.language === "ru"
+    ? "Проверил: активного заказа на этом номере нет, отменять пока нечего. Если заказ оформлен с другого номера — напишите с него, а если нужен оператор, скажите, и я сразу передам."
+    : "Тексердім: осы нөмірде белсенді тапсырыс жоқ, сондықтан бас тартатын ештеңе жоқ. Тапсырыс басқа нөмірмен жасалған болса, сол нөмірден жазыңыз; оператор керек болса айтыңыз, дереу жалғастырамын.";
+}
+
+// A guest who asks a second time is not going to accept "there is no order".
+function repeatedCancellationRequest(history: unknown): boolean {
+  if (!Array.isArray(history)) return false;
+  let seen = 0;
+  for (let index = history.length - 1; index >= 0 && seen < 8; index -= 1) {
+    const entry: any = history[index];
+    const role = String(entry?.role || "").toLowerCase();
+    if (role !== "user") continue;
+    seen += 1;
+    if (isOrderCancellationRequest(String(entry?.text || entry?.content || ""))) return true;
+  }
+  return false;
+}
+
+// What the guest actually has, resolved from the same sources as the status
+// route: a number they quoted, the order under discussion, then their active
+// order. The cancellation answer is decided from this, never before it.
+async function resolveCancellationTarget(ctx: FastFoodContext): Promise<{
+  state: "found" | "missing" | "unavailable";
+  orderNumber: string;
+  statusLine: string;
+}> {
+  const quotedNumber = requestedOrderNumber(ctx.text);
+  const discussedNumber = quotedNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
+  const discussedRecord = discussedNumber ? pickConversationOrder(ctx.activeOrder, discussedNumber) : null;
+  const lookup = quotedNumber
+    ? await getCustomerOrder(ctx.instanceId, String(ctx.config?.domain || ""), ctx.phone, ctx.language, quotedNumber)
+    : ctx.activeOrder?.is_stale
+      ? { state: "unavailable" as const }
+      : customerOrderFromRecord(discussedRecord || ctx.activeOrder, ctx.phone, ctx.language);
+  if (lookup.state === "found") {
+    const order: any = (lookup as any).order;
+    const number = String(order?.order_number || order?.order_id || order?.id || quotedNumber || "").replace(/\D/g, "");
+    return { state: "found", orderNumber: number, statusLine: formatCustomerOrderStatus(order, ctx.language) };
+  }
+  if (lookup.state === "unavailable") return { state: "unavailable", orderNumber: quotedNumber, statusLine: "" };
+  return { state: "missing", orderNumber: quotedNumber, statusLine: "" };
+}
+
 
 async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> {
   // "заказ 59 холодный привезли" names an order, but the guest is not asking where it is —
@@ -939,11 +989,21 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
-    // A cancellation is an operator action. It is settled here, before the status
-    // route, so the guest is never told "send the order number" for something the
-    // bot could not do with the number anyway (live round, 2026-08-12).
+    // A cancellation is settled here, before the status route, but only after the
+    // order itself is looked up: there is nothing to cancel until an order
+    // exists, and a human is pulled in only when one does (or when the guest
+    // asks again). The guest is never told "send the order number" for something
+    // the bot could not do with the number anyway.
     if (isOrderCancellationRequest(ctx.text)) {
-      const cancelReply = cancellationHandoffReply(ctx);
+      const target = await resolveCancellationTarget(ctx);
+      const insists = repeatedCancellationRequest(ctx.chatHistory) || isLikelyOperatorRequestText(ctx.text);
+      if (target.state === "missing" && !insists) {
+        await sendCustomerReplyAndFinish(ctx, messageId, nothingToCancelReply(ctx), "cancel_request:no_order");
+        return;
+      }
+      const cancelReply = target.state === "found"
+        ? [target.statusLine, cancellationHandoffReply(ctx, target.orderNumber)].filter(Boolean).join(" ")
+        : cancellationHandoffReply(ctx, target.orderNumber);
       const routing = await routeComplaintToAdmin(ctx, {
         summary: stripEscalationSignals(ctx.text),
         customerText: ctx.text,

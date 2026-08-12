@@ -23,8 +23,9 @@ test("tenant voice is injected exactly once and remains bounded", () => {
   // The bound guards against a runaway prompt, not against a specific number.
   // Raised from 16 000 when getKitchenStatus/getShiftNotes were registered, then
   // from 16 500 for the two rules added after the 2026-08-12 live round (the link
-  // never replaces an answer; an unavailable item still gets alternatives). Each
-  // ceiling sits a few hundred chars above the then-current size, so a runaway
-  // addition still trips it.
-  assert.ok(instructions.length < 17_000, `assembled prompt is unexpectedly large: ${instructions.length}`);
+  // never replaces an answer; an unavailable item still gets alternatives), then
+  // from 17 000 for the allergen rule (never promise a dish is allergen-free).
+  // Each ceiling sits a few hundred chars above the then-current size, so a
+  // runaway addition still trips it.
+  assert.ok(instructions.length < 17_400, `assembled prompt is unexpectedly large: ${instructions.length}`);
 });

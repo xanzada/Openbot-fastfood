@@ -33,6 +33,18 @@ const PRICE_CLAIM_RE =
   /[^.!?\n]*\d[\d\s]*(?:тенге|теңге|тг|₸)[^.!?\n]*[.!?]?/iu;
 const PROMO_CLAIM_RE =
   /[^.!?\n]*(?:скидк|жеңілді|акци|бонус|промо|подарок|сыйлық|тегін|бесплатн)[^.!?\n]*(?:\d|%|бар|есть|жүріп|идет|действу|береміз|даём)[^.!?\n]*[.!?]?/iu;
+// "Бұл тағамдардың құрамында теңіз өнімдері мен жаңғақтар жоқ" was sent to a
+// guest asking for allergen-free food for a child, with no dish named and no
+// tool called (live round, 2026-08-12). Telling someone an allergen is absent is
+// the one lie that can put them in hospital, so it may only survive when a menu
+// lookup grounded it this turn.
+const ALLERGEN_ASSURANCE_RE =
+  /[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|орех|теңіз\s*өнім|морепродукт|құрам|состав)[^.!?\n]*(?:жоқ|болмайды|таза|емес|нет|отсутств|без\s|не\s+содерж|свободн)[^.!?\n]*[.!?]?/iu;
+// What is left after a clause is cut must still be an answer. A surviving
+// sentence that points at a list which was just removed ("these dishes...",
+// "вот варианты") reads as an answer while naming nothing at all.
+const DANGLING_REFERENCE_RE =
+  /^[^.!?\n]*(?:бұл\s+(?:тағам|блюд|нұсқа|вариант)|осы\s+тағам|мына\s+тағам|эт(?:и|от|о)\s+(?:блюд|вариант|позици)|вот\s+(?:вариант|что|блюд)|келес[іi]\s+тағам|следующ\p{L}*\s+блюд)[^.!?\n]*[.!?]?$/iu;
 const PRICE_GROUNDING_TOOLS = ["searchMenu", "checkOrderStatus", "getPaymentDetails"];
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 
@@ -109,8 +121,15 @@ function noActiveOrderText(ctx: FastFoodContext) {
     : "Сейчас нет активного заказа.";
 }
 
-function runtimeUnavailableText(ctx: FastFoodContext) {
+// When the only thing the model had to say about an allergen was unverified, the
+// honest reply is that we will check it rather than silence or a generic prompt.
+function allergenUnverifiedText(ctx: FastFoodContext) {
   return ctx.language === "kk"
+    ? "Тағамдардың құрамын өзім растай алмаймын. Қандай өнім болмауы керек екенін жазыңыз, асүймен нақтылап, сізге жарайтын тағамдарды айтамын."
+    : "Состав блюд подтвердить без кухни не могу. Напишите, какие продукты исключить, я уточню и назову подходящие блюда.";
+}
+
+function runtimeUnavailableText(ctx: FastFoodContext) {  return ctx.language === "kk"
     ? "Қазір асүй статусын тексере алмаймын. Кейін қайталап жазыңыз."
     : "Не могу проверить статус кухни. Напишите позже.";
 }
@@ -297,6 +316,22 @@ export function validateFinalText(
           warnings.push("unverified_promo_claim_kept_no_survivor");
         }
       }
+      if (ALLERGEN_ASSURANCE_RE.test(text)) {
+        const withoutAssurance = dropSentencesMatching(text, ALLERGEN_ASSURANCE_RE);
+        text = withoutAssurance;
+        warnings.push("ungrounded_allergen_assurance_removed");
+        if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
+      }
+    }
+    // Whatever was cut above, the guest must not be left holding a pointer to a
+    // list that no longer exists.
+    if (DANGLING_REFERENCE_RE.test(text)) {
+      const anchored = dropSentencesMatching(text, DANGLING_REFERENCE_RE);
+      if (anchored !== text) {
+        text = anchored;
+        warnings.push("dangling_reference_removed");
+      }
+      if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
     }
   }
 
