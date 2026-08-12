@@ -1,3 +1,6 @@
+// Deployed by Dokploy from codex/fix-wa-payment-signal. Only package*.json,
+// tsconfig.json and src/ enter the image (see Dockerfile) — a change anywhere
+// else in this repo will never reach the container, however green the deploy is.
 import "dotenv/config";
 import http from "node:http";
 import express from "express";
