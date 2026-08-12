@@ -328,7 +328,10 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
       : customerOrderFromRecord(discussedRecord || ctx.activeOrder, ctx.phone, ctx.language);
   if (lookup.state === "found") return formatCustomerOrderStatus(lookup.order, ctx.language);
   if (lookup.state === "unavailable") return unavailableOrderReply(ctx.language);
-  const referenced = orderNumber || discussedNumber;
+  // Only a number backed by a real record may be named back to the guest. A
+  // number that merely appeared in the conversation, with nothing behind it, used
+  // to produce "№019 not found" for a guest who never had order 019.
+  const referenced = orderNumber || (discussedRecord ? discussedNumber : "");
   return referenced ? missingQuotedOrderReply(ctx.language, referenced) : missingOrderReply(ctx.language);
 }
 

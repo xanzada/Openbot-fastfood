@@ -3,6 +3,7 @@ import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../u
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 import { classifyKitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
+import { wantsMenuAsText } from "../utils/magicLink.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -75,11 +76,14 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     add(plan, "getKitchenStatus", "live_kitchen_status");
   }
 
-  if (!immediateServiceIncident && intentMatches(MENU_LOOKUP_RE, text)) {
+  if (!immediateServiceIncident && (intentMatches(MENU_LOOKUP_RE, text) || wantsMenuAsText(text))) {
     add(plan, "searchMenu", "live_menu_lookup");
   }
 
-  if (!paymentDetailsIntent && !checkoutBlocked
+  // A complaint suppressed searchMenu but not sendMenuLink, so an angry guest
+  // demanding a refund was handed the menu link and nothing else. Nobody who is
+  // complaining is asking to start a new order.
+  if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident && !wantsMenuAsText(text)
     && (intentMatches(DIRECT_MENU_LINK_RE, text) || ctx.explicitMenuLinkIntent)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }

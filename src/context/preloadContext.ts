@@ -22,6 +22,7 @@ import {
 import { getActiveGoal } from "../services/goalTracker.service.js";
 import { orderMentionedByItems, pickConversationOrder } from "../services/customerOrder.service.js";
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
+import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
 import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
@@ -259,7 +260,14 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     runtime_available: runtimeAvailable,
     redis_available: redisAvailable,
   };
-  const explicitMenuLinkIntent = hasExplicitMenuLinkIntent(text);
+  // A furious "Я заказ сделал час назад, верните деньги" contains "заказ ... сдел",
+  // so the link intent fired and the entire reply to a refund demand was a menu
+  // link (live round, 2026-08-12). A complaint or a request for a human is never
+  // an order intent: no link is issued on that turn, which also lets
+  // finalValidator strip one if the model writes it anyway.
+  const explicitMenuLinkIntent = hasExplicitMenuLinkIntent(text)
+    && !isLikelyComplaintText(text)
+    && !isLikelyOperatorRequestText(text);
   let magicLinkFailed = false;
   const magicLink = explicitMenuLinkIntent
     ? await issueCustomerAccessLink({

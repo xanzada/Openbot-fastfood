@@ -58,8 +58,31 @@ export function isMenuLinkResendRequest(text = ""): boolean {
   return LINK_FORCE_RESEND_RE.test(value) || MENU_LINK_RESEND_TEXT_RE.test(value);
 }
 
+// "Сілтемені ашқым жоқ, жазып жіберіңіз мәзірді" contains the word "мәзір", so
+// every link regex below read it as a request for the link and the guest got the
+// same URL a second time (live round, 2026-08-12). A guest who declines the link
+// and asks for the items in writing is asking for searchMenu, not for a URL.
+const MENU_AS_TEXT_RE =
+  /(жазып\s*(?:жібер|бер|таста)|жазып\s*қой|мәзірді\s*жаз|тізім(?:ін|мен)?\s*(?:жібер|бер|жаз)|осында\s*жаз|чат(?:қа|та|е|ом)?\s*жаз|напиш\p{L}*|перечисл\p{L}*|списк\p{L}*|текст(?:ом|е)|здесь\s*(?:напиш|скинь|перечисл))/iu;
+const LINK_DECLINED_RE =
+  /((?:сілтеме|ссылк|линк|link)\p{L}*\s*(?:ашқым\s*жоқ|ашпай|керек\s*емес|қажет\s*емес|не\s*надо|не\s*нужн|не\s*хочу|не\s*могу|не\s*открыв)|(?:ашқым|ашпай|аша\s*алмай)\p{L}*\s*жоқ|без\s*(?:ссылк|линк)\p{L}*|(?:сілтемесіз|ссылкой\s*не))/iu;
+
+/**
+ * The guest wants the assortment written out in the chat, not another URL.
+ *
+ * Two independent signals, both required: they ask for it in writing, and they
+ * either decline the link outright or the request itself is a "write it here".
+ * Requiring the writing signal keeps a plain "мәзір жібер" on the link path.
+ */
+export function wantsMenuAsText(text = ""): boolean {
+  const value = String(text || "").toLowerCase();
+  if (!MENU_AS_TEXT_RE.test(value)) return false;
+  return LINK_DECLINED_RE.test(value) || MENU_LINK_TOPIC_RE.test(value) || MENU_LINK_MOJIBAKE_RE.test(value);
+}
+
 export function hasExplicitMenuLinkIntent(text: string): boolean {
   const value = String(text || "").toLowerCase();
+  if (wantsMenuAsText(value)) return false;
   return (
     /(сілтеме|ссылка|link|линк|мәзір|меню|каталог|тапсырыс\s*(бер|берейін|берем|жасай|ет|қыл)|заказ\s*(бер|берейін|берем|жасай|ет|қыл|хочу|сдел|оформ)|заказать|оформить|хочу\s+заказ|хочу\s+заказать|корзин|себет|меню жібер|мәзір жібер|меню бер|мәзір бер|қалай заказ|қалай тапсырыс)/iu.test(value) ||
     isMenuLinkResendRequest(value)

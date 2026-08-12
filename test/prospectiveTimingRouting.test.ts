@@ -41,7 +41,9 @@ test("a quoted order number that cannot be found is named back, not asked for ag
   const source = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
   assert.match(source, /function missingQuotedOrderReply/);
   assert.match(source, /referenced \? missingQuotedOrderReply\(ctx\.language, referenced\) : missingOrderReply\(ctx\.language\)/);
-  assert.match(source, /const referenced = orderNumber \|\| discussedNumber/);
+  // A discussed number is only named back when a real record stands behind it -
+  // otherwise "№019 not found" was invented for a guest who never had order 019.
+  assert.match(source, /const referenced = orderNumber \|\| \(discussedRecord \? discussedNumber : ""\)/);
   // The quoted-number reply must not repeat the "send the order number" ask.
   const quoted = source.slice(source.indexOf("function missingQuotedOrderReply"));
   const body = quoted.slice(0, quoted.indexOf("\n}"));

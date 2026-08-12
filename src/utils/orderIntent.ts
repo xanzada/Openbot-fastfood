@@ -78,13 +78,30 @@ export function isLikelyOrderStatusFollowUp(text = "") {
 // question "қашан келеді?" is about.
 const DISCUSSED_ORDER_RE = /(?:тапсырыс|заказ)\s*№?\s*#?\s*(\d{1,6})/iu;
 
+// Our own "№019 тапсырысы осы нөмір бойынша табылмады" is a sentence about an
+// order that does not exist. Reading the number back out of it resurrected a
+// dead order number for the rest of the evening: a later bare "тапсырысым
+// қайда?" was answered "№019 not found" again, and a plain "how long does
+// cooking take?" was answered "you have no active order" instead of the kitchen
+// wait time (live round, 2026-08-12).
+const ORDER_NOT_FOUND_RE = /(табылмады|табылған\s*жоқ|жоқ\s*екен|не\s*найден|не\s*найдено|отсутствует)/iu;
+
+// How far back a number stays "the order we are talking about". A guest who
+// mentioned an order six replies ago and has since moved on to the menu is not
+// asking about it any more.
+const DISCUSSED_ORDER_LOOKBACK = 6;
+
 export function lastDiscussedOrderNumber(history: unknown): string {
   if (!Array.isArray(history)) return "";
-  for (let index = history.length - 1; index >= 0; index -= 1) {
+  let scanned = 0;
+  for (let index = history.length - 1; index >= 0 && scanned < DISCUSSED_ORDER_LOOKBACK; index -= 1) {
     const entry: any = history[index];
     const role = String(entry?.role || "");
     if (role !== "assistant" && role !== "model") continue;
-    const match = DISCUSSED_ORDER_RE.exec(String(entry?.text || entry?.content || ""));
+    scanned += 1;
+    const value = String(entry?.text || entry?.content || "");
+    if (ORDER_NOT_FOUND_RE.test(value)) continue;
+    const match = DISCUSSED_ORDER_RE.exec(value);
     if (match) return match[1];
   }
   return "";
