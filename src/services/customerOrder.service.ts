@@ -1,5 +1,6 @@
 import { auditError } from "./auditLogger.service.js";
 import { getOrderContext, normalizePhone } from "./dle.service.js";
+import { formatKitchenWait } from "./kitchenPolicy.service.js";
 
 export type CustomerOrderStage = "awaiting_confirmation" | "awaiting_receipt" | "receipt_review" | "preparing" | "delivery" | "completed" | "cancelled" | "unknown";
 export interface CustomerOrder { orderId: string; orderNumber: string; status: string; stage: CustomerOrderStage; statusLabel: string; statusExplanation: string; items: Array<{ name: string; quantity: number }>; }
@@ -121,4 +122,15 @@ export function orderNextStepLine(order:CustomerOrder,language:"kk"|"ru"){
   if(/(?<!\p{L})готов(?:о|а|ый)?(?!\p{L})|(?<!\p{L})дайын(?!\p{L})|заверш|орындал/u.test(label)) return language==="ru"?"Можете забирать — всё упаковано.":"Алып кетуге болады — бәрі дайын.";
   return language==="ru"?"Как только что-то изменится, сразу напишем.":"Жаңалық болса, бірден хабарлаймыз.";
 }
-export function formatCustomerOrderStatus(order:CustomerOrder,language:"kk"|"ru"){const items=order.items.slice(0,8).map(i=>`${i.name} ×${i.quantity}`).join(", ");if(language==="ru")return items?`Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Состав: ${items}. ${orderNextStepLine(order,language)}`:`Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${orderNextStepLine(order,language)}`;return items?`Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Құрамы: ${items}. ${orderNextStepLine(order,language)}`:`Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${orderNextStepLine(order,language)}`;}
+// The kitchen's own estimate, printed only while the food is still being made.
+// The status line used to end at "we will write the moment it is ready" even when
+// the kitchen had entered 65 minutes, so the one number the guest actually wanted
+// was held by the backend and never said out loud (audit, 2026-08-12).
+export function orderWaitLine(order:CustomerOrder,language:"kk"|"ru",waitMinutes:unknown){
+  const minutes=Math.max(0,Math.floor(Number(waitMinutes)||0));
+  if(!minutes) return "";
+  if(!["awaiting_confirmation","awaiting_receipt","receipt_review","preparing"].includes(order.stage)) return "";
+  const label=formatKitchenWait(minutes,language);
+  return language==="ru"?`Ориентировочное время приготовления — ${label}.`:`Дайындалу уақыты шамамен ${label}.`;
+}
+export function formatCustomerOrderStatus(order:CustomerOrder,language:"kk"|"ru",waitMinutes:unknown=0){const items=order.items.slice(0,8).map(i=>`${i.name} ×${i.quantity}`).join(", ");const wait=orderWaitLine(order,language,waitMinutes);const tail=[wait,orderNextStepLine(order,language)].filter(Boolean).join(" ");if(language==="ru")return items?`Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Состав: ${items}. ${tail}`:`Заказ #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${tail}`;return items?`Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. Құрамы: ${items}. ${tail}`:`Тапсырыс #${order.orderNumber}: ${order.statusLabel} — ${order.statusExplanation}. ${tail}`;}

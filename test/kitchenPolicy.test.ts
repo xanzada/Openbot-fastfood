@@ -100,3 +100,28 @@ test("consent answers are read in both languages", () => {
   }
   assert.equal(detectKitchenConsentAnswer("пицца қанша тұрады"), "unknown");
 });
+
+// Every closed state used to share one reply that blamed "a technical reason", so
+// a guest writing at 03:00 was told the restaurant was broken (audit, 2026-08-12).
+test("being closed for the night is its own mode, not a breakdown", () => {
+  const p = classifyKitchenSalesPolicy({ ...runtime({ wait_time: 10 }), within_work_hours: false }, NOW);
+  assert.equal(p.mode, "off_hours");
+  assert.equal(p.blocksAllSales, true);
+  assert.equal(p.isEmergency, false, "closing time is not an emergency");
+  assert.equal(p.requiresConsent, false);
+});
+
+test("a closure longer than a day is a vacation even when it starts outside work hours", () => {
+  const p = classifyKitchenSalesPolicy(
+    { ...runtime({ wait_time: 10, reset_at: nowSec + 2 * 86400 }), within_work_hours: false },
+    NOW
+  );
+  assert.equal(p.mode, "vacation");
+});
+
+test("off hours outranks a long queue - a closed kitchen has no queue to consent to", () => {
+  const p = classifyKitchenSalesPolicy({ ...runtime({ wait_time: 90 }), within_work_hours: false }, NOW);
+  assert.equal(p.mode, "off_hours");
+  assert.equal(p.requiresConsent, false);
+  assert.equal(p.waitMinutes, 90, "the number is still reported, it is just not sellable");
+});

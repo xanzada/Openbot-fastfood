@@ -286,17 +286,25 @@ export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
   };
 }
 
-function runtimeFromKitchenStatus(instanceId: string, status: KitchenStatusState): Record<string, any> {
-  const isAcceptingOrders = !status.is_emergency && (status.delivery || status.pickup);
-  const closedReason = status.is_emergency
-    ? "emergency_stop"
-    : !status.delivery && !status.pickup
-      ? "service_channels_disabled"
-      : "";
+export function runtimeFromKitchenStatus(instanceId: string, status: KitchenStatusState): Record<string, any> {
+  // within_work_hours used to be hard-coded true here, so whenever the hub was
+  // unreachable a closed restaurant looked open and the bot sold through the
+  // night (audit, 2026-08-12). The record now carries the openness the last hub
+  // read stored, and the local pause is applied on top of it.
+  const withinWorkHours = status.within_work_hours !== false;
+  const isAcceptingOrders =
+    withinWorkHours && status.is_accepting_orders !== false && !status.is_emergency && (status.delivery || status.pickup);
+  const closedReason = !withinWorkHours
+    ? status.closed_reason || "outside_work_hours"
+    : status.is_emergency
+      ? "emergency_stop"
+      : !status.delivery && !status.pickup
+        ? "service_channels_disabled"
+        : "";
 
   return {
     is_accepting_orders: isAcceptingOrders,
-    within_work_hours: true,
+    within_work_hours: withinWorkHours,
     closed_reason: closedReason,
     delivery: status.delivery,
     pickup: status.pickup,
@@ -325,6 +333,70 @@ function runtimeFromKitchenStatus(instanceId: string, status: KitchenStatusState
   };
 }
 
+// Kitchen state the panel pushes to /kanban-webhook lands in Redis, but Redis was
+// only ever read when the hub was unreachable - so while the hub answered (which
+// is almost always) an operator who paused the kitchen or raised the wait changed
+// nothing the guest could see (audit, 2026-08-12). The push is now overlaid on the
+// hub read, under two rules that keep it from ever overselling or outliving its
+// welcome: it must still be in effect (an explicit reset_at in the future, or
+// pushed within the last PUSHED_KITCHEN_GRACE_MS), and it may only make the state
+// MORE restrictive - a longer wait, emergency on, a channel off. A hub value that
+// is already stricter wins.
+const PUSHED_KITCHEN_GRACE_MS = 30 * 60_000;
+const HUB_KITCHEN_SOURCES = ["dle_runtime_status", "redis_kitchen_status_reset"];
+
+export function overlayPushedKitchenState(
+  status: Record<string, any>,
+  pushed: KitchenStatusState | null | undefined,
+  nowMs = Date.now(),
+): Record<string, any> {
+  if (!pushed) return status;
+  if (HUB_KITCHEN_SOURCES.includes(String(pushed.source || "").trim())) return status;
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const stillScheduled = Number(pushed.reset_at || 0) > nowSeconds;
+  const pushedAt = Date.parse(String(pushed.synced_at || "")) || 0;
+  const stillFresh = pushedAt > 0 && nowMs - pushedAt <= PUSHED_KITCHEN_GRACE_MS;
+  if (!stillScheduled && !stillFresh) return status;
+
+  const waitTime = Math.max(Number(status.wait_time || 0) || 0, Number(pushed.wait_time || 0) || 0);
+  const isEmergency = Boolean(status.is_emergency) || Boolean(pushed.is_emergency);
+  const delivery = Boolean(status.delivery) && Boolean(pushed.delivery);
+  const pickup = Boolean(status.pickup) && Boolean(pushed.pickup);
+  const resetAt = stillScheduled ? Number(pushed.reset_at || 0) : Number(status.reset_at || 0) || 0;
+  const changed =
+    waitTime !== (Number(status.wait_time || 0) || 0) ||
+    isEmergency !== Boolean(status.is_emergency) ||
+    delivery !== Boolean(status.delivery) ||
+    pickup !== Boolean(status.pickup) ||
+    resetAt !== (Number(status.reset_at || 0) || 0);
+  if (!changed) return status;
+
+  return {
+    ...status,
+    wait_time: waitTime,
+    is_emergency: isEmergency,
+    delivery,
+    pickup,
+    reset_at: resetAt,
+    is_accepting_orders: Boolean(status.is_accepting_orders) && !isEmergency && (delivery || pickup),
+    kitchen_status: {
+      ...(status.kitchen_status || {}),
+      wait_time: waitTime,
+      is_emergency: isEmergency,
+      delivery,
+      pickup,
+      reset_at: resetAt,
+    },
+    fetched_settings: {
+      ...(status.fetched_settings || {}),
+      wait_time: Math.max(Number(status.fetched_settings?.wait_time || 0) || 0, waitTime),
+      is_emergency: isEmergency,
+    },
+    pushed_kitchen_override: true,
+    pushed_kitchen_source: String(pushed.source || "redis_kitchen_status"),
+  };
+}
+
 export async function getRuntimeStatus(
   instanceId: string,
   domain: string,
@@ -340,13 +412,22 @@ export async function getRuntimeStatus(
 
   try {
     const data = await apiBot(domain, { action: "get_runtime_status", restaurant_id: instanceId }, 8000);
-    const status = normalizeRuntimeStatus(data || {});
+    // Read the pushed state BEFORE the sync below overwrites it with the hub's.
+    const pushed = await getKitchenStatus(instanceId).catch(() => null);
+    const status = overlayPushedKitchenState(normalizeRuntimeStatus(data || {}), pushed);
     await setJsonCache(cacheKey, 5, status);
     await setJsonCache(backupKey, 600, status);
     await saveKitchenStatus(instanceId, {
       ...(status.kitchen_status || {}),
       payment_details: status.payment_details || [],
-      source: "dle_runtime_status",
+      // Openness travels with the record, so the Redis fallback can reproduce a
+      // closed restaurant instead of assuming an open one.
+      is_accepting_orders: status.is_accepting_orders,
+      within_work_hours: status.within_work_hours,
+      closed_reason: status.closed_reason || "",
+      // Keeping the push's own source is what lets the override survive the very
+      // sync that would otherwise erase it one turn later.
+      source: status.pushed_kitchen_override ? status.pushed_kitchen_source : "dle_runtime_status",
       preserve_reset: true,
     }).catch((syncError: any) => {
       auditError("Runtime Redis kitchen sync skipped", syncError, { instanceId });

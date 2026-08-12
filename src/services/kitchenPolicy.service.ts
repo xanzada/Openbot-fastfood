@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-export type KitchenSalesMode = "normal" | "busy" | "channel_limited" | "critical" | "vacation" | "indefinite";
+export type KitchenSalesMode = "normal" | "busy" | "channel_limited" | "critical" | "vacation" | "indefinite" | "off_hours";
 
 export interface KitchenSalesPolicy {
   mode: KitchenSalesMode;
@@ -56,13 +56,19 @@ export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, 
   // to 0, and treating that as a shutdown silently killed sales at 41 minutes.
   // Past 180 the wait stops being a queue at all, so it blocks like before.
   let mode: KitchenSalesMode = "normal";
-  if (globalStop && resetAt === 0) mode = "indefinite";
-  else if (globalStop && remainingSeconds >= 86400) mode = "vacation";
+  // Being closed for the night is not a fault, and every closed state used to
+  // share one reply that blamed "a technical reason" - a guest writing at 03:00
+  // was told the restaurant was broken (audit, 2026-08-12). Off-hours is its own
+  // mode so the honest sentence can be said. A closure longer than a day is still
+  // a vacation, whichever side of the clock it starts on.
+  if (globalStop && remainingSeconds >= 86400) mode = "vacation";
+  else if (!withinWorkHours) mode = "off_hours";
+  else if (globalStop && resetAt === 0) mode = "indefinite";
   else if (globalStop || waitMinutes > 180) mode = "critical";
   else if (waitMinutes > 40) mode = "busy";
   else if (delivery !== pickup) mode = "channel_limited";
 
-  const blocksAllSales = mode === "critical" || mode === "vacation" || mode === "indefinite";
+  const blocksAllSales = mode === "critical" || mode === "vacation" || mode === "indefinite" || mode === "off_hours";
   const requiresConsent = mode === "busy";
   const reopeningKnown = resetAt > 0;
   const fingerprintSource = JSON.stringify({ mode, waitMinutes, delivery, pickup, isEmergency, isAcceptingOrders, withinWorkHours, resetAt });

@@ -221,10 +221,14 @@ function operationalRuntime(ctx: FastFoodContext) {
     // A guest asking "how long?" has already paid; "I have no information" is the
     // one answer that is never true here. wait_time plus the order stage always
     // supports an honest estimate, and the kitchen can be quoted as normal speed
-    // when the wait is zero.
-    timing_answer_rule: waitMinutes > 0
+    // when the wait is zero. A wait the policy still calls normal is an estimate,
+    // not an alarm: calling a 30-minute queue "loaded" talked guests out of
+    // ordering for no reason.
+    timing_answer_rule: policy.requiresConsent
       ? "If the customer asks how long, say the kitchen is loaded and name the wait out loud, then say you will write the moment it is ready. Never answer that you have no information."
-      : "If the customer asks how long, say the kitchen is working at its normal pace and give the usual readiness window, then say you will write the moment it is ready. Never answer that you have no information.",
+      : waitMinutes > 0
+        ? "If the customer asks how long, name the wait above as the normal readiness window - without calling the kitchen busy - then say you will write the moment it is ready. Never answer that you have no information."
+        : "If the customer asks how long, say the kitchen is working at its normal pace and give the usual readiness window, then say you will write the moment it is ready. Never answer that you have no information.",
   };
 }
 

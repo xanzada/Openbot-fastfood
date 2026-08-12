@@ -333,6 +333,14 @@ function repeatedCancellationRequest(history: unknown): boolean {
   return false;
 }
 
+// The wait the kitchen entered for this turn, so a status answer can name it.
+function ctxKitchenWaitMinutes(ctx: FastFoodContext): number {
+  const live: any = ctx.hardRealtimeContext || {};
+  const runtime: any = ctx.runtimeStatus || {};
+  const value = Number(live.wait_time ?? runtime.wait_time ?? runtime.kitchen_status?.wait_time ?? 0) || 0;
+  return Math.max(0, Math.floor(value));
+}
+
 // What the guest actually has, resolved from the same sources as the status
 // route: a number they quoted, the order under discussion, then their active
 // order. The cancellation answer is decided from this, never before it.
@@ -352,7 +360,7 @@ async function resolveCancellationTarget(ctx: FastFoodContext): Promise<{
   if (lookup.state === "found") {
     const order: any = (lookup as any).order;
     const number = String(order?.order_number || order?.order_id || order?.id || quotedNumber || "").replace(/\D/g, "");
-    return { state: "found", orderNumber: number, statusLine: formatCustomerOrderStatus(order, ctx.language) };
+    return { state: "found", orderNumber: number, statusLine: formatCustomerOrderStatus(order, ctx.language, ctxKitchenWaitMinutes(ctx)) };
   }
   if (lookup.state === "unavailable") return { state: "unavailable", orderNumber: quotedNumber, statusLine: "" };
   return { state: "missing", orderNumber: quotedNumber, statusLine: "" };
@@ -389,7 +397,7 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
     : ctx.activeOrder?.is_stale
       ? { state: "unavailable" as const }
       : customerOrderFromRecord(discussedRecord || ctx.activeOrder, ctx.phone, ctx.language);
-  if (lookup.state === "found") return formatCustomerOrderStatus(lookup.order, ctx.language);
+  if (lookup.state === "found") return formatCustomerOrderStatus(lookup.order, ctx.language, ctxKitchenWaitMinutes(ctx));
   if (lookup.state === "unavailable") return unavailableOrderReply(ctx.language);
   // Only a number backed by a real record may be named back to the guest. A
   // number that merely appeared in the conversation, with nothing behind it, used
@@ -425,10 +433,15 @@ function operationalPreemptionReply(ctx: FastFoodContext): string | null {
 function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
   if (language === "ru") {
     if (policy.mode === "vacation") return `Сейчас временно не принимаем заказы${policy.remainingDays ? ` примерно ${policy.remainingDays} дн.` : ""}. Напишите нам немного позже — мы сообщим актуальную информацию. Спасибо за понимание.`;
+    // Closed for the night is not a breakdown: saying "по технической причине"
+    // here made a normal closing time sound like a failure and left the guest
+    // with nothing to do about it.
+    if (policy.mode === "off_hours") return "Сейчас мы закрыты — заказы принимаем в рабочие часы. Напишите, как только откроемся, и я всё оформлю. Меню можно посмотреть уже сейчас.";
     if (policy.mode === "indefinite") return "По важной технической причине временно не принимаем заказы. Пожалуйста, напишите нам немного позже, чтобы уточнить актуальную ситуацию. Спасибо за понимание.";
     return "По важной технической причине временно не принимаем заказы. Пожалуйста, попробуйте написать нам немного позже. Спасибо за понимание.";
   }
   if (policy.mode === "vacation") return `Қазір уақытша тапсырыс қабылдамаймыз${policy.remainingDays ? `, шамамен ${policy.remainingDays} күн` : ""}. Біраздан кейін қайта жазып, өзекті жағдайды нақтылап көріңіз. Түсіністік танытқаныңызға рақмет.`;
+  if (policy.mode === "off_hours") return "Қазір жабықпыз — тапсырыстарды жұмыс уақытында қабылдаймыз. Ашылған кезде жазсаңыз, бәрін рәсімдеп беремін. Мәзірді қазірдің өзінде қарап отыруға болады.";
   if (policy.mode === "indefinite") return "Маңызды техникалық себепке байланысты уақытша тапсырыс қабылдамаймыз. Біраздан кейін қайта жазып, өзекті жағдайды нақтылап көріңіз. Түсіністік танытқаныңызға рақмет.";
   return "Маңызды техникалық себепке байланысты уақытша тапсырыс қабылдамаймыз. Біраздан кейін қайта жазып көріңіз. Түсіністік танытқаныңызға рақмет.";
 }

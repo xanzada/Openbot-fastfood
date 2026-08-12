@@ -151,6 +151,14 @@ export interface KitchenStatusState {
   delivery: boolean;
   pickup: boolean;
   reset_at: number;
+  // Whether the restaurant is open at all, and why not. These are hub facts, but
+  // they have to survive in Redis: the fallback that reconstructs a runtime from
+  // this record used to hard-code within_work_hours: true, so a guest who wrote at
+  // 03:00 while the hub was unreachable was told the kitchen was open (audit,
+  // 2026-08-12).
+  is_accepting_orders: boolean;
+  within_work_hours: boolean;
+  closed_reason: string;
   payment_details: PaymentDetail[];
   source: string;
   synced_at: string;
@@ -222,10 +230,16 @@ export async function hasActiveKitchenCheckout(instanceId: string, phone: string
   return safeRedis(false, async () => Boolean(await redisClient.get(kitchenCheckoutGraceKey(instanceId, phone))));
 }
 
+// The grace window is a sliding one. A fixed 30 minutes meant a guest still
+// choosing dishes was asked to accept the same wait a second time, which reads
+// like the bot forgot the conversation (audit, 2026-08-12). Every turn that finds
+// the same kitchen state renews it, so only silence lets it lapse.
 export async function getKitchenCheckoutFingerprint(instanceId: string, phone: string): Promise<string | null> {
   return safeRedis(null, async () => {
     const value = await redisClient.get(kitchenCheckoutGraceKey(instanceId, phone));
-    return value ? String(value) : null;
+    if (!value) return null;
+    await redisClient.expire(kitchenCheckoutGraceKey(instanceId, phone), KITCHEN_CHECKOUT_GRACE_TTL_SECONDS).catch(() => undefined);
+    return String(value);
   });
 }
 
@@ -271,15 +285,23 @@ function normalizePaymentDetails(value: unknown): PaymentDetail[] {
     .slice(0, 6);
 }
 
+// The real number the kitchen entered, clamped only to a sane range. It used to
+// be floored to 0 below 41 minutes because the sales policy calls anything up to
+// 40 "normal" - but the policy already applies that threshold itself, and
+// throwing the value away meant a guest asking "how long?" while the kitchen had
+// entered 35 was told nothing at all, and the panel looked like it had dropped
+// the write (audit, 2026-08-12). Storing the truth lets the mode stay normal AND
+// the estimate be quoted.
 function normalizeKitchenWaitTime(value: unknown): number {
-  const waitTime = Math.min(720, Math.max(0, Math.floor(Number(value ?? 0) || 0)));
-  return waitTime <= 40 ? 0 : waitTime;
+  return Math.min(720, Math.max(0, Math.floor(Number(value ?? 0) || 0)));
 }
 
 function normalizeKitchenStatus(
   value: Record<string, any> = {},
-  previousPaymentDetails: PaymentDetail[] = []
+  previous?: KitchenStatusState | PaymentDetail[] | null
 ): KitchenStatusState {
+  const previousState = Array.isArray(previous) ? null : previous || null;
+  const previousPaymentDetails = Array.isArray(previous) ? previous : previousState?.payment_details || [];
   const paymentDetails = normalizePaymentDetails(value.payment_details).length
     ? normalizePaymentDetails(value.payment_details)
     : previousPaymentDetails;
@@ -292,13 +314,30 @@ function normalizeKitchenStatus(
       : hoursValid > 0
         ? Math.floor(now + hoursValid * 3600)
         : Math.max(0, Number(value.reset_at || value.resetAt || 0) || 0);
+  // A panel push carries a wait time and a pause, never the opening hours. It must
+  // not silently reopen a closed restaurant, so openness falls back to whatever
+  // was already stored before it defaults to open.
+  const withinWorkHours = toBool(
+    value.within_work_hours ?? value.withinWorkHours,
+    previousState ? previousState.within_work_hours : true,
+  );
+  const isEmergency = toBool(value.is_emergency ?? value.isEmergency, false);
+  const delivery = toBool(value.delivery, true);
+  const pickup = toBool(value.pickup, true);
 
   return {
     wait_time: normalizeKitchenWaitTime(value.wait_time ?? value.waitTime),
-    is_emergency: toBool(value.is_emergency ?? value.isEmergency, false),
-    delivery: toBool(value.delivery, true),
-    pickup: toBool(value.pickup, true),
+    is_emergency: isEmergency,
+    delivery,
+    pickup,
     reset_at: resetAt,
+    is_accepting_orders:
+      toBool(
+        value.is_accepting_orders ?? value.isAcceptingOrders,
+        previousState ? previousState.is_accepting_orders : true,
+      ) && withinWorkHours && !isEmergency && (delivery || pickup),
+    within_work_hours: withinWorkHours,
+    closed_reason: String(value.closed_reason ?? value.closedReason ?? previousState?.closed_reason ?? "").trim().slice(0, 120),
     payment_details: paymentDetails,
     source: String(value.source || "redis_kitchen_status").trim(),
     synced_at: new Date().toISOString(),
@@ -560,7 +599,7 @@ export async function saveKitchenStatus(
   value: Record<string, any>
 ): Promise<KitchenStatusState> {
   const previous = await getKitchenStatus(instanceId).catch(() => null);
-  const status = normalizeKitchenStatus(value, previous?.payment_details || []);
+  const status = normalizeKitchenStatus(value, previous);
   await safeRedis(undefined, async () => {
     await redisClient.setEx(kitchenStatusKey(instanceId), KITCHEN_STATUS_TTL_SECONDS, JSON.stringify(status));
   });
@@ -581,6 +620,11 @@ export async function getKitchenStatus(instanceId: string): Promise<KitchenStatu
         pickup: true,
         reset_at: 0,
         payment_details: current.payment_details,
+        // The pause expiring says nothing about the clock: a restaurant that was
+        // outside its working hours still is.
+        within_work_hours: current.within_work_hours,
+        is_accepting_orders: current.within_work_hours,
+        closed_reason: current.within_work_hours ? "" : current.closed_reason,
         source: "redis_kitchen_status_reset",
       });
       await redisClient.setEx(kitchenStatusKey(instanceId), KITCHEN_STATUS_TTL_SECONDS, JSON.stringify(reset));
