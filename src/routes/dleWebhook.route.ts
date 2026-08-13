@@ -70,6 +70,7 @@ function normalizeAction(value: unknown) {
     "order.rejected": "order_rejected",
     "shift_note.created": "shift_note_created",
     "shift_note.deleted": "shift_note_deleted",
+    "shift_note.expired": "shift_note_deleted",
     // The operator's «подтверждение» press is the successor of the legacy
     // request_payment step: the guest is told the food is available and how much
     // to pay. Without these three lines the confirm produced a 400 BAD_ACTION and
@@ -104,6 +105,7 @@ function normalizeAction(value: unknown) {
     cancel_order: "order_rejected",
     create_shift_note: "shift_note_created",
     delete_shift_note: "shift_note_deleted",
+    shift_note_expired: "shift_note_deleted",
   };
   return aliases[action] || action;
 }

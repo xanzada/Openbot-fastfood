@@ -176,6 +176,7 @@ test("Alemi event aliases map exactly once and normalization is idempotent", () 
     ["order.rejected", "order_rejected"],
     ["shift_note.created", "shift_note_created"],
     ["shift_note.deleted", "shift_note_deleted"],
+    ["shift_note.expired", "shift_note_deleted"],
   ] as const;
 
   for (const [eventType, action] of mappings) {

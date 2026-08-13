@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { redisClient } from "../src/services/redis.service.js";
-import { saveShiftNote, deleteShiftNote, getActiveShiftNotes } from "../src/services/redis.service.js";
+import { saveShiftNote, deleteShiftNote, getActiveShiftNotes, syncShiftNotesSnapshot } from "../src/services/redis.service.js";
 
 // The shift-note helpers talk to the module-level client directly, so the test
 // swaps that client's methods for an in-memory store. Everything under test is
@@ -169,4 +169,18 @@ test("a summary survives when the delete removed nothing from that history", asy
     true,
     "an unrelated conversation keeps its memory"
   );
+});
+
+test("the authoritative runtime snapshot restores missed notes and removes stale ones", async () => {
+  await seed();
+  await syncShiftNotesSnapshot(A, [{
+    id: "runtime-301",
+    text: "Кола закончилась, предлагай пепси",
+    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+  }]);
+
+  const notes = await getActiveShiftNotes(A);
+  assert.deepEqual(notes.map((note) => note.noteId), ["runtime-301"]);
+  assert.equal(notes[0].text, "Кола закончилась, предлагай пепси");
+  assert.equal(store.has(`shift_note:${B}:201`), true, "another tenant is untouched");
 });

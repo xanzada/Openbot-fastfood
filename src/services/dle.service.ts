@@ -10,6 +10,7 @@ import {
   saveDailyLog,
   saveKitchenStatus,
   setJsonCache,
+  syncShiftNotesSnapshot,
   type KitchenStatusState,
 } from "./redis.service.js";
 import { auditError } from "./auditLogger.service.js";
@@ -231,6 +232,38 @@ function firstFiniteNumber(...values: unknown[]) {
   return 0;
 }
 
+function resetAtSeconds(...values: unknown[]) {
+  for (const value of values) {
+    if (value === "" || value === null || value === undefined) continue;
+    if (typeof value === "number" || /^\d{10,16}$/.test(String(value).trim())) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) return Math.floor(numeric >= 1e12 ? numeric / 1000 : numeric);
+    }
+    const parsed = Date.parse(String(value));
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed / 1000);
+  }
+  return 0;
+}
+
+function fulfillmentEnabled(value: unknown, type: "delivery" | "pickup", fallback: boolean) {
+  if (!Array.isArray(value)) return fallback;
+  const item = value.find((entry) => String(entry?.type || "").trim().toLowerCase() === type);
+  return item ? toBool(item.enabled, false) : false;
+}
+
+function normalizeRuntimeShiftNotes(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  return value
+    .map((note) => {
+      const noteId = String(note?.id || note?.note_id || note?.noteId || "").trim();
+      const text = String(note?.text || "").trim();
+      const expiresRaw = note?.expires_at ?? note?.expiresAt;
+      const expiresAt = resetAtSeconds(expiresRaw) * 1000;
+      return { noteId, text, ...(expiresAt > 0 ? { expiresAt } : {}) };
+    })
+    .filter((note) => note.noteId && note.text);
+}
+
 export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
   const settings = safeJsonObject(data.settings, {});
   const rawKitchenSettings = safeJsonObject(settings.kitchen_status, null);
@@ -246,21 +279,33 @@ export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
     data;
   const kitchen = safeJsonObject(nested.kitchen_status || nested.kitchen || nested.settings || nested.current || nested, {});
   const waitTime = firstFiniteNumber(
-    kitchen.wait_time, kitchen.wait_minutes, kitchen.current_wait_minutes, kitchen.current_wait_time,
-    nested.wait_time, nested.wait_minutes, nested.current_wait_minutes, nested.current_wait_time,
-    data.wait_time, data.wait_minutes, data.current_wait_minutes, data.current_wait_time,
+    kitchen.wait_time_minutes, kitchen.wait_time, kitchen.wait_minutes, kitchen.current_wait_minutes, kitchen.current_wait_time,
+    nested.wait_time_minutes, nested.wait_time, nested.wait_minutes, nested.current_wait_minutes, nested.current_wait_time,
+    data.wait_time_minutes, data.wait_time, data.wait_minutes, data.current_wait_minutes, data.current_wait_time,
   );
-  const resetAt = Number(kitchen.reset_at ?? nested.reset_at ?? data.reset_at ?? 0) || 0;
-  const delivery = toBool(kitchen.delivery ?? kitchen.delivery_enabled ?? nested.delivery ?? nested.delivery_enabled ?? data.delivery ?? data.delivery_enabled, true);
-  const pickup = toBool(kitchen.pickup ?? kitchen.pickup_enabled ?? nested.pickup ?? nested.pickup_enabled ?? data.pickup ?? data.pickup_enabled, true);
-  const isEmergency = toBool(kitchen.is_emergency ?? kitchen.emergency ?? nested.is_emergency ?? nested.emergency ?? data.is_emergency ?? data.emergency, false);
+  const resetAt = resetAtSeconds(kitchen.reset_at, nested.reset_at, data.reset_at);
+  const legacyDelivery = toBool(kitchen.delivery ?? kitchen.delivery_enabled ?? nested.delivery ?? nested.delivery_enabled ?? data.delivery ?? data.delivery_enabled, true);
+  const legacyPickup = toBool(kitchen.pickup ?? kitchen.pickup_enabled ?? nested.pickup ?? nested.pickup_enabled ?? data.pickup ?? data.pickup_enabled, true);
+  const fulfillment = data.fulfillment ?? nested.fulfillment ?? kitchen.fulfillment;
+  const delivery = fulfillmentEnabled(fulfillment, "delivery", legacyDelivery);
+  const pickup = fulfillmentEnabled(fulfillment, "pickup", legacyPickup);
+  const isEmergency = toBool(
+    kitchen.workload_emergency ?? kitchen.is_emergency ?? kitchen.emergency ??
+    nested.workload_emergency ?? nested.is_emergency ?? nested.emergency ??
+    data.workload_emergency ?? data.is_emergency ?? data.emergency,
+    false,
+  );
+  const shiftNotes = normalizeRuntimeShiftNotes(data.shift_notes ?? nested.shift_notes);
   const fetchedWaitTime = rawKitchenSettings
     ? firstFiniteNumber(rawKitchenSettings.wait_time, rawKitchenSettings.wait_minutes, rawKitchenSettings.current_wait_minutes)
     : waitTime;
   const fetchedEmergency = rawKitchenSettings ? toBool(rawKitchenSettings.is_emergency, false) : isEmergency;
 
   return {
-    is_accepting_orders: toBool(nested.is_accepting_orders ?? data.is_accepting_orders, true),
+    is_accepting_orders: toBool(
+      nested.accepting_orders ?? nested.is_accepting_orders ?? data.accepting_orders ?? data.is_accepting_orders,
+      true,
+    ),
     within_work_hours: toBool(nested.within_work_hours ?? data.within_work_hours, true),
     closed_reason: String(nested.closed_reason || data.closed_reason || "").trim(),
     delivery,
@@ -281,6 +326,7 @@ export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
       source: rawKitchenSettings ? "settings.kitchen_status" : current ? "current" : "runtime.status.get",
     },
     payment_details: firstPaymentDetails(data.payment_details, nested.payment_details, kitchen.payment_details),
+    ...(shiftNotes !== null ? { shift_notes: shiftNotes } : {}),
     source: data.source || "dle_spa_settings",
     fetched_at: new Date().toISOString(),
   };
@@ -415,6 +461,11 @@ export async function getRuntimeStatus(
     // Read the pushed state BEFORE the sync below overwrites it with the hub's.
     const pushed = await getKitchenStatus(instanceId).catch(() => null);
     const status = overlayPushedKitchenState(normalizeRuntimeStatus(data || {}), pushed);
+    if (Array.isArray(status.shift_notes)) {
+      await syncShiftNotesSnapshot(instanceId, status.shift_notes).catch((syncError: any) => {
+        auditError("Runtime Redis shift-note sync skipped", syncError, { instanceId });
+      });
+    }
     // The requisites are typed into the kitchen settings screen and reach us either
     // inside the hub read or through the panel push mirrored in Redis. A hub answer
     // that simply omits payment_details used to win, and a guest on the money path

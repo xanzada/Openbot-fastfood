@@ -90,7 +90,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   if (!phone) throw new Error("phone is required");
   if (!text) throw new Error("text is required");
 
-  const [config, storedLang, siteLanguageHint, chatHistory, activeShiftNotes, magicLinkAlreadySent] =
+  const [config, storedLang, siteLanguageHint, chatHistory, cachedShiftNotes, magicLinkAlreadySent] =
     await Promise.all([
       getRestaurantConfig(instanceId),
       getUserLang(instanceId, phone).catch(() => null),
@@ -101,9 +101,6 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     ]);
 
   const safeConfig = { ...(config || {}) };
-  const activeShiftNotesFingerprint = activeShiftNotes.length
-    ? crypto.createHash("sha256").update(activeShiftNotes.map((note) => `${String(note?.text || "").trim()}|${Number(note?.expiresAt || 0) || 0}`).sort().join("\n")).digest("hex")
-    : "";
   const languageCandidateText = String(input.languageCandidateText ?? text).trim();
   let language: "kk" | "ru" = storedLang || siteLanguageHint || "kk";
   let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
@@ -189,6 +186,15 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     ]);
 
   const menuSnapshot = buildMenuSnapshot(liveMenu);
+  // runtime.status.get is the authoritative recovery snapshot. Webhooks and the
+  // Redis copy keep the fast path, but a missed event or a bot deployment must
+  // not leave the AI without the current shift notes for even one turn.
+  const activeShiftNotes = Array.isArray(runtimeStatus?.shift_notes)
+    ? runtimeStatus.shift_notes
+    : cachedShiftNotes;
+  const activeShiftNotesFingerprint = activeShiftNotes.length
+    ? crypto.createHash("sha256").update(activeShiftNotes.map((note: any) => `${String(note?.text || "").trim()}|${Number(note?.expiresAt || 0) || 0}`).sort().join("\n")).digest("hex")
+    : "";
 
   // The site calls the oldest unfinished order "active", but a guest who has
   // spent the whole chat asking about one order means that order when they say

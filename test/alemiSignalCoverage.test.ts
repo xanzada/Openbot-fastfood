@@ -50,6 +50,7 @@ const ACTION_MAP: Array<[string, string]> = [
   ["shift_note.created", "shift_note_created"],
   ["shift_note.updated", "shift_note_created"],
   ["shift_note.deleted", "shift_note_deleted"],
+  ["shift_note.expired", "shift_note_deleted"],
 ];
 
 for (const [eventType, expected] of ACTION_MAP) {

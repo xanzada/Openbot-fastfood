@@ -179,16 +179,19 @@ Timeout: командалар бойынша 8-10 секунд, файл жүк�
 
 ```json
 {
-  "is_accepting_orders": true,          // (true)
+  "accepting_orders": true,             // (true)
   "within_work_hours": true,            // (true)
   "closed_reason": "",                  // жабық болса себебі
-  "kitchen_status": {
-    "wait_time": 35,                    // минут
-    "reset_at": 0,                      // unix ts, 0 = жоқ
-    "delivery": true,                   // (true)
-    "pickup": true,                     // (true)
-    "is_emergency": false               // (false)
-  },
+  "fulfillment": [
+    { "type": "delivery", "enabled": true },
+    { "type": "pickup", "enabled": true }
+  ],
+  "wait_time_minutes": 35,
+  "reset_at": "2026-08-14T18:30:00.000Z",
+  "workload_emergency": false,
+  "shift_notes": [
+    { "id": "019fd154-...", "text": "Кола закончилась", "expires_at": "2026-08-14T20:00:00.000Z" }
+  ],
   "payment_details": [
     { "label": "Kaspi", "value": "+77001234567" }
   ],
@@ -196,9 +199,12 @@ Timeout: командалар бойынша 8-10 секунд, файл жүк�
 }
 ```
 
-Балама өріс атаулары да оқылады: `wait_time` орнына `wait_minutes`,
+Канондық Platform SPA өрістері жоғарыда көрсетілген. Балама legacy атаулары да оқылады:
+`wait_time_minutes` орнына `wait_time`, `wait_minutes`,
 `current_wait_minutes`, `current_wait_time`; `delivery` орнына `delivery_enabled`;
 `is_emergency` орнына `emergency`. `kitchen_status` ішінде де, түбірде де жарайды.
+`shift_notes` толық ағымдағы snapshot болып саналады: бот Redis жадын онымен
+салыстырып, өткізіп алған webhook-тардан кейін қалпына келтіреді.
 
 `payment_details` элементінде `label` (немесе `name`) және `value` (немесе `number`,
 `link`) екеуі де болуы шарт — біреуі бос болса элемент түсіп қалады
@@ -220,8 +226,8 @@ Timeout: командалар бойынша 8-10 секунд, файл жүк�
   ],
   "items": [
     {
-      "id": 4213,                       // МІНДЕТТІ, 0 болмауы керек
-      "category_id": 17,                // МІНДЕТТІ
+      "id": "019fd154-...",             // канондық UUID string
+      "category_id": "019fd155-...",    // канондық UUID string
       "category_name": "Суши",
       "name": "Футомаки",
       "description": "...",
@@ -237,10 +243,9 @@ Timeout: командалар бойынша 8-10 секунд, файл жүк�
 `name` (немесе `title`) бос болса элемент сүзіліп кетеді. `id`/`price` жоқ болса бот
 менюді атымен ғана біледі — баға айта алмайды және тауарды тапсырысқа қоса алмайды.
 
-> **Қазіргі күй — түзету керек.** `prestige` инстансында хаб 12 позиция қайтарады, бірақ
-> бәрінде `id: 0` және `price: 0`, ал `description` өрісінде тауар сипаттамасы емес,
-> сайттың блог мәтіні тұр. Категориялар да араласқан («Цезарь» — `Суши` ішінде).
-> Сайт жағы бұл өрістерді нақты прайс-листпен толтыруы керек.
+`id` және `category_id` UUID ретінде string болып сақталады; оларды санға айналдыруға
+болмайды. Platform SPA `price_amount_minor` / `compare_at_price_amount_minor` және
+үйлесімді `price` / `promo_price` өрістерін нақты ағымдағы бағамен қайтарады.
 
 Кэш: 300 секунд, backup 86400 секунд (`menu_context:<instance>:<lang>`).
 
@@ -344,11 +349,13 @@ completed, done, finished, closed, cancelled, canceled, refunded
 Жауап — жол немесе объект (`alemiApi.service.ts:368-384`):
 
 ```json
-{ "url": "https://prestige.alemi.kz/m/abc123" }
+{ "url": "https://prestige.bekaba.com/?phone=77001234567&hash=baa4a6dc41085296b0b" }
 ```
 
-`url`, `access_url`, `link` — үшеуінің қайсысы болса да оқылады. Бұл сілтеме клиентке
-WhatsApp-пен жіберіледі, сондықтан бір реттік/уақытша болуы дұрыс.
+`url`, `access_url`, `link` — үшеуінің қайсысы болса да оқылады. Бот міндетті түрде
+клиенттің `phone_e164` нөмірін командада жібереді, ал Platform SPA қысқа
+`phone/hash` URL қайтарады. Сілтеме бір реттік емес: оны қайта ашуға болады, ал сәтті
+кіруден кейін клиент 30 күндік қорғалған cookie-сессия алады.
 
 ### 3.5 Файл endpoint-тері
 
@@ -447,6 +454,7 @@ Content-Type: application/json
 | `order.rejected` | `order_rejected` | себебін айтып бас тартуды хабарлайды |
 | `shift_note.created` | `shift_note_created` | ауысым ескертпесін AI контекстіне қосады |
 | `shift_note.deleted` | `shift_note_deleted` | ескертпені өшіреді |
+| `shift_note.expired` | `shift_note_deleted` | мерзімі біткен ескертпені өшіреді |
 
 `request_payment` — төлем сұрау, `complaint`, `developer_alert`,
 `update_kitchen_status`, `get_kitchen_status` да қабылданады
@@ -485,7 +493,7 @@ tenant-ішілік — екі ресторанның бірдей `event_id` б
    **Кілтті репоға, чатқа, логқа жазуға болмайды.**
 4. Сайтта `/v1/integrations/bot/commands` endpoint-ін көтеру, қолтаңбаны 3.2 бойынша
    тексеру, 8 команданы 3.4 бойынша жауап беру.
-5. `catalog.context.get`-те `id` мен `price` шынымен келетінін тексеру (қазір келмейді).
+5. `catalog.context.get`-те UUID `id` мен нақты `price` келетінін тексеру.
 6. Сайтта оқиға жіберуді қосу: `order.created`, `order.status_changed`,
    `order.rejected`.
 7. Тексеру: тапсырыс құру → клиентке WhatsApp хабары келді ме; ботқа «меню» деп жазу →

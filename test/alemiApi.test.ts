@@ -262,10 +262,10 @@ test("customer access-link helper maps phone/locale and unwraps common URL keys"
     nowMs: 1_700_000_000_000,
     transport: async (request) => {
       body = String(request.body);
-      return { status: 200, data: { data: { access_url: "https://alemi.kz/access/one" } } };
+      return { status: 200, data: { data: { access_url: "https://prestige.bekaba.com/?phone=77001112233&hash=baa4a6dc41085296b0b" } } };
     },
   });
-  assert.equal(link, "https://alemi.kz/access/one");
+  assert.equal(link, "https://prestige.bekaba.com/?phone=77001112233&hash=baa4a6dc41085296b0b");
   assert.match(body, /"command":"customer\.access_link\.issue"/);
   assert.match(body, /"phone_e164":"\+77001112233","locale":"kk"/);
 });

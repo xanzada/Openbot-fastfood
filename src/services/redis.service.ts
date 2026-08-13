@@ -826,6 +826,33 @@ export async function getActiveShiftNotes(instanceId: string): Promise<Array<{ n
   });
 }
 
+export async function syncShiftNotesSnapshot(
+  instanceId: string,
+  snapshot: Array<{ id?: unknown; note_id?: unknown; noteId?: unknown; text?: unknown; expires_at?: unknown; expiresAt?: unknown }>
+): Promise<number> {
+  return safeRedis(0, async () => {
+    const desiredIds = new Set<string>();
+    for (const note of Array.isArray(snapshot) ? snapshot : []) {
+      const noteId = String(note?.noteId ?? note?.note_id ?? note?.id ?? "").trim();
+      const text = String(note?.text || "").trim();
+      if (!noteId || !text) continue;
+      const expiresAt = note?.expiresAt ?? note?.expires_at;
+      const expiry = typeof expiresAt === "number" && expiresAt > 0
+        ? new Date(expiresAt >= 1e12 ? expiresAt : expiresAt * 1000).toISOString()
+        : String(expiresAt || "");
+      if (await saveShiftNote(instanceId, noteId, text, expiry)) desiredIds.add(noteId);
+    }
+
+    let changed = 0;
+    const existingKeys = await scanKeys(`shift_note:${instanceId}:*`);
+    for (const key of existingKeys) {
+      const noteId = key.split(":").pop() || "";
+      if (noteId && !desiredIds.has(noteId)) changed += await deleteShiftNote(instanceId, noteId);
+    }
+    return changed + desiredIds.size;
+  });
+}
+
 export async function getJsonCache<T>(key: string): Promise<T | null> {
   return safeRedis<T | null>(null, async () => {
     const raw = await redisClient.get(key);
