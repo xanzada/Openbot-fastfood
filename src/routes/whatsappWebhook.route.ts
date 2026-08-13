@@ -36,6 +36,7 @@ import {
   claimMediaAiQuota,
   claimOutboundReply,
   drainInboundBuffer,
+  requeueInboundText,
   releaseTurnLock,
   clearInboundProcessing,
   extractInboundMedia,
@@ -687,12 +688,16 @@ async function processWhatsAppWebhook(body: any, started: number) {
       // still being generated waits a bounded moment, then gets folded into
       // ONE coherent message by the buffer brain - never a second answer.
       turnLockOwner = await acquireTurnLock(instanceId, phone);
-      for (let waited = 0; !turnLockOwner && waited < 20_000; waited += 1_500) {
+      for (let waited = 0; !turnLockOwner && waited < 45_000; waited += 1_500) {
         await new Promise((resolve) => setTimeout(resolve, 1_500));
         turnLockOwner = await acquireTurnLock(instanceId, phone);
       }
       if (!turnLockOwner) {
-        console.warn(`[OPENBOT:BUFFER] turn busy, part deferred instance=${instanceId} phone=${maskPhone(phone)}`);
+        // Waiting out the previous turn is preferable to answering twice, but a
+        // guest message must never be thrown away: it goes back into the buffer
+        // so the turn that is finishing folds it into its own answer.
+        console.warn(`[OPENBOT:BUFFER] turn busy, part requeued instance=${instanceId} phone=${maskPhone(phone)}`);
+        await requeueInboundText({ instanceId, phone, messageId, text }).catch(() => undefined);
         await markInboundDone(instanceId, messageId);
         return;
       }
@@ -1180,9 +1185,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
         }).catch(() => undefined);
       });
 
-    // Outbound duplicate guard: an identical reply sent within the last
-    // 60s (parallel turn, retried webhook) is dropped instead of shown twice.
-    const outboundIsNew = await claimOutboundReply(ctx.instanceId, ctx.phone, finalText).catch(() => true);
+    // Outbound duplicate guard: an identical reply for THIS SAME turn
+    // (parallel batch, retried webhook) is dropped instead of shown twice.
+    // The turn key is what keeps a repeated guest question answerable: the
+    // guard used to silence any identical reply within 60s, so a guest who
+    // asked the same thing twice got no answer at all the second time.
+    const outboundIsNew = await claimOutboundReply(ctx.instanceId, ctx.phone, finalText, messageId).catch(() => true);
     if (!outboundIsNew) {
       console.warn(`[OPENBOT:OUTBOUND] duplicate reply suppressed instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)}`);
       await markInboundDone(ctx.instanceId, messageId);

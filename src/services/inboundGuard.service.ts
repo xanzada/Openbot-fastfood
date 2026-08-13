@@ -9,7 +9,10 @@ const SPAM_WINDOW_SECONDS = 60;
 const SPAM_LIMIT = envNumber(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE, 15, { min: 1 });
 const MUTE_SECONDS = envNumber(process.env.OPENBOT_SPAM_MUTE_SECONDS, 900, { min: 1 });
 const DUPLICATE_TEXT_SECONDS = 5;
-const INBOUND_BUFFER_SECONDS = 5;
+// The fragment buffer must outlive a full reply generation, otherwise a part
+// that arrives while the previous answer is still being written expires before
+// the leader can fold it in - the guest's second message simply vanished.
+const INBOUND_BUFFER_SECONDS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_TTL_SECONDS, 60, { min: 5 });
 const INBOUND_BUFFER_DELAY_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_MS, 2400, { min: 600 });
 const INBOUND_BUFFER_MAX_ITEMS = 8;
 const INBOUND_BUFFER_MAX_CHARS = 2000;
@@ -930,6 +933,41 @@ export async function drainInboundBuffer(instanceId: string, phone: string): Pro
 }
 
 /**
+ * Put a guest message BACK into the fragment buffer without waiting on it.
+ *
+ * Used when a turn is already in flight for this conversation: dropping the
+ * part meant the guest's second message was never seen at all. Requeued parts
+ * are picked up by the next leader (or folded in by the finishing turn), so
+ * nothing the guest wrote is silently lost.
+ */
+export async function requeueInboundText(input: { instanceId: string; phone: string; messageId: string; text: string }): Promise<boolean> {
+  const instanceId = String(input.instanceId || "").trim();
+  const phone = String(input.phone || "").replace(/\D/g, "");
+  const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
+  const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
+  if (!instanceId || !phone || !text) return false;
+  try {
+    await connectRedis();
+    const listKey = `inbound_buffer:${instanceId}:${phone}`;
+    await redisClient.multi()
+      .rPush(listKey, JSON.stringify({ token, text }))
+      .lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1)
+      .expire(listKey, INBOUND_BUFFER_SECONDS)
+      .exec();
+    return true;
+  } catch {
+    const now = Date.now();
+    const key = localKey(instanceId, phone);
+    const current = localInboundBuffers.get(key) || { items: [], latestToken: "", expiresAt: 0 };
+    current.items.push({ token, text });
+    current.items = current.items.slice(-INBOUND_BUFFER_MAX_ITEMS);
+    current.expiresAt = now + INBOUND_BUFFER_SECONDS * 1000;
+    localInboundBuffers.set(key, current);
+    return true;
+  }
+}
+
+/**
  * Outbound duplicate guard. Incoming dedupe only watched the customer side;
  * nothing watched OUR side, so two parallel turns could send the guest the
  * same answer twice. The normalized hash of the last reply is remembered for a
@@ -942,11 +980,15 @@ export function normalizeReplyText(text: string): string {
   return String(text || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 600);
 }
 
-export async function claimOutboundReply(instanceId: string, phone: string, text: string): Promise<boolean> {
+export async function claimOutboundReply(instanceId: string, phone: string, text: string, turnKey = ""): Promise<boolean> {
   const normalized = normalizeReplyText(text);
   if (!normalized) return true;
   const key = `outbound_dup:${instanceId}:${phone}`;
-  const hash = sha1(normalized);
+  // The guard must stop the SAME turn being answered twice (retried webhook,
+  // parallel batch) - never a NEW guest message that happens to deserve the
+  // same answer. Without the turn in the hash, a guest who asked the very same
+  // question again within 60s got total silence instead of a reply.
+  const hash = sha1(`${String(turnKey || "").trim()}|${normalized}`);
   try {
     await connectRedis();
     const claimed = await redisClient.set(key, hash, { NX: true, EX: OUTBOUND_DUP_SECONDS });
