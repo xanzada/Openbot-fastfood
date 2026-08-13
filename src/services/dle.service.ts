@@ -495,6 +495,15 @@ function normalizeOrderItems(items: unknown) {
     .filter((item) => item.name || item.id);
 }
 
+// Hub reports money in minor units (`total_amount_minor: 6000` = 6000 ₸ * 100).
+// The legacy `total_price` field it never sends won the old chain, so every
+// order the bot quoted was worth 0 ₸.
+function minorToMajor(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.round(number) / 100;
+}
+
 function normalizeOrderPayload(order: Record<string, any> = {}) {
   const items = normalizeOrderItems(order.items);
   const id = String(order.id || order.order_id || order.uuid || "").trim();
@@ -508,10 +517,10 @@ function normalizeOrderPayload(order: Record<string, any> = {}) {
     order_number: displayNumber,
     phone: normalizePhone(order.phone || order.phone_e164 || order.customer_phone || ""),
     status: String(order.status || order.order_status || order.workflow_status || order.state || "").trim(),
-    total_price: Number(order.total_price || order.total || 0) || 0,
+    total_price: Number(order.total_price || order.total || 0) || minorToMajor(order.total_amount_minor ?? order.subtotal_amount_minor),
     address: String(order.address || "").trim().slice(0, 240),
     comment: String(order.comment || "").trim().slice(0, 500),
-    is_pickup: toBool(order.is_pickup, false),
+    is_pickup: toBool(order.is_pickup, String(order.fulfillment_type || order.delivery_type || "").trim().toLowerCase() === "pickup"),
     payment_status: String(order.payment_status || "").trim().slice(0, 80),
     ai_comment: String(order.ai_comment || "").trim().slice(0, 1000),
     created_at: String(order.created_at || order.date || order.date_added || order.time || "").trim().slice(0, 80),
@@ -587,7 +596,23 @@ export async function getOrderStatus(instanceId: string, phone: string, domain: 
       10000
     );
 
-    const context = normalizeOrderContextPayload(data || {}, { phone: cleanPhone });
+    let context = normalizeOrderContextPayload(data || {}, { phone: cleanPhone });
+    // Hub answers `order.status.get` with ids only -
+    // {active_order_id, has_active_order, status} - and no order record at all,
+    // so the normalizer had nothing to select and returned null: the preloaded
+    // context said order=none and the bot told guests it could not see the order
+    // the site was showing them (live report, 2026-08-13). When hub says an
+    // active order exists, the full record is read from `order.context.get`
+    // before the answer is built.
+    const hubActiveOrderId = String((data as any)?.active_order_id || "").trim();
+    if (!context.active_order && (toBool((data as any)?.has_active_order, false) || Boolean(hubActiveOrderId))) {
+      const full = await apiBot(
+        domain,
+        { action: "get_order_context", phone: cleanPhone, restaurant_id: instanceId },
+        10000
+      );
+      context = normalizeOrderContextPayload(full || {}, { phone: cleanPhone, orderId: hubActiveOrderId });
+    }
     if (context.active_order) {
       const order = context.active_order;
       if (!order.id || isInactiveOrderStatus(order.status)) {
