@@ -206,6 +206,14 @@ export async function checkAlemiHub(
     const started = now();
     const config = await hydrate(instance).catch(() => null);
     const target = hostFromUrl(String(config?.alemi_api_url || ""));
+    // Parked/QA tenants (bot_enabled=false) are not registered on the hub, so their
+    // credential check answers 401 on every single boot. That paged the developer
+    // once per tenant per restart while no guest was affected at all (audit,
+    // 2026-08-13). A tenant that serves nobody cannot break anybody: it is reported
+    // in the boot log, never alarmed.
+    if (config && ["false", "0", "no", "off"].includes(String(config.bot_enabled ?? "").trim().toLowerCase())) {
+      return { name, ok: true, target, status: "skipped_bot_disabled", latency_ms: now() - started };
+    }
     if (!String(config?.alemi_secret || "").trim()) {
       return { name, ok: false, target, message: "tenant carries no alemi_secret", latency_ms: now() - started };
     }

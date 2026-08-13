@@ -5,11 +5,34 @@ import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { envNumber } from "../utils/envNumber.js";
 
 const ALERT_DEDUPE_SECONDS = envNumber(process.env.OPENBOT_DEV_ALERT_DEDUPE_SECONDS, 60, { min: 10 });
+// A boot dependency failure repeats identically on every container restart, and a
+// 60-second window let the same 401 page the developer again and again all day
+// (audit, 2026-08-13). Startup alarms are collapsed into one message per problem
+// per window instead.
+const BOOT_ALERT_DEDUPE_SECONDS = envNumber(process.env.OPENBOT_BOOT_ALERT_DEDUPE_SECONDS, 6 * 60 * 60, { min: 60 });
+const BOOT_ALERT_SCOPES = ["startup_dependency", "startup_diagnostics"];
 const localDedupe = new Map<string, number>();
 
 function normalizePhone(value = "") {
   return String(value || "").replace(/\D/g, "");
 }
+
+function isDisabledTenant(config: Record<string, any> | null | undefined) {
+  return ["false", "0", "no", "off"].includes(String(config?.bot_enabled ?? "").trim().toLowerCase());
+}
+
+// Every alarm is addressed to the developer phone of the tenant and to nobody else.
+// A guest phone (whatsapp_phone, admin_phone, the customer in meta) must never be a
+// destination: an internal incident text in a guest chat is a support failure, not a
+// notification (audit, 2026-08-13).
+function isCustomerPhone(config: Record<string, any> | null | undefined, phone: string) {
+  const guestNumbers = [config?.whatsapp_phone, config?.admin_phone, config?.wa_phone]
+    .map((value) => normalizePhone(value))
+    .filter(Boolean);
+  return guestNumbers.includes(phone);
+}
+
+export const developerAlertInternals = { isDisabledTenant, isCustomerPhone };
 
 function cleanAlertText(value: unknown, max = 600) {
   const text = String(value ?? "unknown_error")
@@ -38,19 +61,19 @@ function alertFingerprint(instanceId: string, error: unknown, meta: Record<strin
     .slice(0, 20);
 }
 
-async function claimAlert(fingerprint: string): Promise<boolean> {
+async function claimAlert(fingerprint: string, ttlSeconds = ALERT_DEDUPE_SECONDS): Promise<boolean> {
   const now = Date.now();
   for (const [key, expiresAt] of localDedupe) {
     if (expiresAt <= now) localDedupe.delete(key);
   }
   if ((localDedupe.get(fingerprint) || 0) > now) return false;
-  localDedupe.set(fingerprint, now + ALERT_DEDUPE_SECONDS * 1000);
+  localDedupe.set(fingerprint, now + ttlSeconds * 1000);
 
   if (!redisClient.isOpen) return true;
   try {
     const result = await redisClient.set(`dev_alert:${fingerprint}`, "1", {
       NX: true,
-      EX: ALERT_DEDUPE_SECONDS,
+      EX: ttlSeconds,
     });
     return result === "OK";
   } catch {
@@ -96,9 +119,16 @@ async function sendAlertWithConfig(
     console.error(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=dev_phone_missing`);
     return false;
   }
+  if (isCustomerPhone(config, developerPhone)) {
+    console.error(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=would_reach_guest_number`);
+    return false;
+  }
 
   const fingerprint = alertFingerprint(instanceId, error, meta);
-  if (!(await claimAlert(fingerprint))) return false;
+  const dedupeSeconds = BOOT_ALERT_SCOPES.includes(String(meta.scope || "").trim())
+    ? BOOT_ALERT_DEDUPE_SECONDS
+    : ALERT_DEDUPE_SECONDS;
+  if (!(await claimAlert(fingerprint, dedupeSeconds))) return false;
 
   const incidentId = `${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${fingerprint.slice(0, 6)}`;
   const alertText = [
@@ -144,13 +174,25 @@ export async function notifyAllDevelopersSystemFailure(
 ): Promise<number> {
   try {
     const configs = await getAllRestaurantConfigs().catch(() => []);
+    // One global failure used to be delivered once per tenant, so a single boot 401
+    // arrived three times in a row on the same developer phone - and because that
+    // phone is also a WhatsApp conversation, the spam looked like the bot writing to
+    // a guest (audit, 2026-08-13). The alarm is now addressed per developer phone,
+    // not per tenant, and a live tenant is preferred as the sender.
     const unique = new Map<string, Record<string, any>>();
     for (const config of configs) {
       const instanceId = String(config?.instance_id || config?.instance || "").trim();
-      if (instanceId && normalizePhone(config?.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE)) unique.set(instanceId, config);
+      if (!instanceId) continue;
+      const developerPhone = normalizePhone(config?.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE);
+      if (!developerPhone) continue;
+      const current = unique.get(developerPhone);
+      const currentEnabled = current ? !isDisabledTenant(current) : false;
+      if (!current || (currentEnabled === false && !isDisabledTenant(config))) unique.set(developerPhone, config);
     }
     const results = await Promise.allSettled(
-      [...unique.entries()].map(([instanceId, config]) => sendAlertWithConfig(instanceId, config, error, meta))
+      [...unique.values()].map((config) =>
+        sendAlertWithConfig(String(config?.instance_id || config?.instance || "").trim(), config, error, meta)
+      )
     );
     return results.filter((result) => result.status === "fulfilled" && result.value).length;
   } catch (notifyError) {

@@ -118,6 +118,10 @@ function getInstanceId(body: any) {
   ).trim();
 }
 
+// Internal incident alarms are developer-only. If one ever echoes back through the
+// gateway it must be dropped, never answered as a guest message.
+const DEVELOPER_ALERT_MARKER_RE = /(?:⚠️\s*)?OPENBOT\s+АҚАУЫ/i;
+
 function getPhone(body: any) {
   const eventData = body?.data || body || {};
   const key = eventData?.key || body?.key || {};
@@ -1298,9 +1302,21 @@ export function whatsappWebhookRoute(): Router {
       return res.status(202).json({ ok: true, skipped: true, reason: "fromMe" });
     }
 
+    // An internal incident alarm can echo back into the very chat it was sent to, and
+    // then it was replayed as if a guest had written it: the bot apologised to the
+    // developer for its own diagnostics (audit, 2026-08-13). Our own alarm text is
+    // never a guest turn.
+    const inboundText = extractInboundText(body) || "";
+    if (DEVELOPER_ALERT_MARKER_RE.test(inboundText)) {
+      console.log(
+        `[OPENBOT:INBOUND:SKIP] instance=${getInstanceId(body) || "-"} phone=${maskPhone(getPhone(body))} reason=developer_alert_echo elapsed=${Date.now() - started}ms`
+      );
+      return res.status(202).json({ ok: true, skipped: true, reason: "developer_alert_echo" });
+    }
+
     const mediaContext = extractInboundMedia(body);
     const text =
-      extractInboundText(body) ||
+      inboundText ||
       mediaContext?.caption ||
       mediaContext?.historyLabel ||
       (mediaContext ? "[Media sent]" : "");
