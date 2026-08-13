@@ -31,9 +31,9 @@ export function classifyOrderStage(status: string, aiComment: unknown = "", paym
 }
 export function describeOrderStage(stage: CustomerOrderStage, language: "kk" | "ru") {
   const labels = language === "ru" ? {
-    awaiting_confirmation: ["Новый", "заказ получен и ожидает подтверждения ресторана"], awaiting_receipt: ["Ждём чек", "реквизиты отправлены, ожидаем чек об оплате"], receipt_review: ["Чек отправлен", "чек получен и ожидает проверки оператора"], preparing: ["Готовится", "оплата подтверждена, заказ готовится"], delivery: ["В пути", "заказ у курьера и едет к вам"], completed: ["Завершён", "заказ завершён"], cancelled: ["Отменён", "заказ отменён"], unknown: ["Статус обновлён", "точный этап пока не определён"],
+    awaiting_confirmation: ["Не оплачен", "заказ оформлен на сайте, приготовление начнётся после оплаты"], awaiting_receipt: ["Ждём чек", "реквизиты отправлены, ожидаем чек об оплате"], receipt_review: ["Чек отправлен", "чек получен и ожидает проверки оператора"], preparing: ["Готовится", "оплата подтверждена, заказ готовится"], delivery: ["В пути", "заказ у курьера и едет к вам"], completed: ["Завершён", "заказ завершён"], cancelled: ["Отменён", "заказ отменён"], unknown: ["Статус обновлён", "точный этап пока не определён"],
   } : {
-    awaiting_confirmation: ["Жаңа", "тапсырыс қабылданды және ресторан растауын күтуде"], awaiting_receipt: ["Чек күтудеміз", "реквизиттер жіберілді, төлем чегін күтіп тұрмыз"], receipt_review: ["Чек жіберілді", "чек алынды және оператор тексеруін күтуде"], preparing: ["Дайындалуда", "төлем расталды, тапсырыс дайындалып жатыр"], delivery: ["Жолда", "тапсырыс курьерде және сізге келе жатыр"], completed: ["Аяқталды", "тапсырыс аяқталды"], cancelled: ["Бас тартылды", "тапсырыстан бас тартылды"], unknown: ["Статус жаңартылды", "нақты кезеңі әзірге анықталмады"],
+    awaiting_confirmation: ["Төленбеген", "тапсырыс сайтта рәсімделді, дайындау төлемнен кейін басталады"], awaiting_receipt: ["Чек күтудеміз", "реквизиттер жіберілді, төлем чегін күтіп тұрмыз"], receipt_review: ["Чек жіберілді", "чек алынды және оператор тексеруін күтуде"], preparing: ["Дайындалуда", "төлем расталды, тапсырыс дайындалып жатыр"], delivery: ["Жолда", "тапсырыс курьерде және сізге келе жатыр"], completed: ["Аяқталды", "тапсырыс аяқталды"], cancelled: ["Бас тартылды", "тапсырыстан бас тартылды"], unknown: ["Статус жаңартылды", "нақты кезеңі әзірге анықталмады"],
   };
   const value = labels[stage] as string[]; return { label: value[0], explanation: value[1] };
 }
@@ -112,6 +112,13 @@ export async function getCustomerOrder(instanceId:string,domain:string,phone:str
 // A status line that stops at the label leaves the guest wondering what to do
 // next, so every answer ends with who moves and when.
 export function orderNextStepLine(order:CustomerOrder,language:"kk"|"ru"){
+  // An order the site has not been paid for is not in the kitchen yet: the guest
+  // can still walk away without saying a word. "We will write the moment it is
+  // ready" used to be sent for these too, which promised cooking that had not
+  // started and hid the one thing the guest still had to do (report, 2026-08-13).
+  if(order.stage==="awaiting_confirmation") return language==="ru"?"Заказ пойдёт на кухню после оплаты.":"Тапсырыс төлемнен кейін ас үйге түседі.";
+  if(order.stage==="awaiting_receipt") return language==="ru"?"Пришлите чек об оплате — и мы сразу запустим приготовление.":"Төлем чегін жіберсеңіз, дайындауды бірден бастаймыз.";
+  if(order.stage==="receipt_review") return language==="ru"?"Проверяем чек, ответим сразу после подтверждения.":"Чекті тексеріп жатырмыз, расталған соң бірден хабарлаймыз.";
   const label=String(order.statusLabel||"").toLowerCase();
   // "Дайындалуда" contains "дайын", so the ready branch used to win and sent a
   // guest to collect food that was still on the stove. In-progress labels are
@@ -129,7 +136,10 @@ export function orderNextStepLine(order:CustomerOrder,language:"kk"|"ru"){
 export function orderWaitLine(order:CustomerOrder,language:"kk"|"ru",waitMinutes:unknown){
   const minutes=Math.max(0,Math.floor(Number(waitMinutes)||0));
   if(!minutes) return "";
-  if(!["awaiting_confirmation","awaiting_receipt","receipt_review","preparing"].includes(order.stage)) return "";
+  // Only a paid order is in the kitchen, so the cooking estimate is quoted only
+  // then: printing it while the site is still waiting for money implied the food
+  // was already on the stove.
+  if(order.stage!=="preparing") return "";
   const label=formatKitchenWait(minutes,language);
   return language==="ru"?`Ориентировочное время приготовления — ${label}.`:`Дайындалу уақыты шамамен ${label}.`;
 }

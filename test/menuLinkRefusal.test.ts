@@ -80,7 +80,12 @@ test("The consent check never turns a missing link into a sendable one", () => {
 
 test("The gate stays armed while consent is owed - no checkout grace is written", async () => {
   const source = await readFile(new URL("../src/skills/menuLink.skill.ts", import.meta.url), "utf8");
-  const body = source.slice(source.indexOf("execute: async ()"));
+  // The handler now takes an argument, so anchoring on "execute: async ()" found
+  // nothing and sliced the file down to its last character: every index came back
+  // -1 and the assertions below stopped checking anything.
+  const executeAt = source.indexOf("execute: async");
+  assert.ok(executeAt > 0);
+  const body = source.slice(executeAt);
   // The refusal must return before either mark* call, or the walkaround comes back.
   assert.ok(body.indexOf("if (refusal)") < body.indexOf("markMagicLinkSent"));
   assert.ok(body.indexOf("if (refusal)") < body.indexOf("markKitchenCheckoutStarted"));

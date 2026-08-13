@@ -1,15 +1,20 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
-import { getKitchenCheckoutFingerprint, markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
+import {
+  getKitchenCheckoutFingerprint,
+  getMagicLinkSentAt,
+  markKitchenCheckoutStarted,
+  markMagicLinkSent,
+} from "../services/redis.service.js";
 import { classifyKitchenSalesPolicy, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
-// Hub mints a SINGLE-USE access token: the moment the guest opens the link, that
-// URL is spent and a second visit lands on "ссылка недействительна". Pointing a
-// returning guest at "the link you already have" therefore sent them into a dead
-// page (live report, 2026-08-13). Every turn on which the agent concludes the
-// guest has to open the site issues a fresh link instead; the spam guard is the
-// agent's own judgement plus explicitMenuLinkIntent, not a time window.
+// A link stays valid for a month, so a second link on the same day is pure
+// noise: it buries the first message and makes the assistant read like a bot.
+// Inside this window the guest is simply reminded that they can order through
+// the link they already have. The validity itself is never volunteered - it is
+// only stated if the guest asks how long the link lasts.
+const MENU_LINK_REISSUE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Why the link is being withheld. Three different situations used to share one
@@ -65,16 +70,15 @@ function refusalMessage(reason: ReturnType<typeof classifyMenuLinkRefusal>, lang
       ? "Сілтемені дайындай алмадым, техникалық ақаулық болды. Бірер минуттан кейін қайта сұраңыз."
       : "Не удалось подготовить ссылку из-за технической ошибки. Попросите её ещё раз через пару минут.";
   }
-  // Never promises that an older link still opens: hub tokens are single-use.
-  return kk
-    ? "Тапсырыс беру үшін сілтеме қажет болса айтыңыз — жаңасын бірден жіберемін."
-    : "Если нужна ссылка для заказа — скажите, сразу отправлю новую.";
+  // Same-day repeat: point at the link they already have, without reciting how
+  // long it is valid for.
+  return kk ? "Алдыңғы сілтеме арқылы тапсырыс бере аласыз." : "Можете оформить заказ по предыдущей ссылке.";
 }
 
 export function createSendMenuLinkSkill(ctx: FastFoodContext) {
   return createTool({
     name: "sendMenuLink",
-    description: "Return the personal ordering link ONLY when you have concluded the guest now needs to open the site: they ask to order, to see the menu/catalog/cart, or to get the link. Answer questions (prices, dishes, hours, delivery) with searchMenu/getBusinessInfo instead - a question is not a link request. Each link works for ONE entry only, so never tell a guest to reuse an older link: when they need the site again, call this tool and a fresh link is issued. Set previousLinkBroken=true when they report the old link did not open.",
+    description: "Return the personal ordering link ONLY when you have concluded the guest now needs to open the site: they ask to order, to see the menu/catalog/cart, to get the link, or you can tell from the conversation that they cannot go further without it. Answer questions (prices, dishes, hours, delivery) with searchMenu/getBusinessInfo instead - a question is not a link request. A link already sent stays usable for a month, so if the guest asks again on the same day do NOT call this tool: just say they can order through the link you sent earlier. Never volunteer how long the link lasts; say it only if they ask. Set previousLinkBroken=true only when they report the old link does not open.",
     parameters: z.object({
       reason: z.string().describe("Why the link is being sent"),
       previousLinkBroken: z
@@ -89,11 +93,20 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       if (refusal) {
         return { allowed: false, link: null, reason: refusal, message: refusalMessage(refusal, ctx.language, policy) };
       }
-      // No same-day refusal: the token in an already-sent link is spent as soon
-      // as it is opened, so a guest who needs the site again needs a NEW url.
-      // `previousLinkBroken` stays in the schema because the agent uses it to
-      // explain itself, but it no longer gates anything.
-      void previousLinkBroken;
+      // One link per guest per day. A guest who asks a second time on the same
+      // day is already holding a working URL: sending another one buries the
+      // first message, reads like a bot, and gains nothing. They are pointed at
+      // the link they have unless they report it broken.
+      const sentAt = await getMagicLinkSentAt(ctx.instanceId, ctx.phone).catch(() => 0);
+      const sentWithinDay = sentAt > 0 && Date.now() - sentAt < MENU_LINK_REISSUE_WINDOW_MS;
+      if (sentWithinDay && !previousLinkBroken) {
+        return {
+          allowed: false,
+          link: null,
+          reason: "link_already_sent" as const,
+          message: refusalMessage("link_already_sent", ctx.language, policy),
+        };
+      }
       await markMagicLinkSent(ctx.instanceId, ctx.phone).catch(() => false);
       // Remember the kitchen as it is right now. If it changes while the guest is
       // choosing, the gate reopens and tells them; if nothing changed, they are
