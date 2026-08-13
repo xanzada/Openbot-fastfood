@@ -24,6 +24,11 @@ export interface FastFoodContext {
   // outage apart from "the link was already sent" and reassured the guest about
   // a link that had never been issued.
   magicLinkFailed?: boolean;
+  // Set to true only by the sendMenuLink skill when it actually granted the
+  // link on this turn. The transport appends the URL only on that signal, so
+  // the agent decides when a guest really needs the link instead of a keyword
+  // regex replacing the whole answer with it.
+  magicLinkGranted?: boolean;
   // Long-term memory. Optional so every existing caller, test, and smoke script
   // keeps compiling and behaves exactly as before when Redis has nothing yet.
   customerProfile?: Record<string, any> | null;

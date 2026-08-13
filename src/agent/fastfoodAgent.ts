@@ -8,10 +8,22 @@ import { resolveModel } from "./modelRouter.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
 import { envNumber } from "../utils/envNumber.js";
 
+/**
+ * The link rides along with the answer, it never becomes the answer.
+ *
+ * The old version replaced the whole reply with "here is the menu link" on any
+ * turn whose text merely contained the word "мәзір"/"заказ", so a price
+ * question, a working-hours question and an order request all produced the
+ * identical canned URL while the model's real answer was thrown away (live QA
+ * round, 2026-08-13). Now the agent itself decides: the link is appended only
+ * when the sendMenuLink skill granted it this turn, and the answer is kept.
+ */
 function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
-  if (!ctx.explicitMenuLinkIntent || !ctx.magicLink || text.includes(ctx.magicLink)) return text;
+  if (!ctx.magicLinkGranted || !ctx.magicLink) return text;
+  if (text.includes(ctx.magicLink)) return text;
   const intro = ctx.language === "kk" ? "Міне мәзір сілтемесі:" : "Вот ссылка на меню:";
-  return `${intro}\n${ctx.magicLink}`;
+  const body = String(text || "").trim();
+  return body ? `${body}\n\n${intro}\n${ctx.magicLink}` : `${intro}\n${ctx.magicLink}`;
 }
 
 function buildAgent(ctx: FastFoodContext, extraInstruction?: string) {

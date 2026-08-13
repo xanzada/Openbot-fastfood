@@ -276,9 +276,15 @@ export function validateFinalText(
   }
 
   // Link integrity and duplicate suppression are transport contracts.
+  // Two ways a link becomes unrequested: the turn never carried order intent,
+  // or the agent's own sendMenuLink skill declined it this turn (kitchen
+  // closed, or a link was already issued today) and the model pasted the URL
+  // anyway. magicLinkGranted is undefined for older callers and unit tests, so
+  // their behaviour is unchanged.
+  const linkDeclinedThisTurn = ctx.magicLinkGranted === false;
   const hasUnrequestedMenuLink = Boolean(
     ctx.magicLink
-    && !ctx.explicitMenuLinkIntent
+    && (!ctx.explicitMenuLinkIntent || linkDeclinedThisTurn)
     && uniqueUrls(text).some((url) => isLikelyMagicLinkUrl(url, ctx.magicLink || ""))
   );
   if (hasUnrequestedMenuLink) {

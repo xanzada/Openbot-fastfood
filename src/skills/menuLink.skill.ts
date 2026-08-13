@@ -1,8 +1,13 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
-import { getKitchenCheckoutFingerprint, markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
+import { getKitchenCheckoutFingerprint, getMagicLinkSentAt, markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
 import { classifyKitchenSalesPolicy, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
+
+// A magic link stays valid for a month, so a second link on the same day adds
+// nothing except noise in the chat. Inside this window the guest is reminded
+// about the link they already have.
+const MENU_LINK_REISSUE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Why the link is being withheld. Three different situations used to share one
@@ -64,22 +69,44 @@ function refusalMessage(reason: ReturnType<typeof classifyMenuLinkRefusal>, lang
 export function createSendMenuLinkSkill(ctx: FastFoodContext) {
   return createTool({
     name: "sendMenuLink",
-    description: "Return the personal menu link only when the newest customer message explicitly asks to order, open the menu/catalog/cart, or receive/resend that link. A photo, feedback, joke, complaint, or an incidental word such as 'send' is not sufficient intent.",
+    description: "Return the personal ordering link ONLY when you have concluded the guest now needs to open the site: they ask to order, to see the menu/catalog/cart, or to get the link. Answer questions (prices, dishes, hours, delivery) with searchMenu/getBusinessInfo instead - a question is not a link request. If the guest already received a link within the last day, do not call this tool: tell them the previous link still works. Call it with previousLinkBroken=true only when they say the old link does not open or expired.",
     parameters: z.object({
       reason: z.string().describe("Why the link is being sent"),
+      previousLinkBroken: z
+        .boolean()
+        .optional()
+        .describe("True only when the guest says the earlier link does not work, expired, or was deleted"),
     }),
-    execute: async () => {
+    execute: async ({ previousLinkBroken }: { previousLinkBroken?: boolean }) => {
       const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
       const acceptedFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
       const refusal = classifyMenuLinkRefusal(ctx, policy, acceptedFingerprint === policy.fingerprint);
       if (refusal) {
         return { allowed: false, link: null, reason: refusal, message: refusalMessage(refusal, ctx.language, policy) };
       }
+      // One link per guest per day. A guest who asks a second time on the same
+      // day is holding a working URL already: sending a new one buries the old
+      // message, invalidates nothing, and reads like a bot. They are pointed at
+      // the link they have unless they report it broken, or unless the kitchen
+      // has an order in flight that needs the checkout again.
+      const sentAt = await getMagicLinkSentAt(ctx.instanceId, ctx.phone).catch(() => 0);
+      const sentWithinDay = sentAt > 0 && Date.now() - sentAt < MENU_LINK_REISSUE_WINDOW_MS;
+      if (sentWithinDay && !previousLinkBroken) {
+        return {
+          allowed: false,
+          link: null,
+          reason: "link_already_sent" as const,
+          message: refusalMessage("link_already_sent", ctx.language, policy),
+        };
+      }
       await markMagicLinkSent(ctx.instanceId, ctx.phone).catch(() => false);
       // Remember the kitchen as it is right now. If it changes while the guest is
       // choosing, the gate reopens and tells them; if nothing changed, they are
       // left alone to finish the order.
       await markKitchenCheckoutStarted(ctx.instanceId, ctx.phone, policy.fingerprint).catch(() => false);
+      // The only place that authorises the URL to leave the bot. The transport
+      // appends it to whatever the agent wrote instead of replacing the answer.
+      ctx.magicLinkGranted = true;
       return {
         allowed: true,
         link: ctx.magicLink,

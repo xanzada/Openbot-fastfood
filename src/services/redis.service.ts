@@ -638,6 +638,17 @@ export async function hasMagicLinkBeenSent(instanceId: string, phone: string): P
   return safeRedis(false, async () => Boolean(await redisClient.get(magicLinkKey(instanceId, phone))));
 }
 
+/**
+ * When the last link was issued to this guest, as an epoch millisecond value,
+ * or 0 when none was. The boolean flag above cannot tell "sent five minutes
+ * ago" from "sent three weeks ago", and the guest who asks again on the same
+ * day must be pointed at the link they already have instead of receiving a
+ * fresh URL every time.
+ */
+export async function getMagicLinkSentAt(instanceId: string, phone: string): Promise<number> {
+  return safeRedis(0, async () => Number(await redisClient.get(magicLinkKey(instanceId, phone))) || 0);
+}
+
 export async function markMagicLinkSent(instanceId: string, phone: string): Promise<boolean> {
   return safeRedis(false, async () => {
     await redisClient.setEx(magicLinkKey(instanceId, phone), MAGIC_LINK_SENT_TTL_SECONDS, String(Date.now()));

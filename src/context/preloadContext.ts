@@ -311,5 +311,9 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     explicitMenuLinkIntent,
     magicLink,
     magicLinkFailed,
+    // The link is prepared, not promised. Only the sendMenuLink skill may flip
+    // this to true, which is what lets the agent decide whether the guest
+    // actually needs the URL on this turn.
+    magicLinkGranted: false,
   };
 }
