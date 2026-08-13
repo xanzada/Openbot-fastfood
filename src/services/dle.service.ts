@@ -415,6 +415,19 @@ export async function getRuntimeStatus(
     // Read the pushed state BEFORE the sync below overwrites it with the hub's.
     const pushed = await getKitchenStatus(instanceId).catch(() => null);
     const status = overlayPushedKitchenState(normalizeRuntimeStatus(data || {}), pushed);
+    // The requisites are typed into the kitchen settings screen and reach us either
+    // inside the hub read or through the panel push mirrored in Redis. A hub answer
+    // that simply omits payment_details used to win, and a guest on the money path
+    // was told "no payment system is connected" while kaspi +7... was configured and
+    // still sitting in the Redis kitchen record (live chat, 2026-08-13). The stored
+    // requisites now fill the gap instead of an empty list.
+    if (!Array.isArray(status.payment_details) || status.payment_details.length === 0) {
+      const storedDetails = Array.isArray(pushed?.payment_details) ? pushed.payment_details : [];
+      if (storedDetails.length) {
+        status.payment_details = storedDetails;
+        status.payment_details_source = "redis_kitchen_status";
+      }
+    }
     await setJsonCache(cacheKey, 5, status);
     await setJsonCache(backupKey, 600, status);
     await saveKitchenStatus(instanceId, {
