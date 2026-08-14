@@ -199,6 +199,43 @@ export async function getOrderPhone(instanceId: string, orderId: string): Promis
   });
 }
 
+// What the guest has already been told about this order. Status events are
+// ranked so a stale replay (hub retries a rejected webhook for hours) can never
+// move the guest backwards - e.g. a payment request landing after the order was
+// cancelled, or "дайындалып жатыр" arriving after "курьерге берілді".
+const ORDER_NOTIFY_CURSOR_TTL_SECONDS = 24 * 60 * 60;
+
+function orderNotifyCursorKey(instanceId: string, orderId: string) {
+  return `order_notify_cursor:${instanceId}:${orderId}`;
+}
+
+export async function getOrderNotifyCursor(instanceId: string, orderId: string): Promise<{ rank: number; status: string } | null> {
+  const cleanOrderId = String(orderId || "").trim();
+  if (!instanceId || !cleanOrderId) return null;
+  return safeRedis(null, async () => {
+    await connectRedis();
+    const raw = await redisClient.get(orderNotifyCursorKey(instanceId, cleanOrderId));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(String(raw));
+      const rank = Number(parsed?.rank);
+      return Number.isFinite(rank) ? { rank, status: String(parsed?.status || "") } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+export async function saveOrderNotifyCursor(instanceId: string, orderId: string, rank: number, status: string): Promise<boolean> {
+  const cleanOrderId = String(orderId || "").trim();
+  if (!instanceId || !cleanOrderId || !Number.isFinite(rank)) return false;
+  return safeRedis(false, async () => {
+    await connectRedis();
+    await redisClient.setEx(orderNotifyCursorKey(instanceId, cleanOrderId), ORDER_NOTIFY_CURSOR_TTL_SECONDS, JSON.stringify({ rank, status: String(status || "").slice(0, 60) }));
+    return true;
+  });
+}
+
 const KITCHEN_CONSENT_TTL_SECONDS = 30 * 60;
 const KITCHEN_CHECKOUT_GRACE_TTL_SECONDS = 30 * 60;
 

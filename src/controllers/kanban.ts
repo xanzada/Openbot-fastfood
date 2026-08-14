@@ -8,11 +8,13 @@ import {
   clearKitchenCheckoutState,
   deleteShiftNote,
   getKitchenStatus,
+  getOrderNotifyCursor,
   getOrderPhone,
   getSiteLanguageHint,
   getUserLang,
   redisClient,
   saveKitchenStatus,
+  saveOrderNotifyCursor,
   saveOrderPhone,
   saveSiteLanguageHint,
   saveShiftNote,
@@ -378,10 +380,18 @@ export function formatLegacyPaymentMessage(totalAmount: string, paymentInfo: str
 }
 
 export function buildLegacyRejectedMessage(body: Record<string, unknown>, lang: Language): string {
-  const reason = cleanInline(body.reason || (lang === "ru" ? "Неизвестная причина" : "Белгісіз себеп"), 200);
-  return lang === "ru"
-    ? `❌ К сожалению, мы не сможем приготовить заказ.\nПричина: *${reason}*.\nПожалуйста, выберите другое блюдо.`
-    : `❌ Өкінішке қарай, тапсырысты дайындай алмаймыз.\nСебебі: *${reason}*.\nБасқа тағам таңдауыңызды сұраймыз.`;
+  // The guest must never wonder why: the operator's reason is stated plainly
+  // (payment never arrived, dish not available, guest walked away) and the
+  // chat stays open for questions - no blind "choose another dish" push.
+  const reason = cleanInline(body.reason || "", 200);
+  if (lang === "ru") {
+    return reason
+      ? `❌ *Ваш заказ отменён.*\nПричина: *${reason}*.\nЕсли что-то непонятно, просто напишите в этот чат - я всё объясню.`
+      : `❌ *Ваш заказ отменён.*\nНапишите в этот чат - сразу объясню точную причину и помогу оформить заказ заново.`;
+  }
+  return reason
+    ? `❌ *Тапсырысыңыздан бас тартылды.*\nСебебі: *${reason}*.\nТүсінбеген нәрсе болса, осы чатқа жазыңыз - бәрін түсіндіріп беремін.`
+    : `❌ *Тапсырысыңыздан бас тартылды.*\nОсы чатқа жазыңыз - нақты себебін бірден айтып, тапсырысты қайта рәсімдеуге көмектесемін.`;
 }
 
 export const legacyStatusTemplates: Record<Language, Record<string, string>> = {
@@ -440,6 +450,30 @@ export function resolveStatusTemplateKey(status: string, isPickup: boolean): str
   if (normalized === "ready") return isPickup ? "pickup_ready" : "ready_delivery";
   if (normalized === "completed" && isPickup) return "pickup_ready";
   return normalized;
+}
+
+// One press, one message: hub retries a rejected webhook for hours, so a stale
+// replay must never move the guest backwards - a payment request landing after
+// the order was cancelled, or "дайындалып жатыр" after "курьерге берілді".
+// The per-order notify cursor (Redis) stores the highest rank the guest has
+// already seen; anything at or below it is acknowledged but never sent again.
+const ORDER_NOTIFY_RANK: Record<string, number> = {
+  review: 2,
+  paid: 3,
+  preparing: 4,
+  ready_delivery: 5,
+  pickup_ready: 5,
+  delivery: 6,
+  completed: 7,
+  cancelled: 99,
+};
+
+export function orderNotifyRank(action: string, statusKey: string): number {
+  if (action === "new_order") return 0;
+  if (action === "request_payment") return 1;
+  if (action === "order_rejected") return 99;
+  if (action === "status_changed") return ORDER_NOTIFY_RANK[statusKey] ?? -1;
+  return -1;
 }
 
 export function extractShiftNotePayload(body: Record<string, unknown>) {
@@ -845,8 +879,9 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       auditDecision("Building order_rejected WhatsApp template", { orderId, action, instance, lang });
       textMessage = buildLegacyRejectedMessage(body, lang);
     }
+    let effectiveStatus = "";
     if (action === "status_changed") {
-      const effectiveStatus = resolveStatusTemplateKey(newStatus, isPickup);
+      effectiveStatus = resolveStatusTemplateKey(newStatus, isPickup);
       auditDecision("Resolving status_changed template", { orderId, action, instance, lang, newStatus, effectiveStatus });
       textMessage = legacyStatusTemplates[lang][effectiveStatus] || "";
       if (!textMessage) {
@@ -863,6 +898,23 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       }
     }
 
+    // One press, one message: a stale replay (hub retries a rejected webhook
+    // for hours) must never move the guest backwards - no payment request
+    // after a cancellation, no "дайындалып жатыр" after "курьерге берілді".
+    const nextNotifyRank = orderNotifyRank(action, effectiveStatus);
+    if (textMessage && nextNotifyRank >= 0) {
+      const previousCursor = await getOrderNotifyCursor(instance, orderId).catch(() => null);
+      if (previousCursor && nextNotifyRank <= previousCursor.rank) {
+        auditDecision("Stale order signal suppressed: guest already knows a newer state", {
+          orderId,
+          action,
+          newStatus,
+          previousStatus: previousCursor.status,
+        });
+        res.status(200).json({ success: true, message: "Suppressed stale order signal" });
+        return;
+      }
+    }
     if (textMessage) {
       auditDecision("Triggering WhatsApp notification path", {
         orderId,
@@ -872,6 +924,9 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         textLength: textMessage.length,
       });
       await sendAndRemember(instance, phone, textMessage);
+      if (nextNotifyRank >= 0) {
+        void saveOrderNotifyCursor(instance, orderId, nextNotifyRank, effectiveStatus || action).catch(() => false);
+      }
       if (newStatus === "completed" || newStatus === "cancelled" || action === "order_rejected") {
         auditDecision("Cleaning completed/cancelled order Redis history", { orderId, action, instance, phone, newStatus });
         await redisClient.del([`history:${instance}:${phone}`, `last_order:${instance}:${phone}`]).catch(() => undefined);

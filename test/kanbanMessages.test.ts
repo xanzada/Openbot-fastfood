@@ -5,6 +5,7 @@ import {
   buildLegacyRejectedMessage,
   formatLegacyPaymentMessage,
   legacyStatusTemplates,
+  orderNotifyRank,
 } from "../src/controllers/kanban.js";
 
 test("new_order message preserves Kazakh UTF-8 and order details", () => {
@@ -83,4 +84,12 @@ test("the delivery line shows the site's real fee, says free only on an explicit
   const unknownMsg = buildLegacyNewOrderMessage({ total_price: 5200, items: [{ name: "Pizza", qty: 1, price: 5200 }] }, "kk", "1", false);
   assert.match(unknownMsg, /Жеткізу:\* сайтта есептеледі/u);
   assert.doesNotMatch(unknownMsg, /Жеткізу:\* Тегін/u);
+});
+
+test("a stale replay never moves the guest backwards and a cancel blocks late payment asks", () => {
+  assert.ok(orderNotifyRank("status_changed", "ready_delivery") < orderNotifyRank("status_changed", "delivery"));
+  assert.ok(orderNotifyRank("request_payment") < orderNotifyRank("order_rejected"));
+  assert.ok(orderNotifyRank("new_order") < orderNotifyRank("status_changed", "paid"));
+  assert.equal(orderNotifyRank("status_changed", "pickup_ready"), orderNotifyRank("status_changed", "ready_delivery"));
+  assert.equal(orderNotifyRank("status_changed", "mystery_status"), -1);
 });
