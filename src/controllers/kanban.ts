@@ -8,10 +8,12 @@ import {
   clearKitchenCheckoutState,
   deleteShiftNote,
   getKitchenStatus,
+  getOrderPhone,
   getSiteLanguageHint,
   getUserLang,
   redisClient,
   saveKitchenStatus,
+  saveOrderPhone,
   saveSiteLanguageHint,
   saveShiftNote,
   saveToHistory,
@@ -342,12 +344,20 @@ async function buildLegacyPaymentMessage(
   instance: string
 ): Promise<string> {
   const totalAmount = cleanInline(body.total_price || body.total || 0, 40);
-  const liveRuntimeStatus = await getLiveRuntimeStatus(instance, config || {});
-  const paymentDetails = paymentDetailsFromRuntimeOnly(liveRuntimeStatus);
+  // Speed: the Redis kitchen mirror already holds the requisites the operator
+  // typed (payment_details), so the payment request goes out without waiting on
+  // a live hub read; the live read only runs when the mirror is empty.
+  const mirror = (await getKitchenStatus(instance).catch(() => null)) as Record<string, unknown> | null;
+  let paymentDetails = paymentDetailsFromRuntimeOnly(mirror);
+  let liveRuntimeStatus: Record<string, unknown> | null = null;
+  if (!paymentDetails.length) {
+    liveRuntimeStatus = await getLiveRuntimeStatus(instance, config || {});
+    paymentDetails = paymentDetailsFromRuntimeOnly(liveRuntimeStatus);
+  }
   const paymentInfo = paymentDetailsText(paymentDetails, lang);
   auditDecision("Payment details resolved", {
     instance,
-    source: paymentDetailsRuntimeSource(liveRuntimeStatus),
+    source: paymentDetails.length && mirror ? "redis_kitchen_status" : paymentDetailsRuntimeSource(liveRuntimeStatus),
     count: paymentDetails.length,
   });
   return formatLegacyPaymentMessage(totalAmount, paymentInfo, lang);
@@ -705,7 +715,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     }
 
     const isShiftNoteAction = action.startsWith("shift_note_");
-    const phone = normalizePhone(body.phone || "");
+    let phone = normalizePhone(body.phone || "");
     const orderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
     const newStatus = cleanInline(body.status || body.new_status || body.order_status, 80);
     const isPickup = boolValue(body.is_pickup, false);
@@ -717,11 +727,26 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         return;
       }
       if (!phone) {
+        // Hub status events (status_changed / order_rejected) carry only the
+        // order id, never the guest's phone. The mapping was written when an
+        // event that DOES carry the phone arrived, so recover it instead of
+        // dropping the guest's "дайындалуда / курьерде / аяқталды" (2026-08-14).
+        const recovered = await getOrderPhone(instance, orderId).catch(() => "");
+        if (recovered) {
+          phone = recovered;
+          body.phone = recovered;
+          auditDecision("Order phone recovered from the order map", { orderId, action, instance });
+        }
+      }
+      if (!phone) {
         auditDecision("Rejected webhook: invalid phone", { orderId, action, instance, rawPhone: body.phone });
         res.status(400).json({ ok: false, error: "BAD_PHONE" });
         return;
       }
       auditDecision("Order payload validated", { orderId, action, instance, phone, newStatus, isPickup });
+      // Learn the mapping on every event that does carry the phone, so the
+      // status events that never carry one can still reach the guest.
+      void saveOrderPhone(instance, orderId, phone).catch(() => false);
     } else {
       auditDecision("Shift note payload detected", { action, instance });
     }

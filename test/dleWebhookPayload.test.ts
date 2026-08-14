@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   handleDleWebhook,
   isIgnoredAlemiEvent,
@@ -80,6 +81,15 @@ test("the operator confirm maps to request_payment and keeps the amount and the 
   assert.equal(r.body.total_price, 5200);
   assert.equal(r.body.phone, "+77476884956");
   assert.equal(isIgnoredAlemiEvent("order.external_document_requested"), false);
+});
+
+// Hub status events carry only the order id, never the guest's phone. The guest
+// still gets "дайындалуда / курьерде / аяқталды" because the controller recovers
+// the phone through the order->phone mapping learned at order.created.
+test("a status event without a phone is recovered through the stored order phone mapping", async () => {
+  const source = await readFile(new URL("../src/controllers/kanban.ts", import.meta.url), "utf8");
+  assert.match(source, /getOrderPhone\(instance, orderId\)/);
+  assert.match(source, /saveOrderPhone\(instance, orderId, phone\)/);
 });
 
 test("unknown actions pass through untouched", () => {

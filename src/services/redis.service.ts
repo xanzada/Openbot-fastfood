@@ -168,6 +168,37 @@ function kitchenStatusKey(instanceId: string) {
   return `${instanceId}:kitchen_status`;
 }
 
+// Hub status events (status_changed / order_rejected) carry only the order id -
+// never the guest's phone. The mapping is learned when an event that DOES carry
+// the phone arrives (order.created, the operator confirm) and read back for the
+// ones that do not, so the guest still gets "дайындалуда / курьерде / аяқталды".
+const ORDER_PHONE_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+function orderPhoneKey(instanceId: string, orderId: string) {
+  return `order_phone:${instanceId}:${orderId}`;
+}
+
+export async function saveOrderPhone(instanceId: string, orderId: string, phone: string): Promise<boolean> {
+  const cleanOrderId = String(orderId || "").trim();
+  const cleanPhone = String(phone || "").replace(/\D/g, "");
+  if (!instanceId || !cleanOrderId || !cleanPhone) return false;
+  return safeRedis(false, async () => {
+    await connectRedis();
+    await redisClient.setEx(orderPhoneKey(instanceId, cleanOrderId), ORDER_PHONE_TTL_SECONDS, cleanPhone);
+    return true;
+  });
+}
+
+export async function getOrderPhone(instanceId: string, orderId: string): Promise<string> {
+  const cleanOrderId = String(orderId || "").trim();
+  if (!instanceId || !cleanOrderId) return "";
+  return safeRedis("", async () => {
+    await connectRedis();
+    const value = await redisClient.get(orderPhoneKey(instanceId, cleanOrderId));
+    return typeof value === "string" ? value : "";
+  });
+}
+
 const KITCHEN_CONSENT_TTL_SECONDS = 30 * 60;
 const KITCHEN_CHECKOUT_GRACE_TTL_SECONDS = 30 * 60;
 
