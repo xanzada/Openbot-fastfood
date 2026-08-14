@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   customerOrderFromContext,
@@ -214,4 +215,13 @@ test("the receipt upload carries the extracted sender, amount and bank as the op
 
   assert.equal(result.success, true);
   assert.equal(captured.note, "Рахметоллаұлы Б 8000 ₸ kaspi");
+});
+
+test("receipt test mode never blocks: no AI gate, no duplicate gate, order id falls back", async () => {
+  const routeSource = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  assert.match(routeSource, /strictFilter && !validation\.valid/);
+  assert.match(routeSource, /claimReceiptFingerprint\(ctx\.instanceId, fingerprint\)\) && strictFilter/);
+  assert.match(routeSource, /getLastKnownOrderId\(ctx\.instanceId, ctx\.phone\)/);
+  assert.match(routeSource, /orderNumber: deliverOrderNumber/);
+  assert.match(routeSource, /treatAsReceipt/);
 });

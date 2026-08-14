@@ -236,6 +236,26 @@ export async function saveOrderNotifyCursor(instanceId: string, orderId: string,
   });
 }
 
+// The last order id the guest touched, from the getOrderStatus cache. Receipt
+// test mode uses it to attach a receipt even when the hub no longer lists the
+// order as active (e.g. a cancelled test order).
+export async function getLastKnownOrderId(instanceId: string, phone: string): Promise<string> {
+  const cleanPhone = String(phone || "").replace(/\D/g, "");
+  if (!instanceId || !cleanPhone) return "";
+  return safeRedis("", async () => {
+    await connectRedis();
+    const raw = await redisClient.get(`last_order:${instanceId}:${cleanPhone}`);
+    if (!raw) return "";
+    try {
+      const parsed = JSON.parse(String(raw));
+      const id = parsed?.order_id || parsed?.active_order?.id || parsed?.order?.id || "";
+      return String(id || "").trim();
+    } catch {
+      return "";
+    }
+  });
+}
+
 const KITCHEN_CONSENT_TTL_SECONDS = 30 * 60;
 const KITCHEN_CHECKOUT_GRACE_TTL_SECONDS = 30 * 60;
 

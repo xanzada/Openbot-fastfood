@@ -6,6 +6,7 @@ import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemo
 import {
   claimReceiptFingerprint,
   clearPendingKitchenConsent,
+  getLastKnownOrderId,
   getPendingKitchenConsent,
   getKitchenCheckoutFingerprint,
   markKitchenCheckoutStarted,
@@ -818,8 +819,22 @@ async function processWhatsAppWebhook(body: any, started: number) {
       if (mediaAnalysis) {
         mediaContext = { ...mediaContext, analysis: mediaAnalysis };
         ctx.mediaContext = mediaContext;
-        if (mediaAnalysis.type === "receipt") {
-          const strictFilter = receiptFilterEnabled();
+        // Test mode (filter off): every receipt-looking file must reach the
+        // operator - even when the AI was unsure what it is, on resends, and
+        // even when the order is no longer active (cancelled test orders).
+        const strictFilter = receiptFilterEnabled();
+        const receiptLikeMedia = /^(image\/|application\/pdf)/i.test(String(mediaContext.mimeType || mediaContext.mediaType || ""));
+        const aiOrderReference = String(mediaAnalysis.order_id || "").trim();
+        const knownOrderHint = Boolean(
+          String(activeOrder.id || activeOrder.order_id || activeOrder.order_number || activeOrder.display_number || "").trim() ||
+          (aiOrderReference && aiOrderReference !== "0")
+        );
+        const treatAsReceipt = mediaAnalysis.type === "receipt" || (!strictFilter && receiptLikeMedia && knownOrderHint);
+        if (treatAsReceipt) {
+          if (mediaAnalysis.type !== "receipt") {
+            mediaAnalysis.type = "receipt";
+            mediaAnalysis.is_valid_receipt = true;
+          }
           const validation = validateReceiptAnalysis(mediaAnalysis, receiptContext);
           if (strictFilter && !validation.valid) {
             await sendCustomerReplyAndFinish(
@@ -832,7 +847,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
           }
 
           const fingerprint = createReceiptFingerprint(String(mediaContext.base64 || ""), mediaAnalysis);
-          if (!(await claimReceiptFingerprint(ctx.instanceId, fingerprint))) {
+          // A resend only blocks in strict mode - in test mode sending the same
+          // receipt again is expected and must go through.
+          if (!(await claimReceiptFingerprint(ctx.instanceId, fingerprint)) && strictFilter) {
             const duplicateReply =
               ctx.language === "ru"
                 ? "Этот чек уже был отправлен. Пожалуйста, не отправляйте один чек повторно."
@@ -841,9 +858,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
             return;
           }
 
-          const analyzedOrderReference = String(mediaAnalysis.order_id || "").trim();
-          const receiptOrderNumber = analyzedOrderReference && analyzedOrderReference !== "0"
-            ? analyzedOrderReference
+          const receiptOrderNumber = aiOrderReference && aiOrderReference !== "0"
+            ? aiOrderReference
             : String(activeOrder.display_number || activeOrder.order_number || activeOrder.id || activeOrder.order_id || "");
           const receiptOrder = await getCustomerOrder(
             ctx.instanceId,
@@ -852,7 +868,18 @@ async function processWhatsAppWebhook(body: any, started: number) {
             ctx.language,
             receiptOrderNumber
           );
-          if (receiptOrder.state !== "found") {
+          let deliverOrderNumber = receiptOrder.state === "found" ? String(receiptOrder.order.orderId || "") : "";
+          if (!deliverOrderNumber && !strictFilter) {
+            // Test mode: never reject just because the hub no longer lists the
+            // order (a cancelled test order) - attach to the best id we know:
+            // the number the AI read from the receipt, the active order, or the
+            // last cached order.
+            deliverOrderNumber =
+              (aiOrderReference && aiOrderReference !== "0" ? aiOrderReference : "") ||
+              String(activeOrder.id || activeOrder.order_id || "") ||
+              (await getLastKnownOrderId(ctx.instanceId, ctx.phone).catch(() => ""));
+          }
+          if (!deliverOrderNumber) {
             await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
             // A guest who has actually paid must never be told their order does
             // not exist just because the hub lookup was unreachable. "unavailable"
@@ -882,7 +909,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
           const delivery = await deliverReceiptToClient({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
-            orderNumber: receiptOrder.order.orderId,
+            orderNumber: deliverOrderNumber,
             config: ctx.config,
             amount: mediaAnalysis.amount,
             senderName: mediaAnalysis.sender_name,
