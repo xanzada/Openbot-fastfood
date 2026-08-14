@@ -59,6 +59,29 @@ test("order actions keep their aliases and fields", () => {
   assert.equal(r.body.phone, "77001112233");
 });
 
+// The operator's confirm arrives from hub as order.external_document_requested
+// with the money inside a nested amounts object. Without the alias every confirm
+// was a 400 BAD_ACTION and the guest was never asked to pay (live, 2026-08-14).
+test("the operator confirm maps to request_payment and keeps the amount and the guest phone", () => {
+  const r = req({
+    event_type: "order.external_document_requested",
+    event_id: "evt_01KZZXHRJS9SVZMWT9FQRFE1MS",
+    instance: "prestige",
+    data: {
+      order_id: "019fffd8-59e3-7f55-bf68-13f64c4b7520",
+      order_number: 16,
+      amounts: { total: 5200, currency: "KZT" },
+      customer: { phone: "+77476884956" },
+      fulfillment_type: "pickup",
+    },
+  });
+  normalizeDlePayload(r);
+  assert.equal(r.body.action, "request_payment");
+  assert.equal(r.body.total_price, 5200);
+  assert.equal(r.body.phone, "+77476884956");
+  assert.equal(isIgnoredAlemiEvent("order.external_document_requested"), false);
+});
+
 test("unknown actions pass through untouched", () => {
   const r = req({ action: "something_future", instance: "prestige" });
   normalizeDlePayload(r);

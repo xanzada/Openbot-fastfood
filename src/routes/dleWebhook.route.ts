@@ -79,6 +79,10 @@ function normalizeAction(value: unknown) {
     "order.accepted": "request_payment",
     "payment.requested": "request_payment",
     "payment.request": "request_payment",
+    // Hub's current name for the operator's confirm press: the panel asks the
+    // bot to collect payment from the guest. Without this alias every confirm
+    // was a 400 BAD_ACTION and the guest was never asked to pay (2026-08-14).
+    "order.external_document_requested": "request_payment",
     // Everything else hub can emit about an order is a status transition; routing
     // it here means an unknown status is answered 200-and-silent instead of a 400
     // that hub counts as a webhook error and retries for hours.
@@ -187,6 +191,13 @@ export function normalizeDlePayload(req: Request) {
     ...records.map((record) => record.shift_note),
     ...records.map((record) => record.shiftNote),
   );
+  // The operator confirm (order.external_document_requested) carries the money
+  // inside a nested `amounts` object, not a flat field: without reading it the
+  // guest would be asked to pay "0 ₸" (live event, 2026-08-14).
+  const amounts = firstObject(
+    ...records.map((record) => record.amounts),
+    order.amounts,
+  );
   const legacySourceId = rawEventType ? "" : source.id;
   const orderId = normalizeExternalId(firstValue(
     valueFrom(records, "order_id", "orderId"),
@@ -219,6 +230,7 @@ export function normalizeDlePayload(req: Request) {
     total_price: firstValue(
       valueFrom(records, "total_price", "total", "amount", "sum", "total_amount_minor", "totalAmountMinor", "total_amount"),
       valueFrom([order], "total_price", "total", "amount", "total_amount_minor", "totalAmountMinor", "total_amount"),
+      valueFrom([amounts], "total", "total_amount_minor", "totalAmountMinor", "grand_total", "grandTotal", "total_with_delivery", "totalWithDelivery", "sum", "amount"),
     ),
     delivery_price: firstValue(valueFrom(records, "delivery_price", "delivery_amount_minor", "deliveryAmountMinor"), order.delivery_amount_minor),
     bonus: firstValue(valueFrom(records, "bonus", "bonus_spent_amount_minor", "bonusSpentAmountMinor"), order.bonus_spent_amount_minor),
