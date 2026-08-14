@@ -242,6 +242,18 @@ function paymentDetailsRuntimeSource(runtimeStatus: Record<string, unknown> | nu
   return paymentDetailsFromRuntime(runtimeStatus).length ? "site_kitchen_settings" : "not_configured";
 }
 
+// The receipt shortfall reply must point at the same requisites the guest was
+// asked to pay to. Reads the Redis kitchen mirror first (fast path), then the
+// live runtime status as a fallback - exactly like the payment message.
+export async function getPaymentRequisitesText(instance: string, config: Record<string, unknown>, lang: string): Promise<string> {
+  const safeLang: Language = lang === "ru" ? "ru" : "kk";
+  const mirror = await getKitchenStatus(instance).catch(() => null);
+  const mirrorDetails = mirror ? normalizePaymentDetails((mirror as unknown as Record<string, unknown>).payment_details) : [];
+  if (mirrorDetails.length) return paymentDetailsText(mirrorDetails, safeLang);
+  const runtimeStatus = await getLiveRuntimeStatus(instance, config);
+  return paymentDetailsText(paymentDetailsFromRuntime(runtimeStatus), safeLang);
+}
+
 /**
  * hub.alemi.kz sends the dish name as a locale object (`{ru: "…", kk: "…"}`).
  * Passing that straight into the message printed "[object Object]" for every

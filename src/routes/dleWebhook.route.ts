@@ -151,7 +151,11 @@ function normalizeExternalId(value: unknown) {
 }
 
 export function isIgnoredAlemiEvent(value: unknown) {
-  return /^external(?:[-_.]?document)(?:[-_.]|$)/i.test(String(value || "").trim());
+  const v = String(value || "").trim();
+  // order.external_document_received is hub's echo of our own receipt upload -
+  // acknowledge it so hub stops retrying it for hours, but never notify the
+  // guest about it.
+  return /^external(?:[-_.]?document)(?:[-_.]|$)/i.test(v) || v === "order.external_document_received";
 }
 
 export function normalizeDlePayload(req: Request) {

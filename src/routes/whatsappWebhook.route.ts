@@ -57,6 +57,7 @@ import { markWhatsProChatRead, sendWhatsProResponseSequence, startWhatsProTyping
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { customerOrderFromRecord, pickConversationOrder, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
+import { getPaymentRequisitesText } from "../controllers/kanban.js";
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, isTenantBotEnabled, saveToShpor } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
 import {
@@ -819,24 +820,18 @@ async function processWhatsAppWebhook(body: any, started: number) {
       if (mediaAnalysis) {
         mediaContext = { ...mediaContext, analysis: mediaAnalysis };
         ctx.mediaContext = mediaContext;
-        // Test mode (filter off): every receipt-looking file must reach the
-        // operator - even when the AI was unsure what it is, on resends, and
-        // even when the order is no longer active (cancelled test orders).
+        // The receipt is always genuinely analyzed - in test mode too. A random
+        // photo must not be treated as a receipt just because the filter is off;
+        // only the blocking gates (validation, duplicates, order lookup) relax.
         const strictFilter = receiptFilterEnabled();
-        const receiptLikeMedia = /^(image\/|application\/pdf)/i.test(String(mediaContext.mimeType || mediaContext.mediaType || ""));
         const aiOrderReference = String(mediaAnalysis.order_id || "").trim();
-        const knownOrderHint = Boolean(
-          String(activeOrder.id || activeOrder.order_id || activeOrder.order_number || activeOrder.display_number || "").trim() ||
-          (aiOrderReference && aiOrderReference !== "0")
-        );
-        const treatAsReceipt = mediaAnalysis.type === "receipt" || (!strictFilter && receiptLikeMedia && knownOrderHint);
-        if (treatAsReceipt) {
-          if (mediaAnalysis.type !== "receipt") {
-            mediaAnalysis.type = "receipt";
-            mediaAnalysis.is_valid_receipt = true;
-          }
+        if (mediaAnalysis.type === "receipt") {
           const validation = validateReceiptAnalysis(mediaAnalysis, receiptContext);
-          if (strictFilter && !validation.valid) {
+          // A short payment is not a fake receipt: it still goes to the operator
+          // with an SOS note, and the guest is told exactly how much is left to
+          // pay and to which requisites.
+          const isShortfall = strictFilter && !validation.valid && validation.reason === "amount_short";
+          if (strictFilter && !validation.valid && !isShortfall) {
             await sendCustomerReplyAndFinish(
               ctx,
               messageId,
@@ -919,6 +914,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
             receiptBase64: String(mediaContext.base64 || ""),
             mimeType: String(mediaContext.mimeType || mediaContext.mediaType || ""),
             sourceMessageId: messageId,
+            ...(isShortfall
+              ? {
+                  notePrefix: `⚠️ ТӨЛЕМ ЖЕТПЕЙДІ: чекте ${Number(mediaAnalysis.amount || 0)} ₸, заказ ${Number(receiptContext.expectedAmount || 0)} ₸. Оператор шешеді.`,
+                }
+              : {}),
           });
 
           if (!delivery.success) {
@@ -931,11 +931,23 @@ async function processWhatsAppWebhook(body: any, started: number) {
             return;
           }
 
-          const receiptReply =
-            ctx.language === "ru"
-              ? "🧾 Большое спасибо за оплату! Чек отправлен оператору на проверку. Пожалуйста, немного подождите ⏳"
-              : "🧾 Төлеміңіз үшін көп рақмет! Чек операторға тексеруге жіберілді. Кішкене күте тұрыңыз ⏳";
-          await sendCustomerReplyAndFinish(ctx, messageId, receiptReply, "payment_receipt");
+          let receiptReply: string;
+          if (isShortfall) {
+            const expected = Number(receiptContext.expectedAmount || 0);
+            const paid = Number(mediaAnalysis.amount || 0);
+            const remaining = Math.max(0, expected - paid);
+            const requisites = await getPaymentRequisitesText(ctx.instanceId, ctx.config, ctx.language).catch(() => "");
+            receiptReply =
+              ctx.language === "ru"
+                ? `⚠️ *Оплата неполная.*\nСумма заказа: *${expected} ₸*, в вашем чеке: *${paid} ₸*.\nОсталось доплатить: *${remaining} ₸*.\n\nОплата:\n${requisites}\n\nОтправьте новый чек в этот чат. Оператор уже уведомлён и тоже проверит оплату.`
+                : `⚠️ *Төлем толық емес.*\nТапсырыс сомасы: *${expected} ₸*, чегіңізде: *${paid} ₸*.\nТағы *${remaining} ₸* жіберуіңіз керек.\n\nТөлем жасау:\n${requisites}\n\nЖаңа чекті осы чатқа жіберіңіз. Операторға да хабарлама кетті, ол да тексереді.`;
+          } else {
+            receiptReply =
+              ctx.language === "ru"
+                ? "🧾 Большое спасибо за оплату! Чек отправлен оператору на проверку. Пожалуйста, немного подождите ⏳"
+                : "🧾 Төлеміңіз үшін көп рақмет! Чек операторға тексеруге жіберілді. Кішкене күте тұрыңыз ⏳";
+          }
+          await sendCustomerReplyAndFinish(ctx, messageId, receiptReply, isShortfall ? "payment_receipt_shortfall" : "payment_receipt");
           return;
         }
         if (mediaAnalysis.type === "technical_error") {

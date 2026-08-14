@@ -15,6 +15,9 @@ export interface ReceiptDeliveryInput {
   receiptBase64: string;
   mimeType: string;
   sourceMessageId: string;
+  // Optional SOS prefix for the operator comment (e.g. a short payment - the
+  // operator decides whether to accept it).
+  notePrefix?: string;
 }
 
 export type ReceiptDeliveryResult =
@@ -67,7 +70,9 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendRe
     Number(input.amount) > 0 ? `${Number(input.amount)} ₸` : "",
     String(input.bankName || "").trim(),
   ].filter(Boolean);
-  const note = noteParts.join(" ").replace(/\s{2,}/g, " ").trim().slice(0, 200);
+  const noteBody = noteParts.join(" ").replace(/\s{2,}/g, " ").trim();
+  const prefix = String(input.notePrefix || "").trim();
+  const note = (prefix ? `${prefix} ${noteBody}` : noteBody).replace(/\s{2,}/g, " ").trim().slice(0, 200);
 
   let response: any;
   try {
@@ -106,6 +111,7 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendRe
     orderNumber,
     deliveryId,
     deliveredAt,
+    note,
   });
   return { success: true, deliveryId, deliveredAt };
 }

@@ -44,7 +44,9 @@ test("receipt validation accepts a fresh matching receipt and rejects old or wro
 
   assert.equal(validateReceiptAnalysis(base, context).valid, true);
   assert.equal(validateReceiptAnalysis({ ...base, date_time: "2026-07-20T17:50:00.000Z" }, context).reason, "receipt_too_old");
-  assert.equal(validateReceiptAnalysis({ ...base, amount: 100 }, context).reason, "amount_mismatch");
+  assert.equal(validateReceiptAnalysis({ ...base, amount: 100 }, context).reason, "amount_short");
+  // Overpayment passes - guests often round up (a 1990 ₸ order paid as 2000 ₸).
+  assert.equal(validateReceiptAnalysis({ ...base, amount: 9800 }, context).valid, true);
   assert.equal(validateReceiptAnalysis({ ...base, sender_name: "Белгісіз" }, context).reason, "sender_missing");
   assert.equal(validateReceiptAnalysis({ ...base, bank_name: "Белгісіз банк" }, context).reason, "bank_missing");
   assert.equal(validateReceiptAnalysis({ ...base, sender_name: "Xanzada👑" }, context).reason, "sender_missing");

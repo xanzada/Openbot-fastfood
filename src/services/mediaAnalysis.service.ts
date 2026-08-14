@@ -35,7 +35,11 @@ export function validateReceiptAnalysis(analysis: Record<string, any>, context: 
   if (analysis?.type !== "receipt" || analysis?.is_valid_receipt !== true) return { valid: false, reason: "ai_rejected" };
   const amount = Number(analysis.amount || 0);
   if (!(amount > 0)) return { valid: false, reason: "amount_missing" };
-  if (Number(context.expectedAmount) > 0 && amount !== Number(context.expectedAmount)) return { valid: false, reason: "amount_mismatch" };
+  // Overpayment is fine - guests often round up (a 1990 ₸ order paid as 2000 ₸).
+  // A short payment is not a fake receipt either: it is a special flow where
+  // the receipt still reaches the operator with an SOS note and the guest is
+  // told exactly how much is left to pay ("amount_short").
+  if (Number(context.expectedAmount) > 0 && amount < Number(context.expectedAmount)) return { valid: false, reason: "amount_short" };
   if (missingBank(analysis.bank_name)) return { valid: false, reason: "bank_missing" };
   if (missingSender(analysis.sender_name)) return { valid: false, reason: "sender_missing" };
   if (String(analysis.transaction_id || "").trim().length < 4) return { valid: false, reason: "transaction_missing" };

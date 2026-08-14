@@ -217,11 +217,14 @@ test("the receipt upload carries the extracted sender, amount and bank as the op
   assert.equal(captured.note, "Рахметоллаұлы Б 8000 ₸ kaspi");
 });
 
-test("receipt test mode never blocks: no AI gate, no duplicate gate, order id falls back", async () => {
+test("receipt test mode relaxes blocks but analysis always runs, and a short payment becomes an SOS flow", async () => {
   const routeSource = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
-  assert.match(routeSource, /strictFilter && !validation\.valid/);
+  assert.match(routeSource, /mediaAnalysis\.type === "receipt"/);
+  assert.match(routeSource, /strictFilter && !validation\.valid && !isShortfall/);
   assert.match(routeSource, /claimReceiptFingerprint\(ctx\.instanceId, fingerprint\)\) && strictFilter/);
   assert.match(routeSource, /getLastKnownOrderId\(ctx\.instanceId, ctx\.phone\)/);
   assert.match(routeSource, /orderNumber: deliverOrderNumber/);
-  assert.match(routeSource, /treatAsReceipt/);
+  assert.match(routeSource, /notePrefix: `⚠️ ТӨЛЕМ ЖЕТПЕЙДІ/);
+  assert.match(routeSource, /payment_receipt_shortfall/);
+  assert.match(routeSource, /getPaymentRequisitesText\(ctx\.instanceId/);
 });
