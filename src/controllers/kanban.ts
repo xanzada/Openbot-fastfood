@@ -902,7 +902,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     let textMessage = "";
     if (action === "new_order") {
       await clearKitchenCheckoutState(instance, phone).catch(() => undefined);
-      auditDecision("Building new_order WhatsApp template", { orderId, action, instance, lang, isPickup });
+      auditDecision("Building new_order WhatsApp template", { orderId, action, instance, lang, isPickup, delivery_price: body.delivery_price ?? "", total_price: body.total_price ?? "" });
       // The guest gets the short human order number when hub sends one; the UUID
       // stays internal (it is what Redis and the kitchen keys are built on).
       const displayOrderId = cleanInline(body.order_number || body.orderNumber || orderId, 40);

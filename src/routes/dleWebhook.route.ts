@@ -444,6 +444,7 @@ export async function handleDleWebhook(req: Request, res: Response) {
       phone: req.body?.phone,
       order_id: req.body?.order_id,
       total_price: req.body?.total_price,
+      delivery_price: req.body?.delivery_price,
       new_status: req.body?.new_status,
       is_pickup: req.body?.is_pickup,
       wait_time: req.body?.wait_time,
