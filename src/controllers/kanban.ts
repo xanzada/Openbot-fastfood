@@ -10,6 +10,7 @@ import {
   getKitchenStatus,
   getOrderNotifyCursor,
   getOrderPhone,
+  getPhoneByOrderScan,
   getSiteLanguageHint,
   getUserLang,
   redisClient,
@@ -21,6 +22,7 @@ import {
   saveToHistory,
 } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
+import { humanizeCancellationReason } from "../services/operatorVoice.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
 import { normalizeSiteLanguage, resolveSiteOutboundLanguage } from "../services/languagePolicy.service.js";
@@ -792,6 +794,17 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         }
       }
       if (!phone) {
+        // Orders placed before the phone map existed: scan the phone-keyed
+        // last_order cache for this order id, so an operator's cancellation
+        // for an old order still reaches the guest instead of dying silently.
+        const scanned = await getPhoneByOrderScan(instance, orderId).catch(() => "");
+        if (scanned) {
+          phone = scanned;
+          body.phone = scanned;
+          auditDecision("Order phone recovered by scanning the last_order cache", { orderId, action, instance });
+        }
+      }
+      if (!phone) {
         auditDecision("Rejected webhook: invalid phone", { orderId, action, instance, rawPhone: body.phone });
         res.status(400).json({ ok: false, error: "BAD_PHONE" });
         return;
@@ -889,7 +902,18 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     }
     if (action === "order_rejected") {
       auditDecision("Building order_rejected WhatsApp template", { orderId, action, instance, lang });
-      textMessage = buildLegacyRejectedMessage(body, lang);
+      // The operator's cancel note reaches the guest only after a human-sounding
+      // rewrite: the bot speaks as the restaurant itself - never "оператор жазды".
+      // The AI keeps the internal understanding without exposing it. Falls back
+      // to the plain template when the rewrite is unavailable.
+      const humanReason = await humanizeCancellationReason(String(body.reason || ""), lang).catch(() => "");
+      if (humanReason) {
+        textMessage = lang === "ru"
+          ? `❌ ${humanReason}\n\nЕсли есть вопросы - просто напишите в этот чат, помогу.`
+          : `❌ ${humanReason}\n\nСұрағыңыз болса, осы чатқа жазыңыз - көмектесуге дайынмын.`;
+      } else {
+        textMessage = buildLegacyRejectedMessage(body, lang);
+      }
     }
     let effectiveStatus = "";
     if (action === "status_changed") {

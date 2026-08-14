@@ -228,3 +228,13 @@ test("receipt test mode relaxes blocks but analysis always runs, and a short pay
   assert.match(routeSource, /payment_receipt_shortfall/);
   assert.match(routeSource, /getPaymentRequisitesText\(ctx\.instanceId/);
 });
+
+test("operator cancel words reach the guest humanized, and the phone falls back to the last_order scan", async () => {
+  const kanbanSource = await readFile(new URL("../src/controllers/kanban.ts", import.meta.url), "utf8");
+  const redisSource = await readFile(new URL("../src/services/redis.service.ts", import.meta.url), "utf8");
+  assert.match(kanbanSource, /humanizeCancellationReason/);
+  assert.match(kanbanSource, /getPhoneByOrderScan\(instance, orderId\)/);
+  assert.match(redisSource, /export async function getPhoneByOrderScan/);
+  const { humanizeCancellationReason } = await import("../src/services/operatorVoice.service.js");
+  assert.equal(await humanizeCancellationReason("", "kk"), "");
+});

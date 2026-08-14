@@ -256,6 +256,38 @@ export async function getLastKnownOrderId(instanceId: string, phone: string): Pr
   });
 }
 
+// Hub status/reject events carry only the order id. For orders that predate
+// the order_phone map, walk the phone-keyed last_order cache and return the
+// phone whose cached order matches. Small tenant base - a bounded SCAN is fine.
+export async function getPhoneByOrderScan(instanceId: string, orderId: string): Promise<string> {
+  const cleanOrderId = String(orderId || "").trim();
+  if (!instanceId || !cleanOrderId) return "";
+  return safeRedis("", async () => {
+    await connectRedis();
+    const prefix = `last_order:${instanceId}:`;
+    let cursor = 0;
+    for (let batch = 0; batch < 20; batch += 1) {
+      const res: any = await (redisClient as any).scan(cursor, { MATCH: `${prefix}*`, COUNT: 100 });
+      const keys: string[] = Array.isArray(res?.keys) ? res.keys : [];
+      for (const key of keys) {
+        const raw = await redisClient.get(key);
+        if (!raw) continue;
+        try {
+          const parsed = JSON.parse(String(raw));
+          const id = String(parsed?.order_id || parsed?.active_order?.id || parsed?.order?.id || "").trim();
+          if (id && id === cleanOrderId) return key.slice(prefix.length);
+        } catch {
+          // not JSON - skip
+        }
+      }
+      const nextCursor = Number(res?.cursor ?? 0);
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+    return "";
+  });
+}
+
 const KITCHEN_CONSENT_TTL_SECONDS = 30 * 60;
 const KITCHEN_CHECKOUT_GRACE_TTL_SECONDS = 30 * 60;
 
