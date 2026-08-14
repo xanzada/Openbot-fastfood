@@ -6,6 +6,7 @@ import {
   formatLegacyPaymentMessage,
   legacyStatusTemplates,
   orderNotifyRank,
+  parsePickupFlag,
 } from "../src/controllers/kanban.js";
 
 test("new_order message preserves Kazakh UTF-8 and order details", () => {
@@ -92,4 +93,29 @@ test("a stale replay never moves the guest backwards and a cancel blocks late pa
   assert.ok(orderNotifyRank("new_order") < orderNotifyRank("status_changed", "paid"));
   assert.equal(orderNotifyRank("status_changed", "pickup_ready"), orderNotifyRank("status_changed", "ready_delivery"));
   assert.equal(orderNotifyRank("status_changed", "mystery_status"), -1);
+});
+
+test("pickup order shows no address and no delivery line; the delivery fee is exact", () => {
+  const pickup = buildLegacyNewOrderMessage({ total_price: 5000, delivery_price: 0, items: [{ name: "Ролл", qty: 1, price: 5000 }] }, "kk", "40", true);
+  assert.match(pickup, /Алып кету/);
+  assert.doesNotMatch(pickup, /Мекенжай/);
+  assert.doesNotMatch(pickup, /Жеткізу/);
+
+  const free = buildLegacyNewOrderMessage({ total_price: 9000, address: "Абая 10", delivery_price: 0, items: [{ name: "Ролл", qty: 1, price: 9000 }] }, "kk", "41", false);
+  assert.match(free, /🚚 \*Жеткізу:\* Тегін/);
+
+  const paid = buildLegacyNewOrderMessage({ total_price: 7000, address: "Абая 10", delivery_price: 1000, items: [{ name: "Ролл", qty: 1, price: 6000 }] }, "kk", "42", false);
+  assert.match(paid, /🚚 \*Жеткізу:\* 1000 ₸/);
+});
+
+test("fulfillment_type words map to the pickup flag and the cancel note offers the menu", () => {
+  assert.equal(parsePickupFlag("pickup"), true);
+  assert.equal(parsePickupFlag("delivery"), false);
+  assert.equal(parsePickupFlag("самовывоз"), true);
+  assert.equal(parsePickupFlag(true), true);
+  assert.equal(parsePickupFlag(false), false);
+  assert.equal(parsePickupFlag(undefined), false);
+  assert.match(buildLegacyRejectedMessage({ reason: "Тағам бітіп қалды" }, "kk"), /[Мм]әзір/);
+  assert.match(buildLegacyRejectedMessage({ reason: "Тағам бітіп қалды" }, "kk"), /Тағам бітіп қалды/);
+  assert.match(buildLegacyRejectedMessage({}, "ru"), /меню/);
 });

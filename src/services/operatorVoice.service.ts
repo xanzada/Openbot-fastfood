@@ -31,7 +31,7 @@ export async function humanizeCancellationReason(rawReason: string, lang: string
         messages: [
           {
             role: "system",
-            content: `You rewrite a restaurant's internal order-cancellation note into one short warm message for the guest, written in ${target}. Rules: speak as the restaurant itself; NEVER mention an operator, manager, admin, bot, AI, or system; keep the concrete reason (missing dish, payment not received, courier problem, guest unreachable); max 170 characters; output ONLY the rewritten sentence, no quotes, no explanation.`,
+            content: `You rewrite a restaurant's internal order-cancellation note into one short warm message for the guest, written in ${target}. Rules: speak as the restaurant itself; NEVER mention an operator, manager, admin, bot, AI, or system; keep the concrete reason (a dish is unavailable, payment not received, courier problem, guest unreachable); ALWAYS end with a short warm invitation to choose another dish from the menu (мәзір / меню); never promise vague future treats; max 230 characters; output ONLY the rewritten text, no quotes, no explanation.`,
           },
           { role: "user", content: reason },
         ],
@@ -42,7 +42,7 @@ export async function humanizeCancellationReason(rawReason: string, lang: string
       .replace(/\s+/g, " ")
       .replace(/^["'«»\s]+|["'«»\s]+$/g, "")
       .trim()
-      .slice(0, 200);
+      .slice(0, 260);
     // If the model leaked the machinery words anyway, refuse and let the
     // caller fall back to the safe template.
     if (!text || /оператор|operator|админ|\bбот\b|жүйе|система|\bai\b/i.test(text)) return "";

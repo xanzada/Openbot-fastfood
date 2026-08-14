@@ -161,6 +161,18 @@ function getLanguage(body: Record<string, unknown>): Language {
   return textValue(body.lang || body.language).toLowerCase() === "ru" ? "ru" : "kk";
 }
 
+// Hub sends the order type as a STRING ("pickup"/"delivery" in fulfillment_type
+// or fulfillment.type). boolValue("pickup") is false, so a самовывоз order used
+// to render as delivery - "Мекенжай: Көрсетілмеген" plus a bogus "Жеткізу:
+// Тегін" line (live, 2026-08-14). Parse the words properly.
+export function parsePickupFlag(value: unknown): boolean {
+  if (value === true) return true;
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (/^(pickup|self|self_pickup|selfpickup|самовывоз|собой|carryout|takeaway|take_away)$/.test(raw)) return true;
+  if (/^(delivery|доставка|courier|курьер|deliver)$/.test(raw)) return false;
+  return boolValue(value, false);
+}
+
 function normalizeItems(value: unknown): Array<{ name: string; qty: number; price: number; total: number }> {
   return parseJsonArray(value)
     .map((item) => {
@@ -395,17 +407,17 @@ export function formatLegacyPaymentMessage(totalAmount: string, paymentInfo: str
 
 export function buildLegacyRejectedMessage(body: Record<string, unknown>, lang: Language): string {
   // The guest must never wonder why: the operator's reason is stated plainly
-  // (payment never arrived, dish not available, guest walked away) and the
-  // chat stays open for questions - no blind "choose another dish" push.
+  // (a dish ran out, payment never arrived) AND the way forward is given -
+  // choose another dish from the menu. No vague "келесіде қуантамыз" filler.
   const reason = cleanInline(body.reason || "", 200);
   if (lang === "ru") {
     return reason
-      ? `❌ *Ваш заказ отменён.*\nПричина: *${reason}*.\nЕсли что-то непонятно, просто напишите в этот чат - я всё объясню.`
-      : `❌ *Ваш заказ отменён.*\nНапишите в этот чат - сразу объясню точную причину и помогу оформить заказ заново.`;
+      ? `❌ *Ваш заказ отменён.*\nПричина: *${reason}*.\nВы можете выбрать другое блюдо в меню и оформить заказ - напишите, и я сразу пришлю ссылку на меню.`
+      : `❌ *Ваш заказ отменён.*\nВы можете выбрать другое блюдо в меню - или напишите в этот чат, и я сразу объясню точную причину.`;
   }
   return reason
-    ? `❌ *Тапсырысыңыздан бас тартылды.*\nСебебі: *${reason}*.\nТүсінбеген нәрсе болса, осы чатқа жазыңыз - бәрін түсіндіріп беремін.`
-    : `❌ *Тапсырысыңыздан бас тартылды.*\nОсы чатқа жазыңыз - нақты себебін бірден айтып, тапсырысты қайта рәсімдеуге көмектесемін.`;
+    ? `❌ *Тапсырысыңыздан бас тартылды.*\nСебебі: *${reason}*.\nМәзірден басқа тағам таңдап, тапсырыс бере аласыз - жазсаңыз, мәзір сілтемесін бірден жіберемін.`
+    : `❌ *Тапсырысыңыздан бас тартылды.*\nМәзірден басқа тағам таңдап тапсырыс бере аласыз - немесе осы чатқа жазыңыз, нақты себебін бірден айтамын.`;
 }
 
 export const legacyStatusTemplates: Record<Language, Record<string, string>> = {
@@ -773,7 +785,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     let phone = normalizePhone(body.phone || "");
     const orderId = cleanInline(body.order_id || body.orderId || body.id || "0", 40);
     const newStatus = cleanInline(body.status || body.new_status || body.order_status, 80);
-    const isPickup = boolValue(body.is_pickup, false);
+    const isPickup = parsePickupFlag(body.is_pickup);
 
     if (!isShiftNoteAction) {
       if (!isValidOrderId(orderId) || orderId === "0") {

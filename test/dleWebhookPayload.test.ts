@@ -329,3 +329,25 @@ test("an event named `event` or `type` is recognised, not dropped as BAD_ACTION"
   normalizeDlePayload(unknown);
   assert.equal(unknown.body.action, "something.else");
 });
+
+test("order.created nested fulfillment maps address, pickup type and zero delivery price", () => {
+  const r = req({
+    event_type: "order.created",
+    instance: "prestige",
+    event_id: "evt_test_pickup_1",
+    data: {
+      order_id: "019ffb51-d77b-7b91-98fa-eebac78de247",
+      phone: "77476884956",
+      fulfillment_type: "pickup",
+      delivery_price: 0,
+      total_price: 5000,
+      fulfillment: { type: "pickup", address: "Абая 10" },
+      amounts: { delivery_amount_minor: 0, total_amount_minor: 5000 },
+    },
+  });
+  normalizeDlePayload(r);
+  assert.equal(r.body.action, "new_order");
+  assert.equal(r.body.is_pickup, "pickup");
+  assert.equal(r.body.address, "Абая 10");
+  assert.equal(String(r.body.delivery_price), "0");
+});

@@ -202,6 +202,12 @@ export function normalizeDlePayload(req: Request) {
     ...records.map((record) => record.amounts),
     order.amounts,
   );
+  // The storefront nests the delivery type and address inside `fulfillment`
+  // ({type: "delivery"|"pickup", address: "…"}) - read it too (2026-08-14).
+  const fulfillment = firstObject(
+    ...records.map((record) => record.fulfillment),
+    order.fulfillment,
+  );
   const legacySourceId = rawEventType ? "" : source.id;
   const orderId = normalizeExternalId(firstValue(
     valueFrom(records, "order_id", "orderId"),
@@ -243,13 +249,14 @@ export function normalizeDlePayload(req: Request) {
     ),
     bonus: firstValue(valueFrom(records, "bonus", "bonus_spent_amount_minor", "bonusSpentAmountMinor"), order.bonus_spent_amount_minor),
     persons: firstValue(valueFrom(records, "persons", "cutlery_count", "cutleryCount"), order.cutlery_count),
-    address: firstValue(valueFrom(records, "address"), order.address),
+    address: firstValue(valueFrom(records, "address"), order.address, fulfillment.address),
     comment: firstValue(valueFrom(records, "comment", "info"), order.comment),
     items: firstValue(valueFrom(records, "items", "goods", "products", "order_items", "orderItems"), order.items, order.goods, order.products, order.order_items),
     lang: valueFrom(records, "lang", "language", "lang_code", "locale"),
     is_pickup: firstValue(
       valueFrom(records, "is_pickup", "isPickup", "pickup", "delivery_type", "deliveryType", "fulfillment_type", "fulfillmentType"),
       valueFrom([order], "is_pickup", "isPickup", "delivery_type", "fulfillment_type", "fulfillmentType"),
+      fulfillment.type,
     ),
     reason: firstValue(valueFrom(records, "reason", "cancel_reason", "reject_reason"), order.reason),
     note_id: normalizeExternalId(firstValue(valueFrom(records, "note_id", "noteId"), note.note_id, note.noteId, note.id)),
