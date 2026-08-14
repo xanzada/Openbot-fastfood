@@ -1207,6 +1207,23 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
     if (!sendResult.ok) throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");
     await saveToHistory(ctx.instanceId, ctx.phone, "assistant", finalText, { source: "openbot-agent", ...noteHistoryMeta(ctx, finalText) });
+
+    // The personal ordering link always travels as its own message, never glued
+    // to the reply text (product rule, 2026-08-14): it stays easy to find in the
+    // chat, and the answer reads like a human wrote it.
+    if (ctx.magicLinkGranted && ctx.magicLink) {
+      const linkSend = await sendWhatsProResponseSequence({
+        instanceId: ctx.instanceId,
+        phone: ctx.phone,
+        text: ctx.magicLink,
+        requestScope: `${messageId}:magic-link`,
+      }).catch(() => null);
+      if (linkSend?.ok) {
+        await saveToHistory(ctx.instanceId, ctx.phone, "assistant", ctx.magicLink, { source: "openbot-agent" });
+      } else {
+        console.warn(`[OPENBOT:OUTBOUND] magic link send failed instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)}`);
+      }
+    }
     await markInboundDone(ctx.instanceId, messageId);
     await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
 
@@ -1257,7 +1274,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       language: ctx.language,
     }).catch(() => undefined);
     console.log(
-      `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_in_text=${result.hasLink} elapsed=${Date.now() - started}ms`
+      `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_separate=${result.hasLink} elapsed=${Date.now() - started}ms`
     );
   } catch (error) {
     await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);

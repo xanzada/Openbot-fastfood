@@ -18,20 +18,23 @@ import { envNumber } from "../utils/envNumber.js";
  * round, 2026-08-13). Now the agent itself decides: the link is appended only
  * when the sendMenuLink skill granted it this turn, and the answer is kept.
  */
+// A granted link makes "we cannot take your order" a lie by definition. The
+// model sometimes parrots an older refusal from the chat history while the tool
+// already granted a fresh link for this turn (live round, 2026-08-14: the guest
+// heard "тапсырыс қабылдай алмаймыз" and received the link in the same reply).
+const GRANTED_LINK_REFUSAL_RE = /(қабылдай алмаймыз|қабылдамаймыз|техникалық себеп|жұмыс істемей тұр|жұмыс істемейді|сілтемелер уақытша|не можем принять|не принимаем заказ|ссылки временно|ссылка не работает)/iu;
+
+/**
+ * The link always travels as its own separate WhatsApp message (product rule,
+ * 2026-08-14), never glued to the reply text. All this function still owes the
+ * text: if the model pasted the URL in anyway, take every occurrence back out -
+ * the transport sends it standalone.
+ */
 function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
   if (!ctx.magicLinkGranted || !ctx.magicLink) return text;
   const link = ctx.magicLink;
-  if (text.includes(link)) {
-    // The model pasted the URL itself: keep the first mention and drop echoes -
-    // one message must never carry the same link twice.
-    const firstAt = text.indexOf(link);
-    const head = text.slice(0, firstAt + link.length);
-    const tail = text.slice(firstAt + link.length).split(link).join("");
-    return `${head}${tail}`.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-  }
-  const intro = ctx.language === "kk" ? "Міне мәзір сілтемесі:" : "Вот ссылка на меню:";
-  const body = String(text || "").trim();
-  return body ? `${body}\n\n${intro}\n${link}` : `${intro}\n${link}`;
+  if (!text.includes(link)) return text;
+  return text.split(link).join(" ").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function buildAgent(ctx: FastFoodContext, extraInstruction?: string) {
@@ -131,9 +134,15 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     }
   }
 
+  if (ctx.magicLinkGranted && ctx.magicLink && GRANTED_LINK_REFUSAL_RE.test(finalText)) {
+    finalText = ctx.language === "kk"
+      ? "Тапсырыс беруге болады - жеке сілтемеңізді бөлек хатпен жібердім."
+      : "Можно оформить заказ - отправил вашу персональную ссылку отдельным сообщением.";
+  }
+
   return {
     text: finalText,
-    hasLink: validation.hasLink || Boolean(ctx.magicLink && finalText.includes(ctx.magicLink)),
+    hasLink: Boolean(ctx.magicLinkGranted && ctx.magicLink),
     link: ctx.magicLink,
     rawText: result.text,
     usage: result.usage,

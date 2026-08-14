@@ -78,7 +78,7 @@ function refusalMessage(reason: ReturnType<typeof classifyMenuLinkRefusal>, lang
 export function createSendMenuLinkSkill(ctx: FastFoodContext) {
   return createTool({
     name: "sendMenuLink",
-    description: "Return the guest's personal ordering link ONLY when it is genuinely needed right now: the guest asks to order, to see the menu/catalog/cart, asks for the link, reports the previous link broken, or you can tell the conversation cannot move forward without it. Plain questions (prices, dishes, hours, delivery) are answered with searchMenu/getBusinessInfo - never with a link. There is NO daily or per-conversation limit: whenever the guest truly needs the link again, call this tool again and a fresh one is issued - deciding when it is truly needed is your job, rationing is not. If the guest says the earlier link does not open or expired, set previousLinkBroken=true. The link is tied to the guest's phone and stays valid for a month; never mention validity unless the guest asks. Never paste the URL into your text yourself - the system appends it at most once per reply.",
+    description: "Return the guest's personal ordering link ONLY when it is genuinely needed right now: the guest asks to order, to see the menu/catalog/cart, asks for the link, reports the previous link broken, or you can tell the conversation cannot move forward without it. Plain questions (prices, dishes, hours, delivery) are answered with searchMenu/getBusinessInfo - never with a link. There is NO daily or per-conversation limit: whenever the guest truly needs the link again, call this tool again and a fresh one is issued - deciding when it is truly needed is your job, rationing is not. If the guest says the earlier link does not open or expired, set previousLinkBroken=true. The link is tied to the guest's phone and stays valid for a month; never mention validity unless the guest asks. Never paste the URL into your text yourself - the system delivers it as its own separate message right after your reply.",
     parameters: z.object({
       reason: z.string().describe("Why the link is being sent"),
       previousLinkBroken: z
@@ -109,6 +109,7 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
         allowed: true,
         link: ctx.magicLink,
         message: null,
+        note: "The link is delivered to the guest as its own separate message right after your reply - never paste the URL into your text, and never say orders cannot be accepted or links are down: the link IS working.",
         validity: "1 month",
       };
     },

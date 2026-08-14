@@ -92,7 +92,9 @@ export function hasExplicitMenuLinkIntent(text: string): boolean {
 const LINK_BROKEN_WORD_RE =
   /(жасамай|жұмыс\s*істемей|жумыс\s*istemey|ашылмай|ашылмады|жарамсыз|жарамай|өшіп|өшті|өшкен|кіре\s*алмай|кірмей|не\s*работа|не\s*открыва|недейств|устарел|просроч|сгорел)/iu;
 const LINK_OBJECT_RE = /(сілтеме|ссылк|линк|link)/iu;
-const MAGIC_URL_RE = /\/auth\/whatsapp#token=/i;
+// Both generations of the personal link: the legacy hub token URL and the
+// current Platform SPA phone/hash URL.
+const MAGIC_URL_RE = /(\/auth\/whatsapp#token=|\?phone=\d{10,15}&hash=)/i;
 
 /**
  * "Ол жасамай қалды" carries no link keyword, yet it is the clearest possible
