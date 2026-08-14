@@ -260,7 +260,7 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
   let extractedPersons = 0;
   const deliveryMatch = rawComment.match(/\[(?:Доставка|Жеткізу)\s*:?[\s]*(\d+(?:[.,]\d+)?)\s*(?:т|₸)?\]/iu);
   const explicitDelivery =
-    body.delivery_fee ?? body.delivery_price ?? body.delivery_cost ?? body.shipping_cost ?? body.delivery_amount;
+    body.delivery_fee ?? body.delivery_price ?? body.delivery_cost ?? body.shipping_cost ?? body.delivery_amount ?? body.delivery_amount_minor ?? body.deliveryAmountMinor;
   const deliveryFee = Math.max(
     0,
     numberValue(explicitDelivery ?? deliveryMatch?.[1]?.replace(",", ".") ?? 0, 0)

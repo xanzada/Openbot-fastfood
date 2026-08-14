@@ -59,6 +59,16 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendRe
     return failure(bytes.byteLength ? "receipt_too_large" : "invalid_receipt_media", bytes.byteLength ? "receipt_media_too_large" : "receipt_media_invalid");
   }
 
+  // The operator verifies the payment against this line, not against a generic
+  // "клиент отправил чек": sender name, amount and bank, short and readable
+  // (product rule, 2026-08-14: "Рахметоллаұлы Б 8000 ₸ kaspi").
+  const noteParts = [
+    String(input.senderName || "").trim(),
+    Number(input.amount) > 0 ? `${Number(input.amount)} ₸` : "",
+    String(input.bankName || "").trim(),
+  ].filter(Boolean);
+  const note = noteParts.join(" ").replace(/\s{2,}/g, " ").trim().slice(0, 200);
+
   let response: any;
   try {
     response = await sendReceipt({
@@ -68,6 +78,7 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendRe
       bytes,
       mimeType,
       documentKind: "receipt",
+      ...(note ? { note } : {}),
     }, { config: input.config });
   } catch (error) {
     auditError("Receipt upload to Alemi failed", error, {

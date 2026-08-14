@@ -66,3 +66,21 @@ test("delivery order shows localized fee below the comment and removes the raw m
   }, "ru", "38", false);
   assert.match(paid, /💬 \*Комментарий:\* Позвонить заранее\n🚚 \*Доставка:\* 600 ₸/);
 });
+
+// The site sends the real delivery fee when it charges one and an explicit free
+// marker above the threshold; with no field at all the bot must not invent
+// "Тегін" (live, 2026-08-14).
+test("the delivery line shows the site's real fee, says free only on an explicit marker, and never invents free", () => {
+  const feeMsg = buildLegacyNewOrderMessage({ total_price: 5200, delivery_price: 500, items: [{ name: "Pizza", qty: 1, price: 5200 }] }, "kk", "1", false);
+  assert.match(feeMsg, /Жеткізу:\* 500 ₸/u);
+
+  const freeMsg = buildLegacyNewOrderMessage({ total_price: 9000, delivery_price: 0, items: [{ name: "Pizza", qty: 1, price: 9000 }] }, "kk", "1", false);
+  assert.match(freeMsg, /Жеткізу:\* Тегін/u);
+
+  const freeWordMsg = buildLegacyNewOrderMessage({ total_price: 9000, delivery_price: "тегін", items: [{ name: "Pizza", qty: 1, price: 9000 }] }, "kk", "1", false);
+  assert.match(freeWordMsg, /Жеткізу:\* Тегін/u);
+
+  const unknownMsg = buildLegacyNewOrderMessage({ total_price: 5200, items: [{ name: "Pizza", qty: 1, price: 5200 }] }, "kk", "1", false);
+  assert.match(unknownMsg, /Жеткізу:\* сайтта есептеледі/u);
+  assert.doesNotMatch(unknownMsg, /Жеткізу:\* Тегін/u);
+});

@@ -75,6 +75,9 @@ export interface UploadOrderDocumentInput {
   mimeType: string;
   documentKind?: "receipt" | "other";
   fileName?: string;
+  // Short operator-facing line extracted from the receipt: sender name, amount,
+  // bank ("Рахметоллаұлы Б 8000 ₸ kaspi"). Hub stores it as the order comment.
+  note?: string;
 }
 
 export interface ReportPrintResultInput {
@@ -539,6 +542,10 @@ export async function uploadOrderDocument(input: UploadOrderDocumentInput, optio
       new Blob([blobBytes], { type: mimeType }),
       input.fileName || `receipt.${extensionForMime(mimeType)}`
     );
+    // The operator verifies the payment against this line, not a generic
+    // "клиент отправил чек": sender name, amount and bank (2026-08-14).
+    const note = firstString(input.note);
+    if (note) form.append("note", note);
     const response = await (options.transport || axiosTransport)({
       url: endpoint(credentials.apiUrl, ALEMI_ORDER_DOCUMENT_PATH),
       body: form,

@@ -191,3 +191,27 @@ test("a receipt arriving as a data URL is uploaded, not rejected at the base64 c
   assert.equal(result.success, true);
   assert.equal(Buffer.from(captured.bytes).toString("utf8"), "%PDF-1.4 fake receipt");
 });
+
+// The operator verifies the payment against the extracted line, not a generic
+// "клиент отправил чек": sender name, amount and bank travel with the upload.
+test("the receipt upload carries the extracted sender, amount and bank as the operator note", async () => {
+  let captured: any = null;
+  const result = await deliverReceiptToClient({
+    instanceId: "prestige",
+    phone: "77476884956",
+    orderNumber: "019fffd8-59e3-7f55-bf68-13f64c4b7520",
+    config: {},
+    amount: 8000,
+    senderName: "Рахметоллаұлы Б",
+    bankName: "kaspi",
+    receiptBase64: `data:application/pdf;base64,${Buffer.from("%PDF-1.4 fake receipt").toString("base64")}`,
+    mimeType: "application/pdf",
+    sourceMessageId: "msg-2",
+  }, (async (input: any) => {
+    captured = input;
+    return { order_id: input.orderId, document_id: "doc-2", attached_at: "2026-08-14T12:00:00Z" };
+  }) as any);
+
+  assert.equal(result.success, true);
+  assert.equal(captured.note, "Рахметоллаұлы Б 8000 ₸ kaspi");
+});
