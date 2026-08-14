@@ -20,10 +20,22 @@ test("A first-time guest with no link and no failure flag is still not told to u
   assert.equal(classifyMenuLinkRefusal({ ...live, explicitMenuLinkIntent: true, magicLink: null }), "link_issue_failed");
 });
 
-test("A resend after the link really was sent keeps the previous-link answer", () => {
+test("A resend after the link really was sent is granted again - no daily rationing", () => {
+  const reason = classifyMenuLinkRefusal({ ...live, explicitMenuLinkIntent: true, magicLink: "https://x/auth/whatsapp/t2", magicLinkAlreadySent: true });
+
+  assert.equal(reason, null);
+});
+
+test("An explicit request whose fresh link failed to mint is an issue failure even when one was sent before", () => {
   const reason = classifyMenuLinkRefusal({ ...live, explicitMenuLinkIntent: true, magicLink: null, magicLinkAlreadySent: true });
 
-  assert.equal(reason, "link_already_sent");
+  assert.equal(reason, "link_issue_failed");
+});
+
+test("A spurious call on a turn with no link need is answered without a link", () => {
+  const reason = classifyMenuLinkRefusal({ ...live, explicitMenuLinkIntent: false, magicLink: null, magicLinkAlreadySent: true });
+
+  assert.equal(reason, "link_not_needed");
 });
 
 test("An unreachable kitchen outranks every link question", () => {

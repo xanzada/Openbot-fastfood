@@ -88,3 +88,27 @@ export function hasExplicitMenuLinkIntent(text: string): boolean {
     isMenuLinkResendRequest(value)
   );
 }
+
+const LINK_BROKEN_WORD_RE =
+  /(жасамай|жұмыс\s*істемей|жумыс\s*istemey|ашылмай|ашылмады|жарамсыз|жарамай|өшіп|өшті|өшкен|кіре\s*алмай|кірмей|не\s*работа|не\s*открыва|недейств|устарел|просроч|сгорел)/iu;
+const LINK_OBJECT_RE = /(сілтеме|ссылк|линк|link)/iu;
+const MAGIC_URL_RE = /\/auth\/whatsapp#token=/i;
+
+/**
+ * "Ол жасамай қалды" carries no link keyword, yet it is the clearest possible
+ * broken-link report when our recent messages carried one. A broken report must
+ * always mint a fresh link: answering "use the previous link" to a guest who
+ * just said it died is the one reply that can never be right (live round,
+ * 2026-08-14: the guest heard exactly that, then gave up).
+ *
+ * Two shapes count: the message itself pairs a link word with a broken word
+ * ("сілтеме ашылмайды"), or a SHORT message carries only the broken word while
+ * a link sits in the last few history entries ("ол жасамай қалды").
+ */
+export function hasBrokenLinkReport(text = "", recentHistory: string[] = []): boolean {
+  const value = String(text || "");
+  if (!LINK_BROKEN_WORD_RE.test(value)) return false;
+  if (LINK_OBJECT_RE.test(value)) return true;
+  if (value.length > 120) return false;
+  return recentHistory.some((entry) => LINK_OBJECT_RE.test(entry) || MAGIC_URL_RE.test(entry));
+}

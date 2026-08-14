@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage } from "../utils/language.js";
-import { hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
+import { hasBrokenLinkReport, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getMenuContext, getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
-import { issueCustomerAccessLink } from "../services/alemiApi.service.js";
+import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
 import {
   connectRedis,
@@ -261,7 +261,14 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // link (live round, 2026-08-12). A complaint or a request for a human is never
   // an order intent: no link is issued on that turn, which also lets
   // finalValidator strip one if the model writes it anyway.
-  const explicitMenuLinkIntent = hasExplicitMenuLinkIntent(text)
+  // A broken-link report ("сілтеме ашылмайды", or a bare "ол жасамай қалды"
+  // right after we sent one) is always a link request: the guest needs a fresh
+  // token, never a reminder about the dead one (live round, 2026-08-14).
+  const brokenLinkReport = hasBrokenLinkReport(
+    text,
+    (Array.isArray(chatHistory) ? chatHistory : []).slice(-6).map((entry: any) => String(entry?.text || "")),
+  );
+  const explicitMenuLinkIntent = (hasExplicitMenuLinkIntent(text) || brokenLinkReport)
     && !isLikelyComplaintText(text)
     && !isLikelyOperatorRequestText(text);
   let magicLinkFailed = false;
@@ -279,6 +286,12 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
         return null;
       })
     : null;
+  if (magicLink) {
+    // The hub must know the guest's WhatsApp number the moment an ordering link
+    // exists: bot-only guests had no client record in the hub DB (2026-08-14).
+    // Fire-and-forget - CRM bookkeeping never delays the guest's reply.
+    void upsertCustomerLead({ instanceId, phone, config: safeConfig }).catch(() => false);
+  }
 
   return {
     instanceId,

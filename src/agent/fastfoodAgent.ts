@@ -20,10 +20,18 @@ import { envNumber } from "../utils/envNumber.js";
  */
 function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
   if (!ctx.magicLinkGranted || !ctx.magicLink) return text;
-  if (text.includes(ctx.magicLink)) return text;
+  const link = ctx.magicLink;
+  if (text.includes(link)) {
+    // The model pasted the URL itself: keep the first mention and drop echoes -
+    // one message must never carry the same link twice.
+    const firstAt = text.indexOf(link);
+    const head = text.slice(0, firstAt + link.length);
+    const tail = text.slice(firstAt + link.length).split(link).join("");
+    return `${head}${tail}`.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
   const intro = ctx.language === "kk" ? "Міне мәзір сілтемесі:" : "Вот ссылка на меню:";
   const body = String(text || "").trim();
-  return body ? `${body}\n\n${intro}\n${ctx.magicLink}` : `${intro}\n${ctx.magicLink}`;
+  return body ? `${body}\n\n${intro}\n${link}` : `${intro}\n${link}`;
 }
 
 function buildAgent(ctx: FastFoodContext, extraInstruction?: string) {

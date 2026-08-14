@@ -2,19 +2,17 @@ import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import {
   getKitchenCheckoutFingerprint,
-  getMagicLinkSentAt,
   markKitchenCheckoutStarted,
   markMagicLinkSent,
 } from "../services/redis.service.js";
 import { classifyKitchenSalesPolicy, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
-// A link stays valid for a month, so a second link on the same day is pure
-// noise: it buries the first message and makes the assistant read like a bot.
-// Inside this window the guest is simply reminded that they can order through
-// the link they already have. The validity itself is never volunteered - it is
-// only stated if the guest asks how long the link lasts.
-const MENU_LINK_REISSUE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// No calendar limit on resends (product decision, 2026-08-14): the agent
+// itself decides when the guest truly needs the link - asked for it, reported
+// the previous one broken, or plainly cannot proceed without it. Spam is
+// prevented structurally: the transport appends the URL at most once per reply
+// and the validator strips any link this skill did not grant this turn.
 
 /**
  * Why the link is being withheld. Three different situations used to share one
@@ -43,8 +41,10 @@ export function classifyMenuLinkRefusal(
   }
   if (!runtimeAvailable && !hasActiveOrder) return "runtime_unavailable" as const;
   if (ctx.magicLinkFailed) return "link_issue_failed" as const;
-  if (Boolean(ctx.explicitMenuLinkIntent) && !ctx.magicLink && !ctx.magicLinkAlreadySent) return "link_issue_failed" as const;
-  return "link_already_sent" as const;
+  if (Boolean(ctx.explicitMenuLinkIntent) && !ctx.magicLink) return "link_issue_failed" as const;
+  // The tool was called on a turn with no link need in the message at all:
+  // answer the actual question and leave the URL out.
+  return "link_not_needed" as const;
 }
 
 function refusalMessage(reason: ReturnType<typeof classifyMenuLinkRefusal>, language: string, policy?: KitchenSalesPolicy | null) {
@@ -70,15 +70,15 @@ function refusalMessage(reason: ReturnType<typeof classifyMenuLinkRefusal>, lang
       ? "Сілтемені дайындай алмадым, техникалық ақаулық болды. Бірер минуттан кейін қайта сұраңыз."
       : "Не удалось подготовить ссылку из-за технической ошибки. Попросите её ещё раз через пару минут.";
   }
-  // Same-day repeat: point at the link they already have, without reciting how
-  // long it is valid for.
-  return kk ? "Алдыңғы сілтеме арқылы тапсырыс бере аласыз." : "Можете оформить заказ по предыдущей ссылке.";
+  // link_not_needed: no guest-facing wording at all - the model answers the
+  // actual question and simply leaves the URL out.
+  return null;
 }
 
 export function createSendMenuLinkSkill(ctx: FastFoodContext) {
   return createTool({
     name: "sendMenuLink",
-    description: "Return the personal ordering link ONLY when you have concluded the guest now needs to open the site: they ask to order, to see the menu/catalog/cart, to get the link, or you can tell from the conversation that they cannot go further without it. Answer questions (prices, dishes, hours, delivery) with searchMenu/getBusinessInfo instead - a question is not a link request. A link already sent stays usable for a month, so if the guest asks again on the same day do NOT call this tool: just say they can order through the link you sent earlier. Never volunteer how long the link lasts; say it only if they ask. Set previousLinkBroken=true only when they report the old link does not open.",
+    description: "Return the guest's personal ordering link ONLY when it is genuinely needed right now: the guest asks to order, to see the menu/catalog/cart, asks for the link, reports the previous link broken, or you can tell the conversation cannot move forward without it. Plain questions (prices, dishes, hours, delivery) are answered with searchMenu/getBusinessInfo - never with a link. There is NO daily or per-conversation limit: whenever the guest truly needs the link again, call this tool again and a fresh one is issued - deciding when it is truly needed is your job, rationing is not. If the guest says the earlier link does not open or expired, set previousLinkBroken=true. The link is tied to the guest's phone and stays valid for a month; never mention validity unless the guest asks. Never paste the URL into your text yourself - the system appends it at most once per reply.",
     parameters: z.object({
       reason: z.string().describe("Why the link is being sent"),
       previousLinkBroken: z
@@ -87,25 +87,15 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
         .describe("True only when the guest says the earlier link does not work, expired, or was deleted"),
     }),
     execute: async ({ previousLinkBroken }: { previousLinkBroken?: boolean }) => {
+      // previousLinkBroken stays in the schema so the model can flag a broken
+      // report; it no longer gates anything, because every genuine request now
+      // takes the normal grant path (no calendar rationing, 2026-08-14).
+      void previousLinkBroken;
       const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
       const acceptedFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
       const refusal = classifyMenuLinkRefusal(ctx, policy, acceptedFingerprint === policy.fingerprint);
       if (refusal) {
         return { allowed: false, link: null, reason: refusal, message: refusalMessage(refusal, ctx.language, policy) };
-      }
-      // One link per guest per day. A guest who asks a second time on the same
-      // day is already holding a working URL: sending another one buries the
-      // first message, reads like a bot, and gains nothing. They are pointed at
-      // the link they have unless they report it broken.
-      const sentAt = await getMagicLinkSentAt(ctx.instanceId, ctx.phone).catch(() => 0);
-      const sentWithinDay = sentAt > 0 && Date.now() - sentAt < MENU_LINK_REISSUE_WINDOW_MS;
-      if (sentWithinDay && !previousLinkBroken) {
-        return {
-          allowed: false,
-          link: null,
-          reason: "link_already_sent" as const,
-          message: refusalMessage("link_already_sent", ctx.language, policy),
-        };
       }
       await markMagicLinkSent(ctx.instanceId, ctx.phone).catch(() => false);
       // Remember the kitchen as it is right now. If it changes while the guest is

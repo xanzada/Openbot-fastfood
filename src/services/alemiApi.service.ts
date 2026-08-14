@@ -461,6 +461,41 @@ export async function issueCustomerAccessLink(input: {
   return httpUrlOrNull(firstString(result?.url, result?.access_url, result?.link));
 }
 
+/**
+ * Write the guest's WhatsApp number into the hub's client CRM.
+ *
+ * The hub showed no phone for guests who only ever talked to the bot
+ * (2026-08-14): the number reached the hub inside order payloads but no client
+ * record existed. Issue time is the one moment the number is certain and worth
+ * keeping, so link issuance fires this upsert. Fire-and-forget by design - a
+ * CRM hiccup must never delay or break the guest's reply.
+ */
+export async function upsertCustomerLead(input: {
+  instanceId: string;
+  phone: string;
+  interest?: string;
+  salesStage?: string;
+  config?: Record<string, any> | null;
+}, options: AlemiCallOptions = {}): Promise<boolean> {
+  const phone = e164Kazakhstan(input.phone);
+  if (!phone) return false;
+  try {
+    await callAlemiCommand(
+      input.instanceId,
+      "crm.lead.upsert",
+      {
+        phone_e164: phone,
+        interest: input.interest || "whatsapp_ordering",
+        sales_stage: input.salesStage || "link_issued",
+      },
+      { ...options, config: options.config === undefined ? input.config : options.config }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function extensionForMime(mimeType: string) {
   const mime = String(mimeType || "").toLowerCase();
   if (mime === "image/png") return "png";

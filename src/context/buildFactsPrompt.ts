@@ -386,6 +386,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           value_available: Boolean(ctx.magicLink),
           url: ctx.magicLink,
           validity_rule: "Magic link is valid for 1 month and is tied to the customer's WhatsApp number.",
+          resend_rule: "already_sent is informational only - there is NO daily limit. If the guest asks again or the previous link failed, call sendMenuLink again; never refuse just because one was sent earlier.",
         },
         recent_dialog: compactConversationHistory(ctx.chatHistory),
         conversation_policy: "recent_dialog is your working memory: up to 8 customer and 8 business-side messages in chronological order, operator kept as a distinct human role. Continue from the last unresolved point, greet at most once, answer once, do not re-ask what was answered, and never expose internal reasoning.",
