@@ -166,3 +166,28 @@ test("receipt failure, invalid recipient, and retry-safe nonconfirmation never r
   if (!failed.success) assert.equal(failed.errorCode, "delivery_unconfirmed");
   if (!invalid.success) assert.equal(invalid.errorCode, "invalid_recipient");
 });
+
+// A hydrated receipt reaches this step as a data URL ("data:application/pdf;base64,…").
+// The plain-base64 check used to reject that prefix, so the upload never ran and
+// the guest heard "чекті операторға жібере алмадым" for a valid receipt.
+test("a receipt arriving as a data URL is uploaded, not rejected at the base64 check", async () => {
+  let captured: any = null;
+  const result = await deliverReceiptToClient({
+    instanceId: "prestige",
+    phone: "77476884956",
+    orderNumber: "019fffd8-59e3-7f55-bf68-13f64c4b7520",
+    config: {},
+    amount: 5200,
+    senderName: "Test Sender",
+    bankName: "Kaspi",
+    receiptBase64: `data:application/pdf;base64,${Buffer.from("%PDF-1.4 fake receipt").toString("base64")}`,
+    mimeType: "application/pdf",
+    sourceMessageId: "msg-1",
+  }, (async (input: any) => {
+    captured = input;
+    return { order_id: input.orderId, document_id: "doc-1", attached_at: "2026-08-14T11:43:00Z" };
+  }) as any);
+
+  assert.equal(result.success, true);
+  assert.equal(Buffer.from(captured.bytes).toString("utf8"), "%PDF-1.4 fake receipt");
+});

@@ -442,6 +442,7 @@ Content-Type: application/json
     "address": "Абай 10",
     "comment": "",
     "is_pickup": false,
+    "delivery_amount_minor": 500,
     "items": [{ "name": "Футомаки", "qty": 2, "price": 2900 }]
   },
   "wait_time": 35,

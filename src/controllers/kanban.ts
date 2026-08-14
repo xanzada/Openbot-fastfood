@@ -265,6 +265,13 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
     0,
     numberValue(explicitDelivery ?? deliveryMatch?.[1]?.replace(",", ".") ?? 0, 0)
   );
+  // "No fee field arrived" and "the site charged 0 on purpose" (order above the
+  // free-delivery threshold) are different facts: only an explicit value lets the
+  // message say the delivery is free. With no data the guest gets an honest line
+  // instead of a fabricated "Тегін" (live, 2026-08-14).
+  const deliveryKnown =
+    (explicitDelivery !== undefined && explicitDelivery !== null && String(explicitDelivery).trim() !== "")
+    || Boolean(deliveryMatch);
   if (deliveryMatch) rawComment = rawComment.replace(deliveryMatch[0], "");
 
   const bonusMatch = rawComment.match(/\[(?:Списано|Бонус|Шегерілді)\s*:?\s*(\d+)\s*(?:Б|₸)?[^\]]*\]/iu);
@@ -318,7 +325,7 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
     if (bonusNum > 0) textMessage += `🎁 *Потраченный бонус:* ${bonusNum} ₸\n`;
     if (persons > 0) textMessage += `🍴 *Количество персон:* ${persons}\n`;
     if (comment) textMessage += `💬 *Комментарий:* ${comment}\n`;
-    if (!isPickup) textMessage += `🚚 *Доставка:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : "Бесплатно"}\n`;
+    if (!isPickup) textMessage += `🚚 *Доставка:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : deliveryKnown ? "Бесплатно" : "рассчитана на сайте"}\n`;
     textMessage += `\n🛒 *Состав заказа:*\n${cartText}\n`;
     textMessage += `➖➖➖➖➖➖➖\n💰 *ИТОГО: ${totalAmount} ₸*\n➖➖➖➖➖➖➖\n\n`;
     textMessage += "⏳ *Внимание:* Мы проверяем наличие на кухне, пожалуйста, ожидайте 1-2 минуты...";
@@ -329,7 +336,7 @@ export function buildLegacyNewOrderMessage(body: Record<string, unknown>, lang: 
     if (bonusNum > 0) textMessage += `🎁 *Жұмсалған бонус:* ${bonusNum} ₸\n`;
     if (persons > 0) textMessage += `🍴 *Адам саны:* ${persons}\n`;
     if (comment) textMessage += `💬 *Пікір:* ${comment}\n`;
-    if (!isPickup) textMessage += `🚚 *Жеткізу:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : "Тегін"}\n`;
+    if (!isPickup) textMessage += `🚚 *Жеткізу:* ${deliveryFee > 0 ? `${deliveryFee} ₸` : deliveryKnown ? "Тегін" : "сайтта есептеледі"}\n`;
     textMessage += `\n🛒 *Тапсырыс құрамы:*\n${cartText}\n`;
     textMessage += `➖➖➖➖➖➖➖\n💰 *БАРЛЫҒЫ: ${totalAmount} ₸*\n➖➖➖➖➖➖➖\n\n`;
     textMessage += "⏳ *Назарыңызға:* Біз ас үйде бар-жоғын тексеріп жатырмыз, 1-2 минут күте тұрыңыз...";

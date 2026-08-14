@@ -232,7 +232,11 @@ export function normalizeDlePayload(req: Request) {
       valueFrom([order], "total_price", "total", "amount", "total_amount_minor", "totalAmountMinor", "total_amount"),
       valueFrom([amounts], "total", "total_amount_minor", "totalAmountMinor", "grand_total", "grandTotal", "total_with_delivery", "totalWithDelivery", "sum", "amount"),
     ),
-    delivery_price: firstValue(valueFrom(records, "delivery_price", "delivery_amount_minor", "deliveryAmountMinor"), order.delivery_amount_minor),
+    delivery_price: firstValue(
+      valueFrom(records, "delivery_price", "delivery_amount_minor", "deliveryAmountMinor", "delivery_fee", "deliveryFee"),
+      valueFrom([order], "delivery_price", "delivery_amount_minor", "deliveryAmountMinor", "delivery_fee"),
+      valueFrom([amounts], "delivery", "delivery_fee", "deliveryFee", "delivery_amount_minor", "deliveryAmountMinor"),
+    ),
     bonus: firstValue(valueFrom(records, "bonus", "bonus_spent_amount_minor", "bonusSpentAmountMinor"), order.bonus_spent_amount_minor),
     persons: firstValue(valueFrom(records, "persons", "cutlery_count", "cutleryCount"), order.cutlery_count),
     address: firstValue(valueFrom(records, "address"), order.address),

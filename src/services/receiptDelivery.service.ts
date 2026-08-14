@@ -30,19 +30,32 @@ function failure(errorCode: string, safeMessage: string): ReceiptDeliveryResult 
 export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendReceipt: ReceiptSender = uploadOrderDocument): Promise<ReceiptDeliveryResult> {
   const orderNumber = String(input.orderNumber || "").trim();
   const phone = String(input.phone || "").replace(/\D/g, "");
-  if (!orderNumber || !phone) return failure("invalid_recipient", "receipt_delivery_target_invalid");
+  if (!orderNumber || !phone) {
+    auditError("Receipt delivery target invalid", new Error("invalid_recipient"), { instanceId: input.instanceId, orderNumber: orderNumber || "-", hasPhone: Boolean(phone) });
+    return failure("invalid_recipient", "receipt_delivery_target_invalid");
+  }
 
   const mimeType = String(input.mimeType || "").split(";", 1)[0].trim().toLowerCase();
   const allowedMimeTypes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf"]);
-  if (!allowedMimeTypes.has(mimeType)) return failure("invalid_receipt_media", "receipt_media_type_invalid");
+  if (!allowedMimeTypes.has(mimeType)) {
+    auditError("Receipt media type rejected", new Error("invalid_receipt_media"), { instanceId: input.instanceId, orderNumber, mimeType });
+    return failure("invalid_receipt_media", "receipt_media_type_invalid");
+  }
 
-  const encoded = String(input.receiptBase64 || "").replace(/\s+/g, "");
+  // hydrateInboundMedia hands over a data URL ("data:application/pdf;base64,…").
+  // The prefix failed the plain-base64 check, so the upload was never attempted
+  // and the guest heard "чекті операторға жібере алмадым" for a perfectly valid
+  // receipt (live, 2026-08-14). Strip the prefix before validating.
+  const rawEncoded = String(input.receiptBase64 || "").replace(/\s+/g, "");
+  const encoded = rawEncoded.replace(/^data:[^,]*;base64,/i, "");
   if (!encoded || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+    auditError("Receipt media failed validation", new Error("invalid_receipt_media"), { instanceId: input.instanceId, orderNumber, hadDataUrlPrefix: /^data:/i.test(rawEncoded) });
     return failure("invalid_receipt_media", "receipt_media_invalid");
   }
   const bytes = Buffer.from(encoded, "base64");
   const maxBytes = mimeType === "application/pdf" ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES;
   if (!bytes.byteLength || bytes.byteLength > maxBytes) {
+    auditError("Receipt media size invalid", new Error(bytes.byteLength ? "receipt_too_large" : "invalid_receipt_media"), { instanceId: input.instanceId, orderNumber, bytes: bytes.byteLength });
     return failure(bytes.byteLength ? "receipt_too_large" : "invalid_receipt_media", bytes.byteLength ? "receipt_media_too_large" : "receipt_media_invalid");
   }
 
