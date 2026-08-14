@@ -351,3 +351,34 @@ test("order.created nested fulfillment maps address, pickup type and zero delive
   assert.equal(r.body.address, "Абая 10");
   assert.equal(String(r.body.delivery_price), "0");
 });
+
+test("bonus spend is read from the amounts or loyalty blocks, not only flat fields", () => {
+  const r = req({
+    event_type: "order.created",
+    instance: "prestige",
+    event_id: "evt_test_bonus_1",
+    data: {
+      order_id: "019ffb51-d77b-7b91-98fa-eebac78de247",
+      phone: "77476884956",
+      total_price: 6500,
+      delivery_price: 1000,
+      amounts: { bonus_amount_minor: 500, delivery_amount_minor: 1000, total_amount_minor: 6500 },
+    },
+  });
+  normalizeDlePayload(r);
+  assert.equal(String(r.body.bonus), "500");
+
+  const r2 = req({
+    event_type: "order.created",
+    instance: "prestige",
+    event_id: "evt_test_bonus_2",
+    data: {
+      order_id: "019ffb51-d77b-7b91-98fa-eebac78de247",
+      phone: "77476884956",
+      total_price: 6500,
+      loyalty: { spent: 500 },
+    },
+  });
+  normalizeDlePayload(r2);
+  assert.equal(String(r2.body.bonus), "500");
+});

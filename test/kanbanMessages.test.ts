@@ -119,3 +119,9 @@ test("fulfillment_type words map to the pickup flag and the cancel note offers t
   assert.match(buildLegacyRejectedMessage({ reason: "Тағам бітіп қалды" }, "kk"), /Тағам бітіп қалды/);
   assert.match(buildLegacyRejectedMessage({}, "ru"), /меню/);
 });
+
+test("a spent bonus shows as its own line in the order message", () => {
+  const msg = buildLegacyNewOrderMessage({ total_price: 6500, delivery_price: 1000, bonus: 500, address: "Абая 10", items: [{ name: "Ролл", qty: 2, price: 3000 }] }, "kk", "22", false);
+  assert.match(msg, /🎁 \*Жұмсалған бонус:\* 500 ₸/);
+  assert.match(msg, /БАРЛЫҒЫ: 6500 ₸/);
+});

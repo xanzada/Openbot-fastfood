@@ -208,6 +208,13 @@ export function normalizeDlePayload(req: Request) {
     ...records.map((record) => record.fulfillment),
     order.fulfillment,
   );
+  // Bonus/loyalty spend can arrive nested (amounts.bonus_amount_minor or a
+  // loyalty object) - reading only the flat field dropped it from the guest's
+  // receipt (live: items 6000 + delivery 1000 but total 6500, bonus invisible).
+  const loyalty = firstObject(
+    ...records.map((record) => record.loyalty),
+    order.loyalty,
+  );
   const legacySourceId = rawEventType ? "" : source.id;
   const orderId = normalizeExternalId(firstValue(
     valueFrom(records, "order_id", "orderId"),
@@ -247,7 +254,12 @@ export function normalizeDlePayload(req: Request) {
       valueFrom([order], "delivery_price", "delivery_amount_minor", "deliveryAmountMinor", "delivery_fee"),
       valueFrom([amounts], "delivery", "delivery_fee", "deliveryFee", "delivery_amount_minor", "deliveryAmountMinor"),
     ),
-    bonus: firstValue(valueFrom(records, "bonus", "bonus_spent_amount_minor", "bonusSpentAmountMinor"), order.bonus_spent_amount_minor),
+    bonus: firstValue(
+      valueFrom(records, "bonus", "bonus_spent", "bonusSpent", "bonus_amount", "bonusAmount", "bonus_amount_minor", "bonusAmountMinor", "bonus_spent_amount_minor", "bonusSpentAmountMinor", "discount", "discount_amount_minor", "discountAmountMinor", "loyalty_spent", "loyaltySpent"),
+      valueFrom([order], "bonus", "bonus_spent", "bonus_amount_minor", "bonus_spent_amount_minor", "bonusSpentAmountMinor", "discount_amount_minor"),
+      valueFrom([amounts], "bonus", "bonus_amount_minor", "bonusAmountMinor", "bonus_spent_amount_minor", "bonusSpentAmountMinor", "discount_amount_minor", "discountAmountMinor"),
+      valueFrom([loyalty], "bonus", "bonus_spent", "bonusSpent", "spent", "spent_amount_minor", "spentAmountMinor", "points_spent", "pointsSpent"),
+    ),
     persons: firstValue(valueFrom(records, "persons", "cutlery_count", "cutleryCount"), order.cutlery_count),
     address: firstValue(valueFrom(records, "address"), order.address, fulfillment.address),
     comment: firstValue(valueFrom(records, "comment", "info"), order.comment),
@@ -445,6 +457,7 @@ export async function handleDleWebhook(req: Request, res: Response) {
       order_id: req.body?.order_id,
       total_price: req.body?.total_price,
       delivery_price: req.body?.delivery_price,
+      bonus: req.body?.bonus,
       new_status: req.body?.new_status,
       is_pickup: req.body?.is_pickup,
       wait_time: req.body?.wait_time,
