@@ -257,8 +257,11 @@ test("a supported Hub stores analyzed receipt facts and receives no document byt
 test("legacy document upload is used only while Hub explicitly rejects the new command as unsupported", async () => {
   let documentInput: any = null;
   const unsupported: any = new Error("ALEMI_HTTP_422");
-  unsupported.statusCode = 422;
-  unsupported.code = "INTEGRATION_COMMAND_INVALID";
+  unsupported.code = "ERR_BAD_REQUEST";
+  unsupported.response = {
+    status: 400,
+    data: { error: { code: "INTEGRATION_COMMAND_INVALID" } },
+  };
 
   const result = await deliverReceiptToClient({
     instanceId: "prestige",
