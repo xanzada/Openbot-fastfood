@@ -10,6 +10,7 @@ import {
   createAlemiCommandId,
   issueCustomerAccessLink,
   mapLegacyAlemiAction,
+  reportAnalyzedReceipt,
   reportPrintResult,
   resolveAlemiCredentials,
   unwrapAlemiResponse,
@@ -52,6 +53,41 @@ test("Alemi command signs the exact ordered JSON bytes and emits the contract he
     "X-Command-Signature": expectedSignature("test-secret", "1700000000", expectedBody),
   });
   assert.doesNotMatch(JSON.stringify(request), /test-secret/);
+});
+
+test("analyzed receipt command sends structured payment facts without the raw document", async () => {
+  let captured: AlemiTransportRequest | null = null;
+  const result = await reportAnalyzedReceipt({
+    instanceId: "prestige",
+    orderId: "01a0098e-d585-7071-bb22-6beaf5b740f5",
+    sourceMessageId: "wa-receipt-28",
+    phone: "87476884956",
+    senderName: "Рахметоллаұлы Б.",
+    amount: 8000,
+    bankName: "Kaspi",
+  }, {
+    config,
+    commandId: "cmd-receipt-analysis",
+    nowMs: 1_700_000_000_000,
+    transport: async (request) => {
+      captured = request;
+      return { status: 201, data: { data: { receipt_analysis_id: "analysis-1", order_id: "01a0098e-d585-7071-bb22-6beaf5b740f5" } } };
+    },
+  });
+
+  const body = JSON.parse(String(captured?.body || ""));
+  assert.equal(body.command, "order.payment_receipt.analyzed");
+  assert.deepEqual(body.data, {
+    order_id: "01a0098e-d585-7071-bb22-6beaf5b740f5",
+    source_message_id: "wa-receipt-28",
+    phone_e164: "+77476884956",
+    sender_name: "Рахметоллаұлы Б.",
+    amount_minor: 800000,
+    currency: "KZT",
+    bank_name: "Kaspi",
+  });
+  assert.doesNotMatch(JSON.stringify(body), /base64|receiptBase64|transaction|paidAt|file/i);
+  assert.equal(result.receipt_analysis_id, "analysis-1");
 });
 
 test("legacy actions map to the documented Hub commands and data", () => {

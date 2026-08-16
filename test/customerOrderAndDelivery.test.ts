@@ -220,6 +220,94 @@ test("the receipt upload carries only the concise extracted payment facts as the
   assert.doesNotMatch(captured.note, /KZ-SECRET-REFERENCE|2026-08-14|PDF|file|файл/iu);
 });
 
+test("a supported Hub stores analyzed receipt facts and receives no document bytes", async () => {
+  let analysisInput: any = null;
+  let documentCalls = 0;
+  const result = await deliverReceiptToClient({
+    instanceId: "prestige",
+    phone: "77476884956",
+    orderNumber: "01a0098e-d585-7071-bb22-6beaf5b740f5",
+    config: {},
+    amount: 8000,
+    senderName: "Рахметоллаұлы Б",
+    bankName: "Kaspi",
+    receiptBase64: Buffer.from("private-receipt-bytes").toString("base64"),
+    mimeType: "image/jpeg",
+    sourceMessageId: "wa-receipt-28",
+  }, {
+    sendAnalysis: async (input: any) => {
+      analysisInput = input;
+      return { receipt_analysis_id: "analysis-1", order_id: input.orderId, received_at: "2026-08-16T13:00:00Z" };
+    },
+    sendDocument: async () => {
+      documentCalls += 1;
+      throw new Error("document must not be uploaded when the new command succeeds");
+    },
+  });
+
+  assert.deepEqual(result, { success: true, deliveryId: "analysis-1", deliveredAt: "2026-08-16T13:00:00Z" });
+  assert.equal(documentCalls, 0);
+  assert.equal(analysisInput.senderName, "Рахметоллаұлы Б");
+  assert.equal(analysisInput.amount, 8000);
+  assert.equal(analysisInput.bankName, "Kaspi");
+  assert.equal("bytes" in analysisInput, false);
+  assert.equal("receiptBase64" in analysisInput, false);
+});
+
+test("legacy document upload is used only while Hub explicitly rejects the new command as unsupported", async () => {
+  let documentInput: any = null;
+  const unsupported: any = new Error("ALEMI_HTTP_422");
+  unsupported.statusCode = 422;
+  unsupported.code = "INTEGRATION_COMMAND_INVALID";
+
+  const result = await deliverReceiptToClient({
+    instanceId: "prestige",
+    phone: "77476884956",
+    orderNumber: "01a0098e-d585-7071-bb22-6beaf5b740f5",
+    config: {},
+    amount: 8000,
+    senderName: "Рахметоллаұлы Б",
+    bankName: "Kaspi",
+    receiptBase64: Buffer.from("legacy-receipt").toString("base64"),
+    mimeType: "image/jpeg",
+    sourceMessageId: "wa-receipt-legacy",
+  }, {
+    sendAnalysis: async () => { throw unsupported; },
+    sendDocument: async (input: any) => {
+      documentInput = input;
+      return { document_id: "doc-legacy", order_id: input.orderId, attached_at: "2026-08-16T13:01:00Z" };
+    },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(Buffer.from(documentInput.bytes).toString(), "legacy-receipt");
+  assert.equal(documentInput.note, "Рахметоллаұлы Б. сумма 8000 ₸ Kaspi");
+});
+
+test("a transient analyzed-command failure never leaks the raw receipt through fallback", async () => {
+  let documentCalls = 0;
+  const unavailable: any = new Error("ALEMI_HTTP_503");
+  unavailable.statusCode = 503;
+  const result = await deliverReceiptToClient({
+    instanceId: "prestige",
+    phone: "77476884956",
+    orderNumber: "01a0098e-d585-7071-bb22-6beaf5b740f5",
+    config: {},
+    amount: 8000,
+    senderName: "Рахметоллаұлы Б",
+    bankName: "Kaspi",
+    receiptBase64: Buffer.from("must-stay-private").toString("base64"),
+    mimeType: "image/jpeg",
+    sourceMessageId: "wa-receipt-503",
+  }, {
+    sendAnalysis: async () => { throw unavailable; },
+    sendDocument: async () => { documentCalls += 1; return {}; },
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(documentCalls, 0);
+});
+
 test("receipt test mode relaxes blocks but analysis always runs, and a short payment becomes an SOS flow", async () => {
   const routeSource = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
   assert.match(routeSource, /mediaAnalysis\.type === "receipt"/);
