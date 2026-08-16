@@ -1,6 +1,7 @@
 node_modules
 node_modules
 .env
+dist/
 smoke.log
 smoke-results.jsonl
 learning-report.json
