@@ -67,12 +67,19 @@ function errorResponseData(error: any) {
 export function isAnalyzedReceiptCommandUnsupported(error: any) {
   const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
   const data = errorResponseData(error);
-  const code = String(
-    error?.code || data?.error?.code || data?.error_code || data?.code || ""
-  ).trim().toUpperCase();
+  // Axios uses its own generic ERR_BAD_REQUEST code at the top level. Prefer
+  // Hub's structured business code so an explicit unsupported-command reply is
+  // not mistaken for a transport failure.
+  const codes = [
+    data?.error?.code,
+    data?.error_code,
+    data?.code,
+    error?.alemiCode,
+    error?.code,
+  ].map((value) => String(value || "").trim().toUpperCase()).filter(Boolean);
   const detail = JSON.stringify(data || "").toUpperCase();
   if (![400, 404, 422].includes(status)) return false;
-  if (/UNSUPPORTED|UNKNOWN_COMMAND|COMMAND_NOT_IMPLEMENTED|INTEGRATION_COMMAND_INVALID/.test(code)) return true;
+  if (codes.some((code) => /UNSUPPORTED|UNKNOWN_COMMAND|COMMAND_NOT_IMPLEMENTED|INTEGRATION_COMMAND_INVALID/.test(code))) return true;
   return status === 422 && /COMMAND|ORDER\.PAYMENT_RECEIPT\.ANALYZED/.test(detail);
 }
 
@@ -193,7 +200,7 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
     orderNumber,
     deliveryId,
     deliveredAt,
-    note,
+    hasOperatorNote: Boolean(note),
   });
   return { success: true, deliveryId, deliveredAt };
 }
