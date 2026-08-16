@@ -66,8 +66,12 @@ Alemi event webhook. `order.*` және `shift_note.*` оқиғалары қаз
 | crm.today.get | Күндік CRM лидтері |
 | analytics.daily.upsert | Күндік AI аналитика |
 | customer.access_link.issue | Қорғалған клиент сілтемесі |
+| order.payment_receipt.analyzed | Файлсыз: чек AI талдауының аты-жөні, сомасы және банкі |
 
-Чек `POST /v1/integrations/bot/order-documents`, ал принтер нәтижесі
+OpenBot алдымен файлсыз `order.payment_receipt.analyzed` командасын жібереді. Hub бұл
+команданы әлі нақты `unsupported` деп қайтарса ғана уақытша
+`POST /v1/integrations/bot/order-documents` fallback-ы қолданылады. Команда қолдауға
+енген бойда raw чек жіберу автоматты тоқтайды. Принтер нәтижесі
 `POST /v1/integrations/bot/print-results` арқылы сол Secret Key-пен жіберіледі.
 
 ## NocoDB API

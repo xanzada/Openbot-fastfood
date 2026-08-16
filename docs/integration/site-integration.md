@@ -371,9 +371,31 @@ completed, done, finished, closed, cancelled, canceled, refunded
 Бұл екеуінің қолтаңбасы **денеден емес, канондық жолдан** есептеледі — өйткені біреуі
 multipart.
 
-**Чек суреті:** `POST /v1/integrations/bot/order-documents`, `multipart/form-data`,
-`file` өрісі. Қосымша тақырыптар: `X-Order-Id`, `X-Source-Message-Id`,
+**Негізгі чек жолы (файлсыз):** бот чекті өзі талдап, кәдімгі command endpoint-ке
+`order.payment_receipt.analyzed` жібереді:
+
+```json
+{
+  "order_id": "01a0098e-d585-7071-bb22-6beaf5b740f5",
+  "source_message_id": "WhatsApp message ID",
+  "phone_e164": "+77476884956",
+  "sender_name": "Рахметоллаұлы Б.",
+  "amount_minor": 800000,
+  "currency": "KZT",
+  "bank_name": "Kaspi"
+}
+```
+
+Hub сәтті жауапта `receipt_analysis_id`, `order_id`, `received_at` қайтарады және
+мәліметті `orders.comment`-тен бөлек сақтайды. `source_message_id` Hub-та unique
+idempotency кілті болуы керек. Raw файл/base64 бұл командаға ешқашан кірмейді.
+
+**Уақытша legacy fallback:** Hub жаңа команданы `unsupported` деп нақты қайтарғанша
+ғана `POST /v1/integrations/bot/order-documents`, `multipart/form-data`, `file`
+өрісі қолданылады. Қосымша тақырыптар: `X-Order-Id`, `X-Source-Message-Id`,
 `X-Document-Kind` (`receipt` | `other`), `X-Document-Mime-Type`, `X-Content-SHA256`.
+Hub жаңа команданы қабылдаған алғашқы сәттен бастап fallback автоматты түрде
+орындалмайды; deploy немесе ENV ауыстыру қажет емес.
 
 Қосымша `note` форма өрісі (міндетті емес, 2026-08-14): чектен AI оқыған қысқа
 дерек — «Жіберуші аты-жөні + сома + банк», мысалы `Рахметоллаұлы Б 8000 ₸ kaspi`.
