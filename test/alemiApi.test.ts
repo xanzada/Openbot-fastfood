@@ -145,20 +145,15 @@ test("legacy actions map to the documented Hub commands and data", () => {
   });
 });
 
-test("single-tenant Alemi env is used only for its explicitly named legacy tenant", () => {
-  const credentials = resolveAlemiCredentials("mack_center", {
+test("process-wide Alemi secrets cannot satisfy any SaaS tenant", () => {
+  assert.throws(() => resolveAlemiCredentials("mack_center", {
     instance_id: "mack_center",
     secret_key: "unrelated-whatspro-secret",
   }, {
     ALEMI_API_URL: "https://hub.alemi.kz",
     ALEMI_INSTANCE: "mack_center",
     ALEMI_SECRET: "alemi-restaurant-secret",
-  });
-  assert.deepEqual(credentials, {
-    apiUrl: "https://hub.alemi.kz",
-    instance: "mack_center",
-    secret: "alemi-restaurant-secret",
-  });
+  }), /ALEMI_SECRET_NOT_CONFIGURED/);
 
   assert.throws(() => resolveAlemiCredentials("second-restaurant", {
     instance_id: "second-restaurant",
@@ -203,12 +198,18 @@ test("command transport receives exact raw body and common response envelopes un
 });
 
 test("tenant secret JSON and explicit per-tenant config resolve without exposing another tenant", () => {
-  assert.deepEqual(resolveAlemiCredentials("alpha", null, {
+  const env = {
     ALEMI_TENANT_SECRETS_JSON: JSON.stringify({
       alpha: { secret: "alpha-secret", api_url: "https://hub.alemi.kz", instance: "alpha" },
       beta: "beta-secret",
     }),
-  }), { apiUrl: "https://hub.alemi.kz", instance: "alpha", secret: "alpha-secret" });
+  };
+  assert.deepEqual(resolveAlemiCredentials("alpha", null, env), {
+    apiUrl: "https://hub.alemi.kz", instance: "alpha", secret: "alpha-secret",
+  });
+  assert.deepEqual(resolveAlemiCredentials("beta", null, env), {
+    apiUrl: "https://hub.alemi.kz", instance: "beta", secret: "beta-secret",
+  });
   assert.throws(() => resolveAlemiCredentials("missing", null, {}), /ALEMI_SECRET_NOT_CONFIGURED/);
 });
 

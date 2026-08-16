@@ -110,16 +110,11 @@ test("a tenant with only kanban_secret still denies, and the retired token is fl
   assert.ok(!flagged[0].includes("legacy-kanban-token"));
 });
 
-test("kanban auth accepts the deployment Alemi secret only for its named instance", () => {
+test("kanban auth rejects process-wide Alemi secrets for every SaaS tenant", () => {
   withEnv({ ALEMI_SECRET: "deployment-alemi-secret", ALEMI_INSTANCE: "legacy_restaurant" }, () => {
-    assert.doesNotThrow(() => assertTenantSecret(
-      { body: { instance: "legacy_restaurant" }, query: { token: "deployment-alemi-secret" } },
-      {},
-      "kanban",
-    ));
     assert.throws(
       () => assertTenantSecret(
-        { body: { instance: "someone_elses_tenant" }, query: { token: "deployment-alemi-secret" } },
+        { body: { instance: "legacy_restaurant" }, query: { token: "deployment-alemi-secret" } },
         {},
         "kanban",
       ),
@@ -145,6 +140,30 @@ test("kanban auth resolves the per-tenant Alemi secret after instance aliasing",
       body: { instance: "prestige" },
       query: { token: "crazy-tenant-secret" },
     }, {}, "kanban"));
+  });
+});
+
+test("kanban auth keeps two environment-mapped tenants isolated", () => {
+  withEnv({
+    ALEMI_TENANT_SECRETS_JSON: JSON.stringify({
+      alpha: { secret: "alpha-secret" },
+      beta: { secret: "beta-secret" },
+    }),
+    ALEMI_SECRET: "must-never-be-used",
+    ALEMI_INSTANCE: "alpha",
+  }, () => {
+    assert.doesNotThrow(() => assertTenantSecret(
+      { body: { instance: "alpha" }, query: { token: "alpha-secret" } }, {}, "kanban",
+    ));
+    assert.doesNotThrow(() => assertTenantSecret(
+      { body: { instance: "beta" }, query: { token: "beta-secret" } }, {}, "kanban",
+    ));
+    assert.throws(
+      () => assertTenantSecret(
+        { body: { instance: "beta" }, query: { token: "alpha-secret" } }, {}, "kanban",
+      ),
+      (error: any) => error?.message === "INVALID_TENANT_SECRET" && error?.statusCode === 403,
+    );
   });
 });
 

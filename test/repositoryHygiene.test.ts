@@ -13,6 +13,7 @@ function trackedFiles(...paths: string[]) {
 test("runtime secrets and generated build output stay outside version control", async () => {
   assert.equal(trackedFiles(".env"), "", ".env must never be committed");
   assert.equal(trackedFiles("dist"), "", "dist must be rebuilt from src, not committed");
+  assert.equal(trackedFiles("*.php"), "", "legacy PHP bot adapters must not remain tracked");
 
   const ignore = await readFile(new URL("../.gitignore", import.meta.url), "utf8");
   const rules = new Set(ignore.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));

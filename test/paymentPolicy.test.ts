@@ -4,6 +4,10 @@ import { readFile } from "node:fs/promises";
 import { FASTFOOD_AGENT_INSTRUCTIONS } from "../src/agent/instructions.js";
 import { buildFactsPrompt } from "../src/context/buildFactsPrompt.js";
 import { ONLINE_PREPAYMENT_POLICY } from "../src/services/paymentPolicy.service.js";
+import {
+  reportAnalyzedReceipt,
+  type AlemiTransportRequest,
+} from "../src/services/alemiApi.service.js";
 
 test("orders require online prepayment and reject payment on fulfillment", () => {
   assert.deepEqual(ONLINE_PREPAYMENT_POLICY, {
@@ -48,15 +52,26 @@ test("payment tool returns the same strict policy with live requisites", async (
 });
 
 test("payment confirmation only signals the operator and never marks an order paid", async () => {
-  const source = await readFile(new URL("../api_bot.php", import.meta.url), "utf8");
+  let captured: AlemiTransportRequest | null = null;
+  await reportAnalyzedReceipt({
+    instanceId: "tenant-a",
+    orderId: "order-42",
+    sourceMessageId: "wa-proof-42",
+    phone: "87769156184",
+    senderName: "Customer B.",
+    amount: 8000,
+    bankName: "Kaspi",
+  }, {
+    config: { instance_id: "tenant-a", alemi_instance: "tenant-a", alemi_secret: "tenant-a-secret" },
+    commandId: "cmd-payment-policy",
+    transport: async (request) => {
+      captured = request;
+      return { status: 201, data: { result: { accepted: true } } };
+    },
+  });
 
-  assert.match(
-    source,
-    /add_payment_comment'[\s\S]{0,120}confirm_payment_and_print/,
-    "the legacy action must use the receipt-comment signal path"
-  );
-  assert.doesNotMatch(source, /SET\s+status\s*=\s*'paid'/i);
-  assert.doesNotMatch(source, /\/api\/print_trigger/);
-  assert.doesNotMatch(source, /CURLOPT_SSL_VERIFY(?:HOST|PEER)\s*,\s*false/);
-  assert.match(source, /'status_changed'\s*=>\s*false/);
+  const body = JSON.parse(String(captured?.body || ""));
+  assert.equal(body.command, "order.payment_receipt.analyzed");
+  assert.equal(body.data.amount_minor, 800000);
+  assert.doesNotMatch(JSON.stringify(body), /mark_paid|status_paid|confirm_payment|print_trigger/i);
 });
