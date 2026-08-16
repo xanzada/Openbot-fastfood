@@ -79,24 +79,6 @@ function resolveInstanceId(req: any, config: Record<string, any> | null | undefi
     || "unknown";
 }
 
-function alemiDeploymentSecret(req: any, config: Record<string, any> | null | undefined) {
-  // Same rule as resolveAlemiCredentials(): the process-wide credential belongs
-  // to one explicitly named legacy restaurant, so it may only authorize that
-  // instance. Unlike the signing path the instance is never defaulted to
-  // ALEMI_INSTANCE here, because a request that names no tenant must not be
-  // able to borrow the deployment secret.
-  const globalInstance = scalarSecret(process.env.ALEMI_INSTANCE);
-  if (!globalInstance) return "";
-  const instance = scalarSecret(config?.alemi_instance)
-    || scalarSecret(config?.alemiInstance)
-    || scalarSecret(req?.body?.instance)
-    || scalarSecret(req?.query?.instance)
-    || scalarSecret(config?.instance_id)
-    || scalarSecret(config?.instance);
-  if (!instance || instance !== globalInstance) return "";
-  return scalarSecret(process.env.ALEMI_SECRET);
-}
-
 /**
  * Diagnostic only: never changes the outcome, and never logs a credential value.
  *
@@ -147,8 +129,6 @@ export function assertTenantSecret(req: any, config: Record<string, any> | null 
   if (channel === "kanban") {
     const environmentSecret = alemiEnvironmentSecret(req?.body?.instance);
     if (environmentSecret && !expected.includes(environmentSecret)) expected.push(environmentSecret);
-    const deploymentSecret = alemiDeploymentSecret(req, config);
-    if (deploymentSecret && !expected.includes(deploymentSecret)) expected.push(deploymentSecret);
   }
   const incoming = getIncomingTenantSecret(req);
 

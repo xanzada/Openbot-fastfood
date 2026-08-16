@@ -66,7 +66,7 @@ test("a long queue is never mistaken for a closure, however long it is scheduled
   assert.equal(p.requiresConsent, true);
 });
 
-// reset_at defaults to 0 in api_bot.php and the expiry reset restores it, so
+// reset_at defaults to 0 in the Hub runtime response and expiry restores it, so
 // "45 minutes, no reopening time entered" is an everyday state. It must still
 // let the guest decide instead of quietly closing the restaurant.
 test("a queue with no reopening time still asks the guest instead of stopping sales", () => {

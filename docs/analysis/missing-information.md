@@ -137,7 +137,7 @@ server.ts
    ├── getChatHistory (Redis, 120 items, 7d)
    ├── getActiveShiftNotes (Redis SCAN, 24h)
    ├── hasMagicLinkBeenSent (Redis, 30d)
-   ├── getRuntimeStatus (DLE api_bot.php, 5s cache, 10min backup)
+   ├── getRuntimeStatus (Alemi Hub HMAC API, 5s cache, 10min backup)
    ├── getOrderStatus (DLE, 24h cache)
    └── getShporContext (NocoDB, 1h cache)
 5. mediaAnalysis (егер media бар болса → gemini-2.5-flash-lite)
@@ -173,7 +173,7 @@ server.ts
 ```
 Bot (Node.js)                    DLE (PHP)                  MySQL
      │                              │                         │
-     │── POST /api_bot.php ─────────→│                         │
+     │── POST /v1/integrations/bot/commands ──────────────────→│
      │   { action: "get_runtime_status", token, restaurant_id }│
      │                              │── SELECT spa_settings ──→│
      │                              │←── settings (JSON) ──────│
@@ -271,7 +271,7 @@ Bot (Node.js)                    DLE (PHP)                  MySQL
 | 4 | `hardRealtimeContext.stale` — runtime stale болуы мүмкін, бірақ stale flag әрдайым reliable емес | preloadContext.ts:92 | Орташа |
 | 5 | Magic link regex-те mojibake (кириллица UTF-8 байттары) — көшіру қатесі | magicLink.ts:2-4 | Төмен |
 | 6 | `console.warn/warn` екеуі де қолданылған (typo: warn vs warn) | inboundGuard.service.ts:366 | Төмен |
-| 7 | DLE PHP-де `Ssl verifypeer false` — бұл security issue емес (internal network), бірақ кодта қалған | api_bot.php:700-701 | Төмен |
+| 7 | Legacy PHP bridge and its disabled TLS verification were removed after direct Hub migration | migration history | Closed |
 | 8 | Cookie-based auth для SPA — signature небәрі 1 сөзден тұратын salt | spa-internet-magazin.xml:131 | Орташа |
 | 9 | daily_logs: нақты TTL expires, бірақ ешкім оқымайды | redis.service.ts:162-172 | Төмен |
 | 10 | `process.env` қайта-қайта оқылады — startup-та бір рет оқып, config объектісіне салған дұрыс | Барлық файлдар | Орташа |
@@ -340,7 +340,7 @@ Bot (Node.js)                    DLE (PHP)                  MySQL
 |---|-----|-----------|-----------|----------|
 | 1 | **NocoDB Restaurant Config толық схемасы** | getRestaurantConfig қай өрістерді қайтаратынын білу; типті қатайту үшін | context/types.ts, preloadContext.ts | Required |
 | 2 | **NocoDB Shpor таблицасының толық схемасы** | ideal_answer JSON құрылымын, катгориялар тізімін білу | nocodb.service.ts | Required |
-| 3 | **DLE spa_settings толық тізімі** | kitchen_status, payment_details, work_start/work_end т.б. нақты өрістер | dle.service.ts, api_bot.php | Required |
+| 3 | **Alemi runtime config толық тізімі** | kitchen_status, payment_details, work_start/work_end т.б. нақты өрістер | dle.service.ts, Hub contract | Required |
 | 4 | **Нақты WhatsApp трафик** (күніне қанша хабар, peak MPS) | Rate limiting, auto-scaling есептеу үшін | server.ts, inboundGuard | Required |
 | 5 | **Docker Compose / EasyPanel конфигурациясы** | Deployment архитектурасын түсіну, Redis/NocoDB орналасуын білу | Барлық инфра | Required |
 | 6 | **Redis persistence конфигурациясы** (RDB/AOF, snapshot frequency) | Деректердің жоғалу қаупін бағалау | redis.service.ts | Required |

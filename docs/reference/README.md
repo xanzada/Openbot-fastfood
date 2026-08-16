@@ -17,8 +17,7 @@
 | OPENROUTER_API_KEY | - | OpenRouter API кілті |
 | OPENROUTER_BASE_URL | https://openrouter.ai/api/v1 | OpenRouter base URL |
 | ALEMI_API_URL | https://hub.alemi.kz | Alemi business API base URL |
-| ALEMI_INSTANCE | - | Бір-ресторандық fallback instance |
-| ALEMI_SECRET | - | Бір-ресторандық fallback Secret Key |
+| ALEMI_TENANT_SECRETS_JSON | {} | Optional exact-instance migration map; runtime platform config is preferred |
 | TAVILY_API_KEY | - | Tavily іздеу токен |
 | NODE_ENV | development | Орта |
 | ENABLE_PRIVATE_IP_BLOCK | true | SSRF қорғаныс |

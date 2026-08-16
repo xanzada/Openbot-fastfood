@@ -7,7 +7,7 @@
 - **WhatsApp webhook**: Postman/curl скриншоты
 - **NocoDB**: Restaurant Config таблицасы + Shpor
 - **Redis**: redis-cli кілттері
-- **DLE API**: api_bot.php жауаптары
+- **Alemi Hub API**: signed command responses from `hub.alemi.kz`
 - **WhatsPro**: Dashboard
 - **OpenRouter**: LLM request/response логтары
 - **Health check**: GET /health жауабы

@@ -137,13 +137,6 @@ export function resolveAlemiCredentials(
   config: Record<string, any> | null | undefined,
   env: Record<string, string | undefined> = process.env
 ): AlemiCredentials {
-  // env.ALEMI_INSTANCE deliberately does NOT appear in these two chains. It
-  // names the one legacy restaurant the process-wide secret belongs to (used
-  // below), and letting it stand in for a missing instance meant a call whose
-  // tenant could not be determined - an empty instanceId, a config with no
-  // instance - was signed as that legacy restaurant instead of failing. Every
-  // caller already knows which tenant it is acting for; if it does not, the
-  // right answer is ALEMI_INSTANCE_NOT_CONFIGURED.
   const requestedInstance = firstString(instanceId, config?.instance_id, config?.instance);
   const tenantEntry = tenantEnvironmentEntry(requestedInstance, env);
   const instance = firstString(
@@ -174,13 +167,10 @@ export function resolveAlemiCredentials(
     tenantEntry?.secret_key,
     tenantEntry?.secretKey
   );
-  // A process-wide credential is only valid for its explicitly named legacy
-  // restaurant. Falling back to it for an incomplete SaaS tenant would sign a
-  // request as the wrong restaurant and break tenant isolation.
-  const globalInstance = firstString(env.ALEMI_INSTANCE);
-  const secret = tenantSecret || (globalInstance && instance === globalInstance
-    ? firstString(env.ALEMI_SECRET)
-    : "");
+  // SaaS credentials are tenant data. A process-wide secret can never prove
+  // which restaurant owns a request, so only the exact runtime config or the
+  // exact ALEMI_TENANT_SECRETS_JSON entry may sign it.
+  const secret = tenantSecret;
 
   if (!instance) throw new Error("ALEMI_INSTANCE_NOT_CONFIGURED");
   if (!secret) throw new Error("ALEMI_SECRET_NOT_CONFIGURED");
