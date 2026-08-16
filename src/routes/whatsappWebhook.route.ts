@@ -9,6 +9,7 @@ import {
   getLastKnownOrderId,
   getPendingKitchenConsent,
   getKitchenCheckoutFingerprint,
+  markMagicLinkSent,
   markKitchenCheckoutStarted,
   releaseReceiptFingerprint,
   markComplaintClarificationPending,
@@ -17,6 +18,7 @@ import {
   saveToHistory,
   takeComplaintClarification,
 } from "../services/redis.service.js";
+import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
 import {
   buildComplaintAckReply,
   buildComplaintClarificationReply,
@@ -464,6 +466,52 @@ function missedCallReply(language: "kk" | "ru", brandName?: string): string {
   const intro = brandName ? `${brandName} көмекшісімін` : "сіздің көмекшіңізбін";
   return `Сәлеметсізбе! Қоңырауға жауап бере алмаймыз. Мен — ${intro} 😊 Қандай сұрағыңыз бар? Жазыңыз, сізге көмектесуге дайынмын!`;
 }
+type DeferredKitchenConsent = { deferredMenuLinkIntent?: boolean };
+type DeferredKitchenConsentDeps = {
+  issueAccessLink: typeof issueCustomerAccessLink;
+  markLinkSent: typeof markMagicLinkSent;
+  upsertLead: typeof upsertCustomerLead;
+};
+
+const deferredKitchenConsentDeps: DeferredKitchenConsentDeps = {
+  issueAccessLink: issueCustomerAccessLink,
+  markLinkSent: markMagicLinkSent,
+  upsertLead: upsertCustomerLead,
+};
+
+export async function resumeDeferredKitchenConsent(
+  ctx: FastFoodContext,
+  pending: DeferredKitchenConsent,
+  deps: DeferredKitchenConsentDeps = deferredKitchenConsentDeps,
+): Promise<string | null> {
+  if (!pending.deferredMenuLinkIntent) return null;
+
+  const link = await deps.issueAccessLink({
+    instanceId: ctx.instanceId,
+    phone: ctx.phone,
+    locale: ctx.language,
+    config: ctx.config || {},
+  }).catch(() => null);
+
+  if (!link) {
+    ctx.magicLink = null;
+    ctx.magicLinkFailed = true;
+    ctx.magicLinkGranted = false;
+    return ctx.language === "ru"
+      ? "Спасибо, что подтвердили ожидание. Не удалось подготовить личную ссылку из-за технической ошибки — попросите её ещё раз через пару минут."
+      : "Күтетініңізді растағаныңызға рақмет. Жеке сілтемені техникалық ақауға байланысты дайындай алмадым — бірер минуттан кейін қайта сұраңыз.";
+  }
+
+  ctx.magicLink = link;
+  ctx.magicLinkFailed = false;
+  ctx.magicLinkGranted = true;
+  await deps.markLinkSent(ctx.instanceId, ctx.phone).catch(() => false);
+  await deps.upsertLead({ instanceId: ctx.instanceId, phone: ctx.phone, config: ctx.config || {} }).catch(() => false);
+  return ctx.language === "ru"
+    ? "Хорошо, ожидание подтвердил. Отправляю вашу личную ссылку, чтобы продолжить заказ."
+    : "Жақсы, күтетініңізді белгіледім. Тапсырысты жалғастыру үшін жеке сілтемеңізді жіберіп отырмын.";
+}
+
 async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
   // An existing order does not silence the kitchen. Questions ABOUT that order
   // are already answered above by customerOrderReply, so anything reaching here
@@ -482,6 +530,8 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
         // The guest accepted this exact kitchen state. Remember it, so the wait
         // is raised once and never turns into nagging on every message.
         await markKitchenCheckoutStarted(ctx.instanceId, ctx.phone, policy.fingerprint).catch(() => false);
+        const continuation = await resumeDeferredKitchenConsent(ctx, pending);
+        if (continuation) return continuation;
         return null;
       }
       if (answer === "no") {
@@ -507,7 +557,7 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
   // rather than hoping the model will. Asked once per kitchen state, in the
   // guest's language, and the answer decides what happens next.
   if (policy.requiresConsent) {
-    await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint);
+    await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint, "delay", ctx.explicitMenuLinkIntent);
     const label = formatKitchenWait(policy.waitMinutes || 0, ctx.language === "ru" ? "ru" : "kk");
     return ctx.language === "ru"
       ? `Сейчас заказов много, приготовление займёт примерно ${label}. Сможете подождать? Если да — продолжим заказ.`
@@ -566,6 +616,19 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
     });
     if (!delivery.ok) throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");
     await saveToHistory(ctx.instanceId, ctx.phone, "assistant", cleanReply, { source, ...noteHistoryMeta(ctx, cleanReply) });
+  }
+  if (ctx.magicLinkGranted && ctx.magicLink) {
+    const linkDelivery = await sendWhatsProResponseSequence({
+      instanceId: ctx.instanceId,
+      phone: ctx.phone,
+      text: ctx.magicLink,
+      requestScope: `${messageId}:magic-link`,
+    }).catch(() => null);
+    if (linkDelivery?.ok) {
+      await saveToHistory(ctx.instanceId, ctx.phone, "assistant", ctx.magicLink, { source: "openbot-agent" });
+    } else {
+      console.warn(`[OPENBOT:OUTBOUND] deferred magic link send failed instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)}`);
+    }
   }
   await markInboundDone(ctx.instanceId, messageId);
   await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);

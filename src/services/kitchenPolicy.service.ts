@@ -96,7 +96,7 @@ export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, 
 export function detectKitchenConsentAnswer(text = ""): "yes" | "no" | "unknown" {
   const value = String(text || "").toLowerCase().replace(/[.,!?;:]+/g, " ").replace(/\s+/g, " ").trim();
   if (/(^|\s)(жоқ|жок|керек емес|күтпеймін|кутпеймин|нет|не надо|не буду ждать|отмена|рахмет жоқ|спасибо нет)(\s|$)/iu.test(value)) return "no";
-  if (/(^|\s)(иә|ия|иа|жарайды|келісемін|келисемин|күте аламын|куте аламын|күтемін|кутемин|да|хорошо|согласен|согласна|подожду|буду ждать)(\s|$)/iu.test(value)) return "yes";
+  if (/(^|\s)(иә|ия|иа|жарайды|келісемін|келисемин|күте аламын|куте аламын|күтемін|кутемин|да|хорошо|согласен|согласна|подожду|буду ждать|мхм|м-м|угу|ага|мм+)(\s|$)/iu.test(value)) return "yes";
   return "unknown";
 }
 

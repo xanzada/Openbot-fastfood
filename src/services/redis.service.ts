@@ -303,26 +303,29 @@ export async function savePendingKitchenConsent(
   instanceId: string,
   phone: string,
   policyFingerprint: string,
-  kind: "delay" | "channel" | "delay_and_channel" = "delay"
+  kind: "delay" | "channel" | "delay_and_channel" = "delay",
+  deferredMenuLinkIntent = false,
 ): Promise<boolean> {
   return safeRedis(false, async () => {
     const result = await redisClient.set(
       kitchenConsentKey(instanceId, phone),
-      JSON.stringify({ policyFingerprint, kind, createdAt: Date.now() }),
+      JSON.stringify({ policyFingerprint, kind, deferredMenuLinkIntent: Boolean(deferredMenuLinkIntent), createdAt: Date.now() }),
       { EX: KITCHEN_CONSENT_TTL_SECONDS }
     );
     return result === "OK";
   });
 }
 
-export async function getPendingKitchenConsent(instanceId: string, phone: string): Promise<{ policyFingerprint: string; kind: "delay" | "channel" | "delay_and_channel" } | null> {
+export async function getPendingKitchenConsent(instanceId: string, phone: string): Promise<{ policyFingerprint: string; kind: "delay" | "channel" | "delay_and_channel"; deferredMenuLinkIntent: boolean } | null> {
   return safeRedis(null, async () => {
     const raw = await redisClient.get(kitchenConsentKey(instanceId, phone));
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw);
       const kind = ["delay", "channel", "delay_and_channel"].includes(parsed?.kind) ? parsed.kind : "delay";
-      return parsed?.policyFingerprint ? { policyFingerprint: String(parsed.policyFingerprint), kind } : null;
+      return parsed?.policyFingerprint
+        ? { policyFingerprint: String(parsed.policyFingerprint), kind, deferredMenuLinkIntent: parsed.deferredMenuLinkIntent === true }
+        : null;
     } catch {
       return null;
     }
