@@ -50,6 +50,25 @@ test("payment, rejection and lifecycle templates remain valid UTF-8", () => {
   assert.match(buildLegacyRejectedMessage({ reason: "Тағам жоқ" }, "kk"), /Тағам жоқ/);
 });
 
+test("delivery handoff sends one combined bilingual update instead of ready plus courier duplicates", () => {
+  // Delivery orders must stay silent at the intermediate kitchen-ready step.
+  // The courier handoff then communicates both facts in one human message.
+  assert.equal(legacyStatusTemplates.kk.ready_delivery, "");
+  assert.equal(
+    legacyStatusTemplates.kk.delivery,
+    "✅ Тапсырысыңыз дайын және курьерге берілді. Қазір сізге қарай жолда 🛵",
+  );
+  assert.equal(legacyStatusTemplates.ru.ready_delivery, "");
+  assert.equal(
+    legacyStatusTemplates.ru.delivery,
+    "✅ Ваш заказ готов и передан курьеру. Он уже едет к вам 🛵",
+  );
+
+  // Pickup has no courier transition, so its useful ready notification remains.
+  assert.equal(legacyStatusTemplates.kk.pickup_ready, "✅ Тапсырысыңыз дайын! Келіп алып кетуіңізге болады.");
+  assert.equal(legacyStatusTemplates.ru.pickup_ready, "✅ Ваш заказ готов! Можете забирать.");
+});
+
 test("delivery order shows localized fee below the comment and removes the raw marker", () => {
   const free = buildLegacyNewOrderMessage({
     total_price: 8200,
