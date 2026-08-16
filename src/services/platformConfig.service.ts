@@ -208,6 +208,11 @@ export async function getRestaurantConfig(
   options: { forceRefresh?: boolean; bypassBackup?: boolean } = {}
 ): Promise<Record<string, any> | null> {
   const safeInstanceId = String(instanceId || "").trim();
+  // An absent tenant identity must never become the collection endpoint
+  // `/runtime-configs/` or the shared cache key `config:`. Either path could
+  // lend one restaurant's configuration (including credentials) to another
+  // unidentified request.
+  if (!safeInstanceId) return null;
   const forceRefresh = options.forceRefresh === true;
   // Auth paths need an authoritative read: the stale-tolerant fallbacks (the
   // in-process value and the seven-day config_backup) may still carry a secret
