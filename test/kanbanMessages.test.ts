@@ -7,6 +7,7 @@ import {
   legacyStatusTemplates,
   orderNotifyRank,
   parsePickupFlag,
+  resolveStatusCustomerMessage,
 } from "../src/controllers/kanban.js";
 
 test("new_order message preserves Kazakh UTF-8 and order details", () => {
@@ -45,7 +46,7 @@ test("payment, rejection and lifecycle templates remain valid UTF-8", () => {
     "🧾 *Төлем жасағаннан кейін чекті осы чатқа жіберіңіз 👇*",
   ].join("\n"));
   assert.equal(legacyStatusTemplates.kk.paid, "✅ Төлем расталды, тапсырысыңыз қабылданды. Дайындалуда! 🍳");
-  assert.equal(legacyStatusTemplates.kk.delivery, "🛵 Тапсырысыңыз курьерге берілді, жеткізу жолында.");
+  assert.equal(legacyStatusTemplates.kk.delivery, "✅ Тапсырысыңыз дайын және курьерге берілді. Қазір сізге қарай жолда 🛵");
   assert.equal(legacyStatusTemplates.kk.completed, "🎉 Тапсырыс сәтті аяқталды, асыңыз дәмді болсын!");
   assert.match(buildLegacyRejectedMessage({ reason: "Тағам жоқ" }, "kk"), /Тағам жоқ/);
 });
@@ -53,20 +54,20 @@ test("payment, rejection and lifecycle templates remain valid UTF-8", () => {
 test("delivery handoff sends one combined bilingual update instead of ready plus courier duplicates", () => {
   // Delivery orders must stay silent at the intermediate kitchen-ready step.
   // The courier handoff then communicates both facts in one human message.
-  assert.equal(legacyStatusTemplates.kk.ready_delivery, "");
+  assert.equal(resolveStatusCustomerMessage("ready", false, "kk"), "");
   assert.equal(
-    legacyStatusTemplates.kk.delivery,
+    resolveStatusCustomerMessage("delivery", false, "kk"),
     "✅ Тапсырысыңыз дайын және курьерге берілді. Қазір сізге қарай жолда 🛵",
   );
-  assert.equal(legacyStatusTemplates.ru.ready_delivery, "");
+  assert.equal(resolveStatusCustomerMessage("ready", false, "ru"), "");
   assert.equal(
-    legacyStatusTemplates.ru.delivery,
+    resolveStatusCustomerMessage("delivery", false, "ru"),
     "✅ Ваш заказ готов и передан курьеру. Он уже едет к вам 🛵",
   );
 
   // Pickup has no courier transition, so its useful ready notification remains.
-  assert.equal(legacyStatusTemplates.kk.pickup_ready, "✅ Тапсырысыңыз дайын! Келіп алып кетуіңізге болады.");
-  assert.equal(legacyStatusTemplates.ru.pickup_ready, "✅ Ваш заказ готов! Можете забирать.");
+  assert.equal(resolveStatusCustomerMessage("ready", true, "kk"), "✅ Тапсырысыңыз дайын! Келіп алып кетуіңізге болады.");
+  assert.equal(resolveStatusCustomerMessage("ready", true, "ru"), "✅ Ваш заказ готов! Можете забирать.");
 });
 
 test("delivery order shows localized fee below the comment and removes the raw marker", () => {

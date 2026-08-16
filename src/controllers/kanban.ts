@@ -426,7 +426,7 @@ export const legacyStatusTemplates: Record<Language, Record<string, string>> = {
     paid: "✅ Төлем расталды, тапсырысыңыз қабылданды. Дайындалуда! 🍳",
     preparing: "🍳 Тапсырысыңыз дайындалып жатыр. Дайын болғанда хабарлаймыз.",
     ready_delivery: "✅ Тапсырысыңыз дайын, курьерге беруге дайындалып жатыр.",
-    delivery: "🛵 Тапсырысыңыз курьерге берілді, жеткізу жолында.",
+    delivery: "✅ Тапсырысыңыз дайын және курьерге берілді. Қазір сізге қарай жолда 🛵",
     completed: "🎉 Тапсырыс сәтті аяқталды, асыңыз дәмді болсын!",
     pickup_ready: "✅ Тапсырысыңыз дайын! Келіп алып кетуіңізге болады.",
     cancelled: "❌ Тапсырысыңыздан бас тартылды. Қажет болса, мәзір арқылы жаңа тапсырыс бере аласыз.",
@@ -436,7 +436,7 @@ export const legacyStatusTemplates: Record<Language, Record<string, string>> = {
     paid: "✅ Оплата подтверждена, заказ принят. Готовим! 🍳",
     preparing: "🍳 Ваш заказ готовится. Сообщим, когда будет готов.",
     ready_delivery: "✅ Ваш заказ готов, передаём курьеру.",
-    delivery: "🛵 Ваш заказ передан курьеру и уже в пути.",
+    delivery: "✅ Ваш заказ готов и передан курьеру. Он уже едет к вам 🛵",
     completed: "🎉 Заказ успешно завершён, приятного аппетита!",
     pickup_ready: "✅ Ваш заказ готов! Можете забирать.",
     cancelled: "❌ Ваш заказ отменён. При необходимости можете оформить новый заказ через меню.",
@@ -476,6 +476,16 @@ export function resolveStatusTemplateKey(status: string, isPickup: boolean): str
   if (normalized === "ready") return isPickup ? "pickup_ready" : "ready_delivery";
   if (normalized === "completed" && isPickup) return "pickup_ready";
   return normalized;
+}
+
+export function resolveStatusCustomerMessage(status: string, isPickup: boolean, lang: Language): string {
+  const statusKey = resolveStatusTemplateKey(status, isPickup);
+  // Hub normally advances delivery orders from ready to delivery within
+  // seconds. The intermediate ready text and the courier text describe one
+  // handoff, so only the final combined courier update reaches the guest.
+  // Pickup orders keep their ready message because there is no courier step.
+  if (!isPickup && statusKey === "ready_delivery") return "";
+  return legacyStatusTemplates[lang][statusKey] || "";
 }
 
 // One press, one message: hub retries a rejected webhook for hours, so a stale
@@ -931,7 +941,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     if (action === "status_changed") {
       effectiveStatus = resolveStatusTemplateKey(newStatus, isPickup);
       auditDecision("Resolving status_changed template", { orderId, action, instance, lang, newStatus, effectiveStatus });
-      textMessage = legacyStatusTemplates[lang][effectiveStatus] || "";
+      textMessage = resolveStatusCustomerMessage(newStatus, isPickup, lang);
       if (!textMessage) {
         // Nothing was sent, so nothing must be suppressed: a 24 h lock left behind
         // here would swallow the retry of this very order+status once a template
