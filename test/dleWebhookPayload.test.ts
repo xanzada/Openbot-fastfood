@@ -89,7 +89,8 @@ test("the operator confirm maps to request_payment and keeps the amount and the 
 test("a status event without a phone is recovered through the stored order phone mapping", async () => {
   const source = await readFile(new URL("../src/controllers/kanban.ts", import.meta.url), "utf8");
   assert.match(source, /getOrderPhone\(instance, orderId\)/);
-  assert.match(source, /saveOrderPhone\(instance, orderId, phone\)/);
+  assert.match(source, /await saveOrderPhone\(instance, orderId, phone\)/);
+  assert.match(source, /await saveOrderNotifyCursor\(instance, orderId, nextNotifyRank,/);
 });
 
 test("unknown actions pass through untouched", () => {

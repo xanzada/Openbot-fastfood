@@ -195,7 +195,7 @@ test("a receipt arriving as a data URL is uploaded, not rejected at the base64 c
 
 // The operator verifies the payment against the extracted line, not a generic
 // "клиент отправил чек": sender name, amount and bank travel with the upload.
-test("the receipt upload carries the extracted sender, amount and bank as the operator note", async () => {
+test("the receipt upload carries only the concise extracted payment facts as the operator note", async () => {
   let captured: any = null;
   const result = await deliverReceiptToClient({
     instanceId: "prestige",
@@ -204,7 +204,9 @@ test("the receipt upload carries the extracted sender, amount and bank as the op
     config: {},
     amount: 8000,
     senderName: "Рахметоллаұлы Б",
-    bankName: "kaspi",
+    bankName: "Kaspi",
+    transactionId: "KZ-SECRET-REFERENCE",
+    paidAt: "2026-08-14T11:59:00Z",
     receiptBase64: `data:application/pdf;base64,${Buffer.from("%PDF-1.4 fake receipt").toString("base64")}`,
     mimeType: "application/pdf",
     sourceMessageId: "msg-2",
@@ -214,7 +216,8 @@ test("the receipt upload carries the extracted sender, amount and bank as the op
   }) as any);
 
   assert.equal(result.success, true);
-  assert.equal(captured.note, "Рахметоллаұлы Б 8000 ₸ kaspi");
+  assert.equal(captured.note, "Рахметоллаұлы Б. сумма 8000 ₸ Kaspi");
+  assert.doesNotMatch(captured.note, /KZ-SECRET-REFERENCE|2026-08-14|PDF|file|файл/iu);
 });
 
 test("receipt test mode relaxes blocks but analysis always runs, and a short payment becomes an SOS flow", async () => {
@@ -224,7 +227,7 @@ test("receipt test mode relaxes blocks but analysis always runs, and a short pay
   assert.match(routeSource, /claimReceiptFingerprint\(ctx\.instanceId, fingerprint\)\) && strictFilter/);
   assert.match(routeSource, /getLastKnownOrderId\(ctx\.instanceId, ctx\.phone\)/);
   assert.match(routeSource, /orderNumber: deliverOrderNumber/);
-  assert.match(routeSource, /notePrefix: `⚠️ ТӨЛЕМ ЖЕТПЕЙДІ/);
+  assert.doesNotMatch(routeSource, /notePrefix:/);
   assert.match(routeSource, /payment_receipt_shortfall/);
   assert.match(routeSource, /getPaymentRequisitesText\(ctx\.instanceId/);
 });

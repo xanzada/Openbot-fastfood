@@ -25,14 +25,25 @@ function isDisabledTenant(config: Record<string, any> | null | undefined) {
 // A guest phone (whatsapp_phone, admin_phone, the customer in meta) must never be a
 // destination: an internal incident text in a guest chat is a support failure, not a
 // notification (audit, 2026-08-13).
-function isCustomerPhone(config: Record<string, any> | null | undefined, phone: string) {
-  const guestNumbers = [config?.whatsapp_phone, config?.admin_phone, config?.wa_phone]
+function isCustomerPhone(
+  config: Record<string, any> | null | undefined,
+  phone: string,
+  meta: Record<string, unknown> = {}
+) {
+  const guestNumbers = [
+    config?.whatsapp_phone,
+    config?.admin_phone,
+    config?.wa_phone,
+    meta.customerPhone,
+    meta.customer_phone,
+    meta.phone,
+  ]
     .map((value) => normalizePhone(value))
     .filter(Boolean);
   return guestNumbers.includes(phone);
 }
 
-export const developerAlertInternals = { isDisabledTenant, isCustomerPhone };
+export const developerAlertInternals = { isDisabledTenant, isCustomerPhone, buildAlertText };
 
 function cleanAlertText(value: unknown, max = 600) {
   const text = String(value ?? "unknown_error")
@@ -95,6 +106,36 @@ function metaLines(meta: Record<string, unknown>) {
     .filter(Boolean);
 }
 
+function alertKind(meta: Record<string, unknown>) {
+  const scope = String(meta.scope || "").trim();
+  if (scope === "daily_analytics" || scope === "daily_analytics_fatal") return "Фондық тапсырма ақауы";
+  if (scope === "startup_dependency" || scope === "startup_diagnostics") return "Іске қосу диагностикасы";
+  if (scope === "uncaught_exception" || scope === "unhandled_rejection" || scope === "http_server") {
+    return "Процесс ақауы";
+  }
+  return "Жүйелік ақау";
+}
+
+function buildAlertText(
+  instanceId: string,
+  error: unknown,
+  meta: Record<string, unknown>,
+  incidentId: string,
+  occurredAt = new Date()
+) {
+  return [
+    "⚠️ OPENBOT АҚАУЫ",
+    `Instance: ${instanceId}`,
+    `Түрі: ${alertKind(meta)}`,
+    `Бөлім: ${cleanAlertText(meta.scope || "unknown", 120)}`,
+    `Қате: ${errorCode(error)} — ${errorMessage(error)}`,
+    ...metaLines(meta),
+    `Уақыт: ${occurredAt.toISOString()}`,
+    `Incident: ${incidentId}`,
+    meta.restartOccurred === true ? "Қайта іске қосу: расталды." : "",
+  ].filter(Boolean).join("\n");
+}
+
 async function persistDeveloperAlertOutbox(instanceId: string, incidentId: string, text: string, sendError: unknown) {
   if (!redisClient.isOpen) return false;
   try {
@@ -119,7 +160,7 @@ async function sendAlertWithConfig(
     console.error(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=dev_phone_missing`);
     return false;
   }
-  if (isCustomerPhone(config, developerPhone)) {
+  if (isCustomerPhone(config, developerPhone, meta)) {
     console.error(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=would_reach_guest_number`);
     return false;
   }
@@ -131,16 +172,7 @@ async function sendAlertWithConfig(
   if (!(await claimAlert(fingerprint, dedupeSeconds))) return false;
 
   const incidentId = `${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${fingerprint.slice(0, 6)}`;
-  const alertText = [
-    "⚠️ OPENBOT АҚАУЫ",
-    `Instance: ${instanceId}`,
-    `Бөлім: ${cleanAlertText(meta.scope || "unknown", 120)}`,
-    `Қате: ${errorCode(error)} — ${errorMessage(error)}`,
-    ...metaLines(meta),
-    `Уақыт: ${new Date().toISOString()}`,
-    `Incident: ${incidentId}`,
-    "Қалпына келтіру саясаты: қауіпті process қатесінде контейнер controlled exit жасап, Docker арқылы қайта іске қосылады.",
-  ].join("\n");
+  const alertText = buildAlertText(instanceId, error, meta, incidentId);
   try {
     const result: any = await sendWhatsProMessage({ instanceId, phone: developerPhone, text: alertText });
     if (result?.acknowledged !== true) throw new Error(result?.reason || "DEVELOPER_ALERT_NOT_ACKNOWLEDGED");

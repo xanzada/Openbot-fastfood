@@ -354,7 +354,7 @@ completed, done, finished, closed, cancelled, canceled, refunded
 Жауап — жол немесе объект (`alemiApi.service.ts:368-384`):
 
 ```json
-{ "url": "https://prestige.bekaba.com/?phone=77001234567&hash=baa4a6dc41085296b0b" }
+{ "url": "https://prestige.alemi.kz/?phone=77001234567&hash=baa4a6dc41085296b0b" }
 ```
 
 `url`, `access_url`, `link` — үшеуінің қайсысы болса да оқылады. Бот міндетті түрде
@@ -416,7 +416,7 @@ print-result-v1
 ## 4. 2-бағыт: сайт → бот (оқиға webhook)
 
 ```
-POST https://openbot.bekaba.com/kanban-webhook?token=<Secret Key>
+POST https://openbot.alemi.kz/kanban-webhook?token=<Secret Key>
 Content-Type: application/json
 ```
 

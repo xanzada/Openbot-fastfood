@@ -824,7 +824,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       auditDecision("Order payload validated", { orderId, action, instance, phone, newStatus, isPickup });
       // Learn the mapping on every event that does carry the phone, so the
       // status events that never carry one can still reach the guest.
-      void saveOrderPhone(instance, orderId, phone).catch(() => false);
+      await saveOrderPhone(instance, orderId, phone).catch(() => false);
     } else {
       auditDecision("Shift note payload detected", { action, instance });
     }
@@ -973,7 +973,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       });
       await sendAndRemember(instance, phone, textMessage);
       if (nextNotifyRank >= 0) {
-        void saveOrderNotifyCursor(instance, orderId, nextNotifyRank, effectiveStatus || action).catch(() => false);
+        await saveOrderNotifyCursor(instance, orderId, nextNotifyRank, effectiveStatus || action).catch(() => false);
       }
       if (newStatus === "completed" || newStatus === "cancelled" || action === "order_rejected") {
         auditDecision("Cleaning completed/cancelled order Redis history", { orderId, action, instance, phone, newStatus });

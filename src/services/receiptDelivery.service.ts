@@ -15,9 +15,6 @@ export interface ReceiptDeliveryInput {
   receiptBase64: string;
   mimeType: string;
   sourceMessageId: string;
-  // Optional SOS prefix for the operator comment (e.g. a short payment - the
-  // operator decides whether to accept it).
-  notePrefix?: string;
 }
 
 export type ReceiptDeliveryResult =
@@ -28,6 +25,18 @@ type ReceiptSender = typeof uploadOrderDocument;
 
 function failure(errorCode: string, safeMessage: string): ReceiptDeliveryResult {
   return { success: false, errorCode, safeMessage };
+}
+
+export function formatReceiptOperatorComment(input: Pick<ReceiptDeliveryInput, "senderName" | "amount" | "bankName">) {
+  const sender = String(input.senderName || "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+  const senderWithInitial = /(?:^|\s)\p{L}$/u.test(sender) ? `${sender}.` : sender;
+  const amount = Number(input.amount);
+  const bank = String(input.bankName || "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+  return [
+    senderWithInitial,
+    Number.isFinite(amount) && amount > 0 ? `сумма ${amount} ₸` : "",
+    bank,
+  ].filter(Boolean).join(" ").slice(0, 200);
 }
 
 export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendReceipt: ReceiptSender = uploadOrderDocument): Promise<ReceiptDeliveryResult> {
@@ -62,17 +71,9 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendRe
     return failure(bytes.byteLength ? "receipt_too_large" : "invalid_receipt_media", bytes.byteLength ? "receipt_media_too_large" : "receipt_media_invalid");
   }
 
-  // The operator verifies the payment against this line, not against a generic
-  // "клиент отправил чек": sender name, amount and bank, short and readable
-  // (product rule, 2026-08-14: "Рахметоллаұлы Б 8000 ₸ kaspi").
-  const noteParts = [
-    String(input.senderName || "").trim(),
-    Number(input.amount) > 0 ? `${Number(input.amount)} ₸` : "",
-    String(input.bankName || "").trim(),
-  ].filter(Boolean);
-  const noteBody = noteParts.join(" ").replace(/\s{2,}/g, " ").trim();
-  const prefix = String(input.notePrefix || "").trim();
-  const note = (prefix ? `${prefix} ${noteBody}` : noteBody).replace(/\s{2,}/g, " ").trim().slice(0, 200);
+  // Hub's current direct-API contract still requires the raw document upload,
+  // but its operator note must contain only the extracted payment facts.
+  const note = formatReceiptOperatorComment(input);
 
   let response: any;
   try {

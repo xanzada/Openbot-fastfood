@@ -140,7 +140,7 @@ test("single-tenant Alemi env is used only for its explicitly named legacy tenan
     ALEMI_INSTANCE: "mack_center",
     ALEMI_SECRET: "must-not-be-borrowed",
   }), /ALEMI_INSTANCE_NOT_CONFIGURED/);
-  assert.throws(() => resolveAlemiCredentials("", { domain: "https://prestige.bekaba.com" }, {
+  assert.throws(() => resolveAlemiCredentials("", { domain: "https://prestige.alemi.kz" }, {
     ALEMI_INSTANCE: "mack_center",
     ALEMI_SECRET: "must-not-be-borrowed",
   }), /ALEMI_INSTANCE_NOT_CONFIGURED/);
@@ -262,10 +262,10 @@ test("customer access-link helper maps phone/locale and unwraps common URL keys"
     nowMs: 1_700_000_000_000,
     transport: async (request) => {
       body = String(request.body);
-      return { status: 200, data: { data: { access_url: "https://prestige.bekaba.com/?phone=77001112233&hash=baa4a6dc41085296b0b" } } };
+      return { status: 200, data: { data: { access_url: "https://prestige.alemi.kz/?phone=77001112233&hash=baa4a6dc41085296b0b" } } };
     },
   });
-  assert.equal(link, "https://prestige.bekaba.com/?phone=77001112233&hash=baa4a6dc41085296b0b");
+  assert.equal(link, "https://prestige.alemi.kz/?phone=77001112233&hash=baa4a6dc41085296b0b");
   assert.match(body, /"command":"customer\.access_link\.issue"/);
   assert.match(body, /"phone_e164":"\+77001112233","locale":"kk"/);
 });

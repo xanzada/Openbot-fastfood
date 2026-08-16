@@ -119,6 +119,14 @@ function normalizeAction(value: unknown) {
 // both shapes would ask the guest to pay twice.
 const CONFIRM_STATUSES = new Set(["confirmed", "accepted", "approved"]);
 
+const EVENT_STATUS_HINTS: Record<string, string> = {
+  "order.paid": "paid",
+  "payment.received": "paid",
+  "order.ready": "ready",
+  "order.completed": "completed",
+  "order.delivered": "delivered",
+};
+
 function objectRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 }
@@ -290,6 +298,9 @@ export function normalizeDlePayload(req: Request) {
     deleted_at: firstValue(valueFrom(records, "deleted_at", "deletedAt"), note.deleted_at, note.deletedAt),
   };
 
+  if (!normalized.new_status) {
+    normalized.new_status = EVENT_STATUS_HINTS[String(rawEventType || "").trim().toLowerCase()] || "";
+  }
   if (action === "status_changed" && !normalized.status) normalized.status = normalized.new_status;
   // A confirm delivered as `order.status_changed` + status=confirmed is the same
   // operator press as `order.confirmed`. Collapsing it here (not in the controller)

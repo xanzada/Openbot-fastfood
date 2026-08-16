@@ -76,7 +76,7 @@ export interface UploadOrderDocumentInput {
   documentKind?: "receipt" | "other";
   fileName?: string;
   // Short operator-facing line extracted from the receipt: sender name, amount,
-  // bank ("Рахметоллаұлы Б 8000 ₸ kaspi"). Hub stores it as the order comment.
+  // bank ("Рахметоллаұлы Б. сумма 8000 ₸ Kaspi"). Hub stores it as the order comment.
   note?: string;
 }
 

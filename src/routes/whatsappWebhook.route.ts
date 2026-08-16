@@ -914,11 +914,6 @@ async function processWhatsAppWebhook(body: any, started: number) {
             receiptBase64: String(mediaContext.base64 || ""),
             mimeType: String(mediaContext.mimeType || mediaContext.mediaType || ""),
             sourceMessageId: messageId,
-            ...(isShortfall
-              ? {
-                  notePrefix: `⚠️ ТӨЛЕМ ЖЕТПЕЙДІ: чекте ${Number(mediaAnalysis.amount || 0)} ₸, заказ ${Number(receiptContext.expectedAmount || 0)} ₸. Оператор шешеді.`,
-                }
-              : {}),
           });
 
           if (!delivery.success) {

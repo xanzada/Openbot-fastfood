@@ -75,6 +75,22 @@ test("a non-confirm status transition stays status_changed", () => {
   }
 });
 
+test("a status-specific event supplies its status even when Hub omits the duplicate status field", () => {
+  const cases: Array<[string, string]> = [
+    ["order.paid", "paid"],
+    ["payment.received", "paid"],
+    ["order.ready", "ready"],
+    ["order.completed", "completed"],
+    ["order.delivered", "delivered"],
+  ];
+
+  for (const [eventType, expectedStatus] of cases) {
+    const body = normalize(event(eventType));
+    assert.equal(body.action, "status_changed", eventType);
+    assert.equal(body.new_status, expectedStatus, eventType);
+  }
+});
+
 test("legacy snake_case actions still work alongside the new event names", () => {
   const body = normalize({ instance: "prestige", action: "request_payment", order: { id: "13", phone: "+77015550101" } });
   assert.equal(body.action, "request_payment");
