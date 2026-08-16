@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectLanguageDecision, detectLang, lastCustomerLanguage, parseGeminiLanguageDecision } from "../src/utils/language.js";
+import { detectLanguageDecision, detectLang, isLanguageBearingCustomerText, lastCustomerLanguage, parseGeminiLanguageDecision } from "../src/utils/language.js";
 import { detectNameLanguage, resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
@@ -151,6 +151,12 @@ test("a signal-free message keeps the language the guest last actually used", ()
     { role: "user", text: "👍" },
   ];
   assert.equal(lastCustomerLanguage(history), "ru");
+});
+
+test("a Kazakh order intent followed by mhm keeps the conversation in Kazakh", () => {
+  assert.equal(detectLang("Заказ берейін"), "kk", "mixed everyday Kazakh must not collapse to Russian");
+  assert.equal(isLanguageBearingCustomerText("Мхм"), false, "acknowledgement carries consent, not a language switch");
+  assert.equal(lastCustomerLanguage([{ role: "user", text: "Заказ берейін" }]), "kk");
 });
 
 test("the scan reads only customer messages and gives up rather than guessing", () => {

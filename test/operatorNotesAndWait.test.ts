@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { buildFactsPrompt } from "../src/context/buildFactsPrompt.js";
+import { resumeDeferredKitchenConsent } from "../src/routes/whatsappWebhook.route.js";
 
 function ctx(overrides: Record<string, any> = {}) {
   return {
@@ -78,4 +79,55 @@ test("an existing order never mutes the kitchen gate", () => {
   assert.ok(!/if \(ctx\.activeOrder\) return null;/.test(body), "the gate must not mute itself on an active order");
   assert.ok(body.includes("policy.requiresConsent"), "consent branch must remain");
   assert.ok(body.includes("savePendingKitchenConsent"), "the wait question must be remembered");
+});
+
+test("accepting a saved wait consent resumes the deferred personal order link", async () => {
+  const issued: string[] = [];
+  const marked: string[] = [];
+  const continuationCtx = ctx({
+    phone: "77476884956",
+    language: "kk",
+    config: { name: "Crazy Sushi" },
+    magicLink: null,
+    magicLinkGranted: false,
+  });
+
+  const reply = await resumeDeferredKitchenConsent(
+    continuationCtx,
+    { deferredMenuLinkIntent: true },
+    {
+      issueAccessLink: async (input: any) => {
+        issued.push(`${input.instanceId}:${input.phone}:${input.locale}`);
+        return "https://storefront.alemi.kz/auth/whatsapp#token=test";
+      },
+      markLinkSent: async (instanceId: string, phone: string) => {
+        marked.push(`${instanceId}:${phone}`);
+        return true;
+      },
+      upsertLead: async () => true,
+    },
+  );
+
+  assert.equal(reply, "Жақсы, күтетініңізді белгіледім. Тапсырысты жалғастыру үшін жеке сілтемеңізді жіберіп отырмын.");
+  assert.equal(continuationCtx.magicLinkGranted, true);
+  assert.equal(continuationCtx.magicLink, "https://storefront.alemi.kz/auth/whatsapp#token=test");
+  assert.deepEqual(issued, ["prestige:77476884956:kk"]);
+  assert.deepEqual(marked, ["prestige:77476884956"]);
+});
+
+test("a deferred link failure stays honest and in the guest language", async () => {
+  const continuationCtx = ctx({ phone: "77476884956", language: "ru", config: {}, magicLinkGranted: false });
+  const reply = await resumeDeferredKitchenConsent(
+    continuationCtx,
+    { deferredMenuLinkIntent: true },
+    {
+      issueAccessLink: async () => null,
+      markLinkSent: async () => true,
+      upsertLead: async () => true,
+    },
+  );
+
+  assert.equal(reply, "Спасибо, что подтвердили ожидание. Не удалось подготовить личную ссылку из-за технической ошибки — попросите её ещё раз через пару минут.");
+  assert.equal(continuationCtx.magicLinkGranted, false);
+  assert.equal(continuationCtx.magicLinkFailed, true);
 });

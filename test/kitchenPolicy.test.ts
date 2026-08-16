@@ -92,7 +92,7 @@ test("a closed restaurant with no reopening time is still indefinite", () => {
 });
 
 test("consent answers are read in both languages", () => {
-  for (const yes of ["иә", "жарайды", "күтемін", "да", "хорошо", "подожду"]) {
+  for (const yes of ["иә", "жарайды", "күтемін", "да", "хорошо", "подожду", "мхм", "м-м", "угу"]) {
     assert.equal(detectKitchenConsentAnswer(yes), "yes", yes);
   }
   for (const no of ["жоқ", "керек емес", "нет", "не буду ждать", "отмена"]) {
