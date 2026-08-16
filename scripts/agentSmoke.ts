@@ -45,7 +45,8 @@ const SCENARIOS = [
   { id: 30, text: "yes", expect: "context_aware" },
 ];
 
-const instanceId = String(process.env.SMOKE_INSTANCE_ID || "prestige").trim();
+const instanceId = String(process.env.SMOKE_INSTANCE_ID || "").trim();
+if (!instanceId) throw new Error("SMOKE_INSTANCE_ID_REQUIRED");
 const scenarioId = process.argv[2] ? parseInt(process.argv[2], 10) : null;
 const customText = scenarioId ? null : process.argv.slice(2).join(" ").trim();
 const watchdogMs = Number(process.env.SMOKE_TIMEOUT_MS || 75_000);
