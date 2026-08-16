@@ -1,5 +1,5 @@
 import { auditError, auditOutbound } from "./auditLogger.service.js";
-import { uploadOrderDocument } from "./alemiApi.service.js";
+import { reportAnalyzedReceipt, uploadOrderDocument } from "./alemiApi.service.js";
 import { MAX_DOCUMENT_BYTES, MAX_IMAGE_BYTES } from "./inboundGuard.service.js";
 
 export interface ReceiptDeliveryInput {
@@ -22,6 +22,14 @@ export type ReceiptDeliveryResult =
   | { success: false; errorCode: string; safeMessage: string };
 
 type ReceiptSender = typeof uploadOrderDocument;
+type ReceiptAnalysisSender = typeof reportAnalyzedReceipt;
+
+export interface ReceiptDeliveryDependencies {
+  sendAnalysis?: ReceiptAnalysisSender;
+  sendDocument?: ReceiptSender;
+}
+
+type ReceiptDeliveryAdapter = ReceiptSender | ReceiptDeliveryDependencies;
 
 function failure(errorCode: string, safeMessage: string): ReceiptDeliveryResult {
   return { success: false, errorCode, safeMessage };
@@ -39,12 +47,87 @@ export function formatReceiptOperatorComment(input: Pick<ReceiptDeliveryInput, "
   ].filter(Boolean).join(" ").slice(0, 200);
 }
 
-export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendReceipt: ReceiptSender = uploadOrderDocument): Promise<ReceiptDeliveryResult> {
+function receiptDeliveryDependencies(adapter?: ReceiptDeliveryAdapter) {
+  // A function is the pre-migration test/injection shape and intentionally
+  // exercises the legacy document path. Production passes nothing and always
+  // probes the structured command first.
+  if (typeof adapter === "function") {
+    return { sendAnalysis: null, sendDocument: adapter };
+  }
+  return {
+    sendAnalysis: adapter?.sendAnalysis || reportAnalyzedReceipt,
+    sendDocument: adapter?.sendDocument || uploadOrderDocument,
+  };
+}
+
+function errorResponseData(error: any) {
+  return error?.response?.data ?? error?.responseData ?? error?.data ?? null;
+}
+
+export function isAnalyzedReceiptCommandUnsupported(error: any) {
+  const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
+  const data = errorResponseData(error);
+  const code = String(
+    error?.code || data?.error?.code || data?.error_code || data?.code || ""
+  ).trim().toUpperCase();
+  const detail = JSON.stringify(data || "").toUpperCase();
+  if (![400, 404, 422].includes(status)) return false;
+  if (/UNSUPPORTED|UNKNOWN_COMMAND|COMMAND_NOT_IMPLEMENTED|INTEGRATION_COMMAND_INVALID/.test(code)) return true;
+  return status === 422 && /COMMAND|ORDER\.PAYMENT_RECEIPT\.ANALYZED/.test(detail);
+}
+
+export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapter?: ReceiptDeliveryAdapter): Promise<ReceiptDeliveryResult> {
   const orderNumber = String(input.orderNumber || "").trim();
   const phone = String(input.phone || "").replace(/\D/g, "");
   if (!orderNumber || !phone) {
     auditError("Receipt delivery target invalid", new Error("invalid_recipient"), { instanceId: input.instanceId, orderNumber: orderNumber || "-", hasPhone: Boolean(phone) });
     return failure("invalid_recipient", "receipt_delivery_target_invalid");
+  }
+
+  const dependencies = receiptDeliveryDependencies(adapter);
+  const note = formatReceiptOperatorComment(input);
+
+  if (dependencies.sendAnalysis) {
+    try {
+      const response: any = await dependencies.sendAnalysis({
+        instanceId: input.instanceId,
+        orderId: orderNumber,
+        sourceMessageId: String(input.sourceMessageId || "").trim(),
+        phone,
+        senderName: input.senderName,
+        amount: input.amount,
+        bankName: input.bankName,
+      }, { config: input.config });
+      const deliveredOrderNumber = String(response?.order_id || orderNumber).trim();
+      if (deliveredOrderNumber !== orderNumber) {
+        throw Object.assign(new Error("RECEIPT_ANALYSIS_DELIVERY_UNCONFIRMED"), { deliveredOrderNumber });
+      }
+      const deliveredAt = String(response?.received_at || response?.created_at || response?.updated_at || new Date().toISOString());
+      const deliveryId = String(response?.receipt_analysis_id || response?.payment_receipt_id || response?.event_id || `receipt-analysis:${orderNumber}:${input.sourceMessageId}`);
+      auditOutbound("Receipt analysis to Alemi confirmed", {
+        instanceId: input.instanceId,
+        orderNumber,
+        deliveryId,
+        deliveredAt,
+        amountMinor: Math.round(Number(input.amount || 0) * 100),
+        hasSenderName: Boolean(String(input.senderName || "").trim()),
+        hasBankName: Boolean(String(input.bankName || "").trim()),
+      });
+      return { success: true, deliveryId, deliveredAt };
+    } catch (error) {
+      if (!isAnalyzedReceiptCommandUnsupported(error)) {
+        auditError("Receipt analysis delivery to Alemi failed", error, {
+          instanceId: input.instanceId,
+          orderNumber,
+          sourceMessageId: input.sourceMessageId,
+        });
+        return failure("delivery_failed", "receipt_delivery_failed");
+      }
+      auditOutbound("Analyzed receipt command unsupported; using temporary document fallback", {
+        instanceId: input.instanceId,
+        orderNumber,
+      });
+    }
   }
 
   const mimeType = String(input.mimeType || "").split(";", 1)[0].trim().toLowerCase();
@@ -73,11 +156,9 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, sendRe
 
   // Hub's current direct-API contract still requires the raw document upload,
   // but its operator note must contain only the extracted payment facts.
-  const note = formatReceiptOperatorComment(input);
-
   let response: any;
   try {
-    response = await sendReceipt({
+    response = await dependencies.sendDocument({
       instanceId: input.instanceId,
       orderId: orderNumber,
       sourceMessageId: String(input.sourceMessageId || "").trim(),

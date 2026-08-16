@@ -25,7 +25,8 @@ export type AlemiCommandName =
   | "crm.lead.upsert"
   | "crm.today.get"
   | "analytics.daily.upsert"
-  | "customer.access_link.issue";
+  | "customer.access_link.issue"
+  | "order.payment_receipt.analyzed";
 
 export interface AlemiTransportRequest {
   url: string;
@@ -78,6 +79,16 @@ export interface UploadOrderDocumentInput {
   // Short operator-facing line extracted from the receipt: sender name, amount,
   // bank ("Рахметоллаұлы Б. сумма 8000 ₸ Kaspi"). Hub stores it as the order comment.
   note?: string;
+}
+
+export interface ReportAnalyzedReceiptInput {
+  instanceId: string;
+  orderId: string | number;
+  sourceMessageId: string;
+  phone?: string;
+  senderName?: string;
+  amount: number;
+  bankName?: string;
 }
 
 export interface ReportPrintResultInput {
@@ -433,6 +444,31 @@ export async function callAlemiLegacyAction(
   const instanceId = firstString(payload.restaurant_id, payload.instance, payload.instanceId, options.config?.instance_id, options.config?.instance);
   const mapped = mapLegacyAlemiAction(action, payload);
   return callAlemiCommand(instanceId, mapped.command, mapped.data, options);
+}
+
+// Preferred receipt transport. Hub stores only the AI-extracted payment facts,
+// never the customer's raw WhatsApp document. Until Hub exposes this command,
+// receiptDelivery.service performs a narrowly detected legacy upload fallback.
+export async function reportAnalyzedReceipt(input: ReportAnalyzedReceiptInput, options: AlemiCallOptions = {}) {
+  const instanceId = firstString(input.instanceId);
+  const orderId = firstString(input.orderId);
+  const sourceMessageId = firstString(input.sourceMessageId);
+  const amount = Number(input.amount);
+  const amountMinor = Math.round(amount * 100);
+  if (!instanceId) throw new Error("ALEMI_INSTANCE_REQUIRED");
+  if (!orderId) throw new Error("ALEMI_ORDER_ID_REQUIRED");
+  if (!sourceMessageId) throw new Error("ALEMI_SOURCE_MESSAGE_ID_REQUIRED");
+  if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new Error("ALEMI_RECEIPT_AMOUNT_REQUIRED");
+
+  return callAlemiCommand(instanceId, "order.payment_receipt.analyzed", {
+    order_id: orderId,
+    source_message_id: sourceMessageId,
+    phone_e164: e164Kazakhstan(input.phone),
+    sender_name: firstString(input.senderName).slice(0, 120),
+    amount_minor: amountMinor,
+    currency: "KZT",
+    bank_name: firstString(input.bankName).slice(0, 40),
+  }, options);
 }
 
 // A 200 whose body is not a link is not a link. The helper used to hand back
