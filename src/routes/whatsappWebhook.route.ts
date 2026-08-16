@@ -484,7 +484,11 @@ export async function resumeDeferredKitchenConsent(
   pending: DeferredKitchenConsent,
   deps: DeferredKitchenConsentDeps = deferredKitchenConsentDeps,
 ): Promise<string | null> {
-  if (!pending.deferredMenuLinkIntent) return null;
+  // Records written before deferredMenuLinkIntent existed contain only the
+  // policy fingerprint. A positive answer still means "continue the order":
+  // the question itself explicitly promised that continuation, so legacy and
+  // current consent records must behave identically.
+  void pending;
 
   const link = await deps.issueAccessLink({
     instanceId: ctx.instanceId,
