@@ -112,7 +112,15 @@ test("declining the link and asking for the menu in writing is not a link reques
 });
 
 test("a plain request for the menu link still gets one", () => {
-  for (const text of ["Мәзір сілтемесін жіберіңіз", "меню скинь", "хочу заказать"]) {
+  for (const text of [
+    "Мәзір сілтемесін жіберіңіз",
+    "меню скинь",
+    "хочу заказать",
+    "Жалғастырамын",
+    "Тапсырысты жалғастыра берейік",
+    "Продолжу заказ",
+    "Давайте продолжим оформление",
+  ]) {
     assert.equal(wantsMenuAsText(text), false, text);
     assert.equal(hasExplicitMenuLinkIntent(text), true, text);
   }

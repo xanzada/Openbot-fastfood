@@ -81,7 +81,7 @@ test("an existing order never mutes the kitchen gate", () => {
   assert.ok(body.includes("savePendingKitchenConsent"), "the wait question must be remembered");
 });
 
-test("accepting a saved wait consent resumes the deferred personal order link", async () => {
+test("accepting even a legacy wait consent resumes the personal order link", async () => {
   const issued: string[] = [];
   const marked: string[] = [];
   const continuationCtx = ctx({
@@ -94,7 +94,7 @@ test("accepting a saved wait consent resumes the deferred personal order link", 
 
   const reply = await resumeDeferredKitchenConsent(
     continuationCtx,
-    { deferredMenuLinkIntent: true },
+    {},
     {
       issueAccessLink: async (input: any) => {
         issued.push(`${input.instanceId}:${input.phone}:${input.locale}`);
