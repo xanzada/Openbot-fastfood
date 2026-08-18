@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
+import { refreshCheckoutContextForText } from "../services/checkoutIntent.service.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
 import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemory.service.js";
 import {
@@ -1035,6 +1036,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
             ctx.text = transcript;
             const voiceLanguage = await detectLanguageDecision(transcript).catch(() => null);
             if (voiceLanguage?.lockable) ctx.language = voiceLanguage.language;
+            await refreshCheckoutContextForText(ctx, transcript);
             await saveToHistory(ctx.instanceId, ctx.phone, "user", transcript, {
               source: "voice_transcript",
               messageId,
