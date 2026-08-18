@@ -20,7 +20,7 @@ const PROCESSING_LOCK_SECONDS = 180;
 const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
 const OPERATOR_MUTE_MAX_SECONDS = envNumber(process.env.OPERATOR_MUTE_MAX_SECONDS, 300, { min: 1 });
-const OPERATOR_ACTIVE_SECONDS = envNumber(process.env.OPERATOR_ACTIVE_SECONDS, 60, { min: 1 });
+export const OPERATOR_ACTIVE_SECONDS = envNumber(process.env.OPERATOR_ACTIVE_SECONDS, 40, { min: 1 });
 export const MAX_IMAGE_BYTES = envNumber(process.env.OPENBOT_MAX_IMAGE_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES, 5 * 1024 * 1024, { min: 1024 });
 export const MAX_DOCUMENT_BYTES = envNumber(process.env.OPENBOT_MAX_DOCUMENT_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES, 5 * 1024 * 1024, { min: 1024 });
 export const MAX_AUDIO_BYTES = envNumber(process.env.OPENBOT_MAX_AUDIO_BYTES, 8 * 1024 * 1024, { min: 1024 });
@@ -633,6 +633,10 @@ export function testModeAllowedPhones(
   ]);
 }
 
+export function shouldIgnoreSavedContacts(env: Record<string, string | undefined> = process.env) {
+  return String(env.BOT_IGNORE_SAVED_CONTACTS ?? "true").trim().toLowerCase() !== "false";
+}
+
 async function getTestModeAllowedPhones(instanceId: string) {
   const config = await getRestaurantConfig(instanceId).catch(() => null);
   return testModeAllowedPhones(config);
@@ -683,7 +687,7 @@ export async function guardIncomingMessage(input: {
     input.senderMeta?.pushName,
     text,
   ].filter(Boolean);
-  const ignoreSavedContacts = String(process.env.BOT_IGNORE_SAVED_CONTACTS || "false").trim().toLowerCase() === "true";
+  const ignoreSavedContacts = shouldIgnoreSavedContacts();
   if (hasPrivateKeyword(privateNames)) return { blocked: true, reason: "private_contact_keyword" };
   if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact)) return { blocked: true, reason: "private_saved_contact" };
 
