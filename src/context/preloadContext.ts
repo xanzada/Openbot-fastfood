@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage } from "../utils/language.js";
 import { hasBrokenLinkReport, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
-import { getMenuContext, getOrderStatus, getRuntimeStatus } from "../services/dle.service.js";
+import { getMenuContext, getOrderStatus, getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
 import {
@@ -83,7 +83,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   const redisAvailable = await connectRedis().then(() => true).catch(() => false);
 
   const instanceId = String(input.instanceId || "").trim();
-  const phone = String(input.phone || "").replace(/\D/g, "");
+  const phone = normalizePhone(input.phone);
   const text = String(input.text || "").trim();
 
   if (!instanceId) throw new Error("instanceId is required");

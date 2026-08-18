@@ -79,7 +79,11 @@ export function extractPhoneCandidate(rawValue: unknown) {
   const raw = String(rawValue || "").trim();
   if (!raw || isGroupOrStatusJid(raw)) return "";
 
-  if (LID_JID_RE.test(raw)) return "";
+  if (LID_JID_RE.test(raw)) {
+    const match = raw.match(/^(\d+)/);
+    if (match) return `${match[1]}@lid`;
+    return "";
+  }
 
   const phoneLikeMatch =
     raw.match(/(?:\+?7|8)[\s().-]*\d{3}[\s().-]*\d{3}[\s().-]*\d{2}[\s().-]*\d{2}/) ||
@@ -89,7 +93,9 @@ export function extractPhoneCandidate(rawValue: unknown) {
 }
 
 export function normalizePhone(value: unknown = "") {
-  return normalizeKazakhstanPhone(extractPhoneCandidate(value));
+  const candidate = extractPhoneCandidate(value);
+  if (candidate.endsWith("@lid")) return candidate;
+  return normalizeKazakhstanPhone(candidate);
 }
 
 export function normalizePhoneFromCandidates(candidates: unknown[] = []) {

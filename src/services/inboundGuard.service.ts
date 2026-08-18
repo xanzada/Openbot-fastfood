@@ -4,7 +4,7 @@ import { getRestaurantConfig } from "./platformConfig.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
-const PHONE_RE = /^\d{10,15}$/;
+const PHONE_RE = /^(\d{10,15}|\d+@lid)$/;
 const SPAM_WINDOW_SECONDS = 60;
 const SPAM_LIMIT = envNumber(process.env.OPENBOT_SPAM_LIMIT_PER_MINUTE, 15, { min: 1 });
 const MUTE_SECONDS = envNumber(process.env.OPENBOT_SPAM_MUTE_SECONDS, 900, { min: 1 });
@@ -609,11 +609,17 @@ function digitsOf(value: unknown) {
   return String(value ?? "").replace(/\D/g, "");
 }
 
+function normalizeChatPhone(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (/^\d+@lid$/i.test(raw)) return raw.toLowerCase();
+  return digitsOf(raw);
+}
+
 function phoneListOf(value: unknown): string[] {
   // Split on separators only, never on whitespace: "+7 776 915 6184" is one
   // number written the way a human writes it, not four numbers.
   const raw = Array.isArray(value) ? value : String(value ?? "").split(/[,;|]+/);
-  return raw.map((entry) => digitsOf(entry)).filter((entry) => PHONE_RE.test(entry));
+  return raw.map((entry) => normalizeChatPhone(entry)).filter((entry) => PHONE_RE.test(entry));
 }
 
 export function testModeAllowedPhones(
@@ -634,7 +640,7 @@ async function getTestModeAllowedPhones(instanceId: string) {
 
 export async function setOperatorAutoMute(instanceId: string, phone: string): Promise<void> {
   const safeInstanceId = String(instanceId || "").trim();
-  const safePhone = String(phone || "").replace(/\D/g, "");
+  const safePhone = normalizeChatPhone(phone);
   if (!safeInstanceId || !safePhone) return;
   await connectRedis();
   await redisClient
@@ -654,7 +660,7 @@ export async function guardIncomingMessage(input: {
   senderMeta?: Record<string, any>;
 }): Promise<GuardResult> {
   const instanceId = String(input.instanceId || "").trim();
-  const phone = String(input.phone || "").replace(/\D/g, "");
+  const phone = normalizeChatPhone(input.phone);
   const text = String(input.text || "").trim();
   const messageId = String(input.messageId || "").trim();
 
@@ -788,7 +794,7 @@ export async function saveMediaContext(
 
 export async function bufferInboundText(input: { instanceId: string; phone: string; messageId: string; text: string }): Promise<{ leader: boolean; text: string; parts: number; items: string[] }> {
   const instanceId = String(input.instanceId || "").trim();
-  const phone = String(input.phone || "").replace(/\D/g, "");
+  const phone = normalizeChatPhone(input.phone);
   const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
   const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
   if (!instanceId || !phone || !text) return { leader: true, text, parts: text ? 1 : 0, items: text ? [text] : [] };
@@ -942,7 +948,7 @@ export async function drainInboundBuffer(instanceId: string, phone: string): Pro
  */
 export async function requeueInboundText(input: { instanceId: string; phone: string; messageId: string; text: string }): Promise<boolean> {
   const instanceId = String(input.instanceId || "").trim();
-  const phone = String(input.phone || "").replace(/\D/g, "");
+  const phone = normalizeChatPhone(input.phone);
   const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
   const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
   if (!instanceId || !phone || !text) return false;
