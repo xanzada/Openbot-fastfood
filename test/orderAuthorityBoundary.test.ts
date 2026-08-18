@@ -11,6 +11,8 @@ import {
 } from "../src/utils/language.js";
 import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 import { compactConversationHistory } from "../src/context/buildFactsPrompt.js";
+import { refreshCheckoutContextForText } from "../src/services/checkoutIntent.service.js";
+import { hasExplicitMenuLinkIntent } from "../src/utils/magicLink.js";
 
 function context(language: "kk" | "ru" = "kk") {
   return {
@@ -91,4 +93,37 @@ test("fabricated order acceptance is excluded from the agent working memory", ()
   assert.equal(compact.some((entry) => entry.text.includes("қабылдадым")), false);
   assert.equal(compact.some((entry) => entry.text.includes("сайтта расталды")), true);
   assert.equal(compact.some((entry) => entry.role === "user"), true);
+});
+
+test("a voice transcript hydrates the personal checkout link before the agent runs", async () => {
+  const ctx = {
+    ...context("kk"),
+    instanceId: "prestige",
+    phone: "77476884956",
+    config: {},
+    chatHistory: [],
+    explicitMenuLinkIntent: false,
+    magicLink: null,
+    magicLinkFailed: false,
+  } as any;
+  let issued = 0;
+  await refreshCheckoutContextForText(ctx, "Екі донер заказ берейін деп едім, қазір керек", {
+    issueAccessLink: async () => {
+      issued += 1;
+      return "https://menu.alemi.kz/personal";
+    },
+    upsertLead: async () => true,
+  });
+
+  assert.equal(issued, 1);
+  assert.equal(ctx.explicitMenuLinkIntent, true);
+  assert.equal(ctx.magicLink, "https://menu.alemi.kz/personal");
+  const plan = resolveAgentToolPlan({ ...ctx, text: "Екі донер заказ берейін деп едім" });
+  assert.equal(plan.requiredTools[0], "sendMenuLink");
+});
+
+test("mixed-language requests to accept an order route to checkout, never address collection", () => {
+  assert.equal(hasExplicitMenuLinkIntent("Заказ қабылдашы"), true);
+  const blocked = validateFinalText("Жеткізу мекенжайын растай аласыз ба?", context("kk"), { toolsCalled: ["searchMenu"] });
+  assert.equal(blocked.warnings.includes("manual_order_claim_blocked"), true);
 });
