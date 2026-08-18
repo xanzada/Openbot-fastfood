@@ -10,6 +10,7 @@ import {
   lastCustomerLanguage,
 } from "../src/utils/language.js";
 import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
+import { compactConversationHistory } from "../src/context/buildFactsPrompt.js";
 
 function context(language: "kk" | "ru" = "kk") {
   return {
@@ -68,4 +69,26 @@ test("a bare delivery address keeps the established Kazakh conversation language
     { role: "user", text: "Екі донерге тапсырыс бергім келеді" },
     { role: "user", text: "Брусиловский 18" },
   ]), "kk");
+});
+
+test("fabricated order acceptance is excluded from the agent working memory", () => {
+  const compact = compactConversationHistory([
+    { role: "user", text: "Екі донерге тапсырыс бергім келеді", createdAt: 1 },
+    {
+      role: "assistant",
+      source: "openbot-agent",
+      text: "Тапсырысыңызды қабылдадым. Жеткізу мекенжайын жазыңыз.",
+      createdAt: 2,
+    },
+    {
+      role: "model",
+      source: "hub_notification",
+      text: "№12 тапсырысыңыз сайтта расталды.",
+      createdAt: 3,
+    },
+  ]);
+
+  assert.equal(compact.some((entry) => entry.text.includes("қабылдадым")), false);
+  assert.equal(compact.some((entry) => entry.text.includes("сайтта расталды")), true);
+  assert.equal(compact.some((entry) => entry.role === "user"), true);
 });
