@@ -60,7 +60,18 @@ export function getTextModels(): TextModelChain {
 }
 
 export function getMediaPrimaryModel() {
-  return envText("MEDIA_PRIMARY_MODEL", envText("GEMINI_MEDIA_MODEL", envText("GEMINI_MODEL", "gemini-2.5-flash-lite")));
+  const configured = envText(
+    "MEDIA_PRIMARY_MODEL",
+    envText("GEMINI_MEDIA_MODEL", envText("GEMINI_MODEL", "gemini-3.6-flash"))
+  );
+  // Google returns 404 for these retired direct-API media models. Silently
+  // retaining an old Dokploy override breaks every voice note, so upgrade the
+  // known retired values while preserving deliberate current-model overrides.
+  const normalized = configured.toLowerCase().replace(/^models\//, "");
+  if (["gemini-2.5-flash", "gemini-2.5-flash-lite"].includes(normalized)) {
+    return "gemini-3.6-flash";
+  }
+  return configured;
 }
 
 export function getMediaFallbackModel() {
