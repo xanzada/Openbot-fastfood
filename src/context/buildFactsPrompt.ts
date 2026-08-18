@@ -88,11 +88,16 @@ export function compactConversationHistory(history: any[]) {
   const normalized = (Array.isArray(history) ? history : [])
     .map((entry, index) => ({
       role: conversationRole(entry),
+      source: String(entry?.source || "").trim().toLowerCase(),
       text: String(entry?.text || entry?.body || "").replace(/\s+/g, " ").trim().slice(0, DIALOG_TEXT_LIMIT),
       createdAt: Number(entry?.createdAt || entry?.timestamp || 0) || index,
       index,
     }))
     .filter((entry): entry is typeof entry & { role: ConversationRole } => Boolean(entry.role && entry.text))
+    .filter((entry) => {
+      if (entry.role !== "assistant" || !isManualOrderHandlingClaim(entry.text)) return true;
+      return /(?:hub|signal|notification|dle)/u.test(entry.source);
+    })
     .sort((a, b) => a.createdAt - b.createdAt || a.index - b.index);
 
   let customerCount = 0;
@@ -403,3 +408,4 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
     "FACTS_CONTEXT_END",
   ].join("\n");
 }
+import { isManualOrderHandlingClaim } from "../services/orderAuthority.service.js";
