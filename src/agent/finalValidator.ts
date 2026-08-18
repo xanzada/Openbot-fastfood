@@ -13,6 +13,8 @@ const STALE_WAIT_CONSENT_RE =
   /[^.!?\n]*(?:күте\s+аласыз|күте\s+аласың|күтуге\s+дайын|сможете\s+подождать|готовы\s+(?:подождать|ждать)|будете\s+ждать)[^.!?\n]*[?]?/iu;
 const ORDER_STATUS_RE =
   /(тапсырысыңыз|заказыңыз|заказ|order).*(дайындалып|әзірленіп|курьер|жолда|жеткіз|аяқтал|готов|едет|достав|дайын|әзір|даяр)/iu;
+const MANUAL_ORDER_HANDLING_RE =
+  /(тапсырыс(?:ыңызды|ты|қа)?[^.!?\n]{0,80}(?:қабылдай\s+аламыз|қабылдадым|қабылдадық|рәсімдедім|расталды)|(?:жеткізу\s+)?мекенжай(?:ыңызды|ын)?\s+жазыңыз|приняли\s+адрес|заказ[^.!?\n]{0,100}(?:подтвержд[её]н|оформлен|мы\s+приняли|принимаю)|(?:адрес|доставка|самовывоз)[^.!?\n]{0,60}(?:для\s+заказа|заказ\s+подтверж))/iu;
 // Bare "дайын"/"готов"/"работает" appear in ordinary menu and order replies too,
 // so the kitchen guard now demands an explicit kitchen subject next to the
 // claim. Otherwise a correct answer got replaced by the canned kitchen line.
@@ -121,6 +123,12 @@ function noActiveOrderText(ctx: FastFoodContext) {
     : "Сейчас нет активного заказа.";
 }
 
+function manualOrderBoundaryText(ctx: FastFoodContext) {
+  return ctx.language === "kk"
+    ? "Тапсырыс әлі рәсімделген жоқ. Оны тек жеке мәзір сілтемесі арқылы өзіңіз жасай аласыз."
+    : "Заказ ещё не оформлен. Оформить его можно только самостоятельно по персональной ссылке на меню.";
+}
+
 // When the only thing the model had to say about an allergen was unverified, the
 // honest reply is that we will check it rather than silence or a generic prompt.
 function allergenUnverifiedText(ctx: FastFoodContext) {
@@ -181,6 +189,15 @@ export function validateFinalText(
   const warnings: string[] = [];
 
   if (!text) return { text: fallback(ctx), hasLink: false, warnings: ["empty_model_output"] };
+
+  const statusGrounded = Boolean(grounding?.toolsCalled?.includes("checkOrderStatus"));
+  if (!statusGrounded && MANUAL_ORDER_HANDLING_RE.test(text)) {
+    return {
+      text: manualOrderBoundaryText(ctx),
+      hasLink: false,
+      warnings: ["manual_order_claim_blocked"],
+    };
+  }
 
   // A truncated generation once shipped the single word "Өкі" to a guest. A reply that
   // short with no sentence ending and no URL is a broken fragment, not an answer.

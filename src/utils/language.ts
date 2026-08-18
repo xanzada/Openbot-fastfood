@@ -9,6 +9,10 @@ const KAZAKH_RE =
 // language switch. Treating "мхм" as Russian made a Kazakh wait-consent dialog
 // change language on the exact turn that should continue the order.
 const LANGUAGE_NEUTRAL_ACK_RE = /^(?:м+\s*-?\s*х?м+|угу+|ага+|ок(?:ей)?|okay)$/iu;
+// A street/building answer continues the current dialog; it is not a request to
+// switch language. Russian street names are common inside otherwise Kazakh
+// conversations (for example "Брусиловский 18").
+const ADDRESS_ONLY_RE = /^[\p{L}.'’\-]+(?:\s+[\p{L}.'’\-]+){0,3}\s+\d+[\p{L}]?(?:[\/-]\d+)?(?:\s*,?\s*(?:кв(?:артира)?|пәтер)\.?\s*\d+)?$/iu;
 
 // generateMediaText, not callGemini: the language of the whole 24-hour lock must
 // not hang on one provider. callGemini alone has no reserve, so while the free
@@ -26,6 +30,7 @@ export interface LanguageDetectionDecision {
 export function isLanguageBearingCustomerText(text = "") {
   const clean = String(text || "").replace(/\[[^\]]+\]/g, " ").trim();
   if (LANGUAGE_NEUTRAL_ACK_RE.test(clean)) return false;
+  if (ADDRESS_ONLY_RE.test(clean)) return false;
   return /[\p{L}]/u.test(clean) && clean.length >= 2;
 }
 

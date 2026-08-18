@@ -67,7 +67,9 @@ import {
   createReceiptFingerprint,
   receiptFilterEnabled,
   validateReceiptAnalysis,
+  voiceTranscriptForAgent,
 } from "../services/mediaAnalysis.service.js";
+import { detectLanguageDecision } from "../utils/language.js";
 import { getTextModels } from "../services/llm.service.js";
 import { classifyKitchenSalesPolicy,
   formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
@@ -1023,8 +1025,24 @@ async function processWhatsAppWebhook(body: any, started: number) {
           mediaPreemptiveSource = "media_technical_error";
         }
         if (mediaAnalysis.type === "reply") {
-          mediaPreemptiveReply = stripEscalationSignals(mediaAnalysis.analysis);
-          mediaPreemptiveSource = mediaContext.kind === "audio" ? "voice_reply" : "media_reply";
+          const transcript = voiceTranscriptForAgent(
+            mediaAnalysis,
+            mediaContext.mimeType || mediaContext.mediaType || ""
+          );
+          if (transcript) {
+            text = transcript;
+            customerLanguageText = transcript;
+            ctx.text = transcript;
+            const voiceLanguage = await detectLanguageDecision(transcript).catch(() => null);
+            if (voiceLanguage?.lockable) ctx.language = voiceLanguage.language;
+            await saveToHistory(ctx.instanceId, ctx.phone, "user", transcript, {
+              source: "voice_transcript",
+              messageId,
+            });
+          } else {
+            mediaPreemptiveReply = stripEscalationSignals(mediaAnalysis.analysis);
+            mediaPreemptiveSource = mediaContext.kind === "audio" ? "voice_reply" : "media_reply";
+          }
         }
         if (mediaAnalysis.type === "complaint" && mediaContext.base64) {
           await saveComplaintMedia(ctx.instanceId, ctx.phone, mediaContext.base64, mediaContext.mimeType || mediaContext.mediaType || "image/jpeg");

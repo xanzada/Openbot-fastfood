@@ -9,6 +9,7 @@ import {
   isLanguageBearingCustomerText,
   lastCustomerLanguage,
 } from "../src/utils/language.js";
+import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 
 function context(language: "kk" | "ru" = "kk") {
   return {
@@ -38,6 +39,13 @@ test("the final validator never lets the AI accept or confirm an order", () => {
     { toolsCalled: [] },
   );
   assert.equal(second.text, "Тапсырыс әлі рәсімделген жоқ. Оны тек жеке мәзір сілтемесі арқылы өзіңіз жасай аласыз.");
+
+  const groundedStatus = validateFinalText(
+    "№12 тапсырысыңыз қабылданды, қазір дайындалып жатыр.",
+    context("kk"),
+    { toolsCalled: ["checkOrderStatus"] },
+  );
+  assert.equal(groundedStatus.warnings.includes("manual_order_claim_blocked"), false);
 });
 
 test("voice media returns a transcript to the main agent instead of becoming a final answer", () => {
@@ -47,6 +55,11 @@ test("voice media returns a transcript to the main agent instead of becoming a f
     analysis: "Әрине, тапсырысыңызды қабылдаймын",
   }));
   assert.equal(voiceTranscriptForAgent(analysis, "audio/ogg"), "Екі донерге тапсырыс бергім келеді");
+  const plan = resolveAgentToolPlan({
+    ...context("kk"),
+    text: voiceTranscriptForAgent(analysis, "audio/ogg"),
+  });
+  assert.equal(plan.requiredTools.includes("sendMenuLink"), true);
 });
 
 test("a bare delivery address keeps the established Kazakh conversation language", () => {
