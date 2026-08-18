@@ -3,10 +3,18 @@ import test from "node:test";
 import {
   MAX_IMAGE_BYTES,
   MAX_VOICE_SECONDS,
+  OPERATOR_ACTIVE_SECONDS,
   detectOggOpusDurationSeconds,
   extractInboundMedia,
   safeMediaMetadata,
+  shouldIgnoreSavedContacts,
 } from "../src/services/inboundGuard.service.js";
+
+test("operator handoff defaults to 40 seconds and saved contacts are protected by default", () => {
+  assert.equal(OPERATOR_ACTIVE_SECONDS, 40);
+  assert.equal(shouldIgnoreSavedContacts({}), true);
+  assert.equal(shouldIgnoreSavedContacts({ BOT_IGNORE_SAVED_CONTACTS: "false" }), false);
+});
 
 test("oversized photos are rejected before AI processing", () => {
   const media = extractInboundMedia({
