@@ -154,7 +154,7 @@ ${pdfInstruction}
 [RECEIPT EXTRACTION]
 - Accept only a genuine, completed bank transfer receipt. Reject edited/demo/template, pending/failed, old, unreadable, or incomplete evidence.
 - Expected payment amount: ${Number(receiptContext.expectedAmount || 0) || "unknown"}. Order created at: ${receiptContext.orderCreatedAt || "unknown"}. Current time: ${new Date(receiptContext.nowMs ?? Date.now()).toISOString()}.
-- is_valid_receipt is true only when amount matches the expected amount, the payment is completed, and visible date/time is within 24 hours and not before the order.
+- is_valid_receipt is true when the amount is equal to or greater than the expected amount (guests often round up: an expected 7590 paid as 7600 is acceptable and is NOT a mismatch), the payment is completed, and visible date/time is within 24 hours and not before the order. Only a clearly smaller amount than expected makes the receipt insufficient.
 - amount: number only.
 - bank_name: Kaspi, Halyk, Jusan, or the visible bank.
 - date_time: visible date/time normalized to ISO 8601. Use "0" if missing.

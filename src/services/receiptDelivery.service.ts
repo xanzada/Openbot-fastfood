@@ -104,6 +104,7 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
         senderName: input.senderName,
         amount: input.amount,
         bankName: input.bankName,
+        text: note,
       }, { config: input.config });
       const deliveredOrderNumber = String(response?.order_id || orderNumber).trim();
       if (deliveredOrderNumber !== orderNumber) {

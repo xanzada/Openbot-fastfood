@@ -89,6 +89,7 @@ export interface ReportAnalyzedReceiptInput {
   senderName?: string;
   amount: number;
   bankName?: string;
+  text?: string;
 }
 
 export interface ReportPrintResultInput {
@@ -450,6 +451,7 @@ export async function reportAnalyzedReceipt(input: ReportAnalyzedReceiptInput, o
   if (!sourceMessageId) throw new Error("ALEMI_SOURCE_MESSAGE_ID_REQUIRED");
   if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new Error("ALEMI_RECEIPT_AMOUNT_REQUIRED");
 
+  const text = firstString(input.text).slice(0, 200);
   return callAlemiCommand(instanceId, "order.payment_receipt.analyzed", {
     order_id: orderId,
     source_message_id: sourceMessageId,
@@ -458,6 +460,7 @@ export async function reportAnalyzedReceipt(input: ReportAnalyzedReceiptInput, o
     amount_minor: amountMinor,
     currency: "KZT",
     bank_name: firstString(input.bankName).slice(0, 40),
+    ...(text ? { text } : {}),
   }, options);
 }
 

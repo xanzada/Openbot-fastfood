@@ -65,6 +65,7 @@ test("analyzed receipt command sends structured payment facts without the raw do
     senderName: "Рахметоллаұлы Б.",
     amount: 8000,
     bankName: "Kaspi",
+    text: "Рахметоллаұлы Б. сумма 8000 ₸ Kaspi",
   }, {
     config,
     commandId: "cmd-receipt-analysis",
@@ -85,6 +86,7 @@ test("analyzed receipt command sends structured payment facts without the raw do
     amount_minor: 800000,
     currency: "KZT",
     bank_name: "Kaspi",
+    text: "Рахметоллаұлы Б. сумма 8000 ₸ Kaspi",
   });
   assert.doesNotMatch(JSON.stringify(body), /base64|receiptBase64|transaction|paidAt|file/i);
   assert.equal(result.receipt_analysis_id, "analysis-1");
