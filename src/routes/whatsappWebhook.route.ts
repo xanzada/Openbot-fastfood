@@ -18,6 +18,7 @@ import {
   savePendingKitchenConsent,
   saveToHistory,
   takeComplaintClarification,
+  markReceiptSeen,
 } from "../services/redis.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
 import {
@@ -985,6 +986,13 @@ async function processWhatsAppWebhook(body: any, started: number) {
             mimeType: String(mediaContext.mimeType || mediaContext.mediaType || ""),
             sourceMessageId: messageId,
           });
+
+          if (delivery.success) {
+            // From now on this order has a receipt. The kanban webhook reads this
+            // marker to tell the operator's "Запросить снова" press apart from the
+            // very first payment request - hub sends one event name for both.
+            await markReceiptSeen(ctx.instanceId, String(deliverOrderNumber || "")).catch(() => false);
+          }
 
           if (!delivery.success) {
             await releaseReceiptFingerprint(ctx.instanceId, fingerprint);

@@ -78,16 +78,18 @@ test("analyzed receipt command sends structured payment facts without the raw do
 
   const body = JSON.parse(String(captured?.body || ""));
   assert.equal(body.command, "order.payment_receipt.analyzed");
+  // Hub's published contract is exactly {order_id, source_message_id, text} -
+  // any extra field (phone_e164, sender_name, amount_minor, ...) makes hub
+  // answer 400 INTEGRATION_COMMAND_INVALID for the whole command, which the
+  // delivery service then mistook for "command not implemented" and silently
+  // fell back to the legacy document upload. The payment facts travel inside
+  // `text`, formatted by formatReceiptOperatorComment.
   assert.deepEqual(body.data, {
     order_id: "01a0098e-d585-7071-bb22-6beaf5b740f5",
     source_message_id: "wa-receipt-28",
-    phone_e164: "+77476884956",
-    sender_name: "Рахметоллаұлы Б.",
-    amount_minor: 800000,
-    currency: "KZT",
-    bank_name: "Kaspi",
     text: "Рахметоллаұлы Б. сумма 8000 ₸ Kaspi",
   });
+  assert.doesNotMatch(JSON.stringify(body.data), /phone_e164|sender_name|amount_minor|bank_name|currency/i);
   assert.doesNotMatch(JSON.stringify(body), /base64|receiptBase64|transaction|paidAt|file/i);
   assert.equal(result.receipt_analysis_id, "analysis-1");
 });

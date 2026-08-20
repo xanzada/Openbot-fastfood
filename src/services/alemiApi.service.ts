@@ -451,15 +451,20 @@ export async function reportAnalyzedReceipt(input: ReportAnalyzedReceiptInput, o
   if (!sourceMessageId) throw new Error("ALEMI_SOURCE_MESSAGE_ID_REQUIRED");
   if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new Error("ALEMI_RECEIPT_AMOUNT_REQUIRED");
 
+  // Hub validates this command exactly as strictly as order.context.get above:
+  // one unexpected field and it answers 400 INTEGRATION_COMMAND_INVALID for the
+  // WHOLE command. The published contract is {order_id, source_message_id, text}
+  // and nothing else, so the phone/sender/amount/bank fields that used to ride
+  // along made every single call fail. receiptDelivery then swallowed the error
+  // as "command unsupported" and fell back to the legacy document upload, which
+  // is why the operator card kept showing the neutral "Клиент отправил чек"
+  // instead of the analysed receipt (audit, 2026-08-19).
+  // Nothing is lost: sender, amount and bank are already formatted into `text`
+  // by formatReceiptOperatorComment. amountMinor stays as a validation guard.
   const text = firstString(input.text).slice(0, 200);
   return callAlemiCommand(instanceId, "order.payment_receipt.analyzed", {
     order_id: orderId,
     source_message_id: sourceMessageId,
-    phone_e164: e164Kazakhstan(input.phone),
-    sender_name: firstString(input.senderName).slice(0, 120),
-    amount_minor: amountMinor,
-    currency: "KZT",
-    bank_name: firstString(input.bankName).slice(0, 40),
     ...(text ? { text } : {}),
   }, options);
 }

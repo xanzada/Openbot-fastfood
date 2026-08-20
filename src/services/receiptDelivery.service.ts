@@ -131,9 +131,15 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
         });
         return failure("delivery_failed", "receipt_delivery_failed");
       }
+      // Hub returns the same generic INTEGRATION_COMMAND_INVALID both for a
+      // command it does not implement and for a payload it dislikes, so this
+      // fallback hid a real payload bug for weeks. Record what hub actually said.
       auditOutbound("Analyzed receipt command unsupported; using temporary document fallback", {
         instanceId: input.instanceId,
         orderNumber,
+        hubStatus: Number((error as any)?.statusCode ?? (error as any)?.response?.status ?? 0),
+        hubCode: String((error as any)?.code || (error as any)?.alemiCode || ""),
+        hubDetail: JSON.stringify(errorResponseData(error) || "").slice(0, 300),
       });
     }
   }

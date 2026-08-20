@@ -72,6 +72,9 @@ test("payment confirmation only signals the operator and never marks an order pa
 
   const body = JSON.parse(String(captured?.body || ""));
   assert.equal(body.command, "order.payment_receipt.analyzed");
-  assert.equal(body.data.amount_minor, 800000);
+  // Hub accepts exactly {order_id, source_message_id, text} for this command;
+  // amount/bank/sender travel inside `text` only. No `text` was passed here,
+  // so the payload is the bare id pair.
+  assert.deepEqual(Object.keys(body.data).sort(), ["order_id", "source_message_id"]);
   assert.doesNotMatch(JSON.stringify(body), /mark_paid|status_paid|confirm_payment|print_trigger/i);
 });

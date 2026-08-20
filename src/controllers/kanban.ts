@@ -20,6 +20,7 @@ import {
   saveSiteLanguageHint,
   saveShiftNote,
   saveToHistory,
+  hasReceiptSeen,
 } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { humanizeCancellationReason } from "../services/operatorVoice.service.js";
@@ -413,11 +414,27 @@ export function buildLegacyRejectedMessage(body: Record<string, unknown>, lang: 
   if (lang === "ru") {
     return reason
       ? `❌ *Ваш заказ отменён.*\nПричина: *${reason}*.\nВы можете выбрать другое блюдо в меню и оформить заказ - напишите, и я сразу пришлю ссылку на меню.`
-      : `❌ *Ваш заказ отменён.*\nВы можете выбрать другое блюдо в меню - или напишите в этот чат, и я сразу объясню точную причину.`;
+      : `❌ *Ваш заказ отменён.*\nЕсли оплата уже прошла, напишите в этот чат - разберёмся с возвратом.\nА если хотите заказать заново - скажите, и я пришлю ссылку на меню.`;
   }
   return reason
     ? `❌ *Тапсырысыңыздан бас тартылды.*\nСебебі: *${reason}*.\nМәзірден басқа тағам таңдап, тапсырыс бере аласыз - жазсаңыз, мәзір сілтемесін бірден жіберемін.`
-    : `❌ *Тапсырысыңыздан бас тартылды.*\nМәзірден басқа тағам таңдап тапсырыс бере аласыз - немесе осы чатқа жазыңыз, нақты себебін бірден айтамын.`;
+    : `❌ *Тапсырысыңыз тоқтатылды.*\nТөлем жасалып қойған болса, осы чатқа жазыңыз - қайтаруын реттейміз.\nҚайта тапсырыс бергіңіз келсе - айтыңыз, мәзір сілтемесін жіберемін.`;
+}
+
+// Sent when the operator pressed "Запросить снова" on the card: the receipt arrived but
+// could not be accepted. The guest needs three things and nothing else - that
+// the receipt did not pass, what usually goes wrong on the photo, and that one
+// clear new picture ends it. The order itself stays alive, so no apology for a
+// cancellation and no repeated payment details.
+export function buildReceiptResendRequestMessage(lang: Language): string {
+  if (lang === "ru") {
+    return "🧾 *Чек не прошёл проверку.*\n"
+      + "Возможно, на снимке не видно сумму, дату или имя отправителя - или это чек от другого перевода.\n\n"
+      + "Отправьте, пожалуйста, чек ещё раз одним чётким снимком, чтобы полностью читались сумма, дата и получатель. Заказ ждёт вас - как только чек придёт, сразу передам его на кухню.";
+  }
+  return "🧾 *Чек тексеруден өтпеді.*\n"
+    + "Суретте сома, күні немесе жіберушінің аты көрінбей тұрған шығар - немесе бұл басқа аударымның чегі.\n\n"
+    + "Чекті қайтадан, бір анық суретпен жіберіңізші: сома, күні және алушы толық оқылатын болсын. Тапсырысыңыз тұр. Чек келген бойда бірден асханаға жіберемін.";
 }
 
 export const legacyStatusTemplates: Record<Language, Record<string, string>> = {
@@ -851,7 +868,23 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     eventLockAcquired = Boolean(eventClaim.key);
     const shiftNotePayload = isShiftNoteAction ? extractShiftNotePayload(body) : null;
     const lockId = shiftNotePayload?.stableLockId || orderId;
-    const lockScope = action === "status_changed" ? `${action}:${newStatus || "unknown"}` : action;
+    // Hub sends order.external_document_requested for two opposite presses: the
+    // first "confirmed, now pay" and the later "Запросить снова" after a receipt was
+    // already delivered. Same action name means the same lock scope, so the
+    // second press was dropped here as a duplicate and the guest heard nothing.
+    // The receipt marker is the only thing that separates them, and it has to be
+    // read before the lock, not after it.
+    const isReceiptResendRequest = action === "request_payment"
+      && Boolean(orderId)
+      && (await hasReceiptSeen(instance, orderId).catch(() => false));
+    // Every press deserves its own lock, but hub retries of the SAME press must
+    // not: event_id is already claimed above, so it is the right discriminator.
+    const resendScopeId = String(body.event_id || body.eventId || "").trim() || `t${Math.floor(Date.now() / 60000)}`;
+    const lockScope = action === "status_changed"
+      ? `${action}:${newStatus || "unknown"}`
+      : isReceiptResendRequest
+        ? `${action}:receipt_resend:${resendScopeId}`
+        : action;
     lockKey = `kanban_lock:${instance}:${lockId}:${lockScope}`;
     auditDecision("Attempting idempotency lock", { orderId, action, instance, lockKey, lockScope });
     const locked = await redisClient.set(lockKey, "1", { NX: true, EX: isShiftNoteAction ? 5 : 86400 });
@@ -919,8 +952,15 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       textMessage = buildLegacyNewOrderMessage(body, lang, displayOrderId, isPickup);
     }
     if (action === "request_payment") {
-      auditDecision("Building request_payment WhatsApp template", { orderId, action, instance, lang });
-      textMessage = await buildLegacyPaymentMessage(body, config, lang, instance);
+      if (isReceiptResendRequest) {
+        // Repeating "Төлем сомасы: X ₸" to someone who has already paid and sent a
+        // receipt reads as "we lost your money". Ask for the picture instead.
+        auditDecision("Building receipt resend request WhatsApp template", { orderId, action, instance, lang });
+        textMessage = buildReceiptResendRequestMessage(lang);
+      } else {
+        auditDecision("Building request_payment WhatsApp template", { orderId, action, instance, lang });
+        textMessage = await buildLegacyPaymentMessage(body, config, lang, instance);
+      }
     }
     if (action === "order_rejected") {
       auditDecision("Building order_rejected WhatsApp template", { orderId, action, instance, lang });
@@ -959,7 +999,9 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     // One press, one message: a stale replay (hub retries a rejected webhook
     // for hours) must never move the guest backwards - no payment request
     // after a cancellation, no "дайындалып жатыр" after "курьерге берілді".
-    const nextNotifyRank = orderNotifyRank(action, effectiveStatus);
+    // A resend request is a correction, not a step forward: rank 1 is already
+    // stored from the first payment request, so ranking it would suppress it.
+    const nextNotifyRank = isReceiptResendRequest ? -1 : orderNotifyRank(action, effectiveStatus);
     if (textMessage && nextNotifyRank >= 0) {
       const previousCursor = await getOrderNotifyCursor(instance, orderId).catch(() => null);
       if (previousCursor && nextNotifyRank <= previousCursor.rank) {

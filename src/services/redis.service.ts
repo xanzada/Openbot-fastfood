@@ -642,6 +642,34 @@ export async function releaseReceiptFingerprint(instanceId: string, fingerprint:
   });
 }
 
+export function receiptSeenKey(instanceId: string, orderId: string) {
+  return `receipt_seen:${instanceId}:${orderId}`;
+}
+
+// Set once the guest's receipt has actually reached the operator card. The hub
+// reuses one event name for "confirmed, now pay" and for the "Запросить снова"
+// button, so this marker is what tells the two presses apart.
+export async function markReceiptSeen(instanceId: string, orderId: string): Promise<boolean> {
+  if (!instanceId || !orderId) return false;
+  try {
+    await connectRedis();
+    await redisClient.set(receiptSeenKey(instanceId, orderId), "1", { EX: 24 * 60 * 60 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function hasReceiptSeen(instanceId: string, orderId: string): Promise<boolean> {
+  if (!instanceId || !orderId) return false;
+  try {
+    await connectRedis();
+    return Boolean(await redisClient.get(receiptSeenKey(instanceId, orderId)));
+  } catch {
+    return false;
+  }
+}
+
 export async function saveComplaintMedia(
   instanceId: string,
   phone: string,
