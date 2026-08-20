@@ -26,7 +26,8 @@ export type AlemiCommandName =
   | "crm.today.get"
   | "analytics.daily.upsert"
   | "customer.access_link.issue"
-  | "order.payment_receipt.analyzed";
+  | "order.payment_receipt.analyzed"
+  | "operator.sos.raised";
 
 export interface AlemiTransportRequest {
   url: string;
@@ -466,6 +467,43 @@ export async function reportAnalyzedReceipt(input: ReportAnalyzedReceiptInput, o
     order_id: orderId,
     source_message_id: sourceMessageId,
     ...(text ? { text } : {}),
+  }, options);
+}
+
+export type ReportOperatorSosInput = {
+  instanceId: string;
+  caseId: string;
+  signalId: string;
+  phone: string;
+  kind: string;
+  summary: string;
+  orderNumber?: string;
+  createdAt?: number;
+};
+
+// Every SOS that reaches the operator panel also reaches the site: one
+// escalation = one signal, in order (operator request, 2026-08-20). Hub
+// dedupes on signal_id. The caller wraps this in log-and-continue, so a hub
+// failure never touches the guest flow or the panel.
+export async function reportOperatorSos(input: ReportOperatorSosInput, options: AlemiCallOptions = {}) {
+  const instanceId = firstString(input.instanceId);
+  const caseId = firstString(input.caseId);
+  const signalId = firstString(input.signalId);
+  const customerPhone = firstString(input.phone).replace(/\D/g, "");
+  if (!instanceId) throw new Error("ALEMI_INSTANCE_REQUIRED");
+  if (!caseId) throw new Error("ALEMI_CASE_ID_REQUIRED");
+  if (!signalId) throw new Error("ALEMI_SIGNAL_ID_REQUIRED");
+  if (!customerPhone) throw new Error("ALEMI_PHONE_REQUIRED");
+  const summary = firstString(input.summary).slice(0, 300);
+  const orderNumber = firstString(input.orderNumber);
+  return callAlemiCommand(instanceId, "operator.sos.raised", {
+    case_id: caseId,
+    signal_id: signalId,
+    phone: customerPhone,
+    kind: firstString(input.kind).slice(0, 40) || "complaint",
+    ...(summary ? { summary } : {}),
+    ...(orderNumber ? { order_number: orderNumber } : {}),
+    created_at: Number(input.createdAt) || Date.now(),
   }, options);
 }
 

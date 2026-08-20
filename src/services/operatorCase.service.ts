@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
 import { isLikelyMenuQuestion } from "../utils/intentText.js";
+import { reportOperatorSos } from "./alemiApi.service.js";
 
 export type OperatorCaseKind = "complaint" | "human_request" | "courier_request" | "cancel_request" | "long_voice" | "unresolved" | "critical";
 export const CASE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -111,6 +112,7 @@ export async function createOperatorCase(input: {
         .zAdd(`operator_cases:${instanceId}`, [{ score: now, value: existingId }])
         .exec();
       const sos = await activateSos({ instanceId, phone: customerPhone, caseId: existingId, signalId, kind: input.kind, summary: input.summary, urgency: input.urgency, source: input.source });
+      await notifyHubSos({ instanceId, phone: customerPhone, caseId: existingId, signalId, kind: input.kind, summary: data.summary, orderNumber: data.orderNumber });
       return { ...data, sos };
     }
   }
@@ -128,7 +130,26 @@ export async function createOperatorCase(input: {
     .expire(`operator_cases:${instanceId}`, CASE_TTL_SECONDS)
     .exec();
   const sos = await activateSos({ instanceId, phone: customerPhone, caseId, signalId, kind: input.kind, summary: input.summary, urgency: input.urgency, source: input.source });
+  await notifyHubSos({ instanceId, phone: customerPhone, caseId, signalId, kind: input.kind, summary: data.summary, orderNumber: data.orderNumber });
   return { ...data, sos };
+}
+
+// The site gets the same signal the panel got: one SOS = one notification, in
+// order (operator request, 2026-08-20). Hub dedupes on signal_id. A hub failure
+// must never touch the guest flow or the panel, so this is log-and-continue.
+async function notifyHubSos(args: {
+  instanceId: string; phone: string; caseId: string; signalId: string;
+  kind: OperatorCaseKind; summary: string; orderNumber?: string;
+}) {
+  await reportOperatorSos({
+    instanceId: args.instanceId,
+    caseId: args.caseId,
+    signalId: args.signalId,
+    phone: args.phone,
+    kind: args.kind,
+    summary: args.summary,
+    orderNumber: args.orderNumber,
+  }).catch((error) => console.warn(`[SOS:HUB] ${args.instanceId}/${args.phone} ${args.signalId}: ${error?.message || error}`));
 }
 
 // A case already sitting on the operator board must not raise a second red flag

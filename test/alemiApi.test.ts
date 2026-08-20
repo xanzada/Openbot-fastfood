@@ -11,6 +11,7 @@ import {
   issueCustomerAccessLink,
   mapLegacyAlemiAction,
   reportAnalyzedReceipt,
+  reportOperatorSos,
   reportPrintResult,
   resolveAlemiCredentials,
   unwrapAlemiResponse,
@@ -350,4 +351,61 @@ test("print-result helper signs the documented canonical string", async () => {
     error_code: "printer_offline",
     error_message: "Printer unavailable",
   }));
+});
+
+test("reportOperatorSos sends operator.sos.raised with exactly the published contract fields", async () => {
+  let captured: any;
+  await reportOperatorSos({
+    instanceId: "prestige",
+    caseId: "oc_1786297320392_31e27989",
+    signalId: "sos_1787213240021_793308ea",
+    phone: "8 747 688-49-56",
+    kind: "complaint",
+    summary: "Тапсырыс екі сағатқа кешікті, тағам суық келді",
+    orderNumber: "13",
+    createdAt: 1_700_000_000_000,
+  }, {
+    config,
+    commandId: "cmd-sos-raised-1",
+    nowMs: 1_700_000_000_000,
+    transport: async (request: any) => { captured = request; return { status: 200, data: { ok: true } }; },
+  });
+
+  const body = JSON.parse(String(captured?.body || ""));
+  assert.equal(body.command, "operator.sos.raised");
+  assert.equal(body.command_id, "cmd-sos-raised-1");
+  assert.equal(body.instance, "prestige");
+  // The site contract is exactly this field set - hub dedupes on signal_id.
+  assert.deepEqual(Object.keys(body.data).sort(), ["case_id", "created_at", "kind", "order_number", "phone", "signal_id", "summary"]);
+  assert.equal(body.data.case_id, "oc_1786297320392_31e27989");
+  assert.equal(body.data.signal_id, "sos_1787213240021_793308ea");
+  assert.equal(body.data.phone, "87476884956");
+  assert.equal(body.data.kind, "complaint");
+  assert.equal(body.data.order_number, "13");
+  assert.equal(body.data.created_at, 1_700_000_000_000);
+});
+
+test("reportOperatorSos omits optional fields and validates the idempotency keys", async () => {
+  let captured: any;
+  await reportOperatorSos({
+    instanceId: "prestige", caseId: "oc_1", signalId: "sos_1",
+    phone: "77476884956", kind: "human_request", summary: "",
+  }, {
+    config,
+    transport: async (request: any) => { captured = request; return { status: 200, data: { ok: true } }; },
+  });
+  const body = JSON.parse(String(captured?.body || ""));
+  assert.equal(body.data.summary, undefined);
+  assert.equal(body.data.order_number, undefined);
+  assert.equal(typeof body.data.created_at, "number");
+
+  await assert.rejects(
+    () => reportOperatorSos({ instanceId: "prestige", caseId: "", signalId: "sos_1", phone: "7747", kind: "complaint", summary: "x" }, { config }),
+    /ALEMI_CASE_ID_REQUIRED/);
+  await assert.rejects(
+    () => reportOperatorSos({ instanceId: "prestige", caseId: "oc_1", signalId: "", phone: "7747", kind: "complaint", summary: "x" }, { config }),
+    /ALEMI_SIGNAL_ID_REQUIRED/);
+  await assert.rejects(
+    () => reportOperatorSos({ instanceId: "prestige", caseId: "oc_1", signalId: "sos_1", phone: "", kind: "complaint", summary: "x" }, { config }),
+    /ALEMI_PHONE_REQUIRED/);
 });
