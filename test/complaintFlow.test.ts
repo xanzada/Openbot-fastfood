@@ -10,6 +10,7 @@ import {
 } from "../src/services/complaintRouting.service.js";
 import { detectOperatorCaseKind } from "../src/services/operatorCase.service.js";
 import { isLikelyMenuQuestion } from "../src/utils/intentText.js";
+import { routeComplaintToAdmin } from "../src/services/complaintRouting.service.js";
 import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 
 test("asking for a human is recognised and never mistaken for a complaint to investigate", () => {
@@ -147,4 +148,15 @@ test("genuine incidents still reach the complaint lane past the menu guard", () 
   }
   assert.equal(detectOperatorCaseKind("суда шаш таптым"), "complaint");
   assert.equal(detectOperatorCaseKind("қорабым лас келді"), "complaint");
+});
+
+test("routeComplaintToAdmin refuses menu questions at the choke point, tool path included", async () => {
+  // The AI tool path runs before the webhook gate, so the refusal must live in
+  // the routing function itself: "The customer is asking for cold water" once
+  // became a red SOS through ai_tool_escalate_to_admin (live, 2026-08-20).
+  const ctx: any = { instanceId: "prestige", phone: "77001234567", text: "Суық суы бар ма?", language: "kk" };
+  const result = await routeComplaintToAdmin(ctx, { summary: "cold water ask", source: "ai_tool_escalate_to_admin" });
+  assert.equal(result.action, "skipped_menu_question");
+  assert.equal(result.caseId, null);
+  assert.equal(result.queuedForChat, false);
 });

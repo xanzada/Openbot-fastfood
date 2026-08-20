@@ -1246,19 +1246,21 @@ async function processWhatsAppWebhook(body: any, started: number) {
     }
 
     const rawAiText = String(result.rawText || result.text || "");
-    const needsAdminEscalation = hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text);
+    // A menu/availability/price question can never enter the escalation lane
+    // at all - not via the complaint matchers, not via a bare human ask, and
+    // not via a misjudged AI signal. It is answered from the menu, period.
+    const menuQuestion = isLikelyMenuQuestion(ctx.text);
+    const needsAdminEscalation = !menuQuestion && (hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text));
     const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
     // Asking for a human, a courier number, or lodging a complaint no longer
     // fires SOS on the spot: a bare demand earns one clarifying question, and
     // only the guest's answer (or a message that already carries the story, or
     // photo evidence) creates the operator case.
     const caseKind = detectOperatorCaseKind(ctx.text);
-    const askedForOperator = caseKind === "human_request" || caseKind === "courier_request";
-    // Menu/availability/price questions never enter the complaint lane: a dish
-    // the restaurant does not carry is answered by searchMenu, not by an SOS.
-    const complaintText = isLikelyComplaintText(ctx.text) && !isLikelyMenuQuestion(ctx.text);
+    const askedForOperator = !menuQuestion && (caseKind === "human_request" || caseKind === "courier_request");
+    const complaintText = !menuQuestion && isLikelyComplaintText(ctx.text);
     const awaitingDetail = await takeComplaintClarification(ctx.instanceId, ctx.phone);
-    const hasDetailNow = complaintHasActionableDetail(ctx.text);
+    const hasDetailNow = !menuQuestion && complaintHasActionableDetail(ctx.text);
     const needsClarification =
       (askedForOperator || complaintText || needsAdminEscalation)
       && awaitingDetail === null

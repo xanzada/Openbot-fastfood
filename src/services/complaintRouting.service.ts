@@ -3,7 +3,7 @@ import type { FastFoodContext } from "../context/types.js";
 import { clearComplaintMedia, getComplaintMedia } from "./redis.service.js";
 import { bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind } from "./operatorCase.service.js";
 import { auditError } from "./auditLogger.service.js";
-import { intentMatches } from "../utils/intentText.js";
+import { intentMatches, isLikelyMenuQuestion } from "../utils/intentText.js";
 
 export type ComplaintUrgency = "low" | "normal" | "high";
 
@@ -148,6 +148,27 @@ export async function hasPendingComplaintMedia(instanceId: string, phone: string
 }
 
 export async function routeComplaintToAdmin(ctx: FastFoodContext, input: ComplaintRoutingInput) {
+  // A menu/availability/price question can never become an operator case, no
+  // matter which path brought it here - regex lane, webhook gate, or the AI
+  // tool. "Суық суы бар ма?" asks about a cold drink; it is answered from the
+  // menu, and SOS stays silent. The AI tool path runs before the webhook gate,
+  // so the refusal has to live here at the choke point (live false positives,
+  // 2026-08-20). escalationAvailable stays true so callers never mistake the
+  // skip for a missing admin phone and alert the developer.
+  if (isLikelyMenuQuestion(input.customerText || ctx.text)) {
+    return {
+      action: "skipped_menu_question",
+      caseId: null,
+      operatorFlagged: false,
+      queuedForChat: false,
+      escalationAvailable: true,
+      signaledToDle: false,
+      signalId: "",
+      mediaAttached: false,
+      sent: false,
+      customerReply: input.customerReply || "",
+    };
+  }
   const savedMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
   const media = toWhatsProMedia(input.media || (savedMedia as ComplaintMediaPayload | null));
   const summary = cleanLine(input.summary || input.customerText || ctx.text || "Customer complaint requires review.");
