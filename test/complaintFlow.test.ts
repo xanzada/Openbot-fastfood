@@ -9,6 +9,7 @@ import {
   buildOperatorHandoffReply,
 } from "../src/services/complaintRouting.service.js";
 import { detectOperatorCaseKind } from "../src/services/operatorCase.service.js";
+import { isLikelyMenuQuestion } from "../src/utils/intentText.js";
 import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 
 test("asking for a human is recognised and never mistaken for a complaint to investigate", () => {
@@ -114,4 +115,36 @@ test("clarify-first questions are short, kind-aware and promise nothing", () => 
     }
     assert.match(buildEscalationClarifyQuestion("courier_request", lang), /курьер/i, "courier question names the courier");
   }
+});
+
+test("no menu or off-menu question can ever raise a complaint lane", () => {
+  // Live rule (2026-08-20): not just шашлык - ANY availability/price/menu ask
+  // must stay out of SOS entirely. The bot answers it from the menu instead.
+  for (const text of [
+    "Шашлык бар ма?",
+    "Суық суы бар ма?",
+    "Кока-кола бар ма",
+    "пицца қанша тұрады",
+    "есть ли суши в наличии",
+    "сапасы қандай болады?",
+    "мәзірде не бар",
+    "можно два шашлыка",
+    "классная пицца была вчера, спасибо",
+  ]) {
+    assert.equal(isLikelyComplaintText(text) && !isLikelyMenuQuestion(text), false, text);
+    assert.equal(detectOperatorCaseKind(text), null, text);
+  }
+});
+
+test("genuine incidents still reach the complaint lane past the menu guard", () => {
+  for (const text of [
+    "Тапсырысым суық келді, пицца жабысып қалған",
+    "суда шаш таптым, шағым",
+    "заказ не привезли вовсе",
+    "қорабы лас еді, іше алмаймыз",
+  ]) {
+    assert.equal(isLikelyComplaintText(text) && !isLikelyMenuQuestion(text), true, text);
+  }
+  assert.equal(detectOperatorCaseKind("суда шаш таптым"), "complaint");
+  assert.equal(detectOperatorCaseKind("қорабым лас келді"), "complaint");
 });

@@ -21,6 +21,7 @@ import {
   markReceiptSeen,
 } from "../services/redis.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
+import { isLikelyMenuQuestion } from "../utils/intentText.js";
 import {
   buildComplaintAckReply,
   buildComplaintClarificationReply,
@@ -1253,7 +1254,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
     // photo evidence) creates the operator case.
     const caseKind = detectOperatorCaseKind(ctx.text);
     const askedForOperator = caseKind === "human_request" || caseKind === "courier_request";
-    const complaintText = isLikelyComplaintText(ctx.text);
+    // Menu/availability/price questions never enter the complaint lane: a dish
+    // the restaurant does not carry is answered by searchMenu, not by an SOS.
+    const complaintText = isLikelyComplaintText(ctx.text) && !isLikelyMenuQuestion(ctx.text);
     const awaitingDetail = await takeComplaintClarification(ctx.instanceId, ctx.phone);
     const hasDetailNow = complaintHasActionableDetail(ctx.text);
     const needsClarification =
