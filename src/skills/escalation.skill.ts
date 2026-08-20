@@ -40,7 +40,7 @@ export function buildHandoffDigest(ctx: FastFoodContext, reason: string): string
 export function createEscalateToAdminSkill(ctx: FastFoodContext) {
   return createTool({
     name: "escalateToAdmin",
-    description: "Create a human operator case only for an explicit request to speak to a person, a genuine complaint/service incident, or unresolved fulfillment that requires human action. Missing menu, payment, address, or business data alone is not a reason to escalate.",
+    description: "Create a human operator case only when a person is truly needed: the guest has explained the problem and it takes human action, they insist on a human after being asked what happened, or there is photo evidence of a service failure. A bare demand for a person or a complaint with no details is NOT escalated here - ask what happened first; routing turns a bare demand into one clarifying question automatically. Missing menu, payment, address, or business data alone is never a reason to escalate.",
     parameters: z.object({
       reason: z.string(),
       customerReply: z.string(),

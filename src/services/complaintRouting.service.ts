@@ -27,11 +27,11 @@ const ESCALATION_SIGNAL_RE = /\[(ESCALATE_ADMIN|ESCALATE_DEVELOPER)\]/giu;
 const ADMIN_SIGNAL_RE = /\[ESCALATE_ADMIN\]/iu;
 const DEVELOPER_SIGNAL_RE = /\[ESCALATE_DEVELOPER\]/iu;
 const COMPLAINT_RE =
-  /(шағым|жалоб|претензи|волос|шаш|гряз|лас|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|дөрек|груб|сапа|качест)/iu;
+  /(шағым|жалоб|претензи|волос|шаш(?!л)|гряз|лас|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|дөрек|груб|сапа|качест)/iu;
 const ACTIONABLE_SERVICE_INCIDENT_RE =
   /(заказ|тапсырыс).{0,40}(опозд|задерж|кешік|кешіг|не\s+(?:приехал|доставлен|привезли)|келмед|жеткізілмед)/iu;
 const CONCRETE_COMPLAINT_DETAIL_RE =
-  /(волос|шаш|гряз|лас|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|курьер.{0,30}(?:дөрек|груб)|(?:дөрек|груб).{0,30}курьер)/iu;
+  /(волос|шаш(?!л)|гряз|лас|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|курьер.{0,30}(?:дөрек|груб)|(?:дөрек|груб).{0,30}курьер)/iu;
 
 function normalizePhone(value = "") {
   return String(value || "").replace(/\D/g, "");
@@ -99,6 +99,29 @@ export function buildComplaintDetailQuestion(language: "kk" | "ru") {
   return language === "ru"
     ? "Извините. Расскажите, пожалуйста, что именно случилось — передам оператору."
     : "Кешіріңіз. Нақты не болғанын жазып жіберіңізші — операторға беремін.";
+}
+
+// SOS is the last resort, not the opening move: a bare "оператор шақыр", a courier-number
+// ask or an unexplained complaint earns ONE clarifying question first. The case
+// is created from the guest's answer, from a message that already carries the
+// story, or from photo evidence - never from a bare demand (2026-08-20).
+export function buildEscalationClarifyQuestion(kind: string | null, language: "kk" | "ru") {
+  if (language === "ru") {
+    if (kind === "courier_request") {
+      return "Подскажите, что именно с доставкой: заказ задерживается или нужно что-то передать курьеру? Напишите коротко - я сразу разберусь или передам оператору с деталями.";
+    }
+    if (kind === "human_request") {
+      return "Конечно, помогу. Напишите коротко, что случилось - если решение за мной, отвечу сразу, а если нужен человек, передам оператору уже с деталями.";
+    }
+    return buildComplaintDetailQuestion(language);
+  }
+  if (kind === "courier_request") {
+    return "Жеткізу жайлы нақты айтыңызшы: тапсырыс кешігіп жатыр ма, әлде курьерге бір нәрсе жеткізу керек пе? Қысқаша жазыңыз - бірден шешейін немесе операторға дәл мәселемен жіберейін.";
+  }
+  if (kind === "human_request") {
+    return "Әрене, көмектесейін. Не болғанын қысқаша жазып жіберіңізші - шеше алсам бірден өзім жауап беремін, адам керек болса операторға дәл мәселемен жеткіземін.";
+  }
+  return buildComplaintDetailQuestion(language);
 }
 
 export function buildOperatorHandoffReply(language: "kk" | "ru") {

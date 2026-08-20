@@ -24,7 +24,7 @@ import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiAp
 import {
   buildComplaintAckReply,
   buildComplaintClarificationReply,
-  buildComplaintDetailQuestion,
+  buildEscalationClarifyQuestion,
   complaintHasActionableDetail,
   hasEscalateAdminSignal,
   hasPendingComplaintMedia,
@@ -1247,27 +1247,34 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const rawAiText = String(result.rawText || result.text || "");
     const needsAdminEscalation = hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text);
     const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
-    // Asking for a human is not a complaint to investigate — hand it over at
-    // once. A complaint gets one calm question when it names nothing yet, and
-    // the pending flag makes the next message escalate whatever it contains.
-    const askedForOperator = isLikelyOperatorRequestText(ctx.text);
+    // Asking for a human, a courier number, or lodging a complaint no longer
+    // fires SOS on the spot: a bare demand earns one clarifying question, and
+    // only the guest's answer (or a message that already carries the story, or
+    // photo evidence) creates the operator case.
+    const caseKind = detectOperatorCaseKind(ctx.text);
+    const askedForOperator = caseKind === "human_request" || caseKind === "courier_request";
     const complaintText = isLikelyComplaintText(ctx.text);
     const awaitingDetail = await takeComplaintClarification(ctx.instanceId, ctx.phone);
-    const complaintNeedsDetail =
-      complaintText && !askedForOperator && !needsAdminEscalation && !pendingComplaintMedia
-      && awaitingDetail === null && !complaintHasActionableDetail(ctx.text);
+    const hasDetailNow = complaintHasActionableDetail(ctx.text);
+    const needsClarification =
+      (askedForOperator || complaintText || needsAdminEscalation)
+      && awaitingDetail === null
+      && !pendingComplaintMedia
+      && !hasDetailNow;
 
     const shouldRouteComplaint =
-      !complaintNeedsDetail
+      !needsClarification
       && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null);
 
-    if (complaintNeedsDetail) {
+    if (needsClarification) {
       await markComplaintClarificationPending(ctx.instanceId, ctx.phone, ctx.text).catch(() => false);
     }
 
     const finalText =
       stripEscalationSignals(result.text)
-      || (complaintNeedsDetail ? buildComplaintDetailQuestion(ctx.language) : shouldRouteComplaint ? buildComplaintAckReply(ctx.language) : result.text);
+      || (needsClarification
+        ? buildEscalationClarifyQuestion(caseKind, ctx.language)
+        : shouldRouteComplaint ? buildComplaintAckReply(ctx.language) : result.text);
 
     if (shouldRouteComplaint) {
       const routing = await routeComplaintToAdmin(ctx, {

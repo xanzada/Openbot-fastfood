@@ -31,7 +31,7 @@ export function detectOperatorCaseKind(text = ""): OperatorCaseKind | null {
   if (CANCEL_ORDER_RE.test(value)) return "cancel_request";
   if (/(курьер.*(номер|нөмір|номерін|телефон)|номер.*курьер|курьерге хабарлас)/iu.test(value)) return "courier_request";
   if (/(оператор|админ|администратор|менеджер|адаммен|человек|живой человек|шақыр|шакыр|позовите|соедините)/iu.test(value)) return "human_request";
-  if (/(шағым|жалоб|претензи|волос|шаш|гряз|лас|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|қате тапсырыс|сапа|качест)/iu.test(value)) return "complaint";
+  if (/(шағым|жалоб|претензи|волос|шаш(?!л)|гряз|лас|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|қате тапсырыс|сапа|качест)/iu.test(value)) return "complaint";
   return null;
 }
 

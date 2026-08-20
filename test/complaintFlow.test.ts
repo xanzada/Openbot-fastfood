@@ -5,6 +5,7 @@ import {
   isLikelyComplaintText,
   isLikelyOperatorRequestText,
   buildComplaintDetailQuestion,
+  buildEscalationClarifyQuestion,
   buildOperatorHandoffReply,
 } from "../src/services/complaintRouting.service.js";
 import { detectOperatorCaseKind } from "../src/services/operatorCase.service.js";
@@ -16,9 +17,10 @@ test("asking for a human is recognised and never mistaken for a complaint to inv
   }
 });
 
-test("a courier number request reaches the operator at once, without an interview", () => {
-  // The courier phone is never in any config and must never be invented, so
-  // there is nothing to clarify — only someone to hand it to.
+test("a courier number request is recognised - and earns one question before any SOS", () => {
+  // The courier phone is never in any config and must never be invented, but a
+  // bare ask no longer fires SOS on its own: the guest is asked what happened
+  // first, and the case is created from their answer (2026-08-20).
   for (const text of ["курьердің номерін беріңізші", "номер курьера дайте", "курьерге хабарласайын"]) {
     assert.equal(isLikelyOperatorRequestText(text), true, text);
     assert.equal(detectOperatorCaseKind(text), "courier_request", text);
@@ -89,5 +91,27 @@ test("anger about a specific order is a complaint, not a status question", () =>
     "59 тапсырысым суық келді, сапасы нашар, ақшамды қайтарыңыз",
   ]) {
     assert.equal(isLikelyComplaintText(text), true, text);
+  }
+});
+
+test("asking about shashlik is a menu question, not a hair complaint", () => {
+  // "шашлык" contains "шаш" (hair): a bare substring match opened a red SOS
+  // case for a guest asking whether shashlik is on the menu (live, 2026-08-20).
+  for (const text of ["Шашлык бар ма?", "шашлык қанша тұрады", "можно два шашлыка"]) {
+    assert.equal(isLikelyComplaintText(text), false, text);
+    assert.equal(detectOperatorCaseKind(text), null, text);
+  }
+  assert.equal(isLikelyComplaintText("тапсырыста шаш таптым"), true, "a real hair report still matches");
+  assert.equal(detectOperatorCaseKind("пиццада шаш бар екен"), "complaint", "a real hair complaint still escalates");
+});
+
+test("clarify-first questions are short, kind-aware and promise nothing", () => {
+  for (const lang of ["kk", "ru"] as const) {
+    for (const kind of ["human_request", "courier_request", "complaint"] as const) {
+      const line = buildEscalationClarifyQuestion(kind, lang);
+      assert.ok(line.length > 0 && line.length < 200, `${lang}/${kind}: "${line}" must be one short line`);
+      assert.doesNotMatch(line, /скидк|бонус|верн|қайтар|жеңілдік/i, "no promise of refunds or discounts");
+    }
+    assert.match(buildEscalationClarifyQuestion("courier_request", lang), /курьер/i, "courier question names the courier");
   }
 });
