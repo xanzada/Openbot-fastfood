@@ -141,6 +141,13 @@ async function notifyHubSos(args: {
   instanceId: string; phone: string; caseId: string; signalId: string;
   kind: OperatorCaseKind; summary: string; orderNumber?: string;
 }) {
+  // One escalation episode = one site signal. The AI tool path and the webhook
+  // gate can both raise the same SOS a second apart (each re-activates the
+  // panel marker); the site must see it exactly once. A fresh episode after
+  // the window still sends again, so "4 SOS = 4 signals" holds.
+  const dedupeKey = `sos_hub_sent:${args.instanceId}:${args.phone}`;
+  const claimed = await redisClient.set(dedupeKey, args.signalId, { EX: 90, NX: true }).catch(() => null);
+  if (claimed !== "OK") return;
   await reportOperatorSos({
     instanceId: args.instanceId,
     caseId: args.caseId,
