@@ -32,7 +32,26 @@ function missingBank(value: unknown) {
 }
 
 export function validateReceiptAnalysis(analysis: Record<string, any>, context: ReceiptValidationContext = {}) {
-  if (analysis?.type !== "receipt" || analysis?.is_valid_receipt !== true) return { valid: false, reason: "ai_rejected" };
+  if (analysis?.type !== "receipt" || analysis?.is_valid_receipt !== true) {
+    // Even when the model rejects the receipt itself (edited/demo/unclear), a
+    // readable date still tells the guest precisely why it cannot pass: a
+    // stale, future-dated or pre-order receipt gets its specific message
+    // instead of the generic "unreadable" one (live case 2026-08-21: a
+    // 4-month-old Kaspi PDF was answered with the vague rejection).
+    // "0" is the prompt's missing-date sentinel - treat it (and empty) as no
+    // date at all, otherwise a bare "0" parses as year 2000 and would wrongly
+    // report receipt_too_old.
+    const rejectedDateRaw = String(analysis?.date_time || "").trim();
+    const rejectedTime = rejectedDateRaw && rejectedDateRaw !== "0" ? Date.parse(rejectedDateRaw) : NaN;
+    if (analysis?.type === "receipt" && Number.isFinite(rejectedTime)) {
+      const now = context.nowMs ?? Date.now();
+      if (rejectedTime > now + 10 * 60_000) return { valid: false, reason: "receipt_in_future" };
+      if (now - rejectedTime > 24 * 60 * 60_000) return { valid: false, reason: "receipt_too_old" };
+      const orderTime = Date.parse(String(context.orderCreatedAt || ""));
+      if (Number.isFinite(orderTime) && rejectedTime < orderTime - 15 * 60_000) return { valid: false, reason: "receipt_before_order" };
+    }
+    return { valid: false, reason: "ai_rejected" };
+  }
   const amount = Number(analysis.amount || 0);
   if (!(amount > 0)) return { valid: false, reason: "amount_missing" };
   // Overpayment is fine - guests often round up (a 1990 ₸ order paid as 2000 ₸).

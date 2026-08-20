@@ -86,3 +86,37 @@ test("CRM receipt payload uses only OCR sender and bank fields", () => {
   );
   assert.notEqual(receiptFingerprintKey("prestige", "abc"), receiptFingerprintKey("other", "abc"));
 });
+
+test("a model-rejected receipt with a readable stale date reports receipt_too_old, not a vague rejection", () => {
+  // Live case 2026-08-21: this exact Kaspi PDF (6000 тнг, 2026-04-24) was
+  // answered with the generic "unreadable" message because the model set
+  // is_valid_receipt=false and the date checks never ran.
+  const now = Date.parse("2026-08-20T20:35:00.000Z");
+  const oldReceipt = {
+    type: "receipt",
+    is_valid_receipt: false,
+    validation_reason: "Төлем күні рұқсат етілген 24 сағаттық мерзімнен өтіп кеткен",
+    amount: 6000,
+    bank_name: "Kaspi",
+    sender_name: "Рахметоллаұлы Б.",
+    transaction_id: "835558413111043668",
+    date_time: "2026-04-24T21:50:00",
+  };
+  assert.equal(validateReceiptAnalysis(oldReceipt, { nowMs: now }).reason, "receipt_too_old");
+});
+
+test("a model-rejected receipt without a readable date stays ai_rejected", () => {
+  const analysis = { type: "receipt", is_valid_receipt: false, date_time: "0" };
+  assert.equal(validateReceiptAnalysis(analysis, { nowMs: Date.now() }).reason, "ai_rejected");
+});
+
+test("a model-rejected receipt dated before the order reports receipt_before_order", () => {
+  const analysis = { type: "receipt", is_valid_receipt: false, date_time: "2026-07-22T17:00:00.000Z" };
+  const context = { nowMs: Date.parse("2026-07-22T18:00:00.000Z"), orderCreatedAt: "2026-07-22T17:30:00.000Z" };
+  assert.equal(validateReceiptAnalysis(analysis, context).reason, "receipt_before_order");
+});
+
+test("a model-rejected receipt dated in the future reports receipt_in_future", () => {
+  const analysis = { type: "receipt", is_valid_receipt: false, date_time: "2026-07-23T10:00:00.000Z" };
+  assert.equal(validateReceiptAnalysis(analysis, { nowMs: Date.parse("2026-07-22T18:00:00.000Z") }).reason, "receipt_in_future");
+});
