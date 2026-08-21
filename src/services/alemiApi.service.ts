@@ -470,6 +470,35 @@ export async function reportAnalyzedReceipt(input: ReportAnalyzedReceiptInput, o
   }, options);
 }
 
+// Escalation context fills the order label with the literal placeholder
+// "not_found" when the guest has no active order, and hub validates this
+// command as strictly as the receipt command above: the placeholder made hub
+// answer 400 INTEGRATION_COMMAND_INVALID for the WHOLE command, so every SOS
+// raised without an active order never reached the site at all. The operator
+// then saw such an SOS only after opening the chat panel, because the panel's
+// own unread bridge was the single surviving path (audit, 2026-08-21). Sending
+// no field is the honest encoding of "no order"; real references still pass.
+const ORDER_REFERENCE_PLACEHOLDERS = new Set([
+  "not_found",
+  "notfound",
+  "not found",
+  "unknown",
+  "none",
+  "null",
+  "undefined",
+  "n/a",
+  "na",
+  "-",
+  "empty",
+  "no_order",
+]);
+
+export function realOrderReference(value: unknown) {
+  const candidate = firstString(value);
+  if (!candidate) return "";
+  return ORDER_REFERENCE_PLACEHOLDERS.has(candidate.toLowerCase()) ? "" : candidate;
+}
+
 export type ReportOperatorSosInput = {
   instanceId: string;
   caseId: string;
@@ -495,7 +524,7 @@ export async function reportOperatorSos(input: ReportOperatorSosInput, options: 
   if (!signalId) throw new Error("ALEMI_SIGNAL_ID_REQUIRED");
   if (!customerPhone) throw new Error("ALEMI_PHONE_REQUIRED");
   const summary = firstString(input.summary).slice(0, 300);
-  const orderNumber = firstString(input.orderNumber);
+  const orderNumber = realOrderReference(input.orderNumber);
   return callAlemiCommand(instanceId, "operator.sos.raised", {
     case_id: caseId,
     signal_id: signalId,

@@ -409,3 +409,33 @@ test("reportOperatorSos omits optional fields and validates the idempotency keys
     () => reportOperatorSos({ instanceId: "prestige", caseId: "oc_1", signalId: "sos_1", phone: "", kind: "complaint", summary: "x" }, { config }),
     /ALEMI_PHONE_REQUIRED/);
 });
+
+test("a guest with no active order raises the SOS without a placeholder order reference", async () => {
+  // Hub answers 400 INTEGRATION_COMMAND_INVALID for the whole command when
+  // order_number carries an escalation placeholder, which silently dropped
+  // every SOS raised without an active order and left the site with nothing to
+  // notify until the operator opened the chat panel (live hub, 2026-08-21).
+  const raise = async (orderNumber: string) => {
+    let captured: any;
+    await reportOperatorSos({
+      instanceId: "prestige",
+      caseId: "oc_1787323244566_19699ad0",
+      signalId: `sos_${orderNumber || "empty"}`,
+      phone: "77476884956",
+      kind: "human_request",
+      summary: "Клиент операторға жалғағысы келеді",
+      orderNumber,
+    }, {
+      config,
+      transport: async (request: any) => { captured = request; return { status: 200, data: { ok: true } }; },
+    });
+    return JSON.parse(String(captured?.body || "")).data;
+  };
+
+  for (const placeholder of ["not_found", "NOT_FOUND", "Not Found", "unknown", "none", "-", "n/a"]) {
+    assert.equal((await raise(placeholder)).order_number, undefined, placeholder);
+  }
+  // A real reference still travels: the site links the signal to the order.
+  assert.equal((await raise("01a02453-f171-79f4-b340-0ca1901dec0f")).order_number, "01a02453-f171-79f4-b340-0ca1901dec0f");
+  assert.equal((await raise("13")).order_number, "13");
+});
