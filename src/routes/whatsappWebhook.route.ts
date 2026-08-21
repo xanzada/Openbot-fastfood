@@ -1256,6 +1256,14 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const menuQuestion = isLikelyMenuQuestion(ctx.text);
     const needsAdminEscalation = !menuQuestion && (hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text));
     const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
+    // When the escalateToAdmin tool already ran this turn, the routing choke
+    // point has decided this escalation (case created, or the guest was asked
+    // the one clarifying question and the flag is already marked). Letting the
+    // text lane run on top re-marked the flag and re-signaled the site for the
+    // same episode, so one SOS surfaced as several site notifications
+    // (2026-08-21 badge noise).
+    const toolHandledEscalation = Array.isArray(result.toolCalls)
+      && result.toolCalls.some((call: any) => call?.name === "escalateToAdmin");
     // Asking for a human, a courier number, or lodging a complaint no longer
     // fires SOS on the spot: a bare demand earns one clarifying question, and
     // only the guest's answer (or a message that already carries the story, or
@@ -1263,16 +1271,18 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const caseKind = detectOperatorCaseKind(ctx.text);
     const askedForOperator = !menuQuestion && (caseKind === "human_request" || caseKind === "courier_request");
     const complaintText = !menuQuestion && isLikelyComplaintText(ctx.text);
-    const awaitingDetail = await takeComplaintClarification(ctx.instanceId, ctx.phone);
+    const awaitingDetail = toolHandledEscalation ? null : await takeComplaintClarification(ctx.instanceId, ctx.phone);
     const hasDetailNow = !menuQuestion && complaintHasActionableDetail(ctx.text);
     const needsClarification =
-      (askedForOperator || complaintText || needsAdminEscalation)
+      !toolHandledEscalation
+      && (askedForOperator || complaintText || needsAdminEscalation)
       && awaitingDetail === null
       && !pendingComplaintMedia
       && !hasDetailNow;
 
     const shouldRouteComplaint =
-      !needsClarification
+      !toolHandledEscalation
+      && !needsClarification
       && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null);
 
     if (needsClarification) {

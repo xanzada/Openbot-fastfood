@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { FastFoodContext } from "../context/types.js";
-import { clearComplaintMedia, getComplaintMedia } from "./redis.service.js";
-import { bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind } from "./operatorCase.service.js";
+import { clearComplaintMedia, getComplaintMedia, markComplaintClarificationPending, takeComplaintClarification } from "./redis.service.js";
+import { bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind, getActiveOperatorCaseId } from "./operatorCase.service.js";
 import { auditError } from "./auditLogger.service.js";
 import { intentMatches, isLikelyMenuQuestion } from "../utils/intentText.js";
 
@@ -171,6 +171,49 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
   }
   const savedMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
   const media = toWhatsProMedia(input.media || (savedMedia as ComplaintMediaPayload | null));
+
+  // 2026-08-21 live defect: the AI tool lane opened a case - and fired SOS to
+  // the panel and the site - on the model's first impulse. A bare
+  // "оператормен сөйлесейін" in the middle of smalltalk became a red SOS whose
+  // summary literally read "мақсат=smalltalk" (case oc_1787323244566). The
+  // webhook lane has had the clarify-first gate since 2026-08-20, but the tool
+  // calls this function directly, before that gate runs. The gate now lives at
+  // the choke point too: a bare demand earns ONE clarifying question, and only
+  // the guest's answer, a message that already carries the story, or photo
+  // evidence creates the case. The other lanes (webhook text lane, cancel
+  // flow, media analysis, long voice) keep their own sources and never match
+  // this one, so nobody is gated twice. An already-open case is never
+  // re-questioned: the guest is mid-escalation, not a new bare demand.
+  if (input.source === "ai_tool_escalate_to_admin") {
+    const guestText = input.customerText || ctx.text || "";
+    const clarifyKind = detectOperatorCaseKind(guestText);
+    const hasActionableStory = complaintHasActionableDetail(guestText);
+    if (!hasActionableStory && !media && clarifyKind !== "cancel_request") {
+      const openCaseId = await getActiveOperatorCaseId(ctx.instanceId, ctx.phone).catch(() => null);
+      if (!openCaseId) {
+        const firstDemand = await takeComplaintClarification(ctx.instanceId, ctx.phone).catch(() => null);
+        if (firstDemand === null) {
+          await markComplaintClarificationPending(ctx.instanceId, ctx.phone, guestText).catch(() => false);
+          return {
+            action: "clarification_requested",
+            caseId: null,
+            operatorFlagged: false,
+            queuedForChat: false,
+            escalationAvailable: true,
+            signaledToDle: false,
+            signalId: "",
+            mediaAttached: false,
+            sent: false,
+            customerReply: buildEscalationClarifyQuestion(clarifyKind, ctx.language),
+          };
+        }
+        // The guest answered the clarifying question (or insists on a human):
+        // fold the original bare demand into the story the operator reads, the
+        // same way the webhook lane does, and open the case now.
+        input = { ...input, summary: [firstDemand, input.summary].filter(Boolean).join(" — ") };
+      }
+    }
+  }
   const summary = cleanLine(input.summary || input.customerText || ctx.text || "Customer complaint requires review.");
   const urgency = input.urgency || "normal";
   const detectedKind = detectOperatorCaseKind(input.customerText || ctx.text);

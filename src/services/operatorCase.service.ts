@@ -75,6 +75,21 @@ async function activateSos(input: {
   return marker;
 }
 
+// The clarify-first gate needs to know whether the guest is already
+// mid-escalation: with an open case a bare "оператор!" is insistence, not a new
+// bare demand, so it must update the case instead of earning another question.
+export async function getActiveOperatorCaseId(instanceId: string, customerPhone: string): Promise<string | null> {
+  const id = clean(instanceId, 64);
+  const guestPhone = phone(customerPhone);
+  if (!id || !guestPhone) return null;
+  try {
+    await connectRedis();
+    return await redisClient.get(activeKey(id, guestPhone));
+  } catch {
+    return null;
+  }
+}
+
 export async function createOperatorCase(input: {
   instanceId: string; phone: string; kind: OperatorCaseKind; summary: string; source?: string; urgency?: string; orderNumber?: string; hasMedia?: boolean; signalId?: string;
 }) {
@@ -141,22 +156,31 @@ async function notifyHubSos(args: {
   instanceId: string; phone: string; caseId: string; signalId: string;
   kind: OperatorCaseKind; summary: string; orderNumber?: string;
 }) {
-  // One escalation episode = one site signal. The AI tool path and the webhook
-  // gate can both raise the same SOS a second apart (each re-activates the
-  // panel marker); the site must see it exactly once. A fresh episode after
-  // the window still sends again, so "4 SOS = 4 signals" holds.
-  const dedupeKey = `sos_hub_sent:${args.instanceId}:${args.phone}`;
-  const claimed = await redisClient.set(dedupeKey, args.signalId, { EX: 90, NX: true }).catch(() => null);
+  // One operator case = one site notification. The 90-second window let a
+  // single open case re-notify the site on every bump, so the operator badge
+  // showed 4 for what was one guest issue (2026-08-21). The hub dedupes on
+  // signal_id; we now dedupe on the case for its whole life. A genuinely new
+  // episode becomes a new case (the stale sweep frees the phone), which sends
+  // a fresh notification. The claim is released when the send fails, so the
+  // next signal of this case retries instead of the case staying silent.
+  const dedupeKey = `sos_hub_sent:${args.instanceId}:${args.caseId}`;
+  const claimed = await redisClient.set(dedupeKey, args.signalId, { EX: CASE_TTL_SECONDS, NX: true }).catch(() => null);
   if (claimed !== "OK") return;
-  await reportOperatorSos({
-    instanceId: args.instanceId,
-    caseId: args.caseId,
-    signalId: args.signalId,
-    phone: args.phone,
-    kind: args.kind,
-    summary: args.summary,
-    orderNumber: args.orderNumber,
-  }).catch((error) => console.warn(`[SOS:HUB] ${args.instanceId}/${args.phone} ${args.signalId}: ${error?.message || error}`));
+  try {
+    await reportOperatorSos({
+      instanceId: args.instanceId,
+      caseId: args.caseId,
+      signalId: args.signalId,
+      phone: args.phone,
+      kind: args.kind,
+      summary: args.summary,
+      orderNumber: args.orderNumber,
+    });
+  } catch (error: any) {
+    await redisClient.del(dedupeKey).catch(() => undefined);
+    const hubCode = error?.response?.data?.code;
+    console.warn(`[SOS:HUB] ${args.instanceId}/${args.phone} ${args.signalId}: ${hubCode || error?.message || error}`);
+  }
 }
 
 // A case already sitting on the operator board must not raise a second red flag

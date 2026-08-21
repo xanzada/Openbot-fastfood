@@ -40,7 +40,7 @@ export function buildHandoffDigest(ctx: FastFoodContext, reason: string): string
 export function createEscalateToAdminSkill(ctx: FastFoodContext) {
   return createTool({
     name: "escalateToAdmin",
-    description: "Create a human operator case only when a person is truly needed: the guest has explained the problem and it takes human action, they insist on a human after being asked what happened, or there is photo evidence of a service failure. A bare demand for a person or a complaint with no details is NOT escalated here - ask what happened first; routing turns a bare demand into one clarifying question automatically. Missing menu, payment, address, or business data alone is never a reason to escalate.",
+    description: "Create a human operator case only when a person is truly needed: the guest has explained the problem and it takes human action, they insist on a human after being asked what happened, or there is photo evidence of a service failure. A bare demand for a person or a complaint with no details is NOT escalated: the result then has action=clarification_requested, no operator is notified, and customerReply holds the one short question to send - reply with exactly that question and call this tool again only when the guest answers or insists. action=operator_case_created means the operator was actually notified. Missing menu, payment, address, or business data alone is never a reason to escalate.",
     parameters: z.object({
       reason: z.string(),
       customerReply: z.string(),
@@ -55,7 +55,7 @@ export function createEscalateToAdminSkill(ctx: FastFoodContext) {
       });
 
       return {
-        action: "operator_case_created",
+        action: routing.action,
         caseId: routing.caseId,
         queuedForChat: routing.queuedForChat,
         escalationAvailable: routing.escalationAvailable,
