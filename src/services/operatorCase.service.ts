@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { connectRedis, redisClient } from "./redis.service.js";
+import { CHAT_HISTORY_TTL_SECONDS, connectRedis, redisClient } from "./redis.service.js";
 import { isLikelyMenuQuestion } from "../utils/intentText.js";
 import { reportOperatorSos } from "./alemiApi.service.js";
 
@@ -60,7 +60,13 @@ async function activateSos(input: {
     .set(sosUnreadKey(input.instanceId, input.phone), input.signalId, { EX: SOS_TTL_SECONDS })
     .zAdd(sosIndexKey(input.instanceId), [{ score: expiresAt, value: input.phone }])
     .expire(sosIndexKey(input.instanceId), CASE_TTL_SECONDS)
+    // The SOS index is scored by expiry, so anything scored in the past is a
+    // marker that died an hour ago. Nothing pruned them, so the index only ever
+    // grew and could report a guest as flagged whose marker and unread key had
+    // both expired (found 2026-08-22).
+    .zRemRangeByScore(sosIndexKey(input.instanceId), 0, now)
     .zAdd(`chatwoot:inbox:${input.instanceId}`, [{ score: now, value: input.phone }])
+    .expire(`chatwoot:inbox:${input.instanceId}`, CASE_TTL_SECONDS)
     .exec();
   await redisClient.publish(`chatwoot:events:${input.instanceId}`, JSON.stringify({
     type: "sos.created",
@@ -127,7 +133,11 @@ export async function createOperatorCase(input: {
         .zAdd(`operator_cases:${instanceId}`, [{ score: now, value: existingId }])
         .exec();
       const sos = await activateSos({ instanceId, phone: customerPhone, caseId: existingId, signalId, kind: input.kind, summary: input.summary, urgency: input.urgency, source: input.source });
-      await notifyHubSos({ instanceId, phone: customerPhone, caseId: existingId, signalId, kind: input.kind, summary: data.summary, orderNumber: data.orderNumber });
+      // Deliberately not awaited: this is log-and-continue by contract, and the
+      // hub call carries a 10s timeout that the rotated-secret retry can double.
+      // Awaiting it put up to ~20s of silence between the guest's complaint and
+      // their acknowledgement, on the reply path (found 2026-08-22).
+      void notifyHubSos({ instanceId, phone: customerPhone, caseId: existingId, signalId, kind: input.kind, summary: data.summary, orderNumber: data.orderNumber }).catch(() => undefined);
       return { ...data, sos };
     }
   }
@@ -145,7 +155,8 @@ export async function createOperatorCase(input: {
     .expire(`operator_cases:${instanceId}`, CASE_TTL_SECONDS)
     .exec();
   const sos = await activateSos({ instanceId, phone: customerPhone, caseId, signalId, kind: input.kind, summary: input.summary, urgency: input.urgency, source: input.source });
-  await notifyHubSos({ instanceId, phone: customerPhone, caseId, signalId, kind: input.kind, summary: data.summary, orderNumber: data.orderNumber });
+  // Same reason as the reuse branch above: the guest must not wait for the hub.
+  void notifyHubSos({ instanceId, phone: customerPhone, caseId, signalId, kind: input.kind, summary: data.summary, orderNumber: data.orderNumber }).catch(() => undefined);
   return { ...data, sos };
 }
 
@@ -164,8 +175,17 @@ async function notifyHubSos(args: {
   // a fresh notification. The claim is released when the send fails, so the
   // next signal of this case retries instead of the case staying silent.
   const dedupeKey = `sos_hub_sent:${args.instanceId}:${args.caseId}`;
-  const claimed = await redisClient.set(dedupeKey, args.signalId, { EX: CASE_TTL_SECONDS, NX: true }).catch(() => null);
-  if (claimed !== "OK") return;
+  // A Redis ERROR and "already claimed" both used to come back as null, so a
+  // transient blip on the claim silently suppressed the site notification for the
+  // rest of the case's 7-day life - the operator saw the red row and the site
+  // never heard about it. They are distinguished now: only a real "somebody else
+  // holds this claim" stops the send. The hub dedupes on signal_id, so sending
+  // when the claim state is unknown is the safe direction (found 2026-08-22).
+  const claimed = await redisClient
+    .set(dedupeKey, args.signalId, { EX: CASE_TTL_SECONDS, NX: true })
+    .catch(() => "CLAIM_UNAVAILABLE" as const);
+  if (claimed === null) return;
+  const claimHeld = claimed === "OK";
   try {
     await reportOperatorSos({
       instanceId: args.instanceId,
@@ -177,9 +197,22 @@ async function notifyHubSos(args: {
       orderNumber: args.orderNumber,
     });
   } catch (error: any) {
-    await redisClient.del(dedupeKey).catch(() => undefined);
-    const hubCode = error?.response?.data?.code;
-    console.warn(`[SOS:HUB] ${args.instanceId}/${args.phone} ${args.signalId}: ${hubCode || error?.message || error}`);
+    // Release only a claim we actually took; deleting one we never held would let
+    // the next signal of this case notify the site a second time.
+    if (claimHeld) await redisClient.del(dedupeKey).catch(() => undefined);
+    // The hub answers 400 INTEGRATION_COMMAND_INVALID for a payload problem and
+    // 401 INTEGRATION_SIGNATURE_INVALID for a credential one. axios throws before
+    // assertAlemiResponse runs, so error.code was unset and every failure logged
+    // as the bare axios message - a 400 was indistinguishable from a dropped
+    // connection. That is how the order_number:"not_found" payload regression
+    // survived 48 hours unnoticed (2026-08-21). Log the status and the hub's own
+    // code so the next payload regression is visible in one grep.
+    const status = Number(error?.statusCode ?? error?.response?.status ?? 0) || "-";
+    const hubCode = error?.response?.data?.error?.code
+      ?? error?.response?.data?.code
+      ?? error?.code
+      ?? "-";
+    console.warn(`[SOS:HUB] ${args.instanceId}/${args.phone} ${args.signalId} case=${args.caseId}: status=${status} hubCode=${hubCode} ${error?.message || error}`);
   }
 }
 
@@ -212,7 +245,10 @@ export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: strin
   // resurrect it.
   const decision = decideCaseFlag(data, now);
   if (decision === "already_flagged") {
-    await redisClient.zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }]);
+    await redisClient.multi()
+      .zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }])
+      .expire(`chatwoot:inbox:${instanceId}`, CASE_TTL_SECONDS)
+      .exec();
     return true;
   }
   if (decision === "stale") {
@@ -233,6 +269,7 @@ export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: strin
     await redisClient.multi()
       .set(caseKey(instanceId, caseId), JSON.stringify(flagged), { EX: CASE_TTL_SECONDS })
       .zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }])
+      .expire(`chatwoot:inbox:${instanceId}`, CASE_TTL_SECONDS)
       .exec();
     return true;
   }
@@ -243,9 +280,14 @@ export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: strin
   await redisClient.multi()
     .rPush(`history:${instanceId}:${customerPhone}`, marker)
     .lTrim(`history:${instanceId}:${customerPhone}`, -120, -1)
-    .expire(`history:${instanceId}:${customerPhone}`, 24 * 60 * 60)
+    // 24h here permanently SHORTENED the 7-day chat history, and saveToHistory
+    // only restores the TTL when it finds none at all - so exactly the guests who
+    // escalated, the ones support most needs to read back, lost their
+    // conversation six days early (found 2026-08-22).
+    .expire(`history:${instanceId}:${customerPhone}`, CHAT_HISTORY_TTL_SECONDS)
     .set(caseKey(instanceId, caseId), JSON.stringify(flagged), { EX: CASE_TTL_SECONDS })
     .zAdd(`chatwoot:inbox:${instanceId}`, [{ score: now, value: customerPhone }])
+    .expire(`chatwoot:inbox:${instanceId}`, CASE_TTL_SECONDS)
     .exec();
   return true;
 }

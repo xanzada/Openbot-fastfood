@@ -129,7 +129,7 @@ function magicLinkKey(instanceId: string, phone: string) {
   return `has_sent_link:${instanceId}:${phone}`;
 }
 
-const CHAT_HISTORY_TTL_SECONDS = 604800;
+export const CHAT_HISTORY_TTL_SECONDS = 604800;
 const CHAT_HISTORY_MAX_ITEMS = 120;
 const MAGIC_LINK_SENT_TTL_SECONDS = 2592000;
 export const USER_LANG_TTL_SECONDS = 24 * 60 * 60;
