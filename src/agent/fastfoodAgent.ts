@@ -58,6 +58,21 @@ function extractToolCalls(result: any) {
   ).filter((call: any) => call.name);
 }
 
+function mergeToolCalls(
+  first: { name: string; arguments: unknown }[],
+  second: { name: string; arguments: unknown }[]
+) {
+  const seen = new Set<string>();
+  const merged: { name: string; arguments: unknown }[] = [];
+  for (const call of [...first, ...second]) {
+    const key = `${call.name}|${JSON.stringify(call.arguments ?? null)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(call);
+  }
+  return merged;
+}
+
 export async function runFastFoodAgent(ctx: FastFoodContext) {
   const turnStartedAt = Date.now();
   // Latency budget: the customer waits in WhatsApp, so the optional
@@ -98,6 +113,8 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   };
 
   let result = await buildAgent(ctx).generateText(ctx.text, generateOptions);
+  // Kept separately because the critic can replace `result` below.
+  let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
   let validation = validateFinalText(result.text, ctx, { toolsCalled: extractToolCalls(result).map((call: { name: string }) => call.name) });
   let finalText = enforceExplicitMagicLink(validation.text, ctx);
   let critic: DraftCritique | null = null;
@@ -119,6 +136,13 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
         const regeneratedValidation = validateFinalText(regenerated.text, ctx, { toolsCalled: extractToolCalls(regenerated).map((call: { name: string }) => call.name) });
         const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
         if (regeneratedText && regeneratedText !== finalText) {
+          // The first pass's tool calls must survive the swap. `result` used to be
+          // replaced outright, so toolCalls reported only the second pass: if the
+          // first pass escalated and the regenerated one did not,
+          // toolHandledEscalation went false and the webhook text lane routed the
+          // SAME episode again - a second case and a second hub signal for one turn
+          // (found 2026-08-22).
+          firstPassToolCalls = extractToolCalls(result);
           result = regenerated;
           validation = {
             ...regeneratedValidation,
@@ -135,9 +159,20 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   }
 
   if (ctx.magicLinkGranted && ctx.magicLink && GRANTED_LINK_REFUSAL_RE.test(finalText)) {
-    finalText = ctx.language === "kk"
+    // Cut the contradicting sentence, keep the rest. Replacing the WHOLE reply threw
+    // away real operational facts that happen to contain the same words: "жеткізу
+    // жұмыс істемей тұр, өзіңіз алып кетсеңіз болады" became "тапсырыс беруге
+    // болады", telling the guest they could order delivery (found 2026-08-22).
+    const kept = finalText
+      .split(/(?<=[.!?\u2026])\s+|\n+/)
+      .filter((sentence) => sentence.trim() && !GRANTED_LINK_REFUSAL_RE.test(sentence))
+      .join(" ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    finalText = kept || (ctx.language === "kk"
       ? "Тапсырыс беруге болады - жеке сілтемеңізді бөлек хатпен жібердім."
-      : "Можно оформить заказ - отправил вашу персональную ссылку отдельным сообщением.";
+      : "Можно оформить заказ - отправил вашу персональную ссылку отдельным сообщением.");
+    validation = { ...validation, warnings: [...validation.warnings, "granted_link_refusal_clause_removed"] };
   }
 
   return {
@@ -148,7 +183,10 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     usage: result.usage,
     finishReason: result.finishReason,
     toolPlan,
-    toolCalls: extractToolCalls(result),
+    // The union of both passes, de-duplicated by name+arguments: the caller uses
+    // this to decide whether the escalate tool already handled this episode, and
+    // that must not depend on which pass happened to be the last one.
+    toolCalls: mergeToolCalls(firstPassToolCalls, extractToolCalls(result)),
     validationWarnings: validation.warnings,
     thinking,
     critic,

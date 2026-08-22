@@ -1,15 +1,11 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import type { FastFoodContext } from "../context/types.js";
+import { getTextModels } from "../services/llm.service.js";
 
 const openrouterProvider = createOpenAI({
   baseURL: "https://openrouter.ai/api/v1",
   apiKey: process.env.OPENROUTER_API_KEY,
 });
-
-function envText(name: string, fallback: string) {
-  const value = String(process.env[name] || "").trim();
-  return value || fallback;
-}
 
 function envTimeout(name: string, fallback: number) {
   const value = Number(process.env[name] || fallback);
@@ -48,62 +44,105 @@ async function timedModelCall(
   }
 }
 
+// Failover was per-call with no memory: every step of a 6-step turn re-tried a dead
+// primary (15s) then a dead fallback (15s) before reaching the reserve (40s), so one
+// provider outage cost up to ~70s PER STEP - minutes of silence for the guest, while
+// WhatsApp retries piled more turns onto the same failing provider
+// (found 2026-08-22). A model that just failed is skipped for a short window.
+const MODEL_FAILURE_COOLDOWN_MS = envTimeout("MODEL_FAILURE_COOLDOWN_MS", 60_000);
+const modelFailedUntil = new Map<string, number>();
+
+function modelIsCoolingDown(modelId: string) {
+  const until = modelFailedUntil.get(modelId) || 0;
+  if (until <= Date.now()) {
+    if (until) modelFailedUntil.delete(modelId);
+    return false;
+  }
+  return true;
+}
+
+function noteModelFailure(modelId: string) {
+  modelFailedUntil.set(modelId, Date.now() + MODEL_FAILURE_COOLDOWN_MS);
+}
+
+function noteModelSuccess(modelId: string) {
+  // A model that answers is healthy again immediately - never hold a working
+  // provider out of rotation.
+  modelFailedUntil.delete(modelId);
+}
+
+export function modelCooldownState() {
+  const now = Date.now();
+  return Object.fromEntries(
+    [...modelFailedUntil.entries()].filter(([, until]) => until > now).map(([id, until]) => [id, until - now])
+  );
+}
+
+export function clearModelCooldowns() {
+  modelFailedUntil.clear();
+}
+
+/**
+ * Runs the chain in order, skipping any model inside its failure window, and always
+ * keeping the LAST model as a genuine last resort even if it is cooling down - a
+ * turn must still produce an answer when every provider is unhappy.
+ */
+async function callChain(
+  chain: { model: any; timeout: number; label: string }[],
+  operation: "doGenerate" | "doStream",
+  options: any
+) {
+  const usable = chain.filter((entry, index) => index === chain.length - 1 || !modelIsCoolingDown(entry.model.modelId));
+  let lastError: any = new Error("MODEL_CHAIN_EMPTY");
+  for (let index = 0; index < usable.length; index += 1) {
+    const entry = usable[index];
+    try {
+      const result = await timedModelCall(entry.model, operation, options, entry.timeout);
+      noteModelSuccess(entry.model.modelId);
+      return result;
+    } catch (error: any) {
+      lastError = error;
+      noteModelFailure(entry.model.modelId);
+      const next = usable[index + 1];
+      console.warn(
+        `[MODEL:TEXT] ${entry.label}=${entry.model.modelId} failed; ` +
+        `${next ? `next=${next.model.modelId}` : "no_more_models"}; ` +
+        `error=${error?.message || error}`
+      );
+    }
+  }
+  throw lastError;
+}
+
 function createFallbackModel(primary: any, secondary: any, reserve: any): any {
   const wrapped = { ...primary };
   const primaryTimeout = envTimeout("TEXT_PRIMARY_TIMEOUT_MS", 15_000);
   const fallbackTimeout = envTimeout("TEXT_FALLBACK_TIMEOUT_MS", 15_000);
   const reserveTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
 
+  const chain = [
+    { model: primary, timeout: primaryTimeout, label: "primary" },
+    { model: secondary, timeout: fallbackTimeout, label: "fallback" },
+    { model: reserve, timeout: reserveTimeout, label: "reserve" },
+  ];
+
   if (typeof primary.doGenerate === "function") {
-    wrapped.doGenerate = async (options: any) => {
-      try {
-        return await timedModelCall(primary, "doGenerate", options, primaryTimeout);
-      } catch (primaryError: any) {
-        console.warn(
-          `[MODEL:TEXT] primary=${primary.modelId} failed; fallback=${secondary.modelId}; ` +
-          `error=${primaryError?.message || primaryError}`
-        );
-        try {
-          return await timedModelCall(secondary, "doGenerate", options, fallbackTimeout);
-        } catch (fallbackError: any) {
-          console.warn(
-            `[MODEL:TEXT] fallback=${secondary.modelId} failed; reserve=${reserve.modelId}; ` +
-            `error=${fallbackError?.message || fallbackError}`
-          );
-          return timedModelCall(reserve, "doGenerate", options, reserveTimeout);
-        }
-      }
-    };
+    wrapped.doGenerate = (options: any) => callChain(chain, "doGenerate", options);
   }
 
   if (typeof primary.doStream === "function") {
-    wrapped.doStream = async (options: any) => {
-      try {
-        return await timedModelCall(primary, "doStream", options, primaryTimeout);
-      } catch (primaryError: any) {
-        console.warn(
-          `[MODEL:TEXT] primary_stream=${primary.modelId} failed; fallback=${secondary.modelId}; ` +
-          `error=${primaryError?.message || primaryError}`
-        );
-        try {
-          return await timedModelCall(secondary, "doStream", options, fallbackTimeout);
-        } catch (fallbackError: any) {
-          console.warn(
-            `[MODEL:TEXT] fallback_stream=${secondary.modelId} failed; reserve=${reserve.modelId}; ` +
-            `error=${fallbackError?.message || fallbackError}`
-          );
-          return timedModelCall(reserve, "doStream", options, reserveTimeout);
-        }
-      }
-    };
+    wrapped.doStream = (options: any) => callChain(chain, "doStream", options);
   }
 
   return wrapped;
 }
 
-const textPrimaryModel = envText("TEXT_PRIMARY_MODEL", "google/gemini-2.5-flash");
-const textFallbackModel = envText("TEXT_FALLBACK_MODEL", "openai/gpt-4.1-mini");
-const textReserveModel = envText("TEXT_RESERVE_MODEL", "openai/gpt-4o-mini");
+// One source of truth for the chain. This file used to re-read the same env vars
+// with its OWN defaults, so with the env unset the agent ran gemini-2.5-flash while
+// the webhook logged deepseek-chat as "primary" and agentThinking / customerMemory
+// picked yet another model as "reserve" - operators debugged against a model the
+// agent never called (found 2026-08-22). llm.service.getTextModels owns it.
+const { primary: textPrimaryModel, fallback: textFallbackModel, reserve: textReserveModel } = getTextModels();
 
 const textModel = createFallbackModel(
   // OpenRouter's broad model catalogue is chat-completions compatible. Calling
