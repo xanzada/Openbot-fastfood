@@ -60,7 +60,14 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const plan: AgentToolPlan = { requiredTools: [], reason: [] };
   const immediateServiceIncident = isLikelyComplaintText(text) && complaintHasActionableDetail(text);
   const paymentDetailsIntent = intentMatches(PAYMENT_DETAILS_RE, text) && !intentMatches(RECEIPT_EVENT_RE, text);
-  const runtime = ctx.hardRealtimeContext || ctx.runtimeStatus;
+  // hardRealtimeContext is ALWAYS truthy and carries neither is_accepting_orders nor
+  // within_work_hours - and classifyKitchenSalesPolicy defaults BOTH to true. So a
+  // closed, emergency-stopped or off-hours kitchen was classified "normal" here,
+  // checkoutBlocked stayed false, sendMenuLink got pinned, and the skill then
+  // refused: the turn was spent on a refusal instead of the honest closed answer.
+  // Every other caller (buildFactsPrompt, menuLink.skill) reads ctx.runtimeStatus;
+  // this was the one place that preferred the partial object (found 2026-08-22).
+  const runtime = ctx.runtimeStatus || ctx.hardRealtimeContext;
   const kitchenPolicy = classifyKitchenSalesPolicy(runtime || null);
   const checkoutBlocked = kitchenPolicy.blocksAllSales || kitchenPolicy.requiresConsent;
 

@@ -143,7 +143,19 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       const menu = await getMenuContext(ctx.instanceId, domain, ctx.language);
       const items = Array.isArray(menu?.items) ? menu.items : [];
       const vocabulary = menuVocabulary(items);
-      const allowedItems = items.filter((item: any) => !menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked);
+      // Hub-level availability was carried in the payload (line ~94) but never acted
+      // on: allowedItems filtered only note-blocked dishes, so a dish the hub marks
+      // sold out was quoted with a price and could even be offered as the "safe
+      // alternative" to another sold-out dish (found 2026-08-22). available === false
+      // is an explicit hub statement; undefined means the hub said nothing and the
+      // dish stays visible.
+      const soldOut = (item: any) => item?.available === false;
+      const allowedItems = items.filter((item: any) =>
+        !soldOut(item) && !menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked);
+      // A guest who names a sold-out dish must hear that it is out, not that it does
+      // not exist, so the named dish is still answerable - it just cannot be ranked
+      // into a list or offered as a replacement.
+      const soldOutNames = items.filter(soldOut).map((item: any) => item?.name || item?.title || "").filter(Boolean).slice(0, 12);
       // The ranked list behind the page is built in full: `totalMatched` has to be
       // the real number of matches, or the page and the total agree and nothing
       // tells the model that more of the menu exists.
@@ -158,7 +170,12 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       // no dish (another language, a wording the filter cannot see) the model is
       // the last chance to notice, and silence here told it everything was fine.
       const unavailableNow = Array.from(
-        new Set(publicNoteConstraints(ctx.activeShiftNotes).flatMap((entry: any) => entry.blocked_terms || [])),
+        new Set([
+          ...publicNoteConstraints(ctx.activeShiftNotes).flatMap((entry: any) => entry.blocked_terms || []),
+          // A hub-level sold-out dish belongs in the same list the model already
+          // knows how to reason about, or nothing tells it why the dish vanished.
+          ...soldOutNames,
+        ]),
       ).slice(0, 12);
       // A sales-minded agent never answers a plain "we don't have it". These are
       // drawn from allowedItems, which already dropped everything a note blocks,
@@ -184,6 +201,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
         // you have?" answerable without paging the whole menu.
         categories: summarizePublicCategories(allowedItems),
         noteRestrictionsApplied: filteringApplied,
+        ...(soldOutNames.length ? { sold_out_now: soldOutNames } : {}),
         ...(unavailableNow.length ? { unavailable_now: unavailableNow } : {}),
       };
     },

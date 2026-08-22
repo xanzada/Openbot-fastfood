@@ -22,10 +22,19 @@ function contextFor(scenario: (typeof AGENT_EVAL_SCENARIOS)[number]) {
     text: scenario.message,
     activeOrder: hasActiveOrder ? { id: 42, status: "pending" } : null,
     explicitMenuLinkIntent: scenario.category === "order_link",
-    hardRealtimeContext: {
+    // Production shape: is_accepting_orders / within_work_hours / is_emergency live
+    // on runtimeStatus, NOT on hardRealtimeContext. The old fixture put them on
+    // hardRealtimeContext, which production never does, so this corpus could not
+    // see that toolPolicy was classifying the kitchen from the partial object
+    // (found 2026-08-22).
+    runtimeStatus: {
       wait_time: scenario.contextKind === "busy60" ? 60 : 0,
       is_emergency: scenario.contextKind === "emergency",
       is_accepting_orders: scenario.contextKind !== "emergency",
+      within_work_hours: true,
+    },
+    hardRealtimeContext: {
+      wait_time: scenario.contextKind === "busy60" ? 60 : 0,
     },
   } as any;
 }
@@ -53,12 +62,12 @@ describe("146-scenario deterministic agent policy", () => {
     const shortWait = resolveAgentToolPlan({
       text: "Хочу заказать",
       explicitMenuLinkIntent: true,
-      hardRealtimeContext: { wait_time: 20 },
+      runtimeStatus: { wait_time: 20, is_accepting_orders: true, within_work_hours: true },
     } as any);
     const consentWait = resolveAgentToolPlan({
       text: "Хочу заказать",
       explicitMenuLinkIntent: true,
-      hardRealtimeContext: { wait_time: 60 },
+      runtimeStatus: { wait_time: 60, is_accepting_orders: true, within_work_hours: true },
     } as any);
     assert.ok(shortWait.requiredTools.includes("sendMenuLink"));
     assert.ok(!consentWait.requiredTools.includes("sendMenuLink"));

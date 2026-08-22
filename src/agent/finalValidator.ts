@@ -166,8 +166,25 @@ function enforceExactMagicLink(text: string, ctx: FastFoodContext): string {
 
 // Words that only exist inside the system: operator notes, kitchen status,
 // context and tooling. A guest must never see any of them.
-const INTERNAL_DISCLOSURE_RE =
-  /(\u043e\u043f\u0435\u0440\u0430\u0442\u043e\u0440|\u0435\u0441\u043a\u0435\u0440\u0442\u043f|\u0437\u0430\u043c\u0435\u0442\u043a|\u043f\u0440\u0438\u043c\u0435\u0447\u0430\u043d\u0438|\u0436\u04af\u0439\u0435\u0434\u0435|\u0441\u0438\u0441\u0442\u0435\u043c\u0430\u0434\u0430|\u0441\u0442\u0430\u0442\u0443\u0441\u0442\u0430|kitchen[_ ]?status|operator|note[s]?\b|context|instruction|prompt|tool\b)/i;
+// "оператор" alone is NOT internal: the escalate tool's customerReply deliberately
+// tells the guest a human will take over, and the contract says to send that text
+// verbatim. Cutting every sentence containing the word deleted exactly that
+// sentence - and on a short reply collapsed the whole answer to the generic
+// fallback while a case had just been opened (found 2026-08-22). The guard exists
+// to stop PROVENANCE leaking ("the operator note says..."), so the operator word
+// now has to appear next to internal wording.
+const INTERNAL_PROVENANCE_RE =
+  /(\u0435\u0441\u043a\u0435\u0440\u0442\u043f|\u0437\u0430\u043c\u0435\u0442\u043a|\u043f\u0440\u0438\u043c\u0435\u0447\u0430\u043d\u0438|\u0436\u04af\u0439\u0435\u0434\u0435|\u0441\u0438\u0441\u0442\u0435\u043c\u0430\u0434\u0430|\u0441\u0442\u0430\u0442\u0443\u0441\u0442\u0430|kitchen[_ ]?status|note[s]?\b|context|instruction|prompt|tool\b)/i;
+const OPERATOR_WORD_RE = /(\u043e\u043f\u0435\u0440\u0430\u0442\u043e\u0440|operator)/i;
+
+function disclosesInternals(sentence: string) {
+  if (INTERNAL_PROVENANCE_RE.test(sentence)) return true;
+  // The operator word only counts when it is explaining where information came
+  // from, i.e. paired with provenance wording in the same sentence.
+  return OPERATOR_WORD_RE.test(sentence) && INTERNAL_PROVENANCE_RE.test(sentence);
+}
+
+const INTERNAL_DISCLOSURE_RE = INTERNAL_PROVENANCE_RE;
 
 export function validateFinalText(
   rawText: string,
@@ -230,7 +247,15 @@ export function validateFinalText(
   }
 
   const liveWaitTime = Number(ctx.fetchedSettings?.wait_time || 0);
-  if (!liveWaitTime) {
+  // A tool that re-read the kitchen or the business info this turn is a live
+  // source, and preload's snapshot is not the only truth: getKitchenStatus calls
+  // the hub with forceFresh, so a wait raised after preload was being stripped out
+  // of a correct answer, and getBusinessInfo's work hours ("тәулік бойы 24 сағат")
+  // were eaten by the same duration regex (found 2026-08-22).
+  const durationGrounded = Boolean(
+    grounding?.toolsCalled?.includes("getKitchenStatus") || grounding?.toolsCalled?.includes("getBusinessInfo")
+  );
+  if (!liveWaitTime && !durationGrounded) {
     if (STALE_WAIT_CONSENT_RE.test(text)) {
       const withoutStaleConsent = dropSentencesMatching(text, STALE_WAIT_CONSENT_RE);
       if (withoutStaleConsent) {
@@ -256,7 +281,11 @@ export function validateFinalText(
     if (SOFT_WAIT_HINT_RE.test(text)) warnings.push("polite_wait_phrase_kept");
   }
 
-  if (!ctx.activeOrder && ORDER_STATUS_RE.test(text)) {
+  // statusGrounded matters here too: checkOrderStatus can find an order by a
+  // quoted number that preload's phone lookup missed, so ctx.activeOrder is empty
+  // while the tool has just read the real order. Cutting the sentence then makes
+  // the bot deny an order it verified one step earlier (found 2026-08-22).
+  if (!ctx.activeOrder && !statusGrounded && ORDER_STATUS_RE.test(text)) {
     // Same principle as the kitchen guard: cut the false order claim, keep the
     // rest of the answer. Only when nothing survives do we fall back to the
     // deterministic "no active order" line.
@@ -273,10 +302,10 @@ export function validateFinalText(
   // to justify itself ("the operator note says..."), which exposes kitchen
   // shorthand written for staff. The sentence carrying the disclosure is cut,
   // not the whole reply, so the useful part of the answer survives.
-  if (INTERNAL_DISCLOSURE_RE.test(text)) {
+  if (INTERNAL_PROVENANCE_RE.test(text)) {
     const kept = text
       .split(/(?<=[.!?\u2026])\s+|\n+/)
-      .filter((sentence) => !INTERNAL_DISCLOSURE_RE.test(sentence))
+      .filter((sentence) => !disclosesInternals(sentence))
       .join(" ")
       .replace(/\s{2,}/g, " ")
       .trim();
@@ -312,7 +341,14 @@ export function validateFinalText(
   // tools actually ran this turn. When the report is absent (older callers,
   // unit tests), behavior is byte-identical to before.
   if (grounding && Array.isArray(grounding.toolsCalled)) {
-    const grounded = grounding.toolsCalled.some((tool) => PRICE_GROUNDING_TOOLS.includes(tool));
+    // The preloaded snapshot is a grounding source, not a hint: menu_snapshot.rule
+    // in buildFactsPrompt explicitly authorises selling a listed dish at the price
+    // shown. Requiring a tool call on top of that deleted prices the prompt had
+    // just told the model to quote - and MENU_LOOKUP_RE does not catch every way a
+    // guest asks ("Пицца почем?"), so no tool ran (found 2026-08-22).
+    const snapshotPrices = Array.isArray(ctx.menuSnapshot?.items) && ctx.menuSnapshot!.items.length > 0;
+    const toolGrounded = grounding.toolsCalled.some((tool) => PRICE_GROUNDING_TOOLS.includes(tool));
+    const grounded = snapshotPrices || toolGrounded;
     if (!grounded) {
       if (PRICE_CLAIM_RE.test(text)) {
         const withoutPrices = dropSentencesMatching(text, PRICE_CLAIM_RE);
@@ -332,12 +368,17 @@ export function validateFinalText(
           warnings.push("unverified_promo_claim_kept_no_survivor");
         }
       }
-      if (ALLERGEN_ASSURANCE_RE.test(text)) {
-        const withoutAssurance = dropSentencesMatching(text, ALLERGEN_ASSURANCE_RE);
-        text = withoutAssurance;
-        warnings.push("ungrounded_allergen_assurance_removed");
-        if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
-      }
+      // Deliberately NOT relaxed by the snapshot: telling a guest an allergen is
+      // absent is the one lie that can put them in hospital, and a composition
+      // string is not a verified allergen statement. This still demands a tool.
+    }
+    // Outside the price/promo block on purpose: a snapshot may authorise a price,
+    // never an allergen assurance.
+    if (!toolGrounded && ALLERGEN_ASSURANCE_RE.test(text)) {
+      const withoutAssurance = dropSentencesMatching(text, ALLERGEN_ASSURANCE_RE);
+      text = withoutAssurance;
+      warnings.push("ungrounded_allergen_assurance_removed");
+      if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
     }
     // Whatever was cut above, the guest must not be left holding a pointer to a
     // list that no longer exists.
