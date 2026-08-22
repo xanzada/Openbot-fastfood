@@ -1,5 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
+// This file calls routeComplaintToAdmin for real, and that path now reads the
+// saved complaint media through Redis before the menu guard (photo evidence must
+// outrank a menu-ish caption). With no Redis in the test container the client's
+// reconnect timers keep the runner alive forever - a real 12-minute hang on
+// 2026-08-22 - so fail fast and destroy the client afterwards. Both halves are
+// required: the env vars must be set BEFORE the imports below, and the teardown
+// must run.
+process.env.REDIS_URL = "redis://127.0.0.1:1";
+process.env.REDIS_CONNECT_TIMEOUT_MS = "500";
+process.env.REDIS_OPERATION_TIMEOUT_MS = "500";
+
 import {
   complaintHasActionableDetail,
   isLikelyComplaintText,
@@ -12,6 +24,11 @@ import { detectOperatorCaseKind } from "../src/services/operatorCase.service.js"
 import { isLikelyMenuQuestion } from "../src/utils/intentText.js";
 import { routeComplaintToAdmin } from "../src/services/complaintRouting.service.js";
 import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
+import { redisClient } from "../src/services/redis.service.js";
+
+test.after(() => {
+  if (redisClient.isOpen) redisClient.destroy();
+});
 
 test("asking for a human is recognised and never mistaken for a complaint to investigate", () => {
   for (const text of ["оператор шақырыңыз", "адаммен сөйлескім келеді", "позовите оператора", "соедините с менеджером"]) {

@@ -50,12 +50,17 @@ test("a bare complaint via the AI tool asks what happened first", async () => {
   assert.equal(result.customerReply, buildEscalationClarifyQuestion("complaint", "ru"));
 });
 
-test("a complaint that already tells the story still creates the case immediately", async () => {
+test("a complaint that already tells the story is never sent back for clarification", async () => {
   const result = await routeComplaintToAdmin(CTX("заказ привезли холодный и не тот соус положили", "ru"), {
     summary: "Холодный заказ, не тот соус",
     source: "ai_tool_escalate_to_admin",
   });
-  assert.equal(result.action, "operator_case_created");
+  // There is no Redis in this file by design, so the case cannot actually persist
+  // and the honest action is escalation_failed (A1, 2026-08-22). What this test
+  // guards is the gate: a self-describing story must go straight through it.
+  assert.notEqual(result.action, "clarification_requested");
+  assert.notEqual(result.action, "skipped_menu_question");
+  assert.equal(result.action, "escalation_failed", "no Redis: the routing must admit the case was not recorded");
 });
 
 test("a cancellation request is self-describing and never earns the clarifying question", async () => {
@@ -63,7 +68,8 @@ test("a cancellation request is self-describing and never earns the clarifying q
     summary: "Болдырмагым келедi",
     source: "ai_tool_escalate_to_admin",
   });
-  assert.equal(result.action, "operator_case_created");
+  assert.notEqual(result.action, "clarification_requested");
+  assert.notEqual(result.action, "skipped_menu_question");
 });
 
 test("photo evidence escalates without the clarifying question", async () => {
@@ -72,7 +78,9 @@ test("photo evidence escalates without the clarifying question", async () => {
     source: "ai_tool_escalate_to_admin",
     media: { base64: "aGVsbG8=", mimeType: "image/jpeg" },
   });
-  assert.equal(result.action, "operator_case_created");
+  assert.notEqual(result.action, "clarification_requested");
+  assert.notEqual(result.action, "skipped_menu_question");
+  assert.equal(result.mediaAttached, true, "the evidence must be carried into the case");
 });
 
 test("the other routing lanes are never gated twice", async () => {
@@ -83,7 +91,7 @@ test("the other routing lanes are never gated twice", async () => {
     summary: "Оператор керек",
     source: "human_request",
   });
-  assert.equal(result.action, "operator_case_created");
+  assert.notEqual(result.action, "clarification_requested");
 });
 
 test("the webhook lane stands down when the escalate tool already ran this turn", async () => {

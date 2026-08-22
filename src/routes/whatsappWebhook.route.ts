@@ -425,6 +425,11 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
 }
 
 function operationalPreemptionReply(ctx: FastFoodContext): string | null {
+  // Same reason as the kitchen gate above: this runs before the cancellation and
+  // complaint lanes and returns unconditionally. "Ақшамды аудардым, бірақ
+  // тапсырыс келмеді, оператор керек" was answered with "send the receipt" and
+  // the human request was never escalated (found 2026-08-22).
+  if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text)) return null;
   // A text claim is not proof of payment. Asking for the receipt here avoids an
   // unnecessary model call and, critically, cannot mutate the order to paid or
   // accidentally send the menu link again.
@@ -526,6 +531,18 @@ export async function resumeDeferredKitchenConsent(
 }
 
 async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
+  // A complaint, a request for a person, or a cancellation is not new ordering
+  // intent, and this gate returns unconditionally once the kitchen is closed or
+  // busy - before the agent and before the post-agent escalation gate. So a real
+  // complaint arriving after closing time was answered with opening hours and
+  // produced no case, no panel SOS and no hub signal: a silent drop of exactly
+  // the class the escalation contract calls worse than a double (found
+  // 2026-08-22). customerOrderReply already has this guard at line 393; the
+  // kitchen gate did not. Complaints about late or cold delivery typically arrive
+  // near closing time.
+  if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text) || isOrderCancellationRequest(ctx.text)) {
+    return null;
+  }
   // An existing order does not silence the kitchen. Questions ABOUT that order
   // are already answered above by customerOrderReply, so anything reaching here
   // is new intent, and new intent must hear the kitchen's real state. Repetition
@@ -827,7 +844,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
           customerText: text,
           customerReply: "",
           urgency: "normal",
-          source: "long_voice_requires_operator",
+          // complaintRouting compares against "long_voice" exactly, so the longer
+          // string never matched and the operator card said "complaint" for a
+          // voice note (found 2026-08-22).
+          source: "long_voice",
         });
         const reply = ctx.language === "ru"
           ? routing.escalationAvailable

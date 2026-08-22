@@ -142,12 +142,23 @@ export function buildComplaintAckReply(language: "kk" | "ru") {
     : "Кешіріңіз. Шағымды админге жібердім, ол тексеріп сізбен байланысады.";
 }
 
+// Said when the guest's problem is real but the case could not be recorded. It
+// promises nothing a human has not been told about.
+export function buildEscalationUnavailableReply(language: "kk" | "ru") {
+  return language === "ru"
+    ? "Извините за ситуацию. Сейчас не могу передать обращение оператору из-за технического сбоя. Напишите, пожалуйста, ещё раз через пару минут — или позвоните нам."
+    : "Кешіріңіз. Техникалық ақаудан қазір өтінішті операторға жібере алмадым. Екі-үш минуттан кейін қайта жазыңыз — немесе бізге қоңырау шалыңыз.";
+}
+
 export async function hasPendingComplaintMedia(instanceId: string, phone: string): Promise<boolean> {
   const media = await getComplaintMedia(instanceId, phone).catch(() => null);
   return Boolean(media?.base64);
 }
 
 export async function routeComplaintToAdmin(ctx: FastFoodContext, input: ComplaintRoutingInput) {
+  const savedMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
+  const media = toWhatsProMedia(input.media || (savedMedia as ComplaintMediaPayload | null));
+
   // A menu/availability/price question can never become an operator case, no
   // matter which path brought it here - regex lane, webhook gate, or the AI
   // tool. "Суық суы бар ма?" asks about a cold drink; it is answered from the
@@ -155,7 +166,19 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
   // so the refusal has to live here at the choke point (live false positives,
   // 2026-08-20). escalationAvailable stays true so callers never mistake the
   // skip for a missing admin phone and alert the developer.
-  if (isLikelyMenuQuestion(input.customerText || ctx.text)) {
+  // ...but only for the lanes that carry a bare guest sentence. A photo of a wrong
+  // order captioned "бұл дұрыс емес, пепперони бар ма еді?", a cancellation, or a
+  // too-long voice note all match MENU_QUESTION_RE on the caption while being
+  // anything but a menu question. Those lanes used to be dropped here with
+  // escalationAvailable:true, so the caller skipped its developer alert and still
+  // sent the guest an apology promising an operator - no case, no panel SOS, no
+  // hub signal, and the photo expiring unseen (found 2026-08-22).
+  const menuSkipApplies = !media
+    && !savedMedia?.base64
+    && input.source !== "cancel_request"
+    && input.source !== "media_analysis"
+    && input.source !== "long_voice";
+  if (menuSkipApplies && isLikelyMenuQuestion(input.customerText || ctx.text)) {
     return {
       action: "skipped_menu_question",
       caseId: null,
@@ -169,9 +192,6 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
       customerReply: input.customerReply || "",
     };
   }
-  const savedMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
-  const media = toWhatsProMedia(input.media || (savedMedia as ComplaintMediaPayload | null));
-
   // 2026-08-21 live defect: the AI tool lane opened a case - and fired SOS to
   // the panel and the site - on the model's first impulse. A bare
   // "оператормен сөйлесейін" in the middle of smalltalk became a red SOS whose
@@ -258,7 +278,14 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     : false;
 
   return {
-    action: "operator_case_created",
+    // WHY this is derived and not a constant: createOperatorCase is wrapped in a
+    // .catch that returns null (Redis unreachable, hub refusing), and the action
+    // used to stay "operator_case_created" regardless. instructions.ts and the
+    // tool description both teach the model that operator_case_created means the
+    // operator WAS notified, so on a Redis outage a guest with a real incident was
+    // told a person is coming while no case, no panel SOS and no hub signal
+    // existed (found 2026-08-22). The tool must report what actually happened.
+    action: operatorCase ? "operator_case_created" : "escalation_failed",
     caseId: operatorCase?.id || null,
     operatorFlagged: flagged,
     queuedForChat: Boolean(operatorCase),
@@ -267,6 +294,12 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     signalId,
     mediaAttached: Boolean(media),
     sent: false,
-    customerReply: input.customerReply || buildComplaintAckReply(ctx.language),
+    // The caller's own reply promises a human ("Шағымды админге жібердім, ол
+    // тексеріп сізбен байланысады"). When the case could not be created that
+    // promise is false, so an honest holding line is substituted instead - the
+    // long-voice lane already did this by hand at whatsappWebhook.route.ts:832.
+    customerReply: operatorCase
+      ? (input.customerReply || buildComplaintAckReply(ctx.language))
+      : buildEscalationUnavailableReply(ctx.language),
   };
 }
