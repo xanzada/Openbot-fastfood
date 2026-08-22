@@ -546,7 +546,23 @@ export async function saveToHistory(
     const ttlBefore = await redisClient.ttl(key);
     const entry = JSON.stringify({ role, text, createdAt: Date.now(), ...meta });
     await redisClient.multi().rPush(key, entry).lTrim(key, -CHAT_HISTORY_MAX_ITEMS, -1).exec();
-    if (ttlBefore < 0) await redisClient.expire(key, CHAT_HISTORY_TTL_SECONDS);
+    // Re-assert the 7-day window whenever the key carries LESS than that, not only
+    // when it carries no TTL at all.
+    //
+    // WHY: this key is shared. WhatsPro treats `history:{instance}:{phone}` as its
+    // own "legacyHistory" and re-stamps it with the panel's 24h chat TTL on every
+    // stored message (chatStore.js applyTtl / setState / pruneExpired). Openbot
+    // keeps it for 7 days because that is the window support reads a complaint back
+    // over. With `ttlBefore < 0` as the only condition, WhatsPro always won and
+    // Openbot's 7 days never actually held - verified live on 2026-08-22, where
+    // every history key still showed ~24h after the operatorCase fix.
+    //
+    // Openbot writes to this key on every turn, so re-asserting here converges on
+    // 7 days without touching WhatsPro's chat-storage Lua, which the inbound WAL
+    // depends on. A LONGER ttl is left alone: whoever set it wanted it.
+    if (ttlBefore < 0 || ttlBefore < CHAT_HISTORY_TTL_SECONDS) {
+      await redisClient.expire(key, CHAT_HISTORY_TTL_SECONDS);
+    }
   });
 }
 
@@ -844,7 +860,10 @@ async function purgeShiftNoteIdsFromHistory(instanceId: string, noteIds: string[
     const multi = redisClient.multi().del(key);
     kept.forEach((row) => multi.rPush(key, row));
     await multi.exec();
-    if (kept.length && ttlBefore > 0) await redisClient.expire(key, ttlBefore);
+    // A key that arrived with no readable TTL used to come back from the rebuild
+    // immortal, because the restore was skipped entirely. Fall back to the 7-day
+    // window instead of leaving a history list to live forever (found 2026-08-22).
+    if (kept.length) await redisClient.expire(key, ttlBefore > 0 ? ttlBefore : CHAT_HISTORY_TTL_SECONDS);
     // The rolling summary is written from this history, so a note that was
     // just deleted survives inside it ("pizza was unavailable") and reaches
     // the prompt again long after the operator removed it. The summary is a
