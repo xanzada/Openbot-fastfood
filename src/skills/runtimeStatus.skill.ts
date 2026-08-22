@@ -23,7 +23,10 @@ export function createGetKitchenStatusSkill(ctx: FastFoodContext) {
       );
       return {
         source,
-        fetched_at: status?.fetched_at || new Date().toISOString(),
+        // Never invent a read time. This used to fall back to "now" while
+        // is_last_known was true, so the model could present a ten-minute-old
+        // kitchen state as read this second (found 2026-08-22). null means unknown.
+        fetched_at: status?.fetched_at || null,
         runtime_available: Boolean(runtime || ctx.runtimeStatus),
         live: Boolean(runtime) && !fromFallback,
         is_last_known: fromFallback,

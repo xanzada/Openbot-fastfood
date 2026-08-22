@@ -149,6 +149,54 @@ async function persistDeveloperAlertOutbox(instanceId: string, incidentId: strin
   } catch { return false; }
 }
 
+// The outbox existed but nothing ever read it: every alert that failed to send was
+// "persisted for retry" and then sat there until its 7-day TTV expired, while the keys
+// and the ZSET accumulated (found 2026-08-22). Either drain it or stop pretending -
+// draining is the useful half, because the alerts that fail are exactly the ones about
+// a broken WhatsPro, which usually recovers minutes later.
+const DEV_ALERT_RETRY_LIMIT = Number(process.env.DEV_ALERT_RETRY_LIMIT || 20);
+
+export async function drainDeveloperAlertOutbox(instanceId: string): Promise<{ retried: number; sent: number }> {
+  if (!redisClient.isOpen) return { retried: 0, sent: 0 };
+  const indexKey = `dev_alert_outbox:${instanceId}`;
+  const incidentIds: string[] = await redisClient
+    .zRange(indexKey, 0, DEV_ALERT_RETRY_LIMIT - 1)
+    .catch(() => [] as string[]);
+  if (!incidentIds.length) return { retried: 0, sent: 0 };
+
+  let sent = 0;
+  for (const incidentId of incidentIds) {
+    const entryKey = `dev_alert_outbox:${instanceId}:${incidentId}`;
+    const raw = await redisClient.get(entryKey).catch(() => null);
+    if (!raw) {
+      // The entry expired; its index member is stale.
+      await redisClient.zRem(indexKey, incidentId).catch(() => 0);
+      continue;
+    }
+    let entry: Record<string, any> | null = null;
+    try { entry = JSON.parse(raw); } catch { entry = null; }
+    if (!entry?.text) {
+      await redisClient.multi().del(entryKey).zRem(indexKey, incidentId).exec().catch(() => null);
+      continue;
+    }
+    const config = await getRestaurantConfig(instanceId).catch(() => null);
+    const developerPhone = normalizePhone(config?.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE);
+    if (!developerPhone) return { retried: incidentIds.length, sent };
+    try {
+      const result: any = await sendWhatsProMessage({ instanceId, phone: developerPhone, text: String(entry.text) });
+      if (result?.acknowledged !== true) throw new Error(result?.reason || "DEVELOPER_ALERT_NOT_ACKNOWLEDGED");
+      // Delivered: drop it, and never re-send it later.
+      await redisClient.multi().del(entryKey).zRem(indexKey, incidentId).exec().catch(() => null);
+      sent += 1;
+    } catch {
+      // Still failing. Leave it for the next pass rather than losing it, and stop
+      // here so one dead tenant cannot burn the whole budget on every tick.
+      break;
+    }
+  }
+  return { retried: incidentIds.length, sent };
+}
+
 async function sendAlertWithConfig(
   instanceId: string,
   config: Record<string, any>,

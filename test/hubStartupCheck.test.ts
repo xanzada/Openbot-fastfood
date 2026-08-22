@@ -67,6 +67,11 @@ test("a tenant with no hub credential is a failed check, not a silent pass", asy
   assert.equal(noSecret[0].name, "alemi_hub[prestige]");
   assert.match(String(noSecret[0].message), /tenant carries no alemi_secret/);
 
+  // A config that could not be READ is a different fault from a config whose secret
+  // field is empty, and this test used to assert the first was reported as the second.
+  // During a platform outage every tenant was then reported as mis-configured and the
+  // operator was sent to fix tenant rows while the real fault was the platform token
+  // (found 2026-08-22). Both are still failures; they just say what they are.
   const unhydratable = await checkAlemiHub(
     async () => [{ instance_id: "prestige" }],
     (async () => ({})) as any,
@@ -75,7 +80,13 @@ test("a tenant with no hub credential is a failed check, not a silent pass", asy
     }
   );
   assert.equal(unhydratable[0].ok, false);
-  assert.match(String(unhydratable[0].message), /tenant carries no alemi_secret/);
+  assert.match(String(unhydratable[0].message), /tenant config could not be loaded/);
+  assert.match(String(unhydratable[0].message), /PLATFORM_DOWN/, "the cause must reach the operator");
+  assert.doesNotMatch(
+    String(unhydratable[0].message),
+    /tenant carries no alemi_secret/,
+    "a platform outage must not be reported as a tenant misconfiguration"
+  );
 
   const none = await checkAlemiHub(async () => [], (async () => ({})) as any, hydrated({}));
   assert.equal(none[0].ok, false);

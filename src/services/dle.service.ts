@@ -1048,8 +1048,12 @@ export async function updateCrmAction(
   if (actionType === "update_crm") {
     Object.assign(payload, {
       action: "update_crm",
-      interest: data.interest || "белгісіз",
-      sales_stage: data.sales_stage || "жаңа",
+      // The updateCrmLead tool declares an uppercase enum (NEW, MENU_SENT, ...) and
+      // the hub funnel groups on this value. Defaulting to Kazakh literals when the
+      // model omitted the field split every funnel across two vocabularies, so stage
+      // analytics silently undercounted (found 2026-08-22). Same enum, same casing.
+      interest: data.interest || "",
+      sales_stage: data.sales_stage || "NEW",
       psycho_analysis: data.psycho_analysis || "мәлімет жоқ",
     });
   } else {

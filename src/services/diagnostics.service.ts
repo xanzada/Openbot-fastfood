@@ -204,8 +204,23 @@ export async function checkAlemiHub(
   return Promise.all(instances.map(async (instance) => {
     const name = `alemi_hub[${instance}]`;
     const started = now();
-    const config = await hydrate(instance).catch(() => null);
+    // Distinguish "could not read the config" from "the config has no secret". When
+    // hydrate rejects - platform down, TENANTS_PLATFORM_API_TOKEN wrong - config is
+    // null and every tenant was reported as carrying no alemi_secret, so the operator
+    // was sent to fix tenant rows while the real fault was the platform token
+    // (found 2026-08-22).
+    let configLoadError: unknown = null;
+    const config = await hydrate(instance).catch((error) => { configLoadError = error; return null; });
     const target = hostFromUrl(String(config?.alemi_api_url || ""));
+    if (configLoadError) {
+      return {
+        name,
+        ok: false,
+        target,
+        message: `tenant config could not be loaded: ${String((configLoadError as any)?.message || configLoadError)}`.slice(0, 200),
+        latency_ms: now() - started,
+      };
+    }
     // Parked/QA tenants (bot_enabled=false) are not registered on the hub, so their
     // credential check answers 401 on every single boot. That paged the developer
     // once per tenant per restart while no guest was affected at all (audit,

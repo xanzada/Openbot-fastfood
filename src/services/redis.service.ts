@@ -137,6 +137,7 @@ export const SITE_LANG_HINT_TTL_SECONDS = 24 * 60 * 60;
 const RECEIPT_FINGERPRINT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const COMPLAINT_MEDIA_TTL_SECONDS = 300;
 const DAILY_LOG_TTL_SECONDS = 172800;
+const DAILY_LOG_MAX_ITEMS = Number(process.env.DAILY_LOG_MAX_ITEMS || 1000);
 const KITCHEN_STATUS_TTL_SECONDS = 604800;
 
 export interface PaymentDetail {
@@ -753,8 +754,16 @@ export async function saveDailyLog(instanceId: string, logData: Record<string, a
   await safeRedis(undefined, async () => {
     const key = `daily_logs:${instanceId}`;
     try {
-      await redisClient.rPush(key, JSON.stringify(logData));
-      await redisClient.expire(key, DAILY_LOG_TTL_SECONDS);
+      // One entry per CRM update per guest turn, each carrying free-text
+      // psycho_analysis, and only the 48h TTL bounded it - multi-megabyte on a busy
+      // tenant, read by nothing (the analytics cron reads the hub's CRM instead).
+      // Trimmed in the same pipeline so the list cannot outgrow its usefulness
+      // (found 2026-08-22).
+      await redisClient.multi()
+        .rPush(key, JSON.stringify(logData))
+        .lTrim(key, -DAILY_LOG_MAX_ITEMS, -1)
+        .expire(key, DAILY_LOG_TTL_SECONDS)
+        .exec();
     } catch (error: any) {
       console.error(`[REDIS] Daily log save failed (${instanceId}):`, error?.message || error);
     }

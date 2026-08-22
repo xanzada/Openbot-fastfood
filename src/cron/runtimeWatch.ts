@@ -1,6 +1,7 @@
 import { getAllRestaurantConfigs } from "../services/platformConfig.service.js";
 import { getRuntimeStatus } from "../services/dle.service.js";
 import { getActiveShiftNotes, getKitchenStatus } from "../services/redis.service.js";
+import { drainDeveloperAlertOutbox } from "../services/developerNotify.service.js";
 import { auditDecision, auditError } from "../services/auditLogger.service.js";
 
 /**
@@ -110,11 +111,19 @@ export async function runRuntimeWatchTick() {
   // Sequential on purpose: this box has 2 vCPU and every tenant refresh is one
   // outbound HTTPS call to hub. A parallel fan-out over many tenants would spike
   // both at once for no gain at a 45 s cadence.
+  let alertsRetried = 0;
   for (const tenant of tenants) {
     const result = await refreshTenantRuntimeWatch(tenant.instanceId, tenant.domain).catch(() => null);
     if (result?.changed) changedCount += 1;
+    // A developer alert that could not be sent used to be "persisted for retry" into
+    // an outbox nothing ever read. This tick already has the tenant list and already
+    // runs every 45s, so it drains it here rather than adding another timer. The
+    // alerts that fail are exactly the ones about a broken WhatsPro, which usually
+    // recovers minutes later (found 2026-08-22).
+    const drained = await drainDeveloperAlertOutbox(tenant.instanceId).catch(() => null);
+    if (drained?.sent) alertsRetried += drained.sent;
   }
-  return { tenants: tenants.length, changed: changedCount };
+  return { tenants: tenants.length, changed: changedCount, alertsRetried };
 }
 
 export function startRuntimeWatcher() {
