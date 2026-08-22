@@ -75,8 +75,9 @@ test("the developer-alert outbox is actually drained", async () => {
   // A delivered alert must be removed from both the entry key and the index, or it
   // would be re-sent forever.
   assert.match(source, /\.del\(entryKey\)\.zRem\(indexKey, incidentId\)/);
-  // A still-failing alert must be kept, not dropped.
-  assert.match(source, /\/\/ Still failing\. Leave it for the next pass/);
+  // A still-failing alert must be kept, not dropped. Asserting the behaviour rather
+  // than the comment: the catch branch rewrites the entry instead of deleting it.
+  assert.match(source, /\} catch \{[\s\S]*?redisClient[\s\S]*?\.setEx\(/);
   // And one dead tenant must not burn the whole budget.
   assert.match(source, /DEV_ALERT_RETRY_LIMIT/);
 });
@@ -96,6 +97,91 @@ test("the drain has a caller, on a tick that already walks every tenant", async 
   assert.match(watch, /setTimeout\(tick, 5_000\)\.unref\(\)/, "the boot warm-up");
   assert.equal((watch.match(/setTimeout\(/g) || []).length, 2, "no third timer was introduced");
   assert.equal((watch.match(/getAllRestaurantConfigs\(/g) || []).length, 1, "one tenant enumeration per tick");
+});
+
+// --------------------------------------------------------------------- D12 hardening
+// The drain above was itself a defect: with no brake it re-sent every pending entry on
+// every 45s tick, so a tenant that can never receive (unpaired WhatsApp session) produced
+// 53 send failures in 20 minutes. Measured live 2026-08-22, all from one inactive tenant.
+
+test("an alert is abandoned once it has burned its attempts, not retried for seven days", async () => {
+  const { developerAlertDrainInternals: brakes } = await import("../src/services/developerNotify.service.js");
+  const limit = brakes.maxAttempts();
+  assert.ok(limit >= 1 && limit <= 20, "a sane retry budget");
+  // A fresh entry, and one that has failed fewer times than the budget, must be retried.
+  assert.equal(brakes.shouldAbandonAlert(undefined), false, "a fresh entry has not failed yet");
+  assert.equal(brakes.shouldAbandonAlert(0), false);
+  assert.equal(brakes.shouldAbandonAlert(limit - 1), false, "the last attempt must still happen");
+  // At the budget it is dropped: an undeliverable alert retried until its 7-day TTL is
+  // the storm, not a retry.
+  assert.equal(brakes.shouldAbandonAlert(limit), true);
+  assert.equal(brakes.shouldAbandonAlert(limit + 99), true);
+});
+
+test("the attempt count is persisted in the entry, because the process restarts", async () => {
+  const source = await read("../src/services/developerNotify.service.ts");
+  // An in-memory counter would reset on every container restart - and a restart loop is
+  // exactly what fills this outbox, so the limit would never be reached.
+  assert.match(source, /attempts: Number\(entry\.attempts \|\| 0\) \+ 1/);
+  // The retry must not extend the entry's life: rewriting a full TTL on every pass would
+  // keep a dead alert alive indefinitely.
+  assert.match(source, /const ttl = await redisClient\.ttl\(entryKey\)/);
+  assert.match(source, /ttl > 0 \? ttl : DEV_ALERT_OUTBOX_TTL_SECONDS/);
+  // And the abandonment must be greppable in production logs.
+  assert.match(source, /DEV-ALERT:ABANDONED/);
+});
+
+test("a failed pass backs the tenant off instead of retrying on the next tick", async () => {
+  const notify = await import("../src/services/developerNotify.service.js");
+  const brakes = notify.developerAlertDrainInternals;
+  notify.clearDevAlertDrainCooldowns();
+  try {
+    const instanceId = "cooldown-probe";
+    assert.equal(brakes.isDrainOnCooldown(instanceId), false, "a healthy tenant drains freely");
+
+    const now = Date.now();
+    brakes.noteDrainFailure(instanceId, now);
+    assert.equal(brakes.isDrainOnCooldown(instanceId, now + 1_000), true,
+      "the next 45s tick must not retry a tenant that just failed");
+    // The whole point: the cooldown outlives the tick interval, so an outage costs one
+    // attempt per cooldown rather than one per tick.
+    assert.ok(brakes.cooldownMs() > 45_000, "a cooldown shorter than the tick is not a brake");
+    assert.equal(brakes.isDrainOnCooldown(instanceId, now + brakes.cooldownMs() + 1), false,
+      "and it must expire, or a recovered transport would never be used again");
+
+    // Recovery clears it, so a tenant is not punished after a good pass.
+    brakes.noteDrainHealthy(instanceId);
+    assert.equal(brakes.isDrainOnCooldown(instanceId, now + 1_000), false);
+    assert.equal(notify.devAlertDrainCooldownState().has(instanceId), false);
+  } finally {
+    notify.clearDevAlertDrainCooldowns();
+  }
+});
+
+test("an inactive tenant is never retried, and every early exit is greppable", async () => {
+  const source = await read("../src/services/developerNotify.service.ts");
+  // kabab-1 is switched off and unpaired: it has no session to receive anything, so the
+  // only thing a retry produces is a 503 per entry per tick.
+  assert.match(source, /if \(isDisabledTenant\(config\)\) \{/);
+  assert.match(source, /skipped: "tenant_disabled"/);
+  assert.match(source, /skipped: "cooldown"/);
+  assert.match(source, /skipped: "dev_phone_missing"/);
+  // The config is read once per pass, not once per entry: every incident of a tenant
+  // goes to the same developer phone.
+  assert.equal((source.match(/await getRestaurantConfig\(instanceId\)/g) || []).length, 1);
+  // The disabled check must come before the send, not after it.
+  assert.ok(
+    source.indexOf("isDisabledTenant(config)") < source.indexOf("await sendWhatsProMessage({ instanceId, phone: developerPhone"),
+    "the gate is worthless if it runs after the message went out"
+  );
+});
+
+test("the drain reports what it abandoned, so the storm is visible in the return value", async () => {
+  const notify = await import("../src/services/developerNotify.service.js");
+  // With Redis unreachable the drain must degrade quietly and say why - it must never
+  // throw into the 45s watcher tick.
+  const result = await notify.drainDeveloperAlertOutbox("unreachable-probe");
+  assert.deepEqual(result, { retried: 0, sent: 0, abandoned: 0, skipped: "redis_closed" });
 });
 
 // ---------------------------------------------------------------------------- D13
