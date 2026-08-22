@@ -1,9 +1,15 @@
 import crypto from "node:crypto";
+import { intentMatches } from "./intentText.js";
 
 const LINK_FORCE_RESEND_RE = /(қайта|кайта|жаңа|жана|жаңасын|жанасын|жоғалт|жогалт|жоғалды|жогалды|өшіп|ошип|өшті|ошті|жоқ бол|ашылмай|ашылмады|ашылмай жатыр|таппай|таппай қал|қайдан|жібер|скинь|скин|жұмыс істемей|работать|еще\s*раз|заново|новую|повтор|потерял|не\s+открывается|сбрось|сброс|перешли|переотправ)/iu;
-const MENU_LINK_TOPIC_RE = /(link|menu|catalog|checkout|cart|s[iy]lteme|ssylka|menyu|mazir|m[aá]zir|сілтеме|ссылка|мәзір|меню|каталог)/iu;
+// The Russian words are matched by STEM: a guest types the accusative
+// ("ссылку скинь", "дайте ссылку"), and spelling only the nominative made every
+// one of those messages invisible to the link path. Kazakh already worked because
+// its suffixes follow the stem ("сілтемені" starts with "сілтеме"), but Russian
+// changes the final vowel (found 2026-08-22).
+const MENU_LINK_TOPIC_RE = /(link|menu|catalog|checkout|cart|s[iy]lteme|ssylka|menyu|mazir|m[aá]zir|сілтеме|ссылк\p{L}*|мәзір|мен[юяью]|каталог)/iu;
 const MENU_LINK_RESEND_TEXT_RE = /(send|sent|resend|again|new|lost|deleted|open|not\s+sent|didn'?t\s+send|where|give|show|jiber|jibershi|zhber|zhbershi|jibermedin|jibermeding|ber|bershi|korset|tasta|skinte|skin|esh[eё]\s*raz|zanovo|novuyu|povtor|poteryal|ne\s+otkryv|qaita|jana|zhanasin|jogalt|jogaldy|oship|oshti|zhok bol|ashylma|tappai|qaida|жібер|жібермед|жіберші|бер|беріңіз|берші|көрсет|көрсетіңіз|таста|қайта|жаңа|жоғалт|жоғалды|өшіп|өшті|жоқ бол|ашылмай|ашылмады|таппай|қайдан|дай|скин|отправ|дай(те)?|покаж|еще\s*раз|заново|новую|повтор|потерял|не\s+откр|сброс|сбрось|перешли|переотправ)/iu;
-const MENU_LINK_MOJIBAKE_RE = /(меню|мәзір|сілтеме|ссылка|каталог|заказ|тапсырыс|корзин|себет)/iu;
+const MENU_LINK_MOJIBAKE_RE = /(мен[юяью]|мәзір|сілтеме|ссылк\p{L}*|каталог|заказ|тапсырыс|корзин|себет)/iu;
 const LINK_JUST_NOW_RE = /(жаңа|жана)\s+ғана|только\s+что|just\s+now/iu;
 
 export function normalizeMenuDomain(domain: string): string | null {
@@ -50,12 +56,21 @@ export function generateSecureMenuUrl(domain: string, phone: string, tenantSecre
   return `${cleanDomain}/?phone=${encodeURIComponent(cleanPhone)}&hash=${hash}&t=${timestamp}&cb=${cb}`;
 }
 
+// WHY every test here goes through intentMatches: WhatsApp Kazakh is routinely
+// typed on a Russian keyboard, so "мәзір" arrives as "мазир" and "сілтеме" as
+// "силтеме". These matchers compared raw text only, so that spelling matched
+// nothing and preloadContext never minted the link - while toolPolicy DID fold,
+// pinned sendMenuLink, and the skill then found ctx.magicLink === null and returned
+// link_not_needed with a null message. The guest asked for the ordering link and
+// received an answer with no link and no reason (found 2026-08-22). intentMatches
+// tests the raw text first and only then the folded form, so nothing that used to
+// match stops matching.
 export function isMenuLinkResendRequest(text = ""): boolean {
   const value = String(text || "");
-  const hasMenuTopic = MENU_LINK_TOPIC_RE.test(value) || MENU_LINK_MOJIBAKE_RE.test(value);
+  const hasMenuTopic = intentMatches(MENU_LINK_TOPIC_RE, value) || intentMatches(MENU_LINK_MOJIBAKE_RE, value);
   if (!hasMenuTopic) return false;
-  if (LINK_JUST_NOW_RE.test(value)) return false;
-  return LINK_FORCE_RESEND_RE.test(value) || MENU_LINK_RESEND_TEXT_RE.test(value);
+  if (intentMatches(LINK_JUST_NOW_RE, value)) return false;
+  return intentMatches(LINK_FORCE_RESEND_RE, value) || intentMatches(MENU_LINK_RESEND_TEXT_RE, value);
 }
 
 // "Сілтемені ашқым жоқ, жазып жіберіңіз мәзірді" contains the word "мәзір", so
@@ -76,17 +91,19 @@ const LINK_DECLINED_RE =
  */
 export function wantsMenuAsText(text = ""): boolean {
   const value = String(text || "").toLowerCase();
-  if (!MENU_AS_TEXT_RE.test(value)) return false;
-  return LINK_DECLINED_RE.test(value) || MENU_LINK_TOPIC_RE.test(value) || MENU_LINK_MOJIBAKE_RE.test(value);
+  if (!intentMatches(MENU_AS_TEXT_RE, value)) return false;
+  return intentMatches(LINK_DECLINED_RE, value)
+    || intentMatches(MENU_LINK_TOPIC_RE, value)
+    || intentMatches(MENU_LINK_MOJIBAKE_RE, value);
 }
+
+const EXPLICIT_MENU_LINK_RE =
+  /(сілтеме|ссылк\p{L}*|link|линк|мәзір|мен[юяью]|каталог|тапсырыс\s*(бер|берейін|берем|жасай|ет|қыл|қабылда)|заказ\s*(бер|берейін|берем|жасай|ет|қыл|қабылда|хочу|сдел|оформ)|заказать|оформить|хочу\s+заказ|хочу\s+заказать|корзин|себет|меню жібер|мәзір жібер|меню бер|мәзір бер|қалай заказ|қалай тапсырыс|(?:тапсырысты\s+)?жалғастыра\s*(?:мын|йық|берейік|беремін|беремиз|беріңіз)|продолж(?:у|им|ить)(?:\s+(?:заказ|оформлени\p{L}*))?|давайте\s+продолжим)/iu;
 
 export function hasExplicitMenuLinkIntent(text: string): boolean {
   const value = String(text || "").toLowerCase();
   if (wantsMenuAsText(value)) return false;
-  return (
-    /(сілтеме|ссылка|link|линк|мәзір|меню|каталог|тапсырыс\s*(бер|берейін|берем|жасай|ет|қыл|қабылда)|заказ\s*(бер|берейін|берем|жасай|ет|қыл|қабылда|хочу|сдел|оформ)|заказать|оформить|хочу\s+заказ|хочу\s+заказать|корзин|себет|меню жібер|мәзір жібер|меню бер|мәзір бер|қалай заказ|қалай тапсырыс|(?:тапсырысты\s+)?жалғастыра\s*(?:мын|йық|берейік|беремін|беремиз|беріңіз)|продолж(?:у|им|ить)(?:\s+(?:заказ|оформлени\p{L}*))?|давайте\s+продолжим)/iu.test(value) ||
-    isMenuLinkResendRequest(value)
-  );
+  return intentMatches(EXPLICIT_MENU_LINK_RE, value) || isMenuLinkResendRequest(value);
 }
 
 const LINK_BROKEN_WORD_RE =
@@ -109,8 +126,8 @@ const MAGIC_URL_RE = /(\/auth\/whatsapp#token=|\?phone=\d{10,15}&hash=)/i;
  */
 export function hasBrokenLinkReport(text = "", recentHistory: string[] = []): boolean {
   const value = String(text || "");
-  if (!LINK_BROKEN_WORD_RE.test(value)) return false;
-  if (LINK_OBJECT_RE.test(value)) return true;
+  if (!intentMatches(LINK_BROKEN_WORD_RE, value)) return false;
+  if (intentMatches(LINK_OBJECT_RE, value)) return true;
   if (value.length > 120) return false;
-  return recentHistory.some((entry) => LINK_OBJECT_RE.test(entry) || MAGIC_URL_RE.test(entry));
+  return recentHistory.some((entry) => intentMatches(LINK_OBJECT_RE, entry) || MAGIC_URL_RE.test(entry));
 }

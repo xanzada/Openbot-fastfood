@@ -449,6 +449,63 @@ export function overlayPushedKitchenState(
   };
 }
 
+// A tenant whose hub credential is not accepted answers 401 to every runtime read,
+// for as long as the credential stays wrong. runtimeWatch polls every enabled
+// tenant every 45 s and getRuntimeStatus swallows the failure to return the Redis
+// fallback, so the watcher can never learn to back off: kabab-1 alone produced 477
+// identical "DLE runtime status read failed" lines per 6 hours in production, plus
+// ~480 platform reads and ~960 hub calls, and that noise buries every other error
+// in the log (measured 2026-08-22).
+//
+// This is not a kabab-1 problem: it is what EVERY new restaurant looks like between
+// being registered in the hub and having its secret configured, so the SaaS gets one
+// of these storms per onboarding.
+//
+// A per-instance cooldown fixes it where the error is actually seen. The tenant
+// keeps answering from the same Redis fallback it already used, so behaviour does
+// not change - only the retry rate and the log volume do. Nothing about the tenant
+// record is touched.
+const HUB_AUTH_COOLDOWN_MS = Math.max(60_000, Number(process.env.HUB_AUTH_COOLDOWN_MS || 30 * 60 * 1000));
+const hubAuthBlockedUntil = new Map<string, { until: number; since: number; suppressed: number }>();
+
+function hubAuthCooldown(instanceId: string) {
+  const entry = hubAuthBlockedUntil.get(instanceId);
+  if (!entry) return null;
+  if (entry.until <= Date.now()) {
+    hubAuthBlockedUntil.delete(instanceId);
+    return null;
+  }
+  return entry;
+}
+
+function noteHubAuthRejection(instanceId: string, domain: string, error: any) {
+  const existing = hubAuthBlockedUntil.get(instanceId);
+  const now = Date.now();
+  hubAuthBlockedUntil.set(instanceId, {
+    until: now + HUB_AUTH_COOLDOWN_MS,
+    since: existing?.since || now,
+    suppressed: 0,
+  });
+  // Logged once per cooldown window rather than once per poll.
+  auditError("Hub rejected this tenant's credential, backing off", error, {
+    instanceId,
+    domain,
+    cooldownMinutes: Math.round(HUB_AUTH_COOLDOWN_MS / 60000),
+    hint: "configure alemi_secret for this tenant, or disable the bot until it is onboarded",
+  });
+}
+
+export function hubAuthCooldownState(instanceId: string) {
+  const entry = hubAuthCooldown(instanceId);
+  if (!entry) return null;
+  return { blockedUntil: entry.until, since: entry.since, suppressed: entry.suppressed };
+}
+
+export function clearHubAuthCooldown(instanceId?: string) {
+  if (instanceId) hubAuthBlockedUntil.delete(instanceId);
+  else hubAuthBlockedUntil.clear();
+}
+
 export async function getRuntimeStatus(
   instanceId: string,
   domain: string,
@@ -460,6 +517,14 @@ export async function getRuntimeStatus(
   if (!options.forceFresh) {
     const cached = await getJsonCache<Record<string, any>>(cacheKey);
     if (cached) return cached;
+  }
+
+  // While the hub is refusing this tenant's credential, do not spend a hub call and
+  // a log line on every poll - fall straight through to the Redis fallback below.
+  const cooldown = hubAuthCooldown(instanceId);
+  if (cooldown) {
+    cooldown.suppressed += 1;
+    return runtimeStatusFallback(instanceId, backupKey, cacheKey);
   }
 
   try {
@@ -504,29 +569,42 @@ export async function getRuntimeStatus(
     });
     return status;
   } catch (error: any) {
-    auditError("DLE runtime status read failed", error, { instanceId, domain });
-    const redisKitchen = await getKitchenStatus(instanceId);
-    if (redisKitchen) {
-      const redisRuntime = runtimeFromKitchenStatus(instanceId, redisKitchen);
-      await setJsonCache(cacheKey, 5, redisRuntime).catch(() => undefined);
-      return redisRuntime;
-    }
+    // 401 means the credential is wrong and will stay wrong until an operator fixes
+    // it, so retrying every 45 s achieves nothing. Any other failure is transient
+    // and keeps its per-call log line.
+    const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
+    if (status === 401) noteHubAuthRejection(instanceId, domain, error);
+    else auditError("DLE runtime status read failed", error, { instanceId, domain });
+    return runtimeStatusFallback(instanceId, backupKey, cacheKey);
+  }
+}
 
-    const backup = await getJsonCache<Record<string, any>>(backupKey);
-    if (!backup) return null;
-    return {
-      ...backup,
-      source: `${backup.source || "dle_spa_settings"}_stale_backup`,
-      stale_runtime_backup: true,
+// The answer a tenant gets when the hub could not be read: the Redis kitchen record
+// first, then the 10-minute backup with its wait time cleared. Extracted so the
+// cooldown path above returns exactly what the catch path returns - a tenant on
+// cooldown must behave identically to one whose call just failed.
+async function runtimeStatusFallback(instanceId: string, backupKey: string, cacheKey: string) {
+  const redisKitchen = await getKitchenStatus(instanceId).catch(() => null);
+  if (redisKitchen) {
+    const redisRuntime = runtimeFromKitchenStatus(instanceId, redisKitchen);
+    await setJsonCache(cacheKey, 5, redisRuntime).catch(() => undefined);
+    return redisRuntime;
+  }
+
+  const backup = await getJsonCache<Record<string, any>>(backupKey);
+  if (!backup) return null;
+  return {
+    ...backup,
+    source: `${backup.source || "dle_spa_settings"}_stale_backup`,
+    stale_runtime_backup: true,
+    wait_time: 0,
+    reset_at: 0,
+    kitchen_status: {
+      ...(backup.kitchen_status || {}),
       wait_time: 0,
       reset_at: 0,
-      kitchen_status: {
-        ...(backup.kitchen_status || {}),
-        wait_time: 0,
-        reset_at: 0,
-      },
-    };
-  }
+    },
+  };
 }
 
 function localizedOrderText(value: unknown): string {
