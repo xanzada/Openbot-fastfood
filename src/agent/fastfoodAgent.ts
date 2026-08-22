@@ -58,6 +58,29 @@ function extractToolCalls(result: any) {
   ).filter((call: any) => call.name);
 }
 
+// What the tools RETURNED, not just that they ran. The validator needs this to tell a
+// successful order lookup from an empty one: every "your order is on the way" guard was
+// unlocked by the call alone, so the reply the model is most confident about - the one
+// where the lookup found nothing - was the one that shipped (found 2026-08-22).
+function extractToolFindings(result: any): { orderFound?: boolean } {
+  const steps = Array.isArray(result?.steps) ? result.steps : [];
+  let sawLookup = false;
+  let found = false;
+  for (const step of steps) {
+    const results = Array.isArray(step?.toolResults) ? step.toolResults : [];
+    for (const entry of results) {
+      const name = String(entry?.toolName || entry?.name || "");
+      if (name !== "checkOrderStatus") continue;
+      sawLookup = true;
+      const payload: any = entry?.output ?? entry?.result ?? entry?.response ?? null;
+      if (payload && String(payload.lookup || "") === "found") found = true;
+    }
+  }
+  // Undefined means "the runtime did not report results", which must stay
+  // indistinguishable from the old behaviour rather than silently tightening a gate.
+  return sawLookup ? { orderFound: found } : {};
+}
+
 function mergeToolCalls(
   first: { name: string; arguments: unknown }[],
   second: { name: string; arguments: unknown }[]
@@ -115,7 +138,10 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   let result = await buildAgent(ctx).generateText(ctx.text, generateOptions);
   // Kept separately because the critic can replace `result` below.
   let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
-  let validation = validateFinalText(result.text, ctx, { toolsCalled: extractToolCalls(result).map((call: { name: string }) => call.name) });
+  let validation = validateFinalText(result.text, ctx, {
+    toolsCalled: extractToolCalls(result).map((call: { name: string }) => call.name),
+    toolFindings: extractToolFindings(result),
+  });
   let finalText = enforceExplicitMagicLink(validation.text, ctx);
   let critic: DraftCritique | null = null;
 
@@ -133,7 +159,24 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
       ].filter(Boolean).join("\n");
       try {
         const regenerated = await buildAgent(ctx, critiqueNote).generateText(ctx.text, generateOptions);
-        const regeneratedValidation = validateFinalText(regenerated.text, ctx, { toolsCalled: extractToolCalls(regenerated).map((call: { name: string }) => call.name) });
+        // The critic rewrite is validated against the UNION of both passes. Validating
+        // it against its own calls alone stripped the prices and the allergen statement
+        // the first pass had grounded, because the critic note tells the model to keep
+        // the facts without re-calling the tools - so the guest got "состав подтвердить
+        // не могу" after a correct first draft, on exactly the high-risk turns the
+        // critic exists for (found 2026-08-22).
+        const unionCalls = mergeToolCalls(extractToolCalls(result), extractToolCalls(regenerated));
+        const firstFindings = extractToolFindings(result);
+        const regenFindings = extractToolFindings(regenerated);
+        const regeneratedValidation = validateFinalText(regenerated.text, ctx, {
+          toolsCalled: unionCalls.map((call: { name: string }) => call.name),
+          // An order found in either pass is found. undefined stays undefined.
+          toolFindings: regenFindings.orderFound === true || firstFindings.orderFound === true
+            ? { orderFound: true }
+            : regenFindings.orderFound !== undefined
+              ? regenFindings
+              : firstFindings,
+        });
         const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
         if (regeneratedText && regeneratedText !== finalText) {
           // The first pass's tool calls must survive the swap. `result` used to be

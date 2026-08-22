@@ -7,9 +7,14 @@ const LINK_FORCE_RESEND_RE = /(қайта|кайта|жаңа|жана|жаңа�
 // one of those messages invisible to the link path. Kazakh already worked because
 // its suffixes follow the stem ("сілтемені" starts with "сілтеме"), but Russian
 // changes the final vowel (found 2026-08-22).
-const MENU_LINK_TOPIC_RE = /(link|menu|catalog|checkout|cart|s[iy]lteme|ssylka|menyu|mazir|m[aá]zir|сілтеме|ссылк\p{L}*|мәзір|мен[юяью]|каталог)/iu;
+// "мен[юяью]" also matched "меня", one of the most common Russian words, so "у меня
+// аллергия на орехи" and "у меня не открывается" were read as a request for the menu
+// link: the guest got a checkout link instead of an answer, sendMenuLink was pinned as
+// the forced first tool, and a CRM lead was written (found 2026-08-22). "меню" is
+// indeclinable - the extra letters bought nothing.
+const MENU_LINK_TOPIC_RE = /(link|menu|catalog|checkout|cart|s[iy]lteme|ssylka|menyu|mazir|m[aá]zir|сілтеме|ссылк\p{L}*|мәзір|мен[юь]|каталог)/iu;
 const MENU_LINK_RESEND_TEXT_RE = /(send|sent|resend|again|new|lost|deleted|open|not\s+sent|didn'?t\s+send|where|give|show|jiber|jibershi|zhber|zhbershi|jibermedin|jibermeding|ber|bershi|korset|tasta|skinte|skin|esh[eё]\s*raz|zanovo|novuyu|povtor|poteryal|ne\s+otkryv|qaita|jana|zhanasin|jogalt|jogaldy|oship|oshti|zhok bol|ashylma|tappai|qaida|жібер|жібермед|жіберші|бер|беріңіз|берші|көрсет|көрсетіңіз|таста|қайта|жаңа|жоғалт|жоғалды|өшіп|өшті|жоқ бол|ашылмай|ашылмады|таппай|қайдан|дай|скин|отправ|дай(те)?|покаж|еще\s*раз|заново|новую|повтор|потерял|не\s+откр|сброс|сбрось|перешли|переотправ)/iu;
-const MENU_LINK_MOJIBAKE_RE = /(мен[юяью]|мәзір|сілтеме|ссылк\p{L}*|каталог|заказ|тапсырыс|корзин|себет)/iu;
+const MENU_LINK_MOJIBAKE_RE = /(мен[юь]|мәзір|сілтеме|ссылк\p{L}*|каталог|заказ|тапсырыс|корзин|себет)/iu;
 const LINK_JUST_NOW_RE = /(жаңа|жана)\s+ғана|только\s+что|just\s+now/iu;
 
 export function normalizeMenuDomain(domain: string): string | null {
@@ -98,7 +103,7 @@ export function wantsMenuAsText(text = ""): boolean {
 }
 
 const EXPLICIT_MENU_LINK_RE =
-  /(сілтеме|ссылк\p{L}*|link|линк|мәзір|мен[юяью]|каталог|тапсырыс\s*(бер|берейін|берем|жасай|ет|қыл|қабылда)|заказ\s*(бер|берейін|берем|жасай|ет|қыл|қабылда|хочу|сдел|оформ)|заказать|оформить|хочу\s+заказ|хочу\s+заказать|корзин|себет|меню жібер|мәзір жібер|меню бер|мәзір бер|қалай заказ|қалай тапсырыс|(?:тапсырысты\s+)?жалғастыра\s*(?:мын|йық|берейік|беремін|беремиз|беріңіз)|продолж(?:у|им|ить)(?:\s+(?:заказ|оформлени\p{L}*))?|давайте\s+продолжим)/iu;
+  /(сілтеме|ссылк\p{L}*|link|линк|мәзір|мен[юь]|каталог|тапсырыс\s*(бер|берейін|берем|жасай|ет|қыл|қабылда)|заказ\s*(бер|берейін|берем|жасай|ет|қыл|қабылда|хочу|сдел|оформ)|заказать|оформить|хочу\s+заказ|хочу\s+заказать|корзин|себет|меню жібер|мәзір жібер|меню бер|мәзір бер|қалай заказ|қалай тапсырыс|(?:тапсырысты\s+)?жалғастыра\s*(?:мын|йық|берейік|беремін|беремиз|беріңіз)|продолж(?:у|им|ить)(?:\s+(?:заказ|оформлени\p{L}*))?|давайте\s+продолжим)/iu;
 
 export function hasExplicitMenuLinkIntent(text: string): boolean {
   const value = String(text || "").toLowerCase();

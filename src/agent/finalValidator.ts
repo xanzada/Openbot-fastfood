@@ -38,14 +38,44 @@ const PROMO_CLAIM_RE =
 // tool called (live round, 2026-08-12). Telling someone an allergen is absent is
 // the one lie that can put them in hospital, so it may only survive when a menu
 // lookup grounded it this turn.
-const ALLERGEN_ASSURANCE_RE =
-  /[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|орех|теңіз\s*өнім|морепродукт|құрам|состав)[^.!?\n]*(?:жоқ|болмайды|таза|емес|нет|отсутств|без\s|не\s+содерж|свободн)[^.!?\n]*[.!?]?/iu;
+// Order-independent on purpose. The first version required the allergen word BEFORE the
+// negation, which fits Kazakh ("жаңғақ жоқ") and misses Russian, where the negation comes
+// first: "В этом блюде НЕТ ОРЕХОВ" - the single most idiomatic way to answer an allergy
+// question - passed the gate untouched while "орехов нет" was cut (found 2026-08-22).
+// Also covers the adjective forms ("безглютеновое") and the reassurance form ("безопасно
+// для аллергии"), neither of which pairs a term with a separate negation word at all.
+const ALLERGEN_TERM = "(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|теңіз\\s*өнім|тениз\\s*оним|морепродукт|құрам|курам|состав)";
+const ALLERGEN_NEGATION = "(?:жоқ|жок|болмайды|таза|емес|нет|отсутств|без\\s|бeз\\s|не\\s+содерж|свободн|безопасн|қауіпсіз|кауипсиз)";
+const ALLERGEN_ASSURANCE_RE = new RegExp(
+  "[^.!?\\n]*(?:"
+    // term ... negation  ("орехов нет", "жаңғақ жоқ", "состав без ...")
+    + `${ALLERGEN_TERM}[^.!?\\n]*${ALLERGEN_NEGATION}`
+    // negation ... term  ("нет орехов", "не содержит глютена", "безопасно для аллергии")
+    + `|${ALLERGEN_NEGATION}[^.!?\\n]*${ALLERGEN_TERM}`
+    // single-word assurances that carry no separate negation
+    + "|без(?:глютен|лактоз|молочн|ореховы)\\p{L}*"
+    + ")[^.!?\\n]*[.!?]?",
+  "iu"
+);
 // What is left after a clause is cut must still be an answer. A surviving
 // sentence that points at a list which was just removed ("these dishes...",
 // "вот варианты") reads as an answer while naming nothing at all.
 const DANGLING_REFERENCE_RE =
   /^[^.!?\n]*(?:бұл\s+(?:тағам|блюд|нұсқа|вариант)|осы\s+тағам|мына\s+тағам|эт(?:и|от|о)\s+(?:блюд|вариант|позици)|вот\s+(?:вариант|что|блюд)|келес[іi]\s+тағам|следующ\p{L}*\s+блюд)[^.!?\n]*[.!?]?$/iu;
 const PRICE_GROUNDING_TOOLS = ["searchMenu", "checkOrderStatus", "getPaymentDetails"];
+// An allergen statement is a claim about what is IN a dish, so only a menu read can
+// ground it. It used to share PRICE_GROUNDING_TOOLS, which meant a turn where the model
+// merely checked the order status or asked for the payment requisites was allowed to
+// ship "в этом блюде нет орехов" - a hospital-grade lie grounded by a tool that never
+// looked at food (found 2026-08-22, reproduced: the sentence survived with
+// toolsCalled=["checkOrderStatus"] and again with ["getPaymentDetails"]).
+const ALLERGEN_GROUNDING_TOOLS = ["searchMenu"];
+// A promotion is not in the menu snapshot and not in any tool result either. The only
+// live source for "today there is 20% off" is what the operator wrote in the shift
+// notes, so that is what grounds it. Sharing the price gate meant any tenant with a
+// preloaded menu - which is every healthy tenant - had the promo guard switched off for
+// the whole turn, and an invented discount shipped to the guest (found 2026-08-22).
+const PROMO_NOTE_RE = /(скидк|жеңілді|женилди|акци|бонус|промо|подарок|сыйлық|сыйлык|тегін|тегин|бесплатн)/iu;
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 
 function trimUrlPunctuation(url: string) {
@@ -124,6 +154,16 @@ function noActiveOrderText(ctx: FastFoodContext) {
 
 // When the only thing the model had to say about an allergen was unverified, the
 // honest reply is that we will check it rather than silence or a generic prompt.
+// The promo guard used to warn and then keep the sentence when the invented discount was
+// the entire reply, so "Сегодня действует скидка 20%" still reached the guest with only a
+// log line to show for it. Every other guard here has a deterministic line to fall back
+// to; this one now does too (found 2026-08-22).
+function promoUnverifiedText(ctx: FastFoodContext) {
+  return ctx.language === "kk"
+    ? "Қазір қолданыстағы жеңілдік немесе акция туралы нақты айта алмаймын. Тексеріп, оператор нақтылап береді."
+    : "Про действующие скидки и акции точно сказать не могу. Уточню у оператора, чтобы не вводить вас в заблуждение.";
+}
+
 function allergenUnverifiedText(ctx: FastFoodContext) {
   return ctx.language === "kk"
     ? "Тағамдардың құрамын өзім растай алмаймын. Қандай өнім болмауы керек екенін жазыңыз, асүймен нақтылап, сізге жарайтын тағамдарды айтамын."
@@ -189,7 +229,12 @@ const INTERNAL_DISCLOSURE_RE = INTERNAL_PROVENANCE_RE;
 export function validateFinalText(
   rawText: string,
   ctx: FastFoodContext,
-  grounding?: { toolsCalled?: string[] }
+  // toolFindings carries what the tools actually RETURNED. A gate that only knows a
+  // tool was called cannot tell "the order exists" from "the lookup came back empty",
+  // and the model is at its most confident precisely when the lookup failed. When the
+  // caller does not report findings the behaviour is unchanged, so older callers and
+  // unit tests keep their exact semantics.
+  grounding?: { toolsCalled?: string[]; toolFindings?: { orderFound?: boolean } }
 ): {
   text: string;
   hasLink: boolean;
@@ -200,7 +245,13 @@ export function validateFinalText(
 
   if (!text) return { text: fallback(ctx), hasLink: false, warnings: ["empty_model_output"] };
 
-  const statusGrounded = Boolean(grounding?.toolsCalled?.includes("checkOrderStatus"));
+  // Calling a read-only tool must not unlock a write-authority claim. "Ваш заказ
+  // принят, напишите адрес" shipped whenever checkOrderStatus had run, even when it
+  // returned lookup:"not_found" - so the guest waited for food that was never entered
+  // anywhere (found 2026-08-22). The tool now has to have FOUND something.
+  const statusCalled = Boolean(grounding?.toolsCalled?.includes("checkOrderStatus"));
+  const orderFound = grounding?.toolFindings?.orderFound;
+  const statusGrounded = statusCalled && orderFound !== false;
   if (!statusGrounded && isManualOrderHandlingClaim(text)) {
     return {
       text: manualOrderBoundaryText(ctx.language),
@@ -359,36 +410,60 @@ export function validateFinalText(
           warnings.push("ungrounded_price_claim_kept_no_survivor");
         }
       }
-      if (PROMO_CLAIM_RE.test(text)) {
-        const withoutPromos = dropSentencesMatching(text, PROMO_CLAIM_RE);
-        if (withoutPromos && withoutPromos !== text) {
-          text = withoutPromos;
-          warnings.push("unverified_promo_claim_removed");
-        } else {
-          warnings.push("unverified_promo_claim_kept_no_survivor");
-        }
-      }
       // Deliberately NOT relaxed by the snapshot: telling a guest an allergen is
       // absent is the one lie that can put them in hospital, and a composition
       // string is not a verified allergen statement. This still demands a tool.
     }
-    // Outside the price/promo block on purpose: a snapshot may authorise a price,
-    // never an allergen assurance.
-    if (!toolGrounded && ALLERGEN_ASSURANCE_RE.test(text)) {
+    // Outside the price block on purpose: a snapshot may authorise a price, never a
+    // promotion. An operator who is really running one writes it in the shift notes,
+    // and getShiftNotes surfaces those, so that is the only thing that grounds it.
+    const promoInNotes = (Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [])
+      .some((note: unknown) => PROMO_NOTE_RE.test(typeof note === "string" ? note : JSON.stringify(note ?? "")));
+    if (!promoInNotes && PROMO_CLAIM_RE.test(text)) {
+      const withoutPromos = dropSentencesMatching(text, PROMO_CLAIM_RE);
+      if (withoutPromos && withoutPromos !== text) {
+        text = withoutPromos;
+        warnings.push("unverified_promo_claim_removed");
+      } else if (!textWithoutUrls(withoutPromos)) {
+        // The promotion was the whole answer. Warning and shipping it anyway is how an
+        // invented discount reached the guest.
+        return { text: promoUnverifiedText(ctx), hasLink: false, warnings: [...warnings, "unverified_promo_claim_replaced"] };
+      } else {
+        warnings.push("unverified_promo_claim_kept_no_survivor");
+      }
+    }
+    // Same reasoning, one step stricter: only a menu read can say what is in a dish.
+    const allergenGrounded = grounding.toolsCalled.some((tool) => ALLERGEN_GROUNDING_TOOLS.includes(tool));
+    if (!allergenGrounded && ALLERGEN_ASSURANCE_RE.test(text)) {
       const withoutAssurance = dropSentencesMatching(text, ALLERGEN_ASSURANCE_RE);
       text = withoutAssurance;
       warnings.push("ungrounded_allergen_assurance_removed");
       if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
     }
-    // Whatever was cut above, the guest must not be left holding a pointer to a
-    // list that no longer exists.
-    if (DANGLING_REFERENCE_RE.test(text)) {
+    // Only when something was actually cut above. DANGLING_REFERENCE_RE is anchored
+    // ^...$, so it matches a whole one-sentence reply that merely opens with a
+    // demonstrative - and it used to run unconditionally, which deleted fully grounded
+    // answers like "Бұл тағам 2500 теңге тұрады." and "Осы тағам дайын." and replaced
+    // them with "I cannot confirm the composition". In Kazakh that opener is ordinary
+    // (found 2026-08-22). A pointer is only dangling if the thing it pointed at was
+    // just removed.
+    const somethingWasCut = warnings.some((warning) => warning.endsWith("_removed") || warning.endsWith("_replaced"));
+    if (somethingWasCut && DANGLING_REFERENCE_RE.test(text)) {
       const anchored = dropSentencesMatching(text, DANGLING_REFERENCE_RE);
       if (anchored !== text) {
         text = anchored;
         warnings.push("dangling_reference_removed");
       }
-      if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
+      if (!textWithoutUrls(text)) {
+        // The allergen line is only honest when the allergen guard is what cut. For a
+        // price or promo cut it would answer a question the guest never asked.
+        const allergenCut = warnings.includes("ungrounded_allergen_assurance_removed");
+        return {
+          text: allergenCut ? allergenUnverifiedText(ctx) : fallback(ctx),
+          hasLink: false,
+          warnings,
+        };
+      }
     }
   }
 
