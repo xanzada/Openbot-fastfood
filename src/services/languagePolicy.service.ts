@@ -62,13 +62,40 @@ export function detectNameLanguage(name: unknown): CustomerLanguage | null {
 // lock belongs to site-originated conversations only. Every other turn is
 // decided again, strongest signal first, so switching language mid-dialog works
 // immediately and a returning guest still keeps the language they always used.
+//
+// ...but "strongest signal first" used to mean the current message ALWAYS outranked the
+// conversation, so one weak detection flipped a ten-message Kazakh dialogue to Russian.
+// The locked path has required a decisive signal or a second confirming message since
+// 2026-08-12 (shouldSwitchLockedLanguage); the organic path - every WhatsApp-native
+// guest, which is most of them - never got the same restraint (owner report, reproduced
+// 2026-08-23: a Kazakh dialogue answered "ok" and was answered in Russian).
+//
+// A detection that CONFIRMS the dialogue still wins instantly, and so does a decisive
+// one - Kazakh-specific letters or unmistakably Russian wording. Only a weak detection
+// that CONTRADICTS an established dialogue yields to the language the guest has actually
+// been using. That keeps a genuine mid-conversation switch immediate while a shrug stops
+// being a language decision.
 export function resolveOrganicLanguage(input: {
   detected: CustomerLanguage | null;
   priorLanguage: CustomerLanguage | null;
   contactName?: unknown;
   siteLanguageHint?: CustomerLanguage | null;
+  /**
+   * Whether the current message carries an unmistakable signal for `detected`
+   * (textCarriesDecisiveLanguageSignal). Absent means "not decisive", which keeps older
+   * callers on the safe side of the change rather than the previous behaviour.
+   */
+  detectedIsDecisive?: boolean;
 }): { language: CustomerLanguage; source: "message" | "history" | "contact_name" | "site_hint" | "default" } {
-  if (input.detected) return { language: input.detected, source: "message" };
+  if (input.detected) {
+    const contradictsDialogue = Boolean(input.priorLanguage) && input.detected !== input.priorLanguage;
+    if (!contradictsDialogue || input.detectedIsDecisive) {
+      return { language: input.detected, source: "message" };
+    }
+    // The guest has been speaking one language and this message only weakly suggests the
+    // other. Answering the dialogue is right far more often than answering the token.
+    return { language: input.priorLanguage as CustomerLanguage, source: "history" };
+  }
   if (input.priorLanguage) return { language: input.priorLanguage, source: "history" };
   const nameLanguage = detectNameLanguage(input.contactName);
   if (nameLanguage) return { language: nameLanguage, source: "contact_name" };

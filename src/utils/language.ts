@@ -3,12 +3,19 @@
 // spelling. None of these words exist in Russian, which keeps false positives
 // out; missing a word only costs a fallback, never a wrong lock.
 const KAZAKH_RE =
-  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|qalai|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
+  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|жарайды|жарайд|жарайсын|мақұл|макул|болғаны|болганы|қаншадан|каншадан|qalai|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
 
 // Short acknowledgements answer the previous question; they do not request a
 // language switch. Treating "мхм" as Russian made a Kazakh wait-consent dialog
 // change language on the exact turn that should continue the order.
-const LANGUAGE_NEUTRAL_ACK_RE = /^(?:м+\s*-?\s*х?м+|угу+|ага+|ок(?:ей)?|okay)$/iu;
+//
+// The list held the CYRILLIC "ок"/"окей" and "okay" but not the plain Latin "ok", which
+// is what people actually type - so a guest who had spoken Kazakh for ten messages and
+// answered "ok" was reclassified as Russian and answered in Russian (owner report,
+// reproduced 2026-08-23). "ok" belongs to no language; neither does a bare "+" or a
+// thumbs-up. Note the optional trailing punctuation: "ok!" and "ок." are the same token.
+const LANGUAGE_NEUTRAL_ACK_RE =
+  /^(?:м+\s*-?\s*х?м+|угу+|ага+|ок(?:ей|ей-ок)?|ok+(?:ay|ey|ie)?|k|дк|azhe|jarayd[iy]?)[.!)]*$/iu;
 // A street/building answer continues the current dialog; it is not a request to
 // switch language. Russian street names are common inside otherwise Kazakh
 // conversations (for example "Брусиловский 18").

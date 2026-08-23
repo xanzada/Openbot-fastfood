@@ -85,15 +85,43 @@ test("a contact name decides the language when the message carries no signal", (
   assert.equal(detectNameLanguage("+7 747"), null);
 });
 
-test("what the guest just wrote outranks their name and their history", () => {
+test("what the guest just wrote outranks their name and the site hint", () => {
+  // A contact name and a site hint are guesses about a person; the message in front of us
+  // is evidence. That ordering is unchanged.
   const resolved = resolveOrganicLanguage({
     detected: "ru",
-    priorLanguage: "kk",
+    priorLanguage: null,
     contactName: "Айгүл",
     siteLanguageHint: "kk",
   });
   assert.equal(resolved.language, "ru");
   assert.equal(resolved.source, "message");
+});
+
+test("but it does not outrank the dialogue unless it is unmistakable", () => {
+  // This test used to assert the opposite, and that was the defect: a weak "ru" reading
+  // of one short turn flipped a Kazakh conversation to Russian. Reported by the owner and
+  // reproduced 2026-08-23 - a guest who answered "ok" was answered in Russian.
+  const weak = resolveOrganicLanguage({
+    detected: "ru",
+    priorLanguage: "kk",
+    contactName: "Айгүл",
+    siteLanguageHint: "kk",
+    detectedIsDecisive: false,
+  });
+  assert.equal(weak.language, "kk");
+  assert.equal(weak.source, "history");
+
+  // A genuine switch is still immediate - restraint must not turn into stubbornness.
+  const decisive = resolveOrganicLanguage({
+    detected: "ru",
+    priorLanguage: "kk",
+    contactName: "Айгүл",
+    siteLanguageHint: "kk",
+    detectedIsDecisive: true,
+  });
+  assert.equal(decisive.language, "ru");
+  assert.equal(decisive.source, "message");
 });
 
 test("a returning guest keeps their usual language when a turn says nothing", () => {

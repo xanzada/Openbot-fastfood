@@ -150,6 +150,11 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     const priorLanguage = storedLang || priorCustomerLanguage;
     const resolved = resolveOrganicLanguage({
       detected: decision?.lockable ? decision.language : null,
+      // Same decisiveness test the locked path uses, so both lanes agree on what counts
+      // as an unmistakable request to switch.
+      detectedIsDecisive: Boolean(
+        decision?.lockable && textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language)
+      ),
       priorLanguage,
       contactName: firstValue(
         input.senderMeta?.pushName,
