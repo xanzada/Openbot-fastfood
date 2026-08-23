@@ -1,6 +1,13 @@
 import crypto from "node:crypto";
 
-export type KitchenSalesMode = "normal" | "busy" | "channel_limited" | "critical" | "vacation" | "indefinite" | "off_hours";
+// "unknown" is not a kitchen state - it means we could not read one. It exists because
+// classifyKitchenSalesPolicy(null) used to return "normal": every flag defaults to open,
+// so a failed hub read was indistinguishable from a kitchen that had answered "we are
+// open", and the bot kept selling through an emergency stop or outside work hours
+// (reproduced 2026-08-23). The defaults are correct for a PARTIAL runtime - a hub object
+// that omits a field means "not restricted", and toolPolicy relies on that - but wrong
+// for no runtime at all.
+export type KitchenSalesMode = "normal" | "busy" | "channel_limited" | "critical" | "vacation" | "indefinite" | "off_hours" | "unknown";
 
 export interface KitchenSalesPolicy {
   mode: KitchenSalesMode;
@@ -18,6 +25,10 @@ export interface KitchenSalesPolicy {
   requiresConsent: boolean;
   blocksAllSales: boolean;
   reopeningKnown: boolean;
+  // False only when there was no runtime object at all. Callers that must not act on a
+  // guess - the checkout gate, the facts prompt - read this instead of inferring
+  // openness from the defaulted flags.
+  stateKnown: boolean;
   fingerprint: string;
 }
 
@@ -37,6 +48,13 @@ export function formatKitchenWait(minutesValue: unknown, language: "kk" | "ru") 
 }
 
 export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, nowMs = Date.now()): KitchenSalesPolicy {
+  // The absence of an answer is not an answer of "open". Two shapes mean "we could not
+  // read the kitchen": no object at all (buildFactsPrompt passes ctx.runtimeStatus,
+  // which preloadContext sets to null when the hub read fails), and an object that says
+  // so - hardRealtimeContext is always built, and carries
+  // runtime_available: Boolean(runtimeStatus) for exactly this reason.
+  const stateKnown = Boolean(runtime && typeof runtime === "object")
+    && (runtime as Record<string, any>).runtime_available !== false;
   const kitchen = runtime?.kitchen_status && typeof runtime.kitchen_status === "object" ? runtime.kitchen_status : {};
   const waitMinutes = Math.max(0, Math.floor(Number(runtime?.wait_time ?? kitchen.wait_time ?? 0) || 0));
   const delivery = asBool(runtime?.delivery ?? kitchen.delivery, true);
@@ -68,10 +86,17 @@ export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, 
   else if (waitMinutes > 40) mode = "busy";
   else if (delivery !== pickup) mode = "channel_limited";
 
+  // Deliberately NOT blocking on an unknown state. Telling guests a working kitchen is
+  // closed because one hub read timed out would trade a rare wrong sale for a constant
+  // wrong refusal - the earlier "reset_at defaults to 0" fix learned that at 41 minutes.
+  // What changes is that "unknown" is reported as unknown, so the facts prompt tells the
+  // model to confirm with getKitchenStatus before it commits to an order, instead of
+  // being handed "normal" as a fact.
+  if (!stateKnown) mode = "unknown";
   const blocksAllSales = mode === "critical" || mode === "vacation" || mode === "indefinite" || mode === "off_hours";
   const requiresConsent = mode === "busy";
   const reopeningKnown = resetAt > 0;
-  const fingerprintSource = JSON.stringify({ mode, waitMinutes, delivery, pickup, isEmergency, isAcceptingOrders, withinWorkHours, resetAt });
+  const fingerprintSource = JSON.stringify({ mode, waitMinutes, delivery, pickup, isEmergency, isAcceptingOrders, withinWorkHours, resetAt, stateKnown });
 
   return {
     mode,
@@ -89,6 +114,7 @@ export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, 
     requiresConsent,
     blocksAllSales,
     reopeningKnown,
+    stateKnown,
     fingerprint: crypto.createHash("sha256").update(fingerprintSource).digest("hex"),
   };
 }

@@ -89,6 +89,15 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     add(plan, "getKitchenStatus", "live_kitchen_status");
   }
 
+  // The runtime read failed, so every sales flag fell back to its open default. Rather
+  // than selling on that assumption, spend one call on the real state - getKitchenStatus
+  // hits the hub with forceFresh (found 2026-08-23). Keyed on the positive signal
+  // preloadContext writes, not on a missing object: hardRealtimeContext is always
+  // present, so "no object" is a test shape, never a production one.
+  if ((runtime as Record<string, any> | null)?.runtime_available === false) {
+    add(plan, "getKitchenStatus", "kitchen_state_unknown");
+  }
+
   // A complaint suppressed searchMenu but not sendMenuLink, so an angry guest
   // demanding a refund was handed the menu link and nothing else. Nobody who is
   // complaining is asking to start a new order.

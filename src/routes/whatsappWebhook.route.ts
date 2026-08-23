@@ -1035,10 +1035,32 @@ async function processWhatsAppWebhook(body: any, started: number) {
             const paid = Number(mediaAnalysis.amount || 0);
             const remaining = Math.max(0, expected - paid);
             const requisites = await getPaymentRequisitesText(ctx.instanceId, ctx.config, ctx.language).catch(() => "");
+            // The promise below ("оператор уже уведомлён") was not kept: this lane only
+            // delivered the receipt and replied. It never opened an operator case, so
+            // there was no red panel row and no hub signal, and deliverReceiptToClient's
+            // operator comment carries sender/amount/bank only - it never says the amount
+            // was SHORT, so the operator saw a receipt that looked like any other
+            // payment. Underpaid money is exactly the class the escalation contract calls
+            // worse than a double (found 2026-08-23). The case is opened first, and the
+            // sentence about the operator is only said when it actually exists.
+            const shortfallRouting = await routeComplaintToAdmin(ctx, {
+              summary: `Төлем толық емес: тапсырыс ${expected} ₸, чекте ${paid} ₸, жетпейді ${remaining} ₸. Тапсырыс №${deliverOrderNumber}. Чек операторға жіберілді, клиент қалған сомаға жаңа чек жіберуі керек.`,
+              customerText: text,
+              customerReply: "",
+              urgency: "high",
+              // Its own source, so the menu-question skip and the AI-tool
+              // clarify-first gate cannot swallow a payment shortfall.
+              source: "payment_shortfall",
+            });
+            const operatorLine = shortfallRouting.escalationAvailable
+              ? ctx.language === "ru"
+                ? " Оператор уже уведомлён и тоже проверит оплату."
+                : " Операторға да хабарлама кетті, ол да тексереді."
+              : "";
             receiptReply =
               ctx.language === "ru"
-                ? `⚠️ *Оплата неполная.*\nСумма заказа: *${expected} ₸*, в вашем чеке: *${paid} ₸*.\nОсталось доплатить: *${remaining} ₸*.\n\nОплата:\n${requisites}\n\nОтправьте новый чек в этот чат. Оператор уже уведомлён и тоже проверит оплату.`
-                : `⚠️ *Төлем толық емес.*\nТапсырыс сомасы: *${expected} ₸*, чегіңізде: *${paid} ₸*.\nТағы *${remaining} ₸* жіберуіңіз керек.\n\nТөлем жасау:\n${requisites}\n\nЖаңа чекті осы чатқа жіберіңіз. Операторға да хабарлама кетті, ол да тексереді.`;
+                ? `⚠️ *Оплата неполная.*\nСумма заказа: *${expected} ₸*, в вашем чеке: *${paid} ₸*.\nОсталось доплатить: *${remaining} ₸*.\n\nОплата:\n${requisites}\n\nОтправьте новый чек в этот чат.${operatorLine}`
+                : `⚠️ *Төлем толық емес.*\nТапсырыс сомасы: *${expected} ₸*, чегіңізде: *${paid} ₸*.\nТағы *${remaining} ₸* жіберуіңіз керек.\n\nТөлем жасау:\n${requisites}\n\nЖаңа чекті осы чатқа жіберіңіз.${operatorLine}`;
           } else {
             receiptReply =
               ctx.language === "ru"

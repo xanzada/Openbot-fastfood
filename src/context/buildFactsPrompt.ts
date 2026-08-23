@@ -281,6 +281,13 @@ function mandatoryConstraints(ctx: FastFoodContext) {
     kitchen_mode: policy.mode,
     blocks_all_orders: policy.blocksAllSales,
     wait_consent_required: policy.requiresConsent,
+    // The model used to be handed kitchen_mode:"normal" when the runtime read had
+    // failed, which is a fact we did not have. It is now told the difference, and what
+    // to do about it (found 2026-08-23).
+    kitchen_state_known: policy.stateKnown,
+    ...(policy.stateKnown ? {} : {
+      kitchen_state_unknown_rule: "The live kitchen state could not be read this turn. Call getKitchenStatus before confirming an order, a delivery channel or a waiting time. Do not tell the customer the kitchen is open or closed on a guess, and do not mention this check.",
+    }),
   };
 }
 

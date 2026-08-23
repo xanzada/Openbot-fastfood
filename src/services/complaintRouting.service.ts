@@ -177,7 +177,11 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     && !savedMedia?.base64
     && input.source !== "cancel_request"
     && input.source !== "media_analysis"
-    && input.source !== "long_voice";
+    && input.source !== "long_voice"
+    // A payment shortfall is a measured amount, not a sentence to classify. The
+    // guest's caption on the receipt photo often mentions a dish, and reading that
+    // as a menu question would silently drop an underpayment (found 2026-08-23).
+    && input.source !== "payment_shortfall";
   if (menuSkipApplies && isLikelyMenuQuestion(input.customerText || ctx.text)) {
     return {
       action: "skipped_menu_question",

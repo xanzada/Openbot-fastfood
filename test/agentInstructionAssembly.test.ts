@@ -29,5 +29,8 @@ test("tenant voice is injected exactly once and remains bounded", () => {
   // the operator was actually notified or a clarifying question is owed).
   // Each ceiling sits a few hundred chars above the then-current size, so a
   // runaway addition still trips it.
-  assert.ok(instructions.length < 17_800, `assembled prompt is unexpectedly large: ${instructions.length}`);
+  // ...then from 17 800 for the unknown-kitchen rule (a failed runtime read is reported
+  // as unknown instead of "normal", and the agent is told to confirm with getKitchenStatus
+  // before committing to an order).
+  assert.ok(instructions.length < 18_200, `assembled prompt is unexpectedly large: ${instructions.length}`);
 });
