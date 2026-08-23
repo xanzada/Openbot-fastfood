@@ -127,9 +127,11 @@ function normalizePaymentDetails(value: unknown): PaymentDetail[] {
 
 function paymentDetailsText(details: PaymentDetail[], lang: Language): string {
   if (!details.length) {
+    // Honest and actionable: the old wording promised an operator was waiting, while this
+    // branch fires precisely because nobody has been told anything (found 2026-08-23).
     return lang === "ru"
-      ? "Реквизиты пока не настроены. Пожалуйста, подождите ответ оператора."
-      : "Реквизиттер әзірге бапталмаған. Оператор жауабын күте тұрыңыз.";
+      ? "Реквизиты для оплаты сейчас уточняются — ресторан свяжется с вами и всё подтвердит."
+      : "Төлем реквизиттері қазір нақтылануда — ресторан сізбен байланысып, растайды.";
   }
   return details.map((item) => `${item.label}: ${item.value}`).join("\n");
 }

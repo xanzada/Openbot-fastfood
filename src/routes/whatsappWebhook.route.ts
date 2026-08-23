@@ -758,6 +758,22 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
+    if (!instanceId) {
+      // An unresolved tenant used to fall into the bot_paused branch below and vanish with a
+      // misleading log line. A message from a real number that no tenant claims means either
+      // a misconfigured gateway or a new tenant whose config has not landed yet - both need a
+      // human, so say so once (found 2026-08-23).
+      console.warn(
+        `[OPENBOT:TENANT:UNRESOLVED] message discarded receiver=${maskPhone(phone)} messageId=${messageId} hint="no tenant config matches this WhatsApp number; check the tenants platform"`
+      );
+      void notifyDeveloperSystemFailure(
+        String(process.env.OPENBOT_DEFAULT_INSTANCE || ""),
+        new Error("TENANT_UNRESOLVED_FOR_INBOUND"),
+        { scope: "tenant_resolution", messageId, customerPhone: maskPhone(phone) },
+      ).catch(() => undefined);
+      return;
+    }
+
     if (!(await isTenantBotEnabled(instanceId))) {
       await markInboundDone(instanceId, messageId).catch(() => undefined);
       console.log(

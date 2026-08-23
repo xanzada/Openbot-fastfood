@@ -319,28 +319,44 @@ export async function getAllRestaurantConfigs(options: { forceRefresh?: boolean 
   }
 }
 
-export async function getRestaurantConfigByWhatsAppPhone(phone: string): Promise<Record<string, any> | null> {
+export async function getRestaurantConfigByWhatsAppPhone(
+  phone: string,
+  options: { forceRefresh?: boolean } = {},
+): Promise<Record<string, any> | null> {
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
-  const configs = await getAllRestaurantConfigs();
-  return (
-    configs.find((config) => {
-      const candidates = [
-        config.whatsapp_phone,
-        config.whatsappPhone,
-        config.whatspro_phone,
-        config.whatsproPhone,
-        config.bot_phone,
-        config.botPhone,
-        config.receiver_phone,
-        config.receiverPhone,
-        config.instance_phone,
-        config.instancePhone,
-        config.phone,
-      ].map((value) => normalizePhone(value));
-      return candidates.some((candidate) => candidate && candidate === normalized);
-    }) || null
-  );
+  const configs = await getAllRestaurantConfigs({ forceRefresh: Boolean(options.forceRefresh) });
+  const hit = findRestaurantConfigByWhatsAppPhone(normalized, configs);
+  if (hit) return hit;
+  // A newly attached WhatsApp number must not be invisible until the five-minute Redis cache
+  // expires: the alemi-instance lane already forces one refresh on a miss for exactly this
+  // onboarding contract, and this lane serves the same moment (found 2026-08-23).
+  if (options.forceRefresh) return null;
+  const freshConfigs = await getAllRestaurantConfigs({ forceRefresh: true });
+  return findRestaurantConfigByWhatsAppPhone(normalized, freshConfigs);
+}
+
+function findRestaurantConfigByWhatsAppPhone(
+  normalized: string,
+  configs: Record<string, any>[],
+): Record<string, any> | null {
+  const match = configs.find((config) => {
+    const candidates = [
+      config.whatsapp_phone,
+      config.whatsappPhone,
+      config.whatspro_phone,
+      config.whatsproPhone,
+      config.bot_phone,
+      config.botPhone,
+      config.receiver_phone,
+      config.receiverPhone,
+      config.instance_phone,
+      config.instancePhone,
+      config.phone,
+    ].map((value) => normalizePhone(value));
+    return candidates.some((candidate) => candidate && candidate === normalized);
+  });
+  return match || null;
 }
 
 export function findRestaurantConfigByAlemiInstance(
