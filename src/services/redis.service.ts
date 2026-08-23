@@ -782,14 +782,25 @@ export async function markComplaintClarificationPending(instanceId: string, phon
   });
 }
 
-export async function takeComplaintClarification(instanceId: string, phone: string): Promise<string | null> {
-  return safeRedis(null, async () => {
+export async function takeComplaintClarification(
+  instanceId: string,
+  phone: string
+): Promise<string | null | "error"> {
+  // "error" is distinct from null on purpose. safeRedis used to collapse a Redis failure
+  // into the same null as an empty key, so callers could not tell "nothing pending" from
+  // "we could not read" - the route re-asked its clarifying question during an outage and
+  // the AI-tool lane did the same, instead of failing open toward a human (found
+  // 2026-08-23).
+  try {
+    await connectRedis();
     const key = complaintClarifyKey(instanceId, phone);
     const value = await redisClient.get(key);
     if (value === null || value === undefined) return null;
     await redisClient.del(key).catch(() => undefined);
     return String(value);
-  });
+  } catch {
+    return "error";
+  }
 }
 
 export async function hasComplaintClarificationPending(instanceId: string, phone: string): Promise<boolean> {

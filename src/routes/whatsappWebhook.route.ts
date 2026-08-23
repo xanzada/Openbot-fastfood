@@ -1335,10 +1335,16 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const caseKind = detectOperatorCaseKind(ctx.text);
     const askedForOperator = !menuQuestion && (caseKind === "human_request" || caseKind === "courier_request");
     const complaintText = !menuQuestion && isLikelyComplaintText(ctx.text);
-    const awaitingDetail = toolHandledEscalation ? null : await takeComplaintClarification(ctx.instanceId, ctx.phone);
+    const awaitingDetailRaw = toolHandledEscalation ? null : await takeComplaintClarification(ctx.instanceId, ctx.phone);
+    // "error" means we could not read the state at all. Neither branch may act on a guess:
+    // re-asking would double the question, routing would double the case - so this turn
+    // stays neutral and lets the agent's own reply stand.
+    const clarificationUnknown = awaitingDetailRaw === "error";
+    const awaitingDetail = clarificationUnknown ? null : (awaitingDetailRaw as string | null);
     const hasDetailNow = !menuQuestion && complaintHasActionableDetail(ctx.text);
     const needsClarification =
       !toolHandledEscalation
+      && !clarificationUnknown
       && (askedForOperator || complaintText || needsAdminEscalation)
       && awaitingDetail === null
       && !pendingComplaintMedia
@@ -1347,6 +1353,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const shouldRouteComplaint =
       !toolHandledEscalation
       && !needsClarification
+      && !clarificationUnknown
+      // The pending flag is the guest's answer to OUR question. A menu question is them
+      // moving on to something else, not the detail of a complaint - and without this
+      // guard the menu question opened a silent operator case while the reply talked
+      // about pizza (found 2026-08-23).
+      && !menuQuestion
       && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null);
 
     if (needsClarification) {

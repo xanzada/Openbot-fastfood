@@ -221,7 +221,12 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     if (!hasActionableStory && !media && clarifyKind !== "cancel_request") {
       const openCaseId = await getActiveOperatorCaseId(ctx.instanceId, ctx.phone).catch(() => null);
       if (!openCaseId) {
-        const firstDemand = await takeComplaintClarification(ctx.instanceId, ctx.phone).catch(() => null);
+        // An unreadable state maps to "nothing pending" here, deliberately: during a
+        // Redis outage createOperatorCase cannot work either (same backend), so failing
+        // open would only produce escalation_failed one round sooner and lose the
+        // clarify-first contract. Re-asking during an outage is the bounded cost.
+        const firstDemandRaw = await takeComplaintClarification(ctx.instanceId, ctx.phone);
+        const firstDemand = firstDemandRaw === "error" ? null : firstDemandRaw;
         if (firstDemand === null) {
           await markComplaintClarificationPending(ctx.instanceId, ctx.phone, guestText).catch(() => false);
           return {

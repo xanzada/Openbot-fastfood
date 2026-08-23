@@ -99,7 +99,9 @@ test("the webhook lane stands down when the escalate tool already ran this turn"
   assert.match(route, /toolHandledEscalation/);
   assert.match(route, /needsClarification =\s+!toolHandledEscalation/);
   assert.match(route, /shouldRouteComplaint =\s+!toolHandledEscalation/);
-  assert.match(route, /awaitingDetail = toolHandledEscalation \? null : await takeComplaintClarification/);
+  assert.match(route, /awaitingDetailRaw = toolHandledEscalation \? null : await takeComplaintClarification/);
+  // The raw read is then mapped through clarificationUnknown before either branch acts.
+  assert.match(route, /const clarificationUnknown = awaitingDetailRaw === "error";/);
 });
 
 test("the site is notified once per case, not once per signal", async () => {
