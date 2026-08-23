@@ -250,8 +250,22 @@ async function verifySecret(req: any, res: any, next: any) {
     return res.status(error?.statusCode || 401).json({ ok: false, error: error?.message || "unauthorized" });
   }
 }
+// Every shape the gateway can deliver, because getting this wrong is not a missed
+// message but a loop: the bot answers its own outbound text, replies to that, and the
+// spam counter eventually mutes the real guest for 15 minutes. extractMessageId and
+// isGroupMessage both already accept a TOP-LEVEL body.key, so a payload shaped
+// {key:{fromMe:true,id:...}} reached the pipeline with fromMe:false (found 2026-08-23).
 function isOwnWhatsAppMessage(body: any): boolean {
-  return body?.fromMe === true || body?.isFromMe === true || body?.data?.key?.fromMe === true;
+  const eventData = body?.data || {};
+  return (
+    body?.fromMe === true ||
+    body?.isFromMe === true ||
+    body?.key?.fromMe === true ||
+    eventData?.fromMe === true ||
+    eventData?.isFromMe === true ||
+    eventData?.key?.fromMe === true ||
+    body?.message?.key?.fromMe === true
+  );
 }
 
 function isGroupMessage(body: any): boolean {
@@ -667,7 +681,8 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
 async function processWhatsAppWebhook(body: any, started: number) {
   const instanceId = getInstanceId(body);
   const phone = getPhone(body);
-  const messageId = extractMessageId(body);
+  // Reassigned once the guard reports the id it deduped on (see below).
+  let messageId = extractMessageId(body);
   let mediaContext = extractInboundMedia(body);
   const senderMeta = extractSenderMeta(body);
   let text =
@@ -744,6 +759,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
       isGroup: isGroupMessage(body),
       senderMeta,
     });
+    // From here on the turn is identified by the id the guard actually deduped on. For a
+    // payload the gateway sent without one that is a derived hash, and marking the empty
+    // raw id instead would leave a 180s processing lock nobody releases (found 2026-08-23).
+    if (guard.dedupeId) messageId = guard.dedupeId;
     if (guard.blocked) {
       if (guard.source === "operator_override") {
         await saveToHistory(String(instanceId || ""), String(phone || ""), "user", text || mediaContext?.historyLabel || "[operator override]", {
@@ -795,6 +814,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
         await requeueInboundText({ instanceId, phone, messageId, text }).catch(() => undefined);
         await markInboundDone(instanceId, messageId);
         return;
+        // NOTE: requeueInboundText now also arms inbound_buffer_latest, so the next
+        // message from this guest becomes a leader that picks this part up. Before, the
+        // part sat in a list nobody was waiting on and the finishing turn deleted it.
       }
       const leftovers = await drainInboundBuffer(instanceId, phone).catch(() => [] as string[]);
       const parts = [...buffered.items, ...leftovers].filter(Boolean);
@@ -1424,9 +1446,24 @@ async function processWhatsAppWebhook(body: any, started: number) {
     await markInboundDone(ctx.instanceId, messageId);
     await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
 
-    // Sweep leftovers from the burst we just answered so they cannot become a
-    // second reply; genuinely new messages flush their own batch anyway.
-    void drainInboundBuffer(ctx.instanceId, ctx.phone).catch(() => []);
+    // Sweep leftovers from the burst we just answered so they cannot become a second
+    // reply. What arrived DURING this turn is a different matter: requeueInboundText put
+    // it here precisely so it would not be lost, and this sweep used to delete it
+    // unanswered - the guest's message vanished with no reply at all (found 2026-08-23).
+    // Anything still buffered after the answer went out is therefore re-armed as its own
+    // pending batch instead of being dropped.
+    void drainInboundBuffer(ctx.instanceId, ctx.phone)
+      .then(async (leftovers) => {
+        const pending = (leftovers || []).filter(Boolean);
+        if (!pending.length) return;
+        console.warn(
+          `[OPENBOT:BUFFER] ${pending.length} part(s) arrived mid-turn, re-arming instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)}`
+        );
+        for (const part of pending) {
+          await requeueInboundText({ instanceId: ctx.instanceId, phone: ctx.phone, messageId: "", text: part }).catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
 
     // The customer's mission advances only after their reply is safely out.
     // Fire-and-forget: one tiny Redis value, never on the latency path.

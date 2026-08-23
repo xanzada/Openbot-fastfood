@@ -125,6 +125,12 @@ export interface GuardResult {
   blocked: boolean;
   reason?: string;
   source?: string;
+  /**
+   * The id the dedupe actually keyed on. Equal to messageId when the gateway sent one,
+   * and a derived hash when it did not. Callers must mark THIS done, not the raw
+   * messageId, or an id-less message takes a processing lock nobody ever releases.
+   */
+  dedupeId?: string;
 }
 
 function sha1(value = "") {
@@ -654,6 +660,38 @@ export async function setOperatorAutoMute(instanceId: string, phone: string): Pr
     .exec();
 }
 
+/**
+ * A stable dedupe id for a payload the gateway sent without one.
+ *
+ * The guard keyed everything off messageId, so an id-less replay slipped past both the
+ * done-marker and the processing lock. Hashing the tenant, the phone and the payload
+ * gives the same key for the same message and a different key for a different one -
+ * which is exactly what the missing id was supposed to provide.
+ *
+ * Media is included via its own metadata when present: two photos sent back to back with
+ * no caption must not collapse into one.
+ */
+export function derivedInboundId(
+  instanceId: string,
+  phone: string,
+  text: string,
+  senderMeta?: Record<string, any>
+): string {
+  const mediaMark = [
+    senderMeta?.mediaId,
+    senderMeta?.mediaSha256,
+    senderMeta?.mediaUrl,
+    senderMeta?.timestamp,
+    senderMeta?.messageTimestamp,
+  ]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+    .join("|");
+  const body = String(text || "").trim().toLowerCase();
+  if (!body && !mediaMark) return "";
+  return `derived:${sha1(`${instanceId}|${phone}|${body}|${mediaMark}`)}`;
+}
+
 export async function guardIncomingMessage(input: {
   instanceId: string;
   phone: string;
@@ -694,32 +732,41 @@ export async function guardIncomingMessage(input: {
   try {
     await connectRedis();
 
+    // A payload with no id used to skip BOTH the done-marker and the processing lock, so
+    // a gateway replay more than DUPLICATE_TEXT_SECONDS later was processed a second time
+    // in full: second reply, second media analysis, second receipt. The 5-second text
+    // hash was the only thing standing there (found 2026-08-23). A derived id closes it:
+    // same tenant, same phone, same payload means the same message, and two genuinely
+    // different messages hash differently. Derived before the first early return, so
+    // every branch below marks the same key the lock was taken under.
+    const dedupeId = messageId || derivedInboundId(instanceId, phone, text, input.senderMeta);
+
     const operatorActive = await getFreshOperatorActive(instanceId, phone);
     if (operatorActive) {
-      await markInboundDone(instanceId, messageId);
-      return { blocked: true, reason: "operator_active", source: "operator_override" };
+      await markInboundDone(instanceId, dedupeId);
+      return { blocked: true, reason: "operator_active", source: "operator_override", dedupeId };
     }
 
-    if (messageId) {
-      if (await redisClient.get(`msg_done:${instanceId}:${messageId}`)) {
-        return { blocked: true, reason: "duplicate_done" };
+    if (dedupeId) {
+      if (await redisClient.get(`msg_done:${instanceId}:${dedupeId}`)) {
+        return { blocked: true, reason: "duplicate_done", dedupeId };
       }
-      const lock = await redisClient.set(`msg_processing:${instanceId}:${messageId}`, "1", {
+      const lock = await redisClient.set(`msg_processing:${instanceId}:${dedupeId}`, "1", {
         NX: true,
         EX: PROCESSING_LOCK_SECONDS,
       });
-      if (!lock) return { blocked: true, reason: "duplicate_processing" };
+      if (!lock) return { blocked: true, reason: "duplicate_processing", dedupeId };
     }
 
     const operatorMute = await getFreshOperatorMute(instanceId, phone);
     if (operatorMute) {
-      await markInboundDone(instanceId, messageId);
-      return { blocked: true, reason: "muted", source: "operator_override" };
+      await markInboundDone(instanceId, dedupeId);
+      return { blocked: true, reason: "muted", source: "operator_override", dedupeId };
     }
 
     if (await redisClient.get(`mute:${instanceId}:${phone}`)) {
-      await markInboundDone(instanceId, messageId);
-      return { blocked: true, reason: "muted" };
+      await markInboundDone(instanceId, dedupeId);
+      return { blocked: true, reason: "muted", dedupeId };
     }
 
     if (text) {
@@ -727,8 +774,8 @@ export async function guardIncomingMessage(input: {
       const textHash = sha1(text.toLowerCase());
       const previousHash = await redisClient.get(duplicateKey);
       if (previousHash === textHash) {
-        await markInboundDone(instanceId, messageId);
-        return { blocked: true, reason: "duplicate_text" };
+        await markInboundDone(instanceId, dedupeId);
+        return { blocked: true, reason: "duplicate_text", dedupeId };
       }
       await redisClient.setEx(duplicateKey, DUPLICATE_TEXT_SECONDS, textHash);
     }
@@ -738,11 +785,11 @@ export async function guardIncomingMessage(input: {
     if (count === 1) await redisClient.expire(spamKey, SPAM_WINDOW_SECONDS);
     if (count > SPAM_LIMIT) {
       await redisClient.setEx(`mute:${instanceId}:${phone}`, MUTE_SECONDS, "spam_blocked");
-      await markInboundDone(instanceId, messageId);
-      return { blocked: true, reason: "spam_limit_exceeded" };
+      await markInboundDone(instanceId, dedupeId);
+      return { blocked: true, reason: "spam_limit_exceeded", dedupeId };
     }
 
-    return { blocked: false };
+    return { blocked: false, dedupeId };
   } catch (error: any) {
     console.warn(`[OPENBOT:GUARD] Redis unavailable, using tenant-local memory guard instance=${instanceId}:`, error?.message || error);
     return guardIncomingMessageInMemory(instanceId, phone, text, messageId);
@@ -959,10 +1006,16 @@ export async function requeueInboundText(input: { instanceId: string; phone: str
   try {
     await connectRedis();
     const listKey = `inbound_buffer:${instanceId}:${phone}`;
+    const latestKey = `inbound_buffer_latest:${instanceId}:${phone}`;
+    // The latest-token marker is what makes a part visible to a future leader. Without
+    // it the requeued message sat in a list nobody was waiting on, and the finishing
+    // turn's sweep deleted it unanswered - "nothing the guest wrote is silently lost"
+    // was not true (found 2026-08-23).
     await redisClient.multi()
       .rPush(listKey, JSON.stringify({ token, text }))
       .lTrim(listKey, -INBOUND_BUFFER_MAX_ITEMS, -1)
       .expire(listKey, INBOUND_BUFFER_SECONDS)
+      .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
       .exec();
     return true;
   } catch {
@@ -971,6 +1024,8 @@ export async function requeueInboundText(input: { instanceId: string; phone: str
     const current = localInboundBuffers.get(key) || { items: [], latestToken: "", expiresAt: 0 };
     current.items.push({ token, text });
     current.items = current.items.slice(-INBOUND_BUFFER_MAX_ITEMS);
+    // Same reason as the Redis path: the fallback must leave a token behind too.
+    current.latestToken = token;
     current.expiresAt = now + INBOUND_BUFFER_SECONDS * 1000;
     localInboundBuffers.set(key, current);
     return true;
