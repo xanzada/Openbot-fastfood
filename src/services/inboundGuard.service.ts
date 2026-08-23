@@ -925,7 +925,24 @@ export async function clearMediaContext(instanceId: string, phone: string): Prom
  * being answered in parallel - which is exactly how a guest who wrote "сәлем"
  * then "пицца бар ма" got two replies. One conversation = one turn at a time.
  */
-const TURN_LOCK_FALLBACK_TTL_MS = 90_000;
+// 90s was shorter than a worst-case turn, so a slow turn outlived its own lock: the next
+// message acquired the "free" lock and the guest got two replies - precisely what this
+// lock exists to stop (found 2026-08-23). The bound is now derived from the budgets that
+// actually govern a turn, so raising one of them cannot silently un-protect the lock:
+//   the wait for a previous turn (45s, the route's own loop)
+// + the buffer settle (INBOUND_BUFFER_DELAY_MS)
+// + the agent's own ceiling (REGEN_BUDGET_MS, which already includes the critic)
+// + the outbound send sequence, which retries per chunk on a 10s axios timeout
+// + headroom, because none of these is a hard kill
+const TURN_WAIT_CEILING_MS = 45_000;
+const TURN_SEND_CEILING_MS = 60_000;
+const TURN_LOCK_FALLBACK_TTL_MS = Math.max(
+  90_000,
+  TURN_WAIT_CEILING_MS
+    + INBOUND_BUFFER_DELAY_MS
+    + envNumber(process.env.REGEN_BUDGET_MS, 38_000, { min: 1_000 })
+    + TURN_SEND_CEILING_MS
+);
 const localTurnLocks = new Map<string, { owner: string; expiresAt: number }>();
 
 export async function acquireTurnLock(instanceId: string, phone: string, ttlMs = TURN_LOCK_FALLBACK_TTL_MS): Promise<string | null> {
@@ -944,13 +961,29 @@ export async function acquireTurnLock(instanceId: string, phone: string, ttlMs =
   }
 }
 
+// Compare-and-delete in one step. A GET followed by a DEL leaves a window where the lock
+// expires and the NEXT turn acquires it after the comparison has already passed - so this
+// turn deletes a lock it no longer owns and the next turn runs unprotected (found
+// 2026-08-23). One guest, two replies, from the code meant to prevent exactly that.
+const RELEASE_TURN_LOCK_LUA =
+  "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+
 export async function releaseTurnLock(instanceId: string, phone: string, owner: string): Promise<void> {
   const key = `turn_lock:${instanceId}:${phone}`;
   try {
     await connectRedis();
-    const current = await redisClient.get(key);
-    if (current === owner) await redisClient.del(key);
-    return;
+    try {
+      await redisClient.eval(RELEASE_TURN_LOCK_LUA, { keys: [key], arguments: [owner] });
+      return;
+    } catch (scriptError: any) {
+      // A Redis build or proxy that refuses EVAL must not leave the lock held for its
+      // whole TTL, so fall back to the previous read-then-delete. It carries the same race
+      // it always did, which is strictly better than not releasing at all.
+      console.warn(`[OPENBOT:GUARD] turn lock EVAL unavailable, using compare-then-delete:`, scriptError?.message || scriptError);
+      const current = await redisClient.get(key);
+      if (current === owner) await redisClient.del(key);
+      return;
+    }
   } catch {
     const local = localTurnLocks.get(key);
     if (local?.owner === owner) localTurnLocks.delete(key);

@@ -1218,9 +1218,25 @@ async function processWhatsAppWebhook(body: any, started: number) {
         media: immediateComplaintMedia,
         source: "media_analysis",
       });
-      await saveToHistory(ctx.instanceId, ctx.phone, "system", "operator case created", {
-        source: "operator-case", caseId: routing.caseId, mediaAttached: routing.mediaAttached,
-      });
+      await saveToHistory(
+        ctx.instanceId,
+        ctx.phone,
+        "system",
+        // The record must say what HAPPENED, not what was attempted. This line was
+        // unconditional, so a turn where createOperatorCase could not write (Redis down,
+        // hub refusing) still left "operator case created" in the history with caseId:null
+        // beside it - support read the complaint back as handled while no operator had
+        // ever been told (found 2026-08-23). Same class as the escalation_failed action
+        // fix; that one cost 48 hours of invisible SOS failures.
+        routing.escalationAvailable ? "operator case created" : `operator case FAILED (${routing.action})`,
+        {
+          source: "operator-case",
+          caseId: routing.caseId,
+          mediaAttached: routing.mediaAttached,
+          escalationAvailable: routing.escalationAvailable,
+          routingAction: routing.action,
+        }
+      );
       void bumpMetric(ctx.instanceId, "escalations");
       void bumpMetric(ctx.instanceId, "complaints");
       void recordLearningEvent(ctx.instanceId, {
@@ -1272,9 +1288,25 @@ async function processWhatsAppWebhook(body: any, started: number) {
         urgency: "high",
         source: "cancel_request",
       });
-      await saveToHistory(ctx.instanceId, ctx.phone, "system", "operator case created", {
-        source: "operator-case", caseId: routing.caseId, mediaAttached: routing.mediaAttached,
-      });
+      await saveToHistory(
+        ctx.instanceId,
+        ctx.phone,
+        "system",
+        // The record must say what HAPPENED, not what was attempted. This line was
+        // unconditional, so a turn where createOperatorCase could not write (Redis down,
+        // hub refusing) still left "operator case created" in the history with caseId:null
+        // beside it - support read the complaint back as handled while no operator had
+        // ever been told (found 2026-08-23). Same class as the escalation_failed action
+        // fix; that one cost 48 hours of invisible SOS failures.
+        routing.escalationAvailable ? "operator case created" : `operator case FAILED (${routing.action})`,
+        {
+          source: "operator-case",
+          caseId: routing.caseId,
+          mediaAttached: routing.mediaAttached,
+          escalationAvailable: routing.escalationAvailable,
+          routingAction: routing.action,
+        }
+      );
       void bumpMetric(ctx.instanceId, "escalations");
       void recordLearningEvent(ctx.instanceId, {
         type: "escalation",
@@ -1429,9 +1461,25 @@ async function processWhatsAppWebhook(body: any, started: number) {
         urgency: needsAdminEscalation ? "high" : "normal",
         source: needsAdminEscalation ? "ai_escalation_signal" : pendingComplaintMedia ? "pending_complaint_media" : detectOperatorCaseKind(ctx.text) || "complaint_text",
       });
-      await saveToHistory(ctx.instanceId, ctx.phone, "system", "operator case created", {
-        source: "operator-case", caseId: routing.caseId, mediaAttached: routing.mediaAttached,
-      });
+      await saveToHistory(
+        ctx.instanceId,
+        ctx.phone,
+        "system",
+        // The record must say what HAPPENED, not what was attempted. This line was
+        // unconditional, so a turn where createOperatorCase could not write (Redis down,
+        // hub refusing) still left "operator case created" in the history with caseId:null
+        // beside it - support read the complaint back as handled while no operator had
+        // ever been told (found 2026-08-23). Same class as the escalation_failed action
+        // fix; that one cost 48 hours of invisible SOS failures.
+        routing.escalationAvailable ? "operator case created" : `operator case FAILED (${routing.action})`,
+        {
+          source: "operator-case",
+          caseId: routing.caseId,
+          mediaAttached: routing.mediaAttached,
+          escalationAvailable: routing.escalationAvailable,
+          routingAction: routing.action,
+        }
+      );
       if (!routing.escalationAvailable) {
         await notifyDeveloperSystemFailure(ctx.instanceId, new Error("ADMIN_PHONE_NOT_CONFIGURED_FOR_COMPLAINT"), {
           scope: "complaint-routing",
