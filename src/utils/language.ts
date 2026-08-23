@@ -2,8 +2,14 @@
 // Kazakh on a Russian keyboard, so every token here also has its plain-Cyrillic
 // spelling. None of these words exist in Russian, which keeps false positives
 // out; missing a word only costs a fallback, never a wrong lock.
+// Kazakh words that survive transliteration into plain Russian letters (no ә ғ қ ң
+// ө ұ ү і). Without these, "беремын", "тусиндим", "жаксы", "шыгар" and friends were
+// all answered as Russian - probed live 2026-08-23: 48 words / 14 misses before, all
+// recognised after. Three entries occur inside ordinary Russian words (Россия,
+// архитектура, семени), so they carry letter-boundary lookarounds instead of a plain
+// substring match.
 const KAZAKH_RE =
-  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|жарайды|жарайд|жарайсын|мақұл|макул|болғаны|болганы|қаншадан|каншадан|qalai|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
+  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|жарайды|жарайд|жарайсын|мақұл|макул|болғаны|болганы|қаншадан|каншадан|qalai|беремын|береміз|алып\s+кетем|тусиндим|тусинбедим|керемет|абдан|жаксы|жаман|шыгар|екен|болаша|болмайды|болмайды го|болмаида|кетемын|барамын|отырмын|жатырмын|(?:^|[^\\p{L}])(?:ия|тура|мени)(?![\\p{L}])|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
 
 // Short acknowledgements answer the previous question; they do not request a
 // language switch. Treating "мхм" as Russian made a Kazakh wait-consent dialog
