@@ -1028,8 +1028,15 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         await saveOrderNotifyCursor(instance, orderId, nextNotifyRank, effectiveStatus || action).catch(() => false);
       }
       if (newStatus === "completed" || newStatus === "cancelled" || action === "order_rejected") {
-        auditDecision("Cleaning completed/cancelled order Redis history", { orderId, action, instance, phone, newStatus });
-        await redisClient.del([`history:${instance}:${phone}`, `last_order:${instance}:${phone}`]).catch(() => undefined);
+        // Only the order pointer is cleared. history:{instance}:{phone} is the SHARED
+        // conversation key - it is whatspro's legacyHistory, the store for
+        // openbot_operator_case red-row markers, and what lastCustomerLanguage and
+        // lastDiscussedOrderNumber read. Deleting it on completion meant a guest who wrote
+        // "суық әкелді" a minute later was greeted as a stranger, the operator panel thread
+        // was empty, and the case marker was gone (found 2026-08-23). A finished order does
+        // not end the relationship.
+        auditDecision("Clearing completed/cancelled order pointer", { orderId, action, instance, phone, newStatus });
+        await redisClient.del([`last_order:${instance}:${phone}`]).catch(() => undefined);
       }
     } else {
       auditDecision("No outbound WhatsApp template produced", { orderId, action, instance, newStatus });

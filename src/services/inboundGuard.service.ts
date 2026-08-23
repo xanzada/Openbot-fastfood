@@ -257,12 +257,27 @@ export function extractInboundText(body: any): string {
 
 export function extractSenderMeta(body: any) {
   const eventData = body?.data || body || {};
+  const message = eventData.message || body?.message || {};
+  const anyMedia =
+    message.imageMessage || message.documentMessage || message.audioMessage || message.videoMessage ||
+    body?.imageMessage || body?.documentMessage || body?.audioMessage || body?.videoMessage ||
+    body?.media || eventData.media || {};
   return {
     pushName: eventData.pushName || body?.pushName || "",
     contactName: eventData.contactName || body?.contactName || eventData.contact?.name || body?.contact?.name || "",
     contactShortName: eventData.contact?.shortName || body?.contact?.shortName || "",
     contactPushName: eventData.contact?.pushName || eventData.contact?.pushname || body?.contact?.pushName || body?.contact?.pushname || "",
     isMyContact: Boolean(eventData.isMyContact || body?.isMyContact || eventData.contact?.isMyContact || body?.contact?.isMyContact),
+    // derivedInboundId hashes these to tell two uncaptioned photos apart. They were never
+    // populated, so mediaMark was always empty: the first captionless photo set msg_done for
+    // 24h and every later one was dropped as duplicate_done. A guest paying in two transfers
+    // lost their second receipt (regression of ea32304, found 2026-08-23).
+    mediaId: String(anyMedia?.id ?? anyMedia?.mediaId ?? anyMedia?.mediaKey ?? "").trim(),
+    mediaSha256: String(anyMedia?.fileSha256 ?? anyMedia?.sha256 ?? anyMedia?.fileEncSha256 ?? "").trim(),
+    mediaUrl: String(anyMedia?.url ?? anyMedia?.directPath ?? anyMedia?.mediaUrl ?? "").trim(),
+    messageTimestamp: String(
+      eventData.messageTimestamp ?? body?.messageTimestamp ?? eventData.timestamp ?? body?.timestamp ?? ""
+    ).trim(),
   };
 }
 
@@ -671,6 +686,10 @@ export async function setOperatorAutoMute(instanceId: string, phone: string): Pr
  * Media is included via its own metadata when present: two photos sent back to back with
  * no caption must not collapse into one.
  */
+// The historyLabel a media turn carries when the guest sent no caption. Two different
+// photos both arrive as this string, which is why they need a media discriminator.
+const MEDIA_PLACEHOLDER_RE = /^\[(?:media sent|photo sent|voice message|document sent|фото|медиа)[^\]]*\]$/i;
+
 export function derivedInboundId(
   instanceId: string,
   phone: string,
@@ -688,7 +707,13 @@ export function derivedInboundId(
     .filter(Boolean)
     .join("|");
   const body = String(text || "").trim().toLowerCase();
+  // Neither text nor any media discriminator: hashing this would make every such payload
+  // collide, so it gets no key at all and the older per-message protections apply.
   if (!body && !mediaMark) return "";
+  // Media present but the gateway gave us nothing stable to hash. Collapsing two different
+  // photos into one id loses the second one, so an unidentifiable media payload is treated
+  // as un-dedupable rather than as a repeat (found 2026-08-23).
+  if (!mediaMark && MEDIA_PLACEHOLDER_RE.test(body)) return "";
   return `derived:${sha1(`${instanceId}|${phone}|${body}|${mediaMark}`)}`;
 }
 

@@ -80,7 +80,15 @@ export function systemRoute(): Router {
     });
   });
 
-  router.get("/health/detailed", async (_req, res) => {
+  // Verified live 2026-08-23: https://openbot.alemi.kz/health/detailed answered 200 to an
+  // anonymous request with every tenant id, the Redis host:port, which secrets are
+  // configured, the model chain and per-tenant hub status. Worse than the disclosure, each
+  // request fans out one SIGNED hub call per tenant (diagnostics.checkAlemiHub), so with 30
+  // restaurants one anonymous GET costs 30 outbound hub calls - a free amplifier against
+  // the partner's API. /health above stays public because that is what an uptime probe
+  // needs; the detailed view is operator data and takes the same token as every other
+  // privileged route on this router. The same hole was closed in whatspro as C8.
+  router.get("/health/detailed", verifySecret("webhook"), async (_req, res) => {
     const checks = await runDependencyChecks();
     const ok = checks.every((check) => check.ok);
     res.status(ok ? 200 : 503).json({

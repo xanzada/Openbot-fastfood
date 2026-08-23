@@ -315,7 +315,11 @@ test("receipt test mode relaxes blocks but analysis always runs, and a short pay
   const routeSource = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
   assert.match(routeSource, /mediaAnalysis\.type === "receipt"/);
   assert.match(routeSource, /strictFilter && !validation\.valid && !isShortfall/);
-  assert.match(routeSource, /claimReceiptFingerprint\(ctx\.instanceId, fingerprint\)\) && strictFilter/);
+  // The claim is now three-state: false means "already claimed", "error" means Redis could
+  // not answer. Only false may produce the "do not resend" answer, because that answer
+  // accuses the guest (D24, 2026-08-23). A resend still blocks only in strict mode.
+  assert.match(routeSource, /const fingerprintClaim = await claimReceiptFingerprint\(ctx\.instanceId, fingerprint\)/);
+  assert.match(routeSource, /if \(fingerprintClaim === false && strictFilter\)/);
   assert.match(routeSource, /getLastKnownOrderId\(ctx\.instanceId, ctx\.phone\)/);
   assert.match(routeSource, /orderNumber: deliverOrderNumber/);
   assert.doesNotMatch(routeSource, /notePrefix:/);

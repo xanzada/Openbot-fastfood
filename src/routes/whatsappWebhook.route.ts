@@ -1008,7 +1008,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
           const fingerprint = createReceiptFingerprint(String(mediaContext.base64 || ""), mediaAnalysis);
           // A resend only blocks in strict mode - in test mode sending the same
           // receipt again is expected and must go through.
-          if (!(await claimReceiptFingerprint(ctx.instanceId, fingerprint)) && strictFilter) {
+          // An unreadable claim must never be read as "the guest is repeating themselves":
+          // that is the accusation this whole branch exists to avoid making wrongly. When
+          // the claim state is unknown the receipt is processed, which risks a duplicate
+          // analysis instead of losing a real payment (found 2026-08-23).
+          const fingerprintClaim = await claimReceiptFingerprint(ctx.instanceId, fingerprint);
+          if (fingerprintClaim === false && strictFilter) {
             // Why this is not simply "duplicate": the acknowledgement is sent AFTER the
             // receipt has already reached the operator, and if that send fails
             // sendCustomerReplyAndFinish throws before its own markInboundDone - so the

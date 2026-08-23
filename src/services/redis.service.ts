@@ -643,14 +643,27 @@ export async function saveSiteLanguageHint(instanceId: string, phone: string, la
   });
 }
 
-export async function claimReceiptFingerprint(instanceId: string, fingerprint: string): Promise<boolean> {
-  return safeRedis(false, async () => {
+export async function claimReceiptFingerprint(
+  instanceId: string,
+  fingerprint: string
+): Promise<boolean | "error"> {
+  // "error" is distinct from false on purpose. safeRedis collapsed a Redis failure into the
+  // same false as "this fingerprint is already claimed", and the caller reads false as a
+  // duplicate - so during a blip a guest who had just paid was told not to resend a receipt
+  // that never reached the operator, with their money already gone. hasReceiptSeen, the
+  // discriminator added for exactly this case, is Redis-backed too and returns false in the
+  // same outage, so the honest branch was unreachable. Same fix B28 applied to
+  // takeComplaintClarification, which was never applied to money (found 2026-08-23).
+  try {
+    await connectRedis();
     const result = await redisClient.set(receiptFingerprintKey(instanceId, fingerprint), "1", {
       EX: RECEIPT_FINGERPRINT_TTL_SECONDS,
       NX: true,
     });
     return result === "OK";
-  });
+  } catch {
+    return "error";
+  }
 }
 
 export async function releaseReceiptFingerprint(instanceId: string, fingerprint: string): Promise<void> {
