@@ -5,20 +5,21 @@ import { refreshCheckoutContextForText } from "../services/checkoutIntent.servic
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
 import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemory.service.js";
 import {
-  claimReceiptFingerprint,
+claimReceiptFingerprint,
   clearPendingKitchenConsent,
+  getKitchenCheckoutFingerprint,
   getLastKnownOrderId,
   getPendingKitchenConsent,
-  getKitchenCheckoutFingerprint,
-  markMagicLinkSent,
-  markKitchenCheckoutStarted,
-  releaseReceiptFingerprint,
+  hasReceiptSeen,
   markComplaintClarificationPending,
+  markKitchenCheckoutStarted,
+  markMagicLinkSent,
+  markReceiptSeen,
+  releaseReceiptFingerprint,
   saveComplaintMedia,
   savePendingKitchenConsent,
   saveToHistory,
   takeComplaintClarification,
-  markReceiptSeen,
 } from "../services/redis.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
 import { isLikelyMenuQuestion } from "../utils/intentText.js";
@@ -467,20 +468,35 @@ function operationalPreemptionReply(ctx: FastFoodContext): string | null {
 // fact (operational_runtime.wait_consent_required + wait_label) that the agent
 // phrases itself in its own words. Removed so there is exactly one owner of
 // that message and no dead template can silently come back.
+// The hub tells us WHY it is closed and we used to throw that away, answering every state
+// with "по важной технической причине" - untrue for all of them except an emergency stop,
+// and it leaves the guest with nothing to do. It also lands hardest exactly where it is
+// least appropriate: a newly onboarded restaurant has its service channels switched off,
+// so its first guests were told the bot was broken (found 2026-08-23, live on kebab1).
+//
+// "Technical" is now reserved for the one case where it is honest.
 function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
+  const reason = String(policy.closedReason || "").toLowerCase();
+  const channelsOff = reason.includes("service_channels_disabled") || (!policy.delivery && !policy.pickup);
+  const emergency = policy.isEmergency || reason.includes("emergency");
+
   if (language === "ru") {
     if (policy.mode === "vacation") return `Сейчас временно не принимаем заказы${policy.remainingDays ? ` примерно ${policy.remainingDays} дн.` : ""}. Напишите нам немного позже — мы сообщим актуальную информацию. Спасибо за понимание.`;
     // Closed for the night is not a breakdown: saying "по технической причине"
     // here made a normal closing time sound like a failure and left the guest
     // with nothing to do about it.
     if (policy.mode === "off_hours") return "Сейчас мы закрыты — заказы принимаем в рабочие часы. Напишите, как только откроемся, и я всё оформлю. Меню можно посмотреть уже сейчас.";
-    if (policy.mode === "indefinite") return "По важной технической причине временно не принимаем заказы. Пожалуйста, напишите нам немного позже, чтобы уточнить актуальную ситуацию. Спасибо за понимание.";
-    return "По важной технической причине временно не принимаем заказы. Пожалуйста, попробуйте написать нам немного позже. Спасибо за понимание.";
+    // Both fulfillment channels are switched off. Nothing is broken and the guest can
+    // still be useful to: the menu is readable and we will write when it reopens.
+    if (channelsOff && !emergency) return "Сейчас ни доставка, ни самовывоз не доступны, поэтому заказ пока оформить не получится. Меню можно посмотреть уже сейчас — напишите позже, и я всё оформлю.";
+    if (emergency) return "Кухня временно остановлена, заказы сейчас не принимаем. Напишите нам немного позже, пожалуйста — как только возобновим, всё оформлю.";
+    return "Сейчас заказы временно не принимаем. Пожалуйста, напишите нам немного позже — я сразу всё оформлю. Меню можно посмотреть уже сейчас.";
   }
   if (policy.mode === "vacation") return `Қазір уақытша тапсырыс қабылдамаймыз${policy.remainingDays ? `, шамамен ${policy.remainingDays} күн` : ""}. Біраздан кейін қайта жазып, өзекті жағдайды нақтылап көріңіз. Түсіністік танытқаныңызға рақмет.`;
   if (policy.mode === "off_hours") return "Қазір жабықпыз — тапсырыстарды жұмыс уақытында қабылдаймыз. Ашылған кезде жазсаңыз, бәрін рәсімдеп беремін. Мәзірді қазірдің өзінде қарап отыруға болады.";
-  if (policy.mode === "indefinite") return "Маңызды техникалық себепке байланысты уақытша тапсырыс қабылдамаймыз. Біраздан кейін қайта жазып, өзекті жағдайды нақтылап көріңіз. Түсіністік танытқаныңызға рақмет.";
-  return "Маңызды техникалық себепке байланысты уақытша тапсырыс қабылдамаймыз. Біраздан кейін қайта жазып көріңіз. Түсіністік танытқаныңызға рақмет.";
+  if (channelsOff && !emergency) return "Қазір жеткізу де, алып кету де қолжетімсіз, сондықтан тапсырысты әзірге рәсімдей алмаймын. Мәзірді қазірдің өзінде қарап отыруға болады — кейінірек жазсаңыз, бәрін рәсімдеп беремін.";
+  if (emergency) return "Асүй уақытша тоқтатылды, қазір тапсырыс қабылдамаймыз. Біраздан кейін жазыңызшы — қайта іске қосылған бойда бәрін рәсімдеп беремін.";
+  return "Қазір тапсырысты уақытша қабылдамаймыз. Біраздан кейін жазсаңыз, бәрін бірден рәсімдеп беремін. Мәзірді қазірдің өзінде қарап отыруға болады.";
 }
 function unavailableChannelReply(channel: "delivery" | "pickup", language: "kk" | "ru") {
   if (language === "ru") return channel === "delivery" ? "Сейчас доставка временно недоступна, но можно оформить самовывоз." : "Сейчас самовывоз временно недоступен, но можно оформить доставку.";
@@ -963,11 +979,36 @@ async function processWhatsAppWebhook(body: any, started: number) {
           // A resend only blocks in strict mode - in test mode sending the same
           // receipt again is expected and must go through.
           if (!(await claimReceiptFingerprint(ctx.instanceId, fingerprint)) && strictFilter) {
-            const duplicateReply =
-              ctx.language === "ru"
+            // Why this is not simply "duplicate": the acknowledgement is sent AFTER the
+            // receipt has already reached the operator, and if that send fails
+            // sendCustomerReplyAndFinish throws before its own markInboundDone - so the
+            // lock is released, msg_done is never set, and the fingerprint stays claimed.
+            // The guest, who saw no confirmation, sends the receipt again and was told
+            // "do not send one receipt twice": accused of spamming a receipt they were
+            // never confirmed for, after their money had already left (found 2026-08-23).
+            //
+            // receipt_seen on the order is the discriminator. It is written only once the
+            // receipt actually reached the operator card, so a claimed fingerprint plus a
+            // seen receipt means WE went quiet, not that the guest repeated themselves.
+            const priorOrderNumber = String(
+              activeOrder.display_number || activeOrder.order_number || activeOrder.id || activeOrder.order_id || ""
+            );
+            const alreadyWithOperator = priorOrderNumber
+              ? await hasReceiptSeen(ctx.instanceId, priorOrderNumber).catch(() => false)
+              : false;
+            const duplicateReply = alreadyWithOperator
+              ? ctx.language === "ru"
+                ? "🧾 Ваш чек у оператора, он на проверке — отправлять ещё раз не нужно. Извините, что подтверждение не дошло сразу."
+                : "🧾 Чегіңіз операторда, тексеруде — қайта жіберудің қажеті жоқ. Растауы бірден жетпегені үшін кешіріңіз."
+              : ctx.language === "ru"
                 ? "Этот чек уже был отправлен. Пожалуйста, не отправляйте один чек повторно."
                 : "Бұл чек бұрын жіберілген. Бір чекті қайта жібермеңіз.";
-            await sendCustomerReplyAndFinish(ctx, messageId, duplicateReply, "payment_receipt_duplicate");
+            await sendCustomerReplyAndFinish(
+              ctx,
+              messageId,
+              duplicateReply,
+              alreadyWithOperator ? "payment_receipt_confirmation_resent" : "payment_receipt_duplicate"
+            );
             return;
           }
 

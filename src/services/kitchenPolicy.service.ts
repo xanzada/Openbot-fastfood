@@ -29,6 +29,12 @@ export interface KitchenSalesPolicy {
   // guess - the checkout gate, the facts prompt - read this instead of inferring
   // openness from the defaulted flags.
   stateKnown: boolean;
+  // Why the kitchen is closed, straight from the hub (service_channels_disabled,
+  // outside_work_hours, emergency_stop, ...). dle.service has always normalised this and
+  // the Redis fallback derives it, but the policy used to drop it - so every closed state
+  // was answered with "по важной технической причине", which is false for all of them
+  // except an emergency stop, and tells the guest nothing to do (found 2026-08-23).
+  closedReason: string;
   fingerprint: string;
 }
 
@@ -47,6 +53,13 @@ export function formatKitchenWait(minutesValue: unknown, language: "kk" | "ru") 
     : `${hours} ${hours === 1 ? "час" : hours < 5 ? "часа" : "часов"} ${rest} минут`;
 }
 
+// The reason can arrive at the top level or nested under kitchen_status, exactly like
+// every other field here.
+function kitchenSource(runtime: Record<string, any> | null) {
+  const nested = runtime?.kitchen_status;
+  return nested && typeof nested === "object" ? nested : null;
+}
+
 export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, nowMs = Date.now()): KitchenSalesPolicy {
   // The absence of an answer is not an answer of "open". Two shapes mean "we could not
   // read the kitchen": no object at all (buildFactsPrompt passes ctx.runtimeStatus,
@@ -55,6 +68,9 @@ export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, 
   // runtime_available: Boolean(runtimeStatus) for exactly this reason.
   const stateKnown = Boolean(runtime && typeof runtime === "object")
     && (runtime as Record<string, any>).runtime_available !== false;
+  const closedReason = String(
+    runtime?.closed_reason ?? kitchenSource(runtime)?.closed_reason ?? ""
+  ).trim().slice(0, 120);
   const kitchen = runtime?.kitchen_status && typeof runtime.kitchen_status === "object" ? runtime.kitchen_status : {};
   const waitMinutes = Math.max(0, Math.floor(Number(runtime?.wait_time ?? kitchen.wait_time ?? 0) || 0));
   const delivery = asBool(runtime?.delivery ?? kitchen.delivery, true);
@@ -115,6 +131,7 @@ export function classifyKitchenSalesPolicy(runtime: Record<string, any> | null, 
     blocksAllSales,
     reopeningKnown,
     stateKnown,
+    closedReason,
     fingerprint: crypto.createHash("sha256").update(fingerprintSource).digest("hex"),
   };
 }
