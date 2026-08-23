@@ -804,6 +804,18 @@ async function processWhatsAppWebhook(body: any, started: number) {
       return;
     }
 
+    // One conversation = one reply at a time. Waits a bounded moment for a turn that is
+    // already running, exactly as the text lane always did - factored out because the media
+    // lane needs the same protection and had none (see below).
+    const waitForTurnLock = async () => {
+      let owner = await acquireTurnLock(instanceId, phone);
+      for (let waited = 0; !owner && waited < 45_000; waited += 1_500) {
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        owner = await acquireTurnLock(instanceId, phone);
+      }
+      return owner;
+    };
+
     // Merge fragmented text messages in a small, short-lived Redis buffer.
     if (!mediaContext && text) {
       const buffered = await bufferInboundText({ instanceId, phone, messageId, text });
@@ -812,16 +824,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
         return;
       }
 
-      // One conversation = one reply at a time. The per-message lock never
-      // stopped two batches of split messages from being answered in parallel;
-      // this turn lock does. A part that arrives while the previous reply is
-      // still being generated waits a bounded moment, then gets folded into
-      // ONE coherent message by the buffer brain - never a second answer.
-      turnLockOwner = await acquireTurnLock(instanceId, phone);
-      for (let waited = 0; !turnLockOwner && waited < 45_000; waited += 1_500) {
-        await new Promise((resolve) => setTimeout(resolve, 1_500));
-        turnLockOwner = await acquireTurnLock(instanceId, phone);
-      }
+      // The per-message lock never stopped two batches of split messages from being
+      // answered in parallel; this turn lock does. A part that arrives while the previous
+      // reply is still being generated waits a bounded moment, then gets folded into ONE
+      // coherent message by the buffer brain - never a second answer.
+      turnLockOwner = await waitForTurnLock();
       if (!turnLockOwner) {
         // Waiting out the previous turn is preferable to answering twice, but a
         // guest message must never be thrown away: it goes back into the buffer
@@ -840,6 +847,29 @@ async function processWhatsAppWebhook(body: any, started: number) {
         ? await mergeBufferedParts(parts).catch(() => buffered.text || text)
         : (parts[0] || buffered.text || text);
       customerLanguageText = text;
+    }
+
+    // A media turn took NO turn lock at all: the acquisition above sits inside
+    // `if (!mediaContext && text)`. Everything from here on is shared with the text lane -
+    // preloadContext, media analysis, the receipt lane, the agent, the send sequence - so a
+    // guest who sent a photo and then typed had two turns running over one conversation,
+    // two replies, and in the receipt lane two analyses of the same payment (found
+    // 2026-08-23).
+    //
+    // It is taken here rather than inside the block above because a photo must not go
+    // through bufferInboundText - that buffer merges text fragments and a photo is not a
+    // fragment.
+    if (!turnLockOwner) {
+      turnLockOwner = await waitForTurnLock();
+      if (!turnLockOwner) {
+        // Deliberately NOT requeued as a text part: a photo is not a fragment, and dropping
+        // a paid receipt because a text turn was busy would be worse than a rare double.
+        // The receipt lane has its own fingerprint claim for that. Proceeding unlocked is
+        // the same behaviour this lane has always had, now logged instead of silent.
+        console.warn(
+          `[OPENBOT:TURN] media turn proceeding without the lock instance=${instanceId} phone=${maskPhone(phone)} kind=${mediaContext?.kind || "-"}`
+        );
+      }
     }
 
     mediaContext = await hydrateInboundMedia(body, mediaContext);
