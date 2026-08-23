@@ -225,9 +225,26 @@ export const CASE_FLAG_QUIET_MS = 12 * 60 * 60 * 1000;
 export type CaseFlagDecision = "flag" | "already_flagged" | "stale";
 
 export function decideCaseFlag(data: { markerPushedAt?: number; updatedAt?: number; createdAt?: number }, now = Date.now()): CaseFlagDecision {
-  if (data?.markerPushedAt) return "already_flagged";
+  // Staleness is checked FIRST, and that order is the whole fix. With the flag test in
+  // front, a case that had been flagged could never be reported stale, so only an
+  // unflagged case was ever swept - and the sweep is the only thing that releases the
+  // guest's phone. A flagged case therefore held it for the full 7-day CASE_TTL_SECONDS,
+  // re-extended on every reuse (found 2026-08-23; measured: a 6-day-old flagged case
+  // still answered "already_flagged").
+  //
+  // That is not a cosmetic leak. createOperatorCase reuses the held case for a genuinely
+  // new complaint days later, and notifyHubSos dedupes on sos_hub_sent:{instance}:{caseId}
+  // for the case's whole life - so the second complaint reached the operator's board and
+  // never reached the site at all. The comment above notifyHubSos already assumed this
+  // behaviour ("a genuinely new episode becomes a new case, the stale sweep frees the
+  // phone"); it just was not true yet.
+  //
+  // A case nobody has touched for CASE_FLAG_QUIET_MS is over whether or not we drew a
+  // red row for it. Fresh cases are unaffected, which keeps "one SOS = one notification"
+  // intact for the episode that is actually live.
   const lastTouch = Number(data?.updatedAt || data?.createdAt || 0);
   if (lastTouch && now - lastTouch > CASE_FLAG_QUIET_MS) return "stale";
+  if (data?.markerPushedAt) return "already_flagged";
   return "flag";
 }
 
@@ -252,7 +269,16 @@ export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: strin
     return true;
   }
   if (decision === "stale") {
-    await redisClient.del(activeKey(instanceId, customerPhone));
+    // Releasing the phone is what lets the guest's next complaint open a NEW case, which
+    // is what makes the site hear about it: notifyHubSos dedupes per case id.
+    // The finished case's hub claim goes with it - keeping a 7-day key for a case nobody
+    // will signal again only delays the cleanup.
+    await redisClient
+      .multi()
+      .del(activeKey(instanceId, customerPhone))
+      .del(`sos_hub_sent:${instanceId}:${caseId}`)
+      .exec()
+      .catch(() => null);
     return false;
   }
   const recent = await redisClient.lRange(`history:${instanceId}:${customerPhone}`, -40, -1);

@@ -687,6 +687,52 @@ export async function hasReceiptSeen(instanceId: string, orderId: string): Promi
   }
 }
 
+// Photo evidence must not outlive its case, and it must not die before it either.
+// whatspro stores every inbound media on arrival (chatwoot:media:{instance}:{messageId})
+// and the operator panel renders it from the chat, but that copy lives
+// STANDARD_TTL_SECONDS = 24h while an operator case lives CASE_TTL_SECONDS = 7 days. So a
+// red "operator needed" row sat on the board for a week with hasMedia:true and nothing
+// behind it after the first day - and openbot deleted its own 5-minute scratch copy the
+// moment the case was created. Same family as the history-TTL defect: the guests who
+// escalated were the ones who lost the evidence (found 2026-08-23).
+const CASE_MEDIA_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+export async function saveCaseMedia(
+  instanceId: string,
+  caseId: string,
+  media: { base64: string; mimeType?: string; mediaType?: string; filename?: string }
+): Promise<boolean> {
+  if (!instanceId || !caseId || !media?.base64) return false;
+  return Boolean(
+    await safeRedis(false, async () => {
+      await redisClient.setEx(
+        `operator_case_media:${instanceId}:${caseId}`,
+        CASE_MEDIA_TTL_SECONDS,
+        JSON.stringify({
+          base64: media.base64,
+          mimeType: media.mimeType || media.mediaType || "image/jpeg",
+          filename: media.filename || "",
+          storedAt: Date.now(),
+        })
+      );
+      return true;
+    })
+  );
+}
+
+export async function getCaseMedia(instanceId: string, caseId: string): Promise<Record<string, any> | null> {
+  if (!instanceId || !caseId) return null;
+  return safeRedis(null, async () => {
+    const raw = await redisClient.get(`operator_case_media:${instanceId}:${caseId}`);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  });
+}
+
 export async function saveComplaintMedia(
   instanceId: string,
   phone: string,

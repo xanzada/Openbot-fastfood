@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import type { FastFoodContext } from "../context/types.js";
-import { clearComplaintMedia, getComplaintMedia, markComplaintClarificationPending, takeComplaintClarification } from "./redis.service.js";
+import {
+  clearComplaintMedia,
+  getComplaintMedia,
+  markComplaintClarificationPending,
+  saveCaseMedia,
+  takeComplaintClarification,
+} from "./redis.service.js";
 import { bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind, getActiveOperatorCaseId } from "./operatorCase.service.js";
 import { auditError } from "./auditLogger.service.js";
 import { intentMatches, isLikelyMenuQuestion } from "../utils/intentText.js";
@@ -264,6 +270,17 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     return null;
   });
 
+  // The scratch copy is promoted to a case-scoped one before it is dropped. Deleting it
+  // outright left the case pointing at evidence that only whatspro held, on a 24h TTL,
+  // while the case itself lives 7 days - so a two-day-old red row said hasMedia:true with
+  // nothing behind it (found 2026-08-23).
+  if (media?.base64 && operatorCase?.id) {
+    await saveCaseMedia(ctx.instanceId, String(operatorCase.id), {
+      base64: media.base64,
+      mimeType: media.mimeType,
+      filename: media.filename,
+    }).catch(() => false);
+  }
   if (savedMedia?.base64 && operatorCase) {
     await clearComplaintMedia(ctx.instanceId, ctx.phone).catch(() => undefined);
   }
