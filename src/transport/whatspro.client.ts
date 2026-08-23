@@ -375,6 +375,23 @@ export async function drainWhatsProOutbox(limit = 25) {
       delivered += 1;
     } catch (error: any) {
       const attempts = Number(record.attempts || 0) + 1;
+      // The same three brakes D12 gave the developer-alert outbox. Without them an
+      // undeliverable reply was re-sent every ~5 minutes for as long as its Redis copy lived
+      // (7 days), each attempt leaving a file copy under outboxDirectory that only success
+      // removed - and a guest could receive an answer to a question asked hours earlier
+      // (found 2026-08-23).
+      const MAX_ATTEMPTS = envNumber(process.env.OPENBOT_OUTBOX_MAX_ATTEMPTS, 5, { min: 1 });
+      const AGE_LIMIT_MS = envNumber(process.env.OPENBOT_OUTBOX_MAX_AGE_MS, 6 * 60 * 60_000, { min: 60_000 });
+      const age = Date.now() - Number(record.createdAt || 0);
+      if (attempts >= MAX_ATTEMPTS || age > AGE_LIMIT_MS) {
+        auditError(
+          `[OPENBOT:OUTBOX:ABANDONED] instance=${record.instanceId} id=${record.id} attempts=${attempts} ageMs=${age}`,
+          new Error(String(error?.message || error || "delivery_failed")),
+          { failedStep: "whatspro_outbox_abandoned" },
+        );
+        await removeOutbox(record.id);
+        continue;
+      }
       await persistOutbox({
         ...record,
         attempts,
