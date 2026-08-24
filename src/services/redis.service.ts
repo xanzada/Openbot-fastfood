@@ -1092,6 +1092,21 @@ export async function syncShiftNotesSnapshot(
       if (await saveShiftNote(instanceId, noteId, text, expiry)) desiredIds.add(noteId);
     }
 
+    // An EMPTY snapshot used to mean "delete every local note". A hub that merely
+    // echoes shift_notes: [] - this one does, even seconds after its own panel
+    // webhook delivered a note - wiped every note within one runtime poll, and the
+    // bot went back to selling a dish the operator had pulled (live round,
+    // 2026-08-24). An empty snapshot now wipes only after this hub has once shown
+    // it actually tracks notes (a non-empty snapshot); explicit
+    // shift_note_deleted webhooks and the TTL remain the cleanup paths otherwise.
+    const managedKey = `shift_notes_hub_managed:${instanceId}`;
+    if (!desiredIds.size) {
+      const managed = await redisClient.get(managedKey);
+      if (!managed) return 0;
+    } else {
+      await redisClient.setEx(managedKey, 7 * 24 * 3600, "1");
+    }
+
     let changed = 0;
     const existingKeys = await scanKeys(`shift_note:${instanceId}:*`);
     for (const key of existingKeys) {

@@ -184,3 +184,25 @@ test("the authoritative runtime snapshot restores missed notes and removes stale
   assert.equal(notes[0].text, "Кола закончилась, предлагай пепси");
   assert.equal(store.has(`shift_note:${B}:201`), true, "another tenant is untouched");
 });
+
+// A hub that merely echoes shift_notes: [] used to erase every webhook-delivered
+// note on the next runtime poll: the panel created a note, and seconds later the
+// bot was selling the dish that note had pulled (live round, 2026-08-24).
+test("an empty snapshot from a hub that never tracked notes wipes nothing", async () => {
+  await seed();
+  await syncShiftNotesSnapshot(A, []);
+
+  const texts = (await getActiveShiftNotes(A)).map((n) => n.text).sort();
+  assert.deepEqual(texts, ["Ірімшік бітті", "Кешкі кезек ұзақ"], "both local notes survive an empty snapshot");
+});
+
+test("once a hub has shown it tracks notes, an empty snapshot corrects the drift", async () => {
+  await seed();
+  await syncShiftNotesSnapshot(A, [{ id: "runtime-401", text: "Кола закончилась" }]);
+  assert.deepEqual((await getActiveShiftNotes(A)).map((n) => n.noteId), ["runtime-401"]);
+
+  // The operator deleted the last note in the panel; the hub now reports none.
+  await syncShiftNotesSnapshot(A, []);
+
+  assert.deepEqual(await getActiveShiftNotes(A), [], "a tracking hub's empty list is authoritative");
+});
