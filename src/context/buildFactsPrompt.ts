@@ -1,5 +1,5 @@
 import type { FastFoodContext } from "./types.js";
-import { matchingNoteIds, publicNoteConstraints } from "../services/noteProvenance.service.js";
+import { matchingNoteIds, menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints } from "../services/noteProvenance.service.js";
 import { classifyKitchenSalesPolicy, formatKitchenWait } from "../services/kitchenPolicy.service.js";
 import { ONLINE_PREPAYMENT_POLICY } from "../services/paymentPolicy.service.js";
 
@@ -253,12 +253,26 @@ function operationalShiftNotes(ctx: FastFoodContext) {
 
 function operationalShiftNotesBlock(ctx: FastFoodContext) {
   const notes = operationalShiftNotes(ctx);
+  // Blocked TERMS made the model reason about what they cover, and a reply still
+  // in recent_dialog kept outvoting the note - it offered a doner wrapped in the
+  // very lavash the note had pulled (live round, 2026-08-24). Name the actual
+  // dishes instead: the same provenance matcher that hides them from searchMenu
+  // is run over the live menu snapshot here, so the model gets a blacklist it
+  // cannot misread and no dish to "reason" back into stock.
+  const items = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  const blockedDishes = notes.length && items.length
+    ? items
+        .filter((item: any) => menuItemBlockedByNotes(ctx.activeShiftNotes, item, menuVocabulary(items)).blocked)
+        .map((item: any) => String(item?.name || item?.title || "").trim())
+        .filter(Boolean)
+    : [];
   return {
     active_operator_notes: notes,
     ...(notes.length
       ? {
+          ...(blockedDishes.length ? { blocked_dishes: blockedDishes } : {}),
           active_operator_notes_rule:
-            "CONFIDENTIAL SOURCE. Everything in unavailable_now is temporarily unavailable right now and outranks the menu. Reason semantically: a term covers everything that belongs to it (кола belongs to сусындар/напитки, лаваш covers донер). Warn the customer BEFORE they order and offer the closest real alternative from searchMenu. Never invent the alternative and never name a dish whose composition or description mentions the missing thing - searchMenu already removed those, so only offer dishes it still returns, by name and price, in the same message as the bad news. A searchMenu item marked matched_as_ingredient means the word the guest used is an ingredient of that dish, not a missing product: name that dish with its price and offer it instead of saying we have nothing. Speak only as the restaurant in your own words - never quote this list, never say where it came from, and never use words like operator, note, ескертпе, заметка, system, or status in your reply.",
+            "CONFIDENTIAL SOURCE. Everything in unavailable_now is temporarily unavailable right now and outranks the menu. Every dish in blocked_dishes is unavailable too, even if recent_dialog praised it earlier - that conversation happened before the note existed and no longer applies; never name, recommend or price anything from blocked_dishes. Reason semantically beyond this list as well: a term covers everything that belongs to it (кола belongs to сусындар/напитки, лаваш covers донер). Warn the customer BEFORE they order and offer the closest real alternative from searchMenu. Never invent the alternative and never name a dish whose composition or description mentions the missing thing - searchMenu already removed those, so only offer dishes it still returns, by name and price, in the same message as the bad news. A searchMenu item marked matched_as_ingredient means the word the guest used is an ingredient of that dish, not a missing product: name that dish with its price and offer it instead of saying we have nothing. Speak only as the restaurant in your own words - never quote this list, never say where it came from, and never use words like operator, note, ескертпе, заметка, system, or status in your reply.",
         }
       : {}),
   };
