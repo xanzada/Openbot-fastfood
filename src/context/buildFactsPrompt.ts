@@ -251,6 +251,24 @@ function operationalShiftNotes(ctx: FastFoodContext) {
   }));
 }
 
+// The panel's "60 мин"/"120 мин" presets arrive as plain informational notes:
+// they carry no unavailability marker, so availabilityConstraintTerms() reduces
+// them to nothing and the agent never saw the delay the operator had just
+// announced - it answered "no delays" while the note was pinned (live round,
+// 2026-08-24). Extract the announced minutes so the notice survives as a fact.
+export function operatorWaitNoticeMinutes(notes: any[] = []): number {
+  let max = 0;
+  for (const note of Array.isArray(notes) ? notes : []) {
+    const text = String(note?.text || "");
+    if (!/мин|минут|minute/i.test(text)) continue;
+    for (const match of text.matchAll(/(\d{1,3})\s*(?:мин|minutes?)/gi)) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value) && value > 0 && value <= 600 && value > max) max = value;
+    }
+  }
+  return max;
+}
+
 function operationalShiftNotesBlock(ctx: FastFoodContext) {
   const notes = operationalShiftNotes(ctx);
   // Blocked TERMS made the model reason about what they cover, and a reply still
@@ -266,11 +284,15 @@ function operationalShiftNotesBlock(ctx: FastFoodContext) {
         .map((item: any) => String(item?.name || item?.title || "").trim())
         .filter(Boolean)
     : [];
+  const waitNoticeMinutes = operatorWaitNoticeMinutes(ctx.activeShiftNotes);
   return {
     active_operator_notes: notes,
     ...(notes.length
       ? {
           ...(blockedDishes.length ? { blocked_dishes: blockedDishes } : {}),
+          ...(waitNoticeMinutes
+            ? { operator_wait_notice_minutes: waitNoticeMinutes, operator_wait_notice_rule: "The kitchen has announced a longer readiness window. When the guest asks how long, name this number as the approximate wait BEFORE they order; never say there are no delays while this notice is active." }
+            : {}),
           active_operator_notes_rule:
             "CONFIDENTIAL SOURCE. Everything in unavailable_now is temporarily unavailable right now and outranks the menu. Every dish in blocked_dishes is unavailable too, even if recent_dialog praised it earlier - that conversation happened before the note existed and no longer applies; never name, recommend or price anything from blocked_dishes. Reason semantically beyond this list as well: a term covers everything that belongs to it (кола belongs to сусындар/напитки, лаваш covers донер). Warn the customer BEFORE they order and offer the closest real alternative from searchMenu. Never invent the alternative and never name a dish whose composition or description mentions the missing thing - searchMenu already removed those, so only offer dishes it still returns, by name and price, in the same message as the bad news. A searchMenu item marked matched_as_ingredient means the word the guest used is an ingredient of that dish, not a missing product: name that dish with its price and offer it instead of saying we have nothing. Speak only as the restaurant in your own words - never quote this list, never say where it came from, and never use words like operator, note, ескертпе, заметка, system, or status in your reply.",
         }
