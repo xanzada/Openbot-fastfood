@@ -149,6 +149,25 @@ function discountedMenuNames(ctx: FastFoodContext): string[] {
     .filter(Boolean);
 }
 
+/**
+ * "We only deliver to <the restaurant's own address>."
+ *
+ * The address getBusinessInfo returns is where the kitchen stands. Nothing in this agent
+ * knows the delivery zone - the site decides it at checkout - yet a guest who gave their
+ * street was told "Өкінішке орай, біз тек Арман 54 мекенжайына жеткіземіз" and the sale
+ * died on an invented boundary (live QA R3-06.1 and R5-07.1, 2026-08-24). A refusal to
+ * deliver somewhere is a fact this bot can never hold, so the sentence is cut and the
+ * honest one takes its place.
+ */
+const DELIVERY_ZONE_REFUSAL_RE =
+  /[^.!?\n]*(?:тек|только|лишь)[^.!?\n]{0,60}(?:жеткіз|жеткиз|достав|доставля)[^.!?\n]*[.!?]?|[^.!?\n]*(?:жеткіз|жеткиз|достав)[^.!?\n]{0,40}(?:мүмкін емес|мумкин емес|алмаймыз|болмайды|не\s+можем|невозможн|не\s+осуществля)[^.!?\n]{0,40}(?:мекенжай|адрес|көше|улиц|аудан|район)[^.!?\n]*[.!?]?|[^.!?\n]*(?:мекенжай|адрес|көше|улиц|аудан|район)[^.!?\n]{0,50}(?:жеткіз\p{L}*\s*(?:мүмкін емес|алмаймыз|болмайды)|не\s+доставля|вне\s+зоны|аймақтан\s+тыс)[^.!?\n]*[.!?]?/giu;
+
+function deliveryZoneUnknownText(language: unknown) {
+  return language === "kk"
+    ? "Жеткізу мекенжайыңызға шыға ма - оны тапсырыс рәсімдеу кезінде сайттың өзі көрсетеді. Сілтемеден таңдап көріңіз, мекенжайды сол жерде тексереміз."
+    : "Доставим ли мы на ваш адрес - это показывает сам сайт при оформлении заказа. Выберите блюда по ссылке, и адрес проверится там же.";
+}
+
 function enforceMaxSentences(text: string, max = 5): string {
   const urls = uniqueUrls(text);
   const trimmed = textWithoutUrls(text);
@@ -352,6 +371,20 @@ export function validateFinalText(
     };
   }
 
+  // A delivery-zone refusal is never a fact this agent holds - see
+  // DELIVERY_ZONE_REFUSAL_RE. Cut the clause; if it was the whole reply, say the honest
+  // thing instead of letting an invented boundary end the sale.
+  DELIVERY_ZONE_REFUSAL_RE.lastIndex = 0;
+  if (DELIVERY_ZONE_REFUSAL_RE.test(text)) {
+    DELIVERY_ZONE_REFUSAL_RE.lastIndex = 0;
+    const withoutZoneRefusal = dropSentencesMatching(text, DELIVERY_ZONE_REFUSAL_RE);
+    warnings.push("invented_delivery_zone_removed");
+    if (!textWithoutUrls(withoutZoneRefusal)) {
+      return { text: deliveryZoneUnknownText(ctx.language), hasLink: false, warnings };
+    }
+    text = withoutZoneRefusal;
+  }
+
   // A truncated generation once shipped the single word "Өкі" to a guest. A reply that
   // short with no sentence ending and no URL is a broken fragment, not an answer.
   const looksUnfinished = text.length < 12 && !/[.!?…:]$/.test(text) && !hasLinkInResponse(text);
@@ -524,8 +557,21 @@ export function validateFinalText(
           return discounted.some((name) => lower.includes(name.toLowerCase()));
         }
       : null;
+    // A percentage is never in the catalog: the menu carries prices, not "20% off". So a
+    // percent claim stays ungrounded even in a reply that also names real discounts.
+    const PERCENT_DISCOUNT_RE = /\d{1,3}\s*%/u;
+    // When the reply already names a genuinely discounted dish, the promo TOPIC is grounded
+    // for this reply, and the framing sentence around it ("Қазір мынадай акциялар бар:")
+    // is part of the same true statement. Cutting it left the answer starting mid-thought
+    // with "Мысалы:" (live QA R5-02.1). Percent claims are still cut individually.
+    const replyIsGroundedPromo = Boolean(namesDiscountedDish)
+      && (textWithoutUrls(text).match(/[^.!?\n]+[.!?]*/g) || []).some((sentence) =>
+        namesDiscountedDish!(sentence) && !PERCENT_DISCOUNT_RE.test(sentence));
+    const keepPromoSentence = replyIsGroundedPromo
+      ? (sentence: string) => !PERCENT_DISCOUNT_RE.test(sentence)
+      : namesDiscountedDish;
     if (!promoInNotes && PROMO_CLAIM_RE.test(text)) {
-      const withoutPromos = dropSentencesMatchingUnless(text, PROMO_CLAIM_RE, namesDiscountedDish);
+      const withoutPromos = dropSentencesMatchingUnless(text, PROMO_CLAIM_RE, keepPromoSentence);
       if (withoutPromos && withoutPromos !== text) {
         text = withoutPromos;
         warnings.push("unverified_promo_claim_removed");

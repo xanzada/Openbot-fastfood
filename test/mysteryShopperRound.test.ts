@@ -149,6 +149,29 @@ test("a promo sentence naming a genuinely discounted dish survives", () => {
   assert.ok(out.warnings.includes("promo_claim_grounded_by_menu"), JSON.stringify(out.warnings));
 });
 
+test("the framing sentence around a real discount list survives with it", () => {
+  // R5-02.1 after the first fix: the dish lines were kept and the opening line
+  // "Қазір мынадай акциялар бар:" was cut, so the answer began mid-thought with "Мысалы:".
+  // When the reply names a real discount the topic is grounded for that reply.
+  const reply = "Қазір мынадай акциялар бар. Калифорния роллы 3000 теңге орнына 2500 теңге.";
+  const out = validateFinalText(reply, ctx({ menuSnapshot: discountedSnapshot }), {
+    toolsCalled: ["searchMenu"],
+  });
+  assert.match(out.text, /мынадай акциялар бар/, out.text);
+  assert.match(out.text, /2500/);
+});
+
+test("a percentage is still cut even inside a grounded promo reply", () => {
+  // The catalog carries prices, never "20% off", so a percent claim can never be grounded
+  // by it - not even in a reply whose other sentences are true.
+  const reply = "Калифорния роллы 3000 теңге орнына 2500 теңге. Барлығына жеңілдік 20% береміз.";
+  const out = validateFinalText(reply, ctx({ menuSnapshot: discountedSnapshot }), {
+    toolsCalled: ["searchMenu"],
+  });
+  assert.match(out.text, /2500/, "the real discount survives");
+  assert.doesNotMatch(out.text, /20\s*%/, "the invented percentage does not");
+});
+
 test("an invented discount on a dish that is not discounted is still cut", () => {
   // The relaxation must be per-sentence and per-dish, or it becomes a licence to invent.
   const reply = "Макидзуси роллына бүгін 50% жеңілдік береміз.";
@@ -285,4 +308,40 @@ test("the honest cancellation handoff wording is not blocked", () => {
   assert.equal(isManualOrderCancellationClaim(honest), false);
   const out = validateFinalText(honest, ctx(), { toolsCalled: [] });
   assert.equal(out.warnings.includes("manual_cancellation_claim_blocked"), false);
+});
+
+// ---------------------------------------------------------------------------
+// F11: the bot invented a delivery zone out of the restaurant's own address.
+// ---------------------------------------------------------------------------
+
+test("the bot never refuses delivery to an address", () => {
+  // Live QA R3-06.1 and again R5-07.1: the guest gave their street and was told
+  // "Өкінішке орай, біз тек Арман 54 мекенжайына жеткіземіз" - Арман 54 is where the
+  // KITCHEN is. Nothing in this agent knows the delivery zone; the site decides it at
+  // checkout, so the sale died on a boundary that does not exist.
+  const invented = "Өкінішке орай, біз тек Арман 54 мекенжайына жеткіземіз.";
+  const out = validateFinalText(invented, ctx(), { toolsCalled: ["getBusinessInfo"] });
+  assert.ok(out.warnings.includes("invented_delivery_zone_removed"), JSON.stringify(out.warnings));
+  assert.doesNotMatch(out.text, /тек Арман 54/);
+  // The replacement has to point at the one thing that CAN answer the question.
+  assert.match(out.text, /сайт/i);
+});
+
+test("a zone refusal is cut clause by clause, keeping the rest of the answer", () => {
+  const mixed = "Донер 1000 теңге тұрады. Абай 10 мекенжайына жеткізу мүмкін емес.";
+  const out = validateFinalText(mixed, ctx({ menuSnapshot: discountedSnapshot }), {
+    toolsCalled: ["searchMenu"],
+  });
+  assert.match(out.text, /1000 теңге/, "the real price survives");
+  assert.doesNotMatch(out.text, /жеткізу мүмкін емес/);
+});
+
+test("an operational delivery outage is still sayable", () => {
+  // The kitchen switching delivery off is a real fact the runtime reports, and the
+  // deterministic channel reply says exactly this. It must not be mistaken for an
+  // invented zone boundary.
+  const real = "Жеткізу қызметі қазір қолжетімді емес, тек алып кетуге болады.";
+  const out = validateFinalText(real, ctx(), { toolsCalled: ["getKitchenStatus"] });
+  assert.equal(out.warnings.includes("invented_delivery_zone_removed"), false, JSON.stringify(out.warnings));
+  assert.match(out.text, /алып кетуге/);
 });
