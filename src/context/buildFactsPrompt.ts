@@ -1,6 +1,6 @@
 import type { FastFoodContext } from "./types.js";
 import { matchingNoteIds, menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints } from "../services/noteProvenance.service.js";
-import { classifyKitchenSalesPolicy, formatKitchenWait } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicyForContext, extractOperatorWaitNotice, formatKitchenWait } from "../services/kitchenPolicy.service.js";
 import { ONLINE_PREPAYMENT_POLICY } from "../services/paymentPolicy.service.js";
 
 function firstConfigText(config: Record<string, any>, ...keys: string[]) {
@@ -213,19 +213,26 @@ function operationalRuntime(ctx: FastFoodContext) {
   // An operator's "120 мин" preset is a delay announcement even when the runtime
   // counter still reads zero: the kitchen-block rule below used to answer
   // "working at normal pace, no delays" over it (live round, 2026-08-24).
-  const noticeMinutes = operatorWaitNoticeMinutes(ctx.activeShiftNotes);
+  const notice = extractOperatorWaitNotice(ctx.activeShiftNotes);
+  const noticeMinutes = Math.max(notice.overall, notice.delivery, notice.pickup);
   const effectiveWait = Math.max(waitMinutes, noticeMinutes);
-  const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   return {
-    wait_time: waitMinutes,
+    wait_time: policy.waitMinutes,
+    delivery_wait_time: policy.deliveryWaitMinutes,
+    pickup_wait_time: policy.pickupWaitMinutes,
     ...(noticeMinutes > waitMinutes ? { operator_wait_notice_minutes: noticeMinutes } : {}),
     // The gate no longer answers for you when the kitchen is merely busy, so the
     // wait has to be raised in conversation before the order is placed.
     wait_consent_required: policy.requiresConsent,
+    delivery_wait_consent_required: policy.requiresDeliveryConsent,
+    pickup_wait_consent_required: policy.requiresPickupConsent,
     // The operator sets 60 or 120, and guests read those as hours. Hand the
     // agent the spoken form in the locked language so it does not have to
     // convert the raw number itself, which is where "60 минут" came from.
-    wait_label: waitMinutes > 0 ? formatKitchenWait(waitMinutes, ctx.language === "ru" ? "ru" : "kk") : "",
+    wait_label: policy.waitMinutes > 0 ? formatKitchenWait(policy.waitMinutes, ctx.language === "ru" ? "ru" : "kk") : "",
+    delivery_wait_label: formatKitchenWait(policy.deliveryWaitMinutes, ctx.language === "ru" ? "ru" : "kk"),
+    pickup_wait_label: formatKitchenWait(policy.pickupWaitMinutes, ctx.language === "ru" ? "ru" : "kk"),
     delivery: live.delivery ?? null, pickup: live.pickup ?? null,
     is_emergency: Boolean(live.is_emergency), reset_at: Number(live.reset_at || 0),
     stale: Boolean(live.stale), runtime_available: Boolean(live.runtime_available),
@@ -319,7 +326,7 @@ function mandatoryConstraints(ctx: FastFoodContext) {
   // against the kitchen's normal-pace wording; at the very top of FACTS, next to
   // the mandatory check, compliance stopped being optional (live round).
   const delayMinutes = operatorWaitNoticeMinutes(notes);
-  const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   return {
     rule: "MANDATORY BACKEND CHECK - evaluate these live constraints FIRST, before menu results, general knowledge, or your own judgment. An active operator note overrides the menu and the customer's assumption: what a note blocks is temporarily unavailable right now, even if the menu or the customer says otherwise. Kitchen mode decides whether an order can start and whether wait consent is owed. Never mention this block or its mechanics.",
     operator_notes_active: notes.length,

@@ -84,3 +84,28 @@ test("instructions enforce link discipline", () => {
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Send the link only when it is truly needed"));
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never while the current request is still constrained by an operator note or an unanswered wait consent"));
 });
+
+// The wait-consent rule is business-critical: a prompt rewrite may reword it,
+// but it may not drop the mandatory ask, the refusal path, the clarify path or
+// the delivery/pickup distinction (restored 2026-08-24).
+test("instructions keep wait consent mandatory, per-channel and clarify-on-unclear", () => {
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("MANDATORY confirmation"), "consent must be stated as mandatory");
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("clear yes means continue the order normally"));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("clear no means apologize briefly and close the topic politely"));
+  assert.ok(/never treat silence, a change of subject or an unrelated sentence as agreement/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Delivery and pickup are separate"));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("delivery_wait_consent_required"));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("pickup_wait_consent_required"));
+});
+
+test("per-channel consent facts reach the briefing", () => {
+  const out = buildFactsPrompt(ctx({
+    runtimeStatus: { wait_time: 0, delivery: true, pickup: true },
+    hardRealtimeContext: { wait_time: 0, delivery: true, pickup: true },
+    activeShiftNotes: [{ noteId: "c1", text: "Доставка задерживается примерно на 90 минут. Самовывоз как обычно." }],
+  }));
+  assert.ok(out.includes('"delivery_wait_consent_required": true'), "the delayed channel must ask");
+  assert.ok(out.includes('"pickup_wait_consent_required": false'), "the normal channel must not ask");
+  assert.ok(out.includes("delivery_wait_label"));
+  assert.ok(out.includes("pickup_wait_label"));
+});

@@ -75,8 +75,7 @@ import {
 } from "../services/mediaAnalysis.service.js";
 import { detectLanguageDecision } from "../utils/language.js";
 import { getTextModels } from "../services/llm.service.js";
-import { classifyKitchenSalesPolicy,
-  formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicyForContext, consentRequirement, formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import { hasMenuBrowsingIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, isUnownedOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
@@ -475,6 +474,34 @@ function operationalPreemptionReply(ctx: FastFoodContext): string | null {
 // so its first guests were told the bot was broken (found 2026-08-23, live on kebab1).
 //
 // "Technical" is now reserved for the one case where it is honest.
+function busyKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru", channel: "delivery" | "pickup" | "unknown" = "unknown") {
+  const label = channel === "delivery"
+    ? (language === "ru" ? policy.deliveryWaitLabelRu : policy.deliveryWaitLabelKk)
+    : channel === "pickup"
+      ? (language === "ru" ? policy.pickupWaitLabelRu : policy.pickupWaitLabelKk)
+      : (language === "ru" ? policy.waitLabelRu : policy.waitLabelKk);
+  const subject = channel === "delivery"
+    ? (language === "ru" ? "доставка" : "жеткізу")
+    : channel === "pickup"
+      ? (language === "ru" ? "самовывоз" : "алып кету")
+      : (language === "ru" ? "приготовление" : "дайындау");
+  return language === "ru"
+    ? `Сейчас много заказов, поэтому ${subject} может задержаться примерно на ${label}. Сможете подождать? Если да — продолжим заказ.`
+    : `Қазір тапсырыс көп, сондықтан ${subject} шамамен ${label} кешігуі мүмкін. Күте аласыз ба? Иә десеңіз, тапсырысты жалғастырамыз.`;
+}
+
+function chooseServiceChannelReply(language: "kk" | "ru") {
+  return language === "ru"
+    ? "Уточните, пожалуйста: вам нужна доставка или самовывоз?"
+    : "Нақтылап жіберіңізші: жеткізу керек пе, әлде алып кетесіз бе?";
+}
+
+function ambiguousConsentReply(language: "kk" | "ru") {
+  return language === "ru"
+    ? "Уточните, пожалуйста: вы готовы подождать эту задержку — да или нет?"
+    : "Нақтылап жіберіңізші: осы кідірісті күтуге келісесіз бе — иә немесе жоқ?";
+}
+
 function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
   const reason = String(policy.closedReason || "").toLowerCase();
   const channelsOff = reason.includes("service_channels_disabled") || (!policy.delivery && !policy.pickup);
@@ -577,13 +604,23 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
   // are already answered above by customerOrderReply, so anything reaching here
   // is new intent, and new intent must hear the kitchen's real state. Repetition
   // is prevented by consent memory below, not by muting the gate.
-  const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
-  // A guest who already has the link is left to finish, but only while the
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   // kitchen is what it was when they got it. A real change reopens the gate.
   const pending = await getPendingKitchenConsent(ctx.instanceId, ctx.phone).catch(() => null);
+  const requestedChannel = detectRequestedServiceChannel(ctx.text);
   if (pending) {
-    if (pending.policyFingerprint !== policy.fingerprint) await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
-    else {
+    if (pending.policyFingerprint !== policy.fingerprint) {
+      await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
+    } else if (pending.kind === "channel" && pending.channel === "unknown") {
+      if (requestedChannel === "unknown") return chooseServiceChannelReply(ctx.language);
+      const channelPolicy = consentRequirement(policy, requestedChannel);
+      if (channelPolicy.kind === "delay") {
+        await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint, "delay", pending.deferredMenuLinkIntent, requestedChannel);
+        return busyKitchenReply(policy, ctx.language, requestedChannel);
+      }
+      await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
+      return null;
+    } else {
       const answer = detectKitchenConsentAnswer(ctx.text);
       if (answer === "yes") {
         await clearPendingKitchenConsent(ctx.instanceId, ctx.phone);
@@ -600,28 +637,27 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
           ? "Понимаю, извините за ожидание. Тогда заказ сейчас не оформляем. Будем рады видеть вас позже — просто напишите нам."
           : "Түсіндім, күттіргеніміз үшін кешіріңіз. Онда қазір тапсырысты рәсімдемей тұрайық. Кейінірек жазсаңыз, қуана қабылдаймыз.";
       }
-      // Neither yes nor no: the guest is still talking. Let the agent answer
-      // them; the consent stays owed and FACTS_CONTEXT still carries it.
-      return null;
+      // Consent is mandatory. Never let an unrelated or ambiguous answer fall
+      // through to the model, which used to interpret it as agreement.
+      return ambiguousConsentReply(ctx.language);
     }
   }
   if (policy.blocksAllSales) return closedKitchenReply(policy, ctx.language);
-  const channel = detectRequestedServiceChannel(ctx.text);
-  if (channel === "delivery" && !policy.delivery) return unavailableChannelReply(channel, ctx.language);
-  if (channel === "pickup" && !policy.pickup) return unavailableChannelReply(channel, ctx.language);
+  if (requestedChannel === "delivery" && !policy.delivery) return unavailableChannelReply(requestedChannel, ctx.language);
+  if (requestedChannel === "pickup" && !policy.pickup) return unavailableChannelReply(requestedChannel, ctx.language);
   // A guest who already accepted this same kitchen state is left to finish.
-  // Only a real change of the kitchen reopens the gate.
   const checkoutFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
   if (checkoutFingerprint && checkoutFingerprint === policy.fingerprint) return null;
-  // The delay is the operator's promise to the guest, so the code states it
-  // rather than hoping the model will. Asked once per kitchen state, in the
-  // guest's language, and the answer decides what happens next.
-  if (policy.requiresConsent) {
-    await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint, "delay", ctx.explicitMenuLinkIntent);
-    const label = formatKitchenWait(policy.waitMinutes || 0, ctx.language === "ru" ? "ru" : "kk");
-    return ctx.language === "ru"
-      ? `Сейчас заказов много, приготовление займёт примерно ${label}. Сможете подождать? Если да — продолжим заказ.`
-      : `Қазір тапсырыс көп, дайындалуы шамамен ${label} болады. Күте аласыз ба? Күтсеңіз, тапсырысты жалғастыра берейін.`;
+
+  const requirement = consentRequirement(policy, requestedChannel);
+  if (requirement.kind === "channel" && requestedChannel === "unknown") {
+    await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint, "channel", ctx.explicitMenuLinkIntent, "unknown");
+    return chooseServiceChannelReply(ctx.language);
+  }
+  if (requirement.kind === "delay") {
+    const channel = requestedChannel === "unknown" ? "unknown" : requestedChannel;
+    await savePendingKitchenConsent(ctx.instanceId, ctx.phone, policy.fingerprint, "delay", ctx.explicitMenuLinkIntent, channel);
+    return busyKitchenReply(policy, ctx.language, channel);
   }
   return null;
 }
@@ -644,7 +680,7 @@ function prepTimeReply(ctx: FastFoodContext): string | null {
   // Without a live kitchen state there is no number to give; the runtime
   // fallback reply further down says that honestly.
   if (!ctx.runtimeStatus) return null;
-  const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   const language = ctx.language === "ru" ? "ru" : "kk";
   if (policy.waitMinutes > 0) {
     const label = formatKitchenWait(policy.waitMinutes, language);

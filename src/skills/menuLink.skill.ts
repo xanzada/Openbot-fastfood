@@ -5,7 +5,7 @@ import {
   markKitchenCheckoutStarted,
   markMagicLinkSent,
 } from "../services/redis.service.js";
-import { classifyKitchenSalesPolicy, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicyForContext, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
 // No calendar limit on resends (product decision, 2026-08-14): the agent
@@ -91,7 +91,7 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // report; it no longer gates anything, because every genuine request now
       // takes the normal grant path (no calendar rationing, 2026-08-14).
       void previousLinkBroken;
-      const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
+      const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
       const acceptedFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
       const refusal = classifyMenuLinkRefusal(ctx, policy, acceptedFingerprint === policy.fingerprint);
       if (refusal) {

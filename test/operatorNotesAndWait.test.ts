@@ -77,8 +77,11 @@ test("an existing order never mutes the kitchen gate", () => {
   const gate = src.slice(src.indexOf("async function kitchenGateReply"));
   const body = gate.slice(0, gate.indexOf("\nasync function ", 10) + 1 || undefined);
   assert.ok(!/if \(ctx\.activeOrder\) return null;/.test(body), "the gate must not mute itself on an active order");
-  assert.ok(body.includes("policy.requiresConsent"), "consent branch must remain");
+  // Consent branch markers: the deterministic ask/accept/decline machine must stay.
+  assert.ok(body.includes("consentRequirement(policy"), "consent branch must remain");
   assert.ok(body.includes("savePendingKitchenConsent"), "the wait question must be remembered");
+  assert.ok(body.includes('action: "accept"') || body.includes('"yes"'), "a clear yes must resume the order");
+  assert.ok(body.includes("ambiguousConsentReply"), "an unclear answer must never fall through as consent");
 });
 
 test("accepting even a legacy wait consent resumes the personal order link", async () => {

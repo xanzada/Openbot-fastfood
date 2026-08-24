@@ -300,32 +300,43 @@ function kitchenCheckoutGraceKey(instanceId: string, phone: string) {
   return `kitchen_checkout_grace:${instanceId}:${phone}`;
 }
 
+export type PendingKitchenConsentKind = "delay" | "channel" | "delay_and_channel";
+export type PendingKitchenChannel = "delivery" | "pickup" | "unknown";
+export interface PendingKitchenConsent {
+  policyFingerprint: string;
+  kind: PendingKitchenConsentKind;
+  channel: PendingKitchenChannel;
+  deferredMenuLinkIntent: boolean;
+}
+
 export async function savePendingKitchenConsent(
   instanceId: string,
   phone: string,
   policyFingerprint: string,
-  kind: "delay" | "channel" | "delay_and_channel" = "delay",
+  kind: PendingKitchenConsentKind = "delay",
   deferredMenuLinkIntent = false,
+  channel: PendingKitchenChannel = "unknown",
 ): Promise<boolean> {
   return safeRedis(false, async () => {
     const result = await redisClient.set(
       kitchenConsentKey(instanceId, phone),
-      JSON.stringify({ policyFingerprint, kind, deferredMenuLinkIntent: Boolean(deferredMenuLinkIntent), createdAt: Date.now() }),
+      JSON.stringify({ policyFingerprint, kind, channel, deferredMenuLinkIntent: Boolean(deferredMenuLinkIntent), createdAt: Date.now() }),
       { EX: KITCHEN_CONSENT_TTL_SECONDS }
     );
     return result === "OK";
   });
 }
 
-export async function getPendingKitchenConsent(instanceId: string, phone: string): Promise<{ policyFingerprint: string; kind: "delay" | "channel" | "delay_and_channel"; deferredMenuLinkIntent: boolean } | null> {
+export async function getPendingKitchenConsent(instanceId: string, phone: string): Promise<PendingKitchenConsent | null> {
   return safeRedis(null, async () => {
     const raw = await redisClient.get(kitchenConsentKey(instanceId, phone));
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw);
-      const kind = ["delay", "channel", "delay_and_channel"].includes(parsed?.kind) ? parsed.kind : "delay";
+      const kind: PendingKitchenConsentKind = ["delay", "channel", "delay_and_channel"].includes(parsed?.kind) ? parsed.kind : "delay";
+      const channel: PendingKitchenChannel = ["delivery", "pickup", "unknown"].includes(parsed?.channel) ? parsed.channel : "unknown";
       return parsed?.policyFingerprint
-        ? { policyFingerprint: String(parsed.policyFingerprint), kind, deferredMenuLinkIntent: parsed.deferredMenuLinkIntent === true }
+        ? { policyFingerprint: String(parsed.policyFingerprint), kind, channel, deferredMenuLinkIntent: parsed.deferredMenuLinkIntent === true }
         : null;
     } catch {
       return null;

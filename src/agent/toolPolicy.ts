@@ -1,7 +1,7 @@
 import type { FastFoodContext } from "../context/types.js";
 import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
-import { classifyKitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
 import { wantsMenuAsText } from "../utils/magicLink.js";
 
@@ -78,7 +78,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   // Every other caller (buildFactsPrompt, menuLink.skill) reads ctx.runtimeStatus;
   // this was the one place that preferred the partial object (found 2026-08-22).
   const runtime = ctx.runtimeStatus || ctx.hardRealtimeContext;
-  const kitchenPolicy = classifyKitchenSalesPolicy(runtime || null);
+  const kitchenPolicy = classifyKitchenSalesPolicyForContext(runtime || null, ctx.activeShiftNotes);
   const checkoutBlocked = kitchenPolicy.blocksAllSales || kitchenPolicy.requiresConsent;
 
   if (immediateServiceIncident) {

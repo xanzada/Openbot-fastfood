@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyKitchenSalesPolicy, detectKitchenConsentAnswer } from "../src/services/kitchenPolicy.service.js";
+import { readFile } from "node:fs/promises";
+import { classifyKitchenSalesPolicy, classifyKitchenSalesPolicyForContext, consentRequirement, decideKitchenConsent, detectKitchenConsentAnswer } from "../src/services/kitchenPolicy.service.js";
 
 const NOW = 1_785_000_000_000;
 const nowSec = Math.floor(NOW / 1000);
@@ -124,4 +125,82 @@ test("off hours outranks a long queue - a closed kitchen has no queue to consent
   assert.equal(p.mode, "off_hours");
   assert.equal(p.requiresConsent, false);
   assert.equal(p.waitMinutes, 90, "the number is still reported, it is just not sellable");
+});
+
+// ===== WAIT-CONSENT BUSINESS RULE REGRESSION (restored 2026-08-24) =====
+// The operator's panel presets ("60 мин"/"120 мин") arrive as shift notes. The
+// consent gate used to see ONLY runtime.wait_time, so an operator-pinned delay
+// never asked the customer. These ten scenarios are the contract; the prompt
+// may be rewritten freely, this machine may not.
+
+function policyWithNotes(kitchen: Record<string, any>, notes: unknown) {
+  return classifyKitchenSalesPolicyForContext(runtime(kitchen), notes, NOW);
+}
+
+test("R1: delivery delay 1h -> ask -> yes continues", () => {
+  const p = policyWithNotes({ wait_time: 0 }, [{ noteId: "d1", text: "Доставка задерживается примерно на 60 минут" }]);
+  assert.equal(p.requiresDeliveryConsent, true);
+  assert.equal(consentRequirement(p, "delivery").kind, "delay");
+  assert.equal(decideKitchenConsent({ policy: p, channel: "delivery", orderingIntent: true }).action, "ask_delay");
+});
+
+test("R2: delivery delay 1h -> no closes politely", () => {
+  const p = policyWithNotes({ wait_time: 0 }, [{ noteId: "d2", text: "Ожидание увеличено примерно на 60 минут." }]);
+  assert.equal(decideKitchenConsent({ policy: p, text: "жоқ", pendingKind: "delay", pendingChannel: "delivery" }).action, "decline");
+});
+
+test("R3: pickup delay 1h -> ask -> yes continues", () => {
+  const p = policyWithNotes({ wait_time: 0 }, [{ noteId: "p1", text: "Самовывоз готовится около 60 минут сегодня" }]);
+  assert.equal(p.requiresPickupConsent, true);
+  assert.equal(decideKitchenConsent({ policy: p, channel: "pickup", orderingIntent: true }).action, "ask_delay");
+});
+
+test("R4: pickup delay 1h -> refusal closes", () => {
+  const p = policyWithNotes({ wait_time: 0 }, [{ noteId: "p2", text: "Ожидание увеличено примерно на 60 минут." }]);
+  assert.equal(decideKitchenConsent({ policy: p, text: "нет, не буду ждать", pendingKind: "delay", pendingChannel: "pickup" }).action, "decline");
+});
+
+test("R5: delivery normal + pickup delayed asks only when relevant", () => {
+  const p = policyWithNotes({ wait_time: 0 }, [{ noteId: "m1", text: "Доставка как обычно. Самовывоз - ожидание 90 минут." }]);
+  assert.equal(p.requiresDeliveryConsent, false, "normal channel must not ask");
+  assert.equal(p.requiresPickupConsent, true);
+  assert.equal(consentRequirement(p, "delivery").kind, "none");
+  assert.equal(consentRequirement(p, "pickup").kind, "delay");
+});
+
+test("R6: pickup normal + delivery delayed asks only when relevant", () => {
+  const p = policyWithNotes({ wait_time: 0 }, [{ noteId: "m2", text: "Доставки ждать около 2 часов. Самовывоз обычный график." }]);
+  assert.equal(p.requiresDeliveryConsent, true);
+  assert.equal(p.requiresPickupConsent, false);
+  assert.equal(consentRequirement(p, "pickup").kind, "none");
+});
+
+test("R7: ambiguous answer forces clarify, never assumed consent", () => {
+  const p = policyWithNotes({ wait_time: 0 }, [{ noteId: "a1", text: "Ожидание увеличено примерно на 120 минут." }]);
+  assert.equal(detectKitchenConsentAnswer("ал қазір неше тұрады?"), "unknown");
+  assert.equal(decideKitchenConsent({ policy: p, text: "ал қазір неше тұрады?", pendingKind: "delay", pendingChannel: "unknown" }).action, "clarify");
+});
+
+test("R8: delay removed mid-conversation updates the customer correctly", () => {
+  const delayed = policyWithNotes({ wait_time: 0 }, [{ noteId: "r1", text: "Ожидание увеличено примерно на 120 минут." }]);
+  assert.equal(delayed.requiresConsent, true);
+  const cleared = classifyKitchenSalesPolicyForContext(runtime({ wait_time: 0 }), [], NOW);
+  assert.equal(cleared.requiresConsent, false);
+  // A pending ask whose fingerprint changed is discarded, not answered.
+  assert.notEqual(delayed.fingerprint, cleared.fingerprint);
+});
+
+test("R9: no delay info anywhere invents nothing", () => {
+  const p = policyWithNotes({ wait_time: 0 }, []);
+  assert.equal(p.requiresConsent, false);
+  assert.equal(consentRequirement(p, "unknown").kind, "none");
+  assert.equal(decideKitchenConsent({ policy: p, text: "тапсырыс берейін", orderingIntent: true }).action, "pass");
+});
+
+test("R10: the consent machine is code-owned, not prompt-owned", async () => {
+  // The route gate must call the shared decision helpers, so a future prompt
+  // rewrite cannot silently drop the ask.
+  const src = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  assert.ok(src.includes("consentRequirement(policy"), "gate must use the shared consent requirement");
+  assert.ok(src.includes('detectKitchenConsentAnswer(ctx.text)'), "yes/no parsing stays deterministic");
 });
