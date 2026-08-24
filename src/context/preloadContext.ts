@@ -46,6 +46,13 @@ function buildMenuSnapshot(menu: any) {
       price: item?.price ?? null,
       category: String(item?.category_name || item?.category || "").trim(),
       composition: String(item?.composition || item?.description || "").trim().slice(0, 160),
+      // A real discount the restaurant is running: the crossed-out "was" price the
+      // storefront shows next to the current one. It was dropped here, so the agent had no
+      // way to answer "акциялар бар ма?" from a fact and either invented a discount or
+      // denied one that the site was advertising on the same dish (found 2026-08-24).
+      ...(Number(item?.compare_at_price || 0) > Number(item?.price || 0)
+        ? { old_price: Number(item.compare_at_price) }
+        : {}),
       // Only the exception is carried: a sold-out dish must not be offered, and
       // saying "available: true" 60 times would spend context on the default.
       ...(item?.available === false ? { available: false } : {}),

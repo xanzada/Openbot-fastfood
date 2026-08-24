@@ -32,7 +32,20 @@ export function detectOperatorCaseKind(text = ""): OperatorCaseKind | null {
   const value = clean(text).toLowerCase();
   if (CANCEL_ORDER_RE.test(value)) return "cancel_request";
   if (/(курьер.*(номер|нөмір|номерін|телефон)|номер.*курьер|курьерге хабарлас)/iu.test(value)) return "courier_request";
-  if (/(оператор|админ|администратор|менеджер|адаммен|человек|живой человек|шақыр|шакыр|позовите|соедините)/iu.test(value)) return "human_request";
+  // "адаммен" only covers the comitative case. A guest in a hurry writes "маған адам
+  // керек", "жанды адам керек", "адам жоқ па" - none of which matched, so the case was
+  // never opened while the model, told an operator would be notified, answered "адамға
+  // хабар беремін" to somebody nobody had been told about (found 2026-08-24). The noun is
+  // matched with its ordinary Kazakh case endings instead, next to a request word.
+  if (/(оператор|админ|администратор|менеджер|человек|позовите|соедините|шақыр|шакыр)/iu.test(value)) return "human_request";
+  // ...but "адам" is also how portions are counted ("екі адамға сет бар ма?"), so a
+  // quantity in front of it means the guest is talking about people eating, not about
+  // wanting to speak to one.
+  const PERSON_QUANTITY_RE = /(?:\d+|бір|бир|екі|еки|үш|уш|төрт|торт|бес|неше|қанша|канша|көп|коп)\s+адам/iu;
+  if (!PERSON_QUANTITY_RE.test(value)
+    && /(?:^|[^\p{L}])(?:тірі\s+|тiрi\s+|жанды\s+|нақты\s+)?адам(?:мен|ға|га|ды|ы)?(?![\p{L}])[^.!?]{0,24}(?:керек|қажет|кажет|шақыр|шакыр|берші|беріңіз|сөйлес|сойлес|байланыс|жоқ\s*па|жок\s*па|бар\s*ма)/iu.test(value)) {
+    return "human_request";
+  }
   // A dish or menu question is never a complaint: "шашлык бар ма?" and
   // "суық суы бар ма?" are catalog talk. The case kind stays null so no SOS
   // can grow out of an off-menu ask (2026-08-20).

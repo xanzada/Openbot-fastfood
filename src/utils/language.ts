@@ -8,8 +8,17 @@
 // recognised after. Three entries occur inside ordinary Russian words (Россия,
 // архитектура, семени), so they carry letter-boundary lookarounds instead of a plain
 // substring match.
+//
+// Those lookarounds were written as `[^\\p{L}]` inside a regex LITERAL, where the double
+// backslash is not an escape at all: the class means "not one of \ p { L }". So the
+// boundary never held, and "ия" matched inside every ordinary Russian word that ends in
+// -ия - аллергия, акция, порция, операция, линия, Россия - which are exactly the words a
+// guest uses when they are speaking Russian. detectLang called them Kazakh, and because
+// lastCustomerLanguage() is built on detectLang, one such message turned a whole Russian
+// conversation Kazakh: reproduced 2026-08-24 with "У меня аллергия на орехи, там есть
+// орехи?" -> kk, and the live QA round then answered the next Russian question in Kazakh.
 const KAZAKH_RE =
-  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|жарайды|жарайд|жарайсын|мақұл|макул|болғаны|болганы|қаншадан|каншадан|qalai|беремын|береміз|алып\s+кетем|тусиндим|тусинбедим|керемет|абдан|жаксы|жаман|шыгар|екен|болаша|болмайды|болмайды го|болмаида|кетемын|барамын|отырмын|жатырмын|(?:^|[^\\p{L}])(?:ия|тура|мени)(?![\\p{L}])|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
+  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|жарайды|жарайд|жарайсын|мақұл|макул|болғаны|болганы|қаншадан|каншадан|qalai|беремын|береміз|алып\s+кетем|тусиндим|тусинбедим|керемет|абдан|жаксы|жаман|шыгар|екен|болаша|болмайды|болмайды го|болмаида|кетемын|барамын|отырмын|жатырмын|(?:^|[^\p{L}])(?:ия|тура|мени)(?![\p{L}])|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
 
 // Short acknowledgements answer the previous question; they do not request a
 // language switch. Treating "мхм" as Russian made a Kazakh wait-consent dialog

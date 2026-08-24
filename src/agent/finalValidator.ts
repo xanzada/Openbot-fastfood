@@ -103,15 +103,50 @@ function sentenceCount(text: string): number {
  * cost the customer the link they asked for.
  */
 function dropSentencesMatching(text: string, pattern: RegExp): string {
+  return dropSentencesMatchingUnless(text, pattern, null);
+}
+
+/**
+ * Same clause surgery, with an escape hatch for sentences that carry their own proof.
+ *
+ * A guard that can only delete has one failure mode: when the fact IS verified, the
+ * verified sentence dies with the invented ones. The promo guard hit exactly that - the
+ * storefront runs real discounts (a crossed-out old price on the dish) and every sentence
+ * naming one was cut, so a guest asking "акциялар бар ма?" was answered "I cannot say"
+ * about a promotion the site was advertising (found 2026-08-24).
+ */
+function dropSentencesMatchingUnless(
+  text: string,
+  pattern: RegExp,
+  keepIf: ((sentence: string) => boolean) | null
+): string {
   const urls = uniqueUrls(text);
   const body = textWithoutUrls(text);
   const sentences = body.match(/[^.!?\n]+[.!?]*/g) || [body];
   const kept = sentences
     .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence && !new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")).test(sentence));
+    .filter((sentence) => {
+      if (!sentence) return false;
+      if (keepIf && keepIf(sentence)) return true;
+      return !new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")).test(sentence);
+    });
   const rebuilt = kept.join(" ").replace(/\s{2,}/g, " ").trim();
   if (!rebuilt) return "";
   return urls.length ? `${rebuilt}\n${urls.join("\n")}` : rebuilt;
+}
+
+/**
+ * Dishes this restaurant is genuinely discounting right now: the live menu carries a
+ * crossed-out old price above the current one. Read from the preloaded snapshot, which is
+ * the same catalog searchMenu reads, so a promo sentence naming one of these dishes is a
+ * fact and not a guess.
+ */
+function discountedMenuNames(ctx: FastFoodContext): string[] {
+  const items = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot!.items : [];
+  return items
+    .filter((item: any) => Number(item?.old_price || 0) > Number(item?.price || 0))
+    .map((item: any) => String(item?.name || "").trim())
+    .filter(Boolean);
 }
 
 function enforceMaxSentences(text: string, max = 5): string {
@@ -135,6 +170,40 @@ function stripBotTags(text: string) {
     .replace(/\*\*/g, "")
     .replace(/\*/g, "")
     .trim();
+}
+
+// Reasoning the model narrated to itself and then sent to the guest.
+//
+// The prompt tells the agent to think silently, and a flash model complies by writing the
+// thinking down first: three live QA turns shipped replies that literally began "Silent
+// Thought: The user is asking about promotions. I should state that I don't have
+// information about promotions." followed by the real Kazakh answer (2026-08-24). It is
+// English, it exposes the machinery, and it is the single most embarrassing thing this bot
+// can send. Every guard in this file already assumed such a preamble could not exist.
+//
+// Cut only a leading meta-labelled block, and only up to the point where the real answer
+// starts, so a reply that merely contains the word "thought" is untouched. The label may
+// be followed by a newline or run straight into the answer, which is why the sentence walk
+// below stops at the first sentence that is not part of the narration.
+const REASONING_PREAMBLE_LABEL_RE =
+  /^\s*(?:\(|\[|\*)?\s*(?:silent\s+thought|internal\s+thought|my\s+thought(?:s|\s+process)?|thought\s+process|thinking|reasoning|analysis|chain\s+of\s+thought|scratchpad|internal\s+monologue|ішкі\s+ой|внутренн\p{L}*\s+мысл\p{L}*|размышлени\p{L}*)\s*(?:\)|\])?\s*[:\-–—]\s*/iu;
+// The narration is written in English about the customer in the third person. The answer
+// itself is always Kazakh or Russian, so the first sentence carrying Cyrillic ends it.
+const LATIN_NARRATION_SENTENCE_RE = /^[^\p{Script=Cyrillic}]*$/u;
+
+export function stripReasoningPreamble(text: string): { text: string; removed: boolean } {
+  const raw = String(text || "");
+  if (!REASONING_PREAMBLE_LABEL_RE.test(raw)) return { text: raw.trim(), removed: false };
+  const afterLabel = raw.replace(REASONING_PREAMBLE_LABEL_RE, "");
+  // Walk the narration sentence by sentence and stop at the first one that contains
+  // Cyrillic - that is the guest-facing answer. `[^.!?]+[.!?]*` keeps the separators.
+  const sentences = afterLabel.match(/[^.!?\n]+[.!?]*\n?/g) || [afterLabel];
+  let index = 0;
+  while (index < sentences.length && LATIN_NARRATION_SENTENCE_RE.test(sentences[index])) index += 1;
+  const answer = sentences.slice(index).join("").trim();
+  // Never let this guard empty a reply: if the whole message was narration there is no
+  // answer to keep, and the caller's own fallback is the honest outcome.
+  return { text: answer, removed: true };
 }
 
 // The prompt forbids emoji by default, yet the deterministic fallback shipped
@@ -245,6 +314,15 @@ export function validateFinalText(
 
   if (!text) return { text: fallback(ctx), hasLink: false, warnings: ["empty_model_output"] };
 
+  // Before any other guard: a narrated "Silent Thought: ..." preamble is not part of the
+  // answer, and leaving it in front meant every regex below measured the wrong sentence.
+  const preamble = stripReasoningPreamble(text);
+  if (preamble.removed) {
+    warnings.push("reasoning_preamble_removed");
+    text = preamble.text;
+    if (!text) return { text: fallback(ctx), hasLink: false, warnings: [...warnings, "reasoning_preamble_was_whole_reply"] };
+  }
+
   // Calling a read-only tool must not unlock a write-authority claim. "Ваш заказ
   // принят, напишите адрес" shipped whenever checkOrderStatus had run, even when it
   // returned lookup:"not_found" - so the guest waited for food that was never entered
@@ -257,6 +335,20 @@ export function validateFinalText(
       text: manualOrderBoundaryText(ctx.language),
       hasLink: false,
       warnings: ["manual_order_claim_blocked"],
+    };
+  }
+
+  // Cancelling is the same boundary in the other direction, and it has no grounding that
+  // could make it true: no tool in this agent can change order state. "Жарайды,
+  // тапсырысыңызды тоқтатамыз" shipped to a guest who asked to cancel, so they stopped
+  // waiting for a cancellation nobody had been asked to perform (found 2026-08-24). The
+  // deterministic cancel lane in the webhook does not pass through this validator, so its
+  // honest handoff wording is unaffected.
+  if (isManualOrderCancellationClaim(text)) {
+    return {
+      text: manualCancellationBoundaryText(ctx.language),
+      hasLink: false,
+      warnings: [...warnings, "manual_cancellation_claim_blocked"],
     };
   }
 
@@ -414,16 +506,33 @@ export function validateFinalText(
       // absent is the one lie that can put them in hospital, and a composition
       // string is not a verified allergen statement. This still demands a tool.
     }
-    // Outside the price block on purpose: a snapshot may authorise a price, never a
-    // promotion. An operator who is really running one writes it in the shift notes,
-    // and getShiftNotes surfaces those, so that is the only thing that grounds it.
+    // Outside the price block on purpose: a snapshot may authorise a price, never a bare
+    // promotion. An operator who is running a campaign writes it in the shift notes, and
+    // getShiftNotes surfaces those.
+    //
+    // The one other real source is the catalog itself: a dish whose live record carries a
+    // crossed-out old price IS discounted, and the storefront shows that discount to the
+    // same guest. Cutting those sentences too made the bot deny a promotion its own site
+    // was advertising, on every tenant that uses the feature (found 2026-08-24). So a promo
+    // sentence survives when it names such a dish - the fact travels with the sentence.
     const promoInNotes = (Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [])
       .some((note: unknown) => PROMO_NOTE_RE.test(typeof note === "string" ? note : JSON.stringify(note ?? "")));
+    const discounted = discountedMenuNames(ctx);
+    const namesDiscountedDish = discounted.length
+      ? (sentence: string) => {
+          const lower = sentence.toLowerCase();
+          return discounted.some((name) => lower.includes(name.toLowerCase()));
+        }
+      : null;
     if (!promoInNotes && PROMO_CLAIM_RE.test(text)) {
-      const withoutPromos = dropSentencesMatching(text, PROMO_CLAIM_RE);
+      const withoutPromos = dropSentencesMatchingUnless(text, PROMO_CLAIM_RE, namesDiscountedDish);
       if (withoutPromos && withoutPromos !== text) {
         text = withoutPromos;
         warnings.push("unverified_promo_claim_removed");
+      } else if (withoutPromos === text) {
+        // Nothing was cut: every promo sentence named a genuinely discounted dish.
+        if (namesDiscountedDish) warnings.push("promo_claim_grounded_by_menu");
+        else warnings.push("unverified_promo_claim_kept_no_survivor");
       } else if (!textWithoutUrls(withoutPromos)) {
         // The promotion was the whole answer. Warning and shipping it anyway is how an
         // invented discount reached the guest.
@@ -480,6 +589,8 @@ export function validateFinalText(
   return { text: text || fallback(ctx), hasLink: hasLinkInResponse(text), warnings };
 }
 import {
+  isManualOrderCancellationClaim,
   isManualOrderHandlingClaim,
+  manualCancellationBoundaryText,
   manualOrderBoundaryText,
 } from "../services/orderAuthority.service.js";

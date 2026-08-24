@@ -27,10 +27,20 @@ export interface AgentToolPlan {
 // "these dishes contain no seafood" naming no dishes at all (live round,
 // 2026-08-12). Any request for a recommendation, or one that rules an ingredient
 // out, is a menu lookup.
+//
+// A question about discounts belongs here too. The catalog is what knows which dishes
+// carry a crossed-out old price, so "акцияларыңыз бар ма?" is a menu lookup - it used to
+// reach the model with no tool and no promo facts, which is how the bot denied a promotion
+// its own storefront was running (found 2026-08-24).
 const MENU_LOOKUP_RE =
-  /(бар\s*ма|барма|есть\s*ли|что\s+(?:входит|взять|выбрать|посоветуе)|что-нибудь|қанша\s*(?:тұр|тұрады|теңге)|ск(?:олько|ока)\s*(?:стоит|тенге)|баға|цена|құрамы|состав|ингредиент|ащы|остр|вегетари|халал|п[ие]п+ерони|pepperoni|маргарит|пицц|бургер|донер|шаурм|суши|ролл|салат|сусын|напит|десерт|комбо|сет|балалар|дет(?:ям|ское)|реб[её]н|етсіз|без\s*мяс|бюджет|деш[её]в|арзан|лаваш|ұсынас|ұсыныңыз|кеңес\s*бер|советуе|посоветуй|рекоменд|аллерг|глютен|лактоз|жаңғақ|орех|теңіз\s*өнім|морепродукт|(?:жоқ|без)\s*(?:тағам|блюд)|тағам\s*керек)/iu;
+  /(бар\s*ма|барма|есть\s*ли|что\s+(?:входит|взять|выбрать|посоветуе)|что-нибудь|қанша\s*(?:тұр|тұрады|теңге)|ск(?:олько|ока)\s*(?:стоит|тенге)|баға|цена|құрамы|состав|ингредиент|ащы|остр|вегетари|халал|п[ие]п+ерони|pepperoni|маргарит|пицц|бургер|донер|шаурм|суши|ролл|салат|сусын|напит|десерт|комбо|сет|балалар|дет(?:ям|ское)|реб[её]н|етсіз|без\s*мяс|бюджет|деш[её]в|арзан|лаваш|ұсынас|ұсыныңыз|кеңес\s*бер|советуе|посоветуй|рекоменд|аллерг|глютен|лактоз|жаңғақ|орех|теңіз\s*өнім|морепродукт|(?:жоқ|без)\s*(?:тағам|блюд)|тағам\s*керек|акци|скидк|жеңілдік|женилдик|промо|арзандат|распродаж|выгодн)/iu;
 const DIRECT_MENU_LINK_RE =
   /(сілтеме|ссылка|link|линк|каталог|мәзірді\s*(?:жібер|бер|аш)|меню\s*(?:пришли|скинь|дай|открой|покажи)|тапсырыс\s*(?:бер|жасай|ет)|заказ\s*(?:хочу|сдел|оформ)|заказать|оформить|корзин|себет)/iu;
+// The guest is DOING something, not asking about the assortment: placing an order, asking
+// for the link, continuing a checkout. For them the link is the answer, so the
+// answer-before-link swap below leaves the pin alone.
+const ORDER_ACTION_RE =
+  /(сілтеме|ссылк\p{L}*|link|линк|тапсырыс\s*(?:бер|берей|берем|жасай|жасас|ет|қыл)|заказ\s*(?:бер|берей|берем|жасай|хочу|сдел|оформ)|заказать|оформить|корзин|себет|жалғастыр|продолж)/iu;
 const PAYMENT_DETAILS_RE =
   /(реквизит|kaspi|каспи|halyk|халық|оплат\p{L}*|төлем|аудар\p{L}*|перевод).*(?:қалай|қайда|как|куда|номер|счет|шот|сілтеме|ссылка)?/iu;
 const RECEIPT_EVENT_RE =
@@ -108,6 +118,31 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
 
   if (!immediateServiceIncident && (intentMatches(MENU_LOOKUP_RE, text) || wantsMenuAsText(text))) {
     add(plan, "searchMenu", "live_menu_lookup");
+  }
+
+  // Answering comes before handing over a URL.
+  //
+  // Only the FIRST planned tool is pinned as step 0, and sendMenuLink was added before
+  // searchMenu, so "Не бар мәзірде?" - a question about what the restaurant sells - spent
+  // its pinned step on the link and was answered with nothing but "you can see the menu at
+  // this link" (live QA, 2026-08-24, twice). The word "мәзір" alone is enough for
+  // hasExplicitMenuLinkIntent, which is right for minting the link but wrong for deciding
+  // what the guest asked. instructions.ts already states the rule this enforces: send the
+  // link AFTER answering the question, in the same message. The link is still granted on
+  // the same turn - it just stops replacing the answer.
+  //
+  // A guest who is actually ordering ("екі донер заказ берейін", "сілтеме жіберіңіз") is
+  // NOT asking a question, and for them the link IS the answer - so the swap is limited to
+  // messages that ask something and do not name an ordering action.
+  const searchIndex = plan.requiredTools.indexOf("searchMenu");
+  const linkIndex = plan.requiredTools.indexOf("sendMenuLink");
+  if (searchIndex > -1 && linkIndex > -1 && linkIndex < searchIndex
+    && !intentMatches(ORDER_ACTION_RE, text)) {
+    plan.requiredTools[linkIndex] = "searchMenu";
+    plan.requiredTools[searchIndex] = "sendMenuLink";
+    const reason = plan.reason[linkIndex];
+    plan.reason[linkIndex] = plan.reason[searchIndex];
+    plan.reason[searchIndex] = reason;
   }
 
   return {

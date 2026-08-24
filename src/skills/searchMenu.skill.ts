@@ -91,6 +91,13 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
         category: entry.item.category_name,
         ingredients: entry.item.composition || entry.item.description || "",
         price: entry.item.price,
+        // The crossed-out "was" price the storefront shows. Without it the tool could not
+        // answer "акциялар бар ма?" from a fact at all: the model either invented a
+        // discount or denied one the site was advertising on the same dish
+        // (found 2026-08-24). Present only when there really is one.
+        ...(Number(entry.item.compare_at_price || 0) > Number(entry.item.price || 0)
+          ? { old_price: Number(entry.item.compare_at_price), discounted: true }
+          : {}),
         available: typeof entry.item.available === "boolean" ? entry.item.available : undefined,
         ...(ingredientMatch ? { matched_as_ingredient: true } : {}),
       };
@@ -128,7 +135,7 @@ export function pageMenuMatches(allMatches: Record<string, any>[], limit?: numbe
 export function createSearchMenuSkill(ctx: FastFoodContext) {
   return createTool({
     name: "searchMenu",
-    description: "Read customer-facing menu items, prices, ingredients, categories, and public availability from the live menu. Results are paged: at most 50 items per call. When the result says hasMore, the list is only part of the menu - page on with offset or narrow by category before answering, and never present a page as the full menu. The `categories` field lists every section of the catalog with its item count.",
+    description: "Read customer-facing menu items, prices, ingredients, categories, and public availability from the live menu. Results are paged: at most 50 items per call. When the result says hasMore, the list is only part of the menu - page on with offset or narrow by category before answering, and never present a page as the full menu. The `categories` field lists every section of the catalog with its item count. An item carrying `old_price` and `discounted: true` is genuinely on sale right now - the storefront shows the same crossed-out price - so those are the ONLY dishes you may present as a discount or promotion, naming the dish, its current price and its old price. `promotions_now` collects them for a bare \"do you have any deals?\"; when it is empty, there is no promotion to announce.",
     parameters: z.object({
       query: z.string().max(80).optional().describe("Food name or ingredient to search"),
       category: z.string().max(80).optional().describe("Customer-facing menu category to filter"),
@@ -200,6 +207,21 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
         // shown - not from the page above. It is what makes "what categories do
         // you have?" answerable without paging the whole menu.
         categories: summarizePublicCategories(allowedItems),
+        // Every dish genuinely on sale right now, across the WHOLE allowed catalog rather
+        // than this page. "Акцияларыңыз бар ма?" carries no dish name, so the ranked page
+        // for an empty query is the cheapest handful and told the model nothing - it then
+        // answered that the restaurant has no promotions while four dishes were discounted
+        // on the storefront (found 2026-08-24). An empty array is the honest "none".
+        promotions_now: allowedItems
+          .filter((item: any) => Number(item?.compare_at_price || 0) > Number(item?.price || 0))
+          .slice(0, 12)
+          .map((item: any) => ({
+            name: item?.name || "",
+            price: item?.price ?? null,
+            old_price: Number(item.compare_at_price),
+            category: item?.category_name || item?.category || "",
+          }))
+          .filter((item: any) => item.name),
         noteRestrictionsApplied: filteringApplied,
         ...(soldOutNames.length ? { sold_out_now: soldOutNames } : {}),
         ...(unavailableNow.length ? { unavailable_now: unavailableNow } : {}),
