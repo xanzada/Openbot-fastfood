@@ -573,8 +573,8 @@ export async function resumeDeferredKitchenConsent(
     ctx.magicLinkFailed = true;
     ctx.magicLinkGranted = false;
     return ctx.language === "ru"
-      ? "Спасибо, что подтвердили ожидание. Не удалось подготовить личную ссылку из-за технической ошибки — попросите её ещё раз через пару минут."
-      : "Күтетініңізді растағаныңызға рақмет. Жеке сілтемені техникалық ақауға байланысты дайындай алмадым — бірер минуттан кейін қайта сұраңыз.";
+      ? "Спасибо, что подтвердили ожидание. Меню сейчас подготовить не получилось из-за технической ошибки — попросите ещё раз через пару минут."
+      : "Күтетініңізді растағаныңызға рақмет. Мәзірді техникалық ақауға байланысты дайындай алмадым — бірер минуттан кейін қайта сұраңыз.";
   }
 
   ctx.magicLink = link;
@@ -583,8 +583,8 @@ export async function resumeDeferredKitchenConsent(
   await deps.markLinkSent(ctx.instanceId, ctx.phone).catch(() => false);
   await deps.upsertLead({ instanceId: ctx.instanceId, phone: ctx.phone, config: ctx.config || {} }).catch(() => false);
   return ctx.language === "ru"
-    ? "Хорошо, ожидание подтвердил. Отправляю вашу личную ссылку, чтобы продолжить заказ."
-    : "Жақсы, күтетініңізді белгіледім. Тапсырысты жалғастыру үшін жеке сілтемеңізді жіберіп отырмын.";
+    ? "Хорошо, спасибо за ожидание! Отправляю меню — зайдите по нему и оформите заказ."
+    : "Жақсы, рақмет! Мәзірді жіберіп отырмын — осы арқылы кіріп, тапсырысыңызды бересіз.";
 }
 
 async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {

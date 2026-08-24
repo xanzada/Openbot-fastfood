@@ -111,7 +111,7 @@ test("accepting even a legacy wait consent resumes the personal order link", asy
     },
   );
 
-  assert.equal(reply, "Жақсы, күтетініңізді белгіледім. Тапсырысты жалғастыру үшін жеке сілтемеңізді жіберіп отырмын.");
+  assert.equal(reply, "Жақсы, рақмет! Мәзірді жіберіп отырмын — осы арқылы кіріп, тапсырысыңызды бересіз.");
   assert.equal(continuationCtx.magicLinkGranted, true);
   assert.equal(continuationCtx.magicLink, "https://storefront.alemi.kz/auth/whatsapp#token=test");
   assert.deepEqual(issued, ["prestige:77476884956:kk"]);
@@ -130,7 +130,7 @@ test("a deferred link failure stays honest and in the guest language", async () 
     },
   );
 
-  assert.equal(reply, "Спасибо, что подтвердили ожидание. Не удалось подготовить личную ссылку из-за технической ошибки — попросите её ещё раз через пару минут.");
+  assert.equal(reply, "Спасибо, что подтвердили ожидание. Меню сейчас подготовить не получилось из-за технической ошибки — попросите ещё раз через пару минут.");
   assert.equal(continuationCtx.magicLinkGranted, false);
   assert.equal(continuationCtx.magicLinkFailed, true);
 });

@@ -242,8 +242,8 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
       .replace(/\s{2,}/g, " ")
       .trim();
     finalText = kept || (ctx.language === "kk"
-      ? "Тапсырыс беруге болады - жеке сілтемеңізді бөлек хатпен жібердім."
-      : "Можно оформить заказ - отправил вашу персональную ссылку отдельным сообщением.");
+      ? "Тапсырыс беруге болады - мәзірді бөлек хатпен жібердім, осы арқылы кіріп қойсаңыз болғаны."
+      : "Можно оформить заказ - отправил меню отдельным сообщением, зайдите и выберите.");
     validation = { ...validation, warnings: [...validation.warnings, "granted_link_refusal_clause_removed"] };
   }
 
