@@ -131,3 +131,24 @@ test("a deferred link failure stays honest and in the guest language", async () 
   assert.equal(continuationCtx.magicLinkGranted, false);
   assert.equal(continuationCtx.magicLinkFailed, true);
 });
+
+// The panel's "60 мин"/"120 мин" presets are informational notes: no
+// unavailability marker, so the constraint path drops them entirely. The wait
+// must still reach the agent as a fact, and the kitchen rule must not answer
+// "no delays" over it (live round, 2026-08-24).
+test("a 120-minute operator delay preset reaches FACTS and overrides normal-pace wording", () => {
+  const out = buildFactsPrompt(ctx({
+    activeShiftNotes: [{ noteId: "w1", text: "Ожидание увеличено примерно на 120 минут.", expiresAt: Date.now() + 3600_000 }],
+  }));
+  assert.ok(out.includes("operator_wait_notice_minutes"), "the announced minutes must reach the agent");
+  assert.ok(out.includes("temporary delay"), "the timing rule must name the announced delay");
+  assert.ok(!out.includes("kitchen is working at its normal pace"), "normal-pace wording must yield to an active notice");
+});
+
+test("an informational note with minutes does not create menu constraints", () => {
+  const out = buildFactsPrompt(ctx({
+    activeShiftNotes: [{ noteId: "w2", text: "Ожидание увеличено примерно на 120 минут." }],
+  }));
+  assert.ok(out.includes("operator_wait_notice_minutes"));
+  assert.ok(!out.includes('"unavailable_now"'), "a pure delay note must not block any dish");
+});
