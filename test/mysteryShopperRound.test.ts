@@ -323,8 +323,41 @@ test("the honest cancellation handoff wording is not blocked", () => {
 });
 
 // ---------------------------------------------------------------------------
-// F11: the bot invented a delivery zone out of the restaurant's own address.
+// F12: blanket allergen permission over the whole menu.
 // ---------------------------------------------------------------------------
+
+test("a blanket allergen claim over the whole menu is cut even after a menu read", () => {
+  // Live QA R7-04.2, on the already-fixed build: "у меня аллергия на орехи" was answered
+  // "Все блюда в нашем меню не содержат орехов. Можете смело выбирать любое." searchMenu had
+  // run, so the per-dish allergen gate was satisfied - but a composition string does not
+  // state what a dish is FREE of, and it says nothing about the dishes that were not read.
+  // This is the most dangerous shape the allergen lie takes, and no tool can ground it.
+  const blanket = "Все блюда в нашем меню не содержат орехов. Можете смело выбирать любое.";
+  const out = validateFinalText(blanket, ctx({ language: "ru" }), { toolsCalled: ["searchMenu"] });
+  assert.ok(out.warnings.includes("blanket_allergen_assurance_removed"), JSON.stringify(out.warnings));
+  assert.doesNotMatch(out.text, /все блюда/i);
+  assert.doesNotMatch(out.text, /смело/i);
+  // What is left must be the honest offer to check, not silence.
+  assert.match(out.text, /состав|кухн/i);
+});
+
+test("the Kazakh shape of the same claim is cut too", () => {
+  const blanket = "Барлық тағамдарымызда жаңғақ жоқ, қорықпай таңдаңыз.";
+  const out = validateFinalText(blanket, ctx(), { toolsCalled: ["searchMenu"] });
+  assert.ok(out.warnings.includes("blanket_allergen_assurance_removed"), JSON.stringify(out.warnings));
+  assert.doesNotMatch(out.text, /барлық тағам/i);
+});
+
+test("a per-dish allergen answer a menu read grounded still survives", () => {
+  // The strict guard must not swallow the answer the guest actually needs: one named dish,
+  // read from the catalog this turn.
+  const perDish = "«Кальцоне» құрамында теңіз өнімдері жоқ - ол ірімшік пен қамырдан жасалады.";
+  const out = validateFinalText(perDish, ctx({ menuSnapshot: discountedSnapshot }), {
+    toolsCalled: ["searchMenu"],
+  });
+  assert.equal(out.warnings.includes("blanket_allergen_assurance_removed"), false, JSON.stringify(out.warnings));
+  assert.match(out.text, /Кальцоне/);
+});
 
 test("the bot never refuses delivery to an address", () => {
   // Live QA R3-06.1 and again R5-07.1: the guest gave their street and was told

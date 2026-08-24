@@ -70,6 +70,17 @@ const PRICE_GROUNDING_TOOLS = ["searchMenu", "checkOrderStatus", "getPaymentDeta
 // looked at food (found 2026-08-22, reproduced: the sentence survived with
 // toolsCalled=["checkOrderStatus"] and again with ["getPaymentDetails"]).
 const ALLERGEN_GROUNDING_TOOLS = ["searchMenu"];
+// A claim about the WHOLE menu, which no tool can ever ground.
+//
+// Live QA R7-04.2, 2026-08-24: a guest wrote "у меня аллергия на орехи" and was answered
+// "Все блюда в нашем меню не содержат орехов. Можете смело выбирать любое." searchMenu HAD
+// run, so the allergen gate below was satisfied - but a composition string listing rice and
+// salmon does not state what a dish is free of, and it says nothing at all about the other
+// eleven dishes. Blanket permission over an entire menu is the most dangerous form this lie
+// takes, and it is exactly the form a helpful model reaches for. No tool call can make it
+// true, so it is cut whether or not the menu was read.
+const BLANKET_ALLERGEN_ASSURANCE_RE =
+  /[^.!?\n]*(?:бар(?:лық|лик)\s+тағам|бүкіл\s+мәзір|мәзірдегі\s+бар\p{L}*|кез\s*келген\s+тағам|все\s+блюда|всё\s+меню|все\s+меню|любое\s+блюдо|люб\p{L}*\s+из\s+меню|в\s+нашем\s+меню)[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|теңіз\s*өнім|морепродукт)[^.!?\n]*[.!?]?|[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|теңіз\s*өнім|морепродукт)[^.!?\n]*(?:бар(?:лық|лик)\s+тағам|бүкіл\s+мәзір|кез\s*келген\s+тағам|все\s+блюда|всё\s+меню|все\s+меню|любое\s+блюдо)[^.!?\n]*[.!?]?|[^.!?\n]*(?:смело\s+выбир\p{L}*|смело\s+заказ\p{L}*|батыл\s+таңда\p{L}*|қорықпай\s+таңда\p{L}*|қорықпай\s+ала\p{L}*)[^.!?\n]*[.!?]?/giu;
 // A promotion is not in the menu snapshot and not in any tool result either. The only
 // live source for "today there is 20% off" is what the operator wrote in the shift
 // notes, so that is what grounds it. Sharing the price gate meant any tenant with a
@@ -593,6 +604,15 @@ export function validateFinalText(
       const withoutAssurance = dropSentencesMatching(text, ALLERGEN_ASSURANCE_RE);
       text = withoutAssurance;
       warnings.push("ungrounded_allergen_assurance_removed");
+      if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
+    }
+    // And a blanket claim over the whole menu is cut even WITH the menu read, because no
+    // tool result can support it - see BLANKET_ALLERGEN_ASSURANCE_RE.
+    BLANKET_ALLERGEN_ASSURANCE_RE.lastIndex = 0;
+    if (BLANKET_ALLERGEN_ASSURANCE_RE.test(text)) {
+      BLANKET_ALLERGEN_ASSURANCE_RE.lastIndex = 0;
+      text = dropSentencesMatching(text, BLANKET_ALLERGEN_ASSURANCE_RE);
+      warnings.push("blanket_allergen_assurance_removed");
       if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
     }
     // Only when something was actually cut above. DANGLING_REFERENCE_RE is anchored
