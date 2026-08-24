@@ -196,6 +196,11 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     languageLocked = false;
     languageConfidence = decision?.confidence;
     languageDecisionSource = resolved.source;
+    // One line that explains any wrong-language answer after the fact: what the
+    // classifier said, what the dialogue said, and which one won.
+    console.info(
+      `[OPENBOT:LANG] instance=${instanceId} detected=${decision?.language || "-"}/${decision?.confidence ?? "-"}${decision?.lockable ? "" : "(weak)"} prior=${priorLanguage || "-"} decisive=${Boolean(decision?.lockable && textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language))} chose=${resolved.language} via=${resolved.source} ctx=${recentCustomerMessages.length}`
+    );
   }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
   if (domain) safeConfig.domain = domain;
