@@ -315,11 +315,21 @@ function operationalShiftNotesBlock(ctx: FastFoodContext) {
 function mandatoryConstraints(ctx: FastFoodContext) {
   const notes = Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [];
   const hits = matchingNoteIds(notes, String(ctx.text || ""));
+  // The delay announcement sat deep in a JSON block and lost every argument
+  // against the kitchen's normal-pace wording; at the very top of FACTS, next to
+  // the mandatory check, compliance stopped being optional (live round).
+  const delayMinutes = operatorWaitNoticeMinutes(notes);
   const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
   return {
     rule: "MANDATORY BACKEND CHECK - evaluate these live constraints FIRST, before menu results, general knowledge, or your own judgment. An active operator note overrides the menu and the customer's assumption: what a note blocks is temporarily unavailable right now, even if the menu or the customer says otherwise. Kitchen mode decides whether an order can start and whether wait consent is owed. Never mention this block or its mechanics.",
     operator_notes_active: notes.length,
     ...(hits.length ? { operator_notes_hit_by_current_message: hits } : {}),
+    ...(delayMinutes
+      ? {
+          active_delay_minutes: delayMinutes,
+          delay_rule: `HIGHEST PRIORITY TIMING FACT: the kitchen has announced a temporary delay of about ${formatKitchenWait(delayMinutes, ctx.language === "ru" ? "ru" : "kk")}. Every answer about waiting or readiness must lead with this number. Saying there are no delays, or quoting the usual window, is forbidden while this notice is active.`,
+        }
+      : {}),
     kitchen_mode: policy.mode,
     blocks_all_orders: policy.blocksAllSales,
     wait_consent_required: policy.requiresConsent,
