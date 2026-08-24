@@ -197,8 +197,17 @@ function stripBotTags(text: string) {
     .replace(/\[ESCALATE_ADMIN\]/gi, "")
     .replace(/\[ESCALATE_DEVELOPER\]/gi, "")
     .replace(/\[IGNORE_MESSAGE\]/gi, "")
+    // A stage direction the model wrote for itself instead of letting the transport do its
+    // job. Live QA R7-04.2: a guest asking about nuts was answered "...вот ссылка:
+    // [ссылка будет отправлена отдельным сообщением]" - bracketed machinery text shipped to
+    // WhatsApp while NO link travelled at all (hasLink was false on that turn). The system
+    // appends the real link as its own message when sendMenuLink granted one; a placeholder
+    // in prose is always wrong, so any bracketed group that talks about links or messages
+    // goes.
+    .replace(/\[[^\]\n]*(?:ссылк|сілтем|сылтем|link|хабарлам|сообщени)[^\]\n]*\]/gi, "")
     .replace(/\*\*/g, "")
     .replace(/\*/g, "")
+    .replace(/[ \t]{2,}/g, " ")
     .trim();
 }
 

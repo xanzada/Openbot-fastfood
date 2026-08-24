@@ -359,6 +359,33 @@ test("a per-dish allergen answer a menu read grounded still survives", () => {
   assert.match(out.text, /Кальцоне/);
 });
 
+// ---------------------------------------------------------------------------
+// F13: the model wrote a bracketed stage direction instead of the link.
+// ---------------------------------------------------------------------------
+
+test("a bracketed link placeholder never reaches the guest", () => {
+  // Live QA R7-04.2, verbatim tail of the reply: "...вот ссылка:
+  // [ссылка будет отправлена отдельным сообщением]" - machinery text in prose, and no real
+  // link travelled on that turn at all.
+  const reply = "Понимаю, это важно. Могу предложить пиццу или донер. Вот ссылка: [ссылка будет отправлена отдельным сообщением]";
+  const out = validateFinalText(reply, ctx({ language: "ru" }), { toolsCalled: ["searchMenu"] });
+  assert.doesNotMatch(out.text, /\[/, out.text);
+  assert.match(out.text, /пиццу или донер/, "the answer itself stays");
+});
+
+test("a whole-reply placeholder falls back to a real sentence", () => {
+  const placeholder = "[сілтеме бөлек хабарламаға жіберілді]";
+  const out = validateFinalText(placeholder, ctx(), { toolsCalled: [] });
+  assert.ok(out.text.length > 0);
+  assert.doesNotMatch(out.text, /\[/);
+});
+
+test("bracketed text that is not about links is untouched", () => {
+  const keep = "Бізде сеттер бар [2-4 адамға], қызығасыз ба?";
+  const out = validateFinalText(keep, ctx(), { toolsCalled: [] });
+  assert.match(out.text, /2-4 адамға/);
+});
+
 test("the bot never refuses delivery to an address", () => {
   // Live QA R3-06.1 and again R5-07.1: the guest gave their street and was told
   // "Өкінішке орай, біз тек Арман 54 мекенжайына жеткіземіз" - Арман 54 is where the
