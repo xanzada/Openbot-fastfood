@@ -121,3 +121,22 @@ export function publicNoteConstraints(notes: any[] = []) {
   return notes.map((note) => ({ note_id: noteId(note), blocked_terms: availabilityConstraintTerms(note?.text), expires_at: Number(note?.expiresAt || 0) || null }))
     .filter((entry) => entry.note_id && entry.blocked_terms.length);
 }
+
+// Notes reach the bot through two doors: the hub's runtime snapshot and the
+// panel's shift_note_created webhooks into Redis. A hub that merely echoes
+// shift_notes: [] - this one does, even right after its own webhook delivered a
+// note - used to shadow the Redis list entirely, so the agent never saw what the
+// operator had just written (live round, 2026-08-24). Merge instead: a hub entry
+// wins on id collision, Redis-only notes survive.
+export function mergeShiftNoteSources(runtimeNotes: unknown, cachedNotes: unknown) {
+  const notesById = new Map<string, any>();
+  for (const note of Array.isArray(runtimeNotes) ? runtimeNotes : []) {
+    const id = String((note as any)?.noteId || (note as any)?.id || "").trim();
+    if (id) notesById.set(id, note);
+  }
+  for (const note of Array.isArray(cachedNotes) ? cachedNotes : []) {
+    const id = String((note as any)?.noteId || (note as any)?.id || "").trim();
+    if (id && !notesById.has(id)) notesById.set(id, note);
+  }
+  return [...notesById.values()].filter((note: any) => String(note?.text || "").trim());
+}

@@ -21,6 +21,7 @@ import {
 } from "../services/customerMemory.service.js";
 import { getActiveGoal } from "../services/goalTracker.service.js";
 import { orderMentionedByItems, pickConversationOrder } from "../services/customerOrder.service.js";
+import { matchingNoteIds, mergeShiftNoteSources } from "../services/noteProvenance.service.js";
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
 import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
@@ -200,13 +201,22 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   const menuSnapshot = buildMenuSnapshot(liveMenu);
   // runtime.status.get is the authoritative recovery snapshot. Webhooks and the
   // Redis copy keep the fast path, but a missed event or a bot deployment must
-  // not leave the AI without the current shift notes for even one turn.
-  const activeShiftNotes = Array.isArray(runtimeStatus?.shift_notes)
-    ? runtimeStatus.shift_notes
-    : cachedShiftNotes;
+  // not leave the AI without the current shift notes for even one turn. The merge
+  // keeps a hub that echoes shift_notes: [] from shadowing real Redis notes.
+  const activeShiftNotes = mergeShiftNoteSources(runtimeStatus?.shift_notes, cachedShiftNotes);
   const activeShiftNotesFingerprint = activeShiftNotes.length
     ? crypto.createHash("sha256").update(activeShiftNotes.map((note: any) => `${String(note?.text || "").trim()}|${Number(note?.expiresAt || 0) || 0}`).sort().join("\n")).digest("hex")
     : "";
+
+  // A canned memory answer must never override live operational state: the first
+  // "is lavash available?" reply was saved into long-term memory, and every later
+  // ask replayed it byte-for-byte while an active shift note said lavash was out -
+  // the menu had changed, the memory had not (live round, 2026-08-24). Records an
+  // active unavailability note names are dropped for this turn; they return on
+  // their own once the note expires.
+  const shporContextLive = Array.isArray(shporContext) && activeShiftNotes.length
+    ? shporContext.filter((record: any) => !matchingNoteIds(activeShiftNotes, JSON.stringify(record)).length)
+    : shporContext;
 
   // The site calls the oldest unfinished order "active", but a guest who has
   // spent the whole chat asking about one order means that order when they say
@@ -331,7 +341,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     activeShiftNotes,
     activeShiftNotesFingerprint,
     mediaContext: input.mediaContext || null,
-    shporContext,
+    shporContext: shporContextLive,
     magicLinkAlreadySent,
     customerProfile,
     conversationSummary,

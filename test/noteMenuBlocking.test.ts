@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints } from "../src/services/noteProvenance.service.js";
+import { menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints, mergeShiftNoteSources } from "../src/services/noteProvenance.service.js";
 
 // Real rows from the live tenant menu: the doner never names "лаваш" in its
 // title, only deep inside the description, which is exactly where an honest
@@ -101,4 +101,24 @@ test("a note naming nothing in the catalog is left as written, not widened", () 
   assert.equal(menuItemBlockedByNotes(notes, DONER, vocabulary).blocked, false);
   // But it is still published as a constraint, so the model can see it.
   assert.deepEqual(publicNoteConstraints(notes), [{ note_id: "82", blocked_terms: ["напитки"], expires_at: null }]);
+});
+
+// The hub's runtime snapshot and the panel's webhook notes are two doors into
+// the same memory. A hub that echoes shift_notes: [] used to shadow the Redis
+// list, so a note the operator had just written never reached the agent.
+test("mergeShiftNoteSources keeps Redis-only notes when the hub reports none", async () => {
+  const runtime = [{ noteId: "hub-1", text: "Кола закончилась" }];
+  const cached = [{ noteId: "web-1", text: "Лаваш таусылды" }];
+
+  const merged = mergeShiftNoteSources(runtime, cached);
+  assert.deepEqual(merged.map((n: any) => n.noteId).sort(), ["hub-1", "web-1"]);
+
+  assert.deepEqual(mergeShiftNoteSources([], cached).map((n: any) => n.noteId), ["web-1"],
+    "an empty hub snapshot must not erase webhook notes");
+
+  const hubWins = mergeShiftNoteSources([{ id: "n1", text: "fresh text" }], [{ noteId: "n1", text: "stale text" }]);
+  assert.equal(hubWins.length, 1);
+  assert.equal(hubWins[0].text, "fresh text", "a hub entry wins on id collision");
+
+  assert.deepEqual(mergeShiftNoteSources(null, null), []);
 });
