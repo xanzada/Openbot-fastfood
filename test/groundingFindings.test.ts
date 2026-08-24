@@ -141,8 +141,9 @@ test("the agent reports what checkOrderStatus returned, not just that it ran", a
   // Both validation call sites must pass the findings, or the gate is dead on arrival.
   assert.equal((source.match(/toolFindings:/g) || []).length, 2);
   // "no results reported" must stay indistinguishable from the old behaviour rather
-  // than silently tightening the gate for every caller.
-  assert.match(source, /return sawLookup \? \{ orderFound: found \} : \{\};/);
+  // than silently tightening the gate for every caller. The findings now also carry
+  // what escalateToAdmin returned, but an empty report still means "nothing known".
+  assert.match(source, /if \(!sawLookup && escalationCreated === undefined\) return \{\};/);
 });
 
 // ---------------------------------------------------------------------------- A37

@@ -179,6 +179,25 @@ function deliveryZoneUnknownText(language: unknown) {
     : "Доставим ли мы на ваш адрес - это показывает сам сайт при оформлении заказа. Выберите блюда по ссылке, и адрес проверится там же.";
 }
 
+// A PAST-TENSE claim that a human was told. Only the escalate tool can make one true, and
+// only when its result says action=operator_case_created.
+//
+// Live QA, 2026-08-24 morning (A50): a guest wrote "Чек жібердім, ақшам қайтып келмейді
+// ме?" and was answered "Ақшаңыздың қайтарылуына қатысты мәселені әкімшіге
+// хабарластық..." - while NO case existed anywhere: escalateToAdmin was never called, the
+// text matched no complaint pattern, so nothing routed, and the panel stayed silent. The
+// guest then waited for a human nobody had asked for. This is the escalation mirror of the
+// manual-order boundary, and it needs the same treatment: an accomplished-notification
+// claim is only allowed when a tool result proves it.
+const PAST_ESCALATION_CLAIM_RE =
+  /[^.!?\n]*(?:әкімш|экімш|администратор|оператор)[^.!?\n]{0,40}(?:хабарласты(?:қ|м|ң)|хабарладым|жеткіздік|жеткіздім|жібердік|жібердім|растадым|айттым|жолдадым|жолдадық)[^.!?\n]*[.!?]?|[^.!?\n]*(?:хабарластық|жеткіздік|жібердік|жолдадық)[^.!?\n]{0,40}(?:әкімш|экімш|администратор|оператор)[^.!?\n]*[.!?]?/giu;
+
+function operatorPromiseBrokenText(language: unknown) {
+  return language === "kk"
+    ? "Кешіріңіз, өтінішіңізді операторға жібере алмадым - техникалық ақау болып тұр. Біраздан кейін қайта жазып көріңіз немесе бізге қоңырау шалыңыз."
+    : "Извините, я не смог передать вашу просьбу оператору - технический сбой. Напишите чуть позже или позвоните нам.";
+}
+
 function enforceMaxSentences(text: string, max = 5): string {
   const urls = uniqueUrls(text);
   const trimmed = textWithoutUrls(text);
@@ -342,7 +361,7 @@ export function validateFinalText(
   // and the model is at its most confident precisely when the lookup failed. When the
   // caller does not report findings the behaviour is unchanged, so older callers and
   // unit tests keep their exact semantics.
-  grounding?: { toolsCalled?: string[]; toolFindings?: { orderFound?: boolean } }
+  grounding?: { toolsCalled?: string[]; toolFindings?: { orderFound?: boolean; escalationCreated?: boolean } }
 ): {
   text: string;
   hasLink: boolean;
@@ -403,6 +422,23 @@ export function validateFinalText(
       return { text: deliveryZoneUnknownText(ctx.language), hasLink: false, warnings };
     }
     text = withoutZoneRefusal;
+  }
+
+  // A past-tense "the admin has been told" is only allowed when a tool result proves it.
+  // Detected here, acted on by the CALLER: the webhook folds this warning into
+  // needsAdminEscalation so the promise becomes TRUE - a case is created after all -
+  // instead of the validator either lying less loudly or deleting a sentence the routing
+  // layer was about to make honest. Callers that never route (unit tests) still get the
+  // visible warning.
+  PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
+  const claimsEscalationDone = PAST_ESCALATION_CLAIM_RE.test(text);
+  PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
+  if (
+    claimsEscalationDone &&
+    grounding?.toolFindings?.escalationCreated !== true &&
+    !warnings.includes("manual_cancellation_claim_blocked")
+  ) {
+    warnings.push("escalation_promise_ungrounded");
   }
 
   // A truncated generation once shipped the single word "Өкі" to a guest. A reply that

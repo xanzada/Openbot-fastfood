@@ -386,6 +386,43 @@ test("bracketed text that is not about links is untouched", () => {
   assert.match(out.text, /2-4 адамға/);
 });
 
+// ---------------------------------------------------------------------------
+// F14 (A50): "the admin has been told" with no escalation behind it.
+// ---------------------------------------------------------------------------
+
+test("a past-tense operator notification claim without a case is flagged", () => {
+  // Live WhatsApp, 2026-08-24 morning: "Чек жібердім, ақшам қайтып келмейді ме?" was
+  // answered "Ақшаңыздың қайтарылуына қатысты мәселені әкімшіге хабарластық..." while NO
+  // case existed - escalateToAdmin never ran and the text matched no complaint pattern.
+  const claim = "Ақшаңыздың қайтарылуына қатысты мәселені әкімшіге хабарластық. Олар сізбен жақын арада байланысады.";
+  const out = validateFinalText(claim, ctx({ language: "ru" }), { toolsCalled: ["searchMenu"] });
+  assert.ok(out.warnings.includes("escalation_promise_ungrounded"), JSON.stringify(out.warnings));
+});
+
+test("an escalation the tool actually created may be claimed", () => {
+  const claim = "Мәселені әкімшіге хабарластық, олар сізбен байланысады.";
+  const out = validateFinalText(claim, ctx(), {
+    toolsCalled: ["escalateToAdmin"],
+    toolFindings: { escalationCreated: true },
+  });
+  assert.equal(out.warnings.includes("escalation_promise_ungrounded"), false, JSON.stringify(out.warnings));
+  assert.match(out.text, /хабарластық/);
+});
+
+test("the clarify-first question is not mistaken for a notification claim", () => {
+  // The tool's clarify wording promises FUTURE handoff ("жеткіземін"), which needs no
+  // proof yet.
+  const clarify = "Әрене, көмектесейін. Не болғанын қысқаша жазып жіберіңізші - адам керек болса операторға дәл мәселемен жеткіземін.";
+  const out = validateFinalText(clarify, ctx(), { toolsCalled: ["escalateToAdmin"] });
+  assert.equal(out.warnings.includes("escalation_promise_ungrounded"), false, JSON.stringify(out.warnings));
+});
+
+test("a portion sentence is not an escalation claim", () => {
+  const innocent = "Екі адамға донер жібердік деп ойламаңыз, бұл тек мәзір ақпараты.";
+  const out = validateFinalText(innocent, ctx(), { toolsCalled: [] });
+  assert.equal(out.warnings.includes("escalation_promise_ungrounded"), false, JSON.stringify(out.warnings));
+});
+
 test("the bot never refuses delivery to an address", () => {
   // Live QA R3-06.1 and again R5-07.1: the guest gave their street and was told
   // "Өкінішке орай, біз тек Арман 54 мекенжайына жеткіземіз" - Арман 54 is where the

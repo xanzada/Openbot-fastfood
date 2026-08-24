@@ -969,6 +969,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
     let mediaPreemptiveReply = "";
     let mediaPreemptiveSource = "";
     let mediaDeveloperError = "";
+    let mediaDeveloperErrorIsUserInput = false;
     let immediateComplaintSummary = "";
     let immediateComplaintMedia: ComplaintMediaPayload | null = null;
     let immediateComplaintUrgency: ComplaintUrgency = "normal";
@@ -1186,6 +1187,15 @@ async function processWhatsAppWebhook(body: any, started: number) {
         }
         if (mediaAnalysis.type === "technical_error") {
           mediaDeveloperError = mediaAnalysis.analysis || "media_analysis_failed";
+          // A provider 4xx on what the guest sent ("Unable to process input image" on a
+          // sticker or corrupt file) is user input we cannot read, not a system fault. The
+          // guest still gets the graceful retry line; what they do NOT get is a developer
+          // page - live round A52 paged the owner's phone for a webp sticker. Real outages
+          // (5xx, timeouts, exhausted keys) keep the alert.
+          const failureText = `${(mediaAnalysis as any).reply_to_customer || ""} ${mediaAnalysis.analysis || ""}`;
+          mediaDeveloperErrorIsUserInput =
+            /MEDIA_40[0134]|Unable to process input image|unsupported|invalid_image|corrupt/i.test(failureText) &&
+            !/50[03]|TIMEOUT|EXHAUSTED|quota/i.test(failureText);
           mediaPreemptiveReply =
             (mediaAnalysis as any).reply_to_customer ||
             stripEscalationSignals(mediaAnalysis.analysis) ||
@@ -1250,7 +1260,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
     await recordInboundTurn();
 
-    if (mediaDeveloperError) {
+    if (mediaDeveloperError && !mediaDeveloperErrorIsUserInput) {
       await notifyDeveloperSystemFailure(ctx.instanceId, new Error(mediaDeveloperError), {
         scope: "media_analysis",
         messageId,
@@ -1442,7 +1452,17 @@ async function processWhatsAppWebhook(body: any, started: number) {
     // at all - not via the complaint matchers, not via a bare human ask, and
     // not via a misjudged AI signal. It is answered from the menu, period.
     const menuQuestion = isLikelyMenuQuestion(ctx.text);
-    const needsAdminEscalation = !menuQuestion && (hasEscalateAdminSignal(rawAiText) || hasEscalateAdminSignal(result.text));
+    // The validator flags a past-tense "the admin has been told" that no escalation tool
+    // grounded. Making the guest's promise TRUE is better than rewording it: fold the flag
+    // into needsAdminEscalation so the routing below actually creates the case.
+    const ungroundedEscalationPromise =
+      Array.isArray(result.validationWarnings) &&
+      result.validationWarnings.includes("escalation_promise_ungrounded");
+    const needsAdminEscalation =
+      !menuQuestion &&
+      (hasEscalateAdminSignal(rawAiText) ||
+        hasEscalateAdminSignal(result.text) ||
+        ungroundedEscalationPromise);
     const pendingComplaintMedia = await hasPendingComplaintMedia(ctx.instanceId, ctx.phone);
     // When the escalateToAdmin tool already ran this turn, the routing choke
     // point has decided this escalation (case created, or the guest was asked

@@ -62,23 +62,38 @@ function extractToolCalls(result: any) {
 // successful order lookup from an empty one: every "your order is on the way" guard was
 // unlocked by the call alone, so the reply the model is most confident about - the one
 // where the lookup found nothing - was the one that shipped (found 2026-08-22).
-function extractToolFindings(result: any): { orderFound?: boolean } {
+function extractToolFindings(result: any): { orderFound?: boolean; escalationCreated?: boolean } {
   const steps = Array.isArray(result?.steps) ? result.steps : [];
   let sawLookup = false;
   let found = false;
+  let escalationCreated: boolean | undefined;
   for (const step of steps) {
     const results = Array.isArray(step?.toolResults) ? step.toolResults : [];
     for (const entry of results) {
       const name = String(entry?.toolName || entry?.name || "");
-      if (name !== "checkOrderStatus") continue;
-      sawLookup = true;
-      const payload: any = entry?.output ?? entry?.result ?? entry?.response ?? null;
-      if (payload && String(payload.lookup || "") === "found") found = true;
+      if (name === "checkOrderStatus") {
+        sawLookup = true;
+        const payload: any = entry?.output ?? entry?.result ?? entry?.response ?? null;
+        if (payload && String(payload.lookup || "") === "found") found = true;
+      }
+      // What the escalation tool RETURNED decides what the agent may claim. Only
+      // action=operator_case_created means a human was actually notified; the clarify-first
+      // outcome is a question owed to the guest, not a notification.
+      if (name === "escalateToAdmin") {
+        const payload: any = entry?.output ?? entry?.result ?? entry?.response ?? null;
+        if (escalationCreated !== true) {
+          escalationCreated = Boolean(payload && String(payload.action || "") === "operator_case_created");
+        }
+      }
     }
   }
   // Undefined means "the runtime did not report results", which must stay
   // indistinguishable from the old behaviour rather than silently tightening a gate.
-  return sawLookup ? { orderFound: found } : {};
+  if (!sawLookup && escalationCreated === undefined) return {};
+  return {
+    ...(sawLookup ? { orderFound: found } : {}),
+    ...(escalationCreated !== undefined ? { escalationCreated } : {}),
+  };
 }
 
 function mergeToolCalls(
@@ -170,12 +185,26 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
         const regenFindings = extractToolFindings(regenerated);
         const regeneratedValidation = validateFinalText(regenerated.text, ctx, {
           toolsCalled: unionCalls.map((call: { name: string }) => call.name),
-          // An order found in either pass is found. undefined stays undefined.
-          toolFindings: regenFindings.orderFound === true || firstFindings.orderFound === true
-            ? { orderFound: true }
-            : regenFindings.orderFound !== undefined
-              ? regenFindings
-              : firstFindings,
+          // An order found in either pass is found. An escalation created in either pass is
+          // created. undefined stays undefined.
+          toolFindings: {
+            ...(regenFindings.orderFound !== undefined || firstFindings.orderFound !== undefined
+              ? {
+                  orderFound:
+                    regenFindings.orderFound === true || firstFindings.orderFound === true
+                      ? true
+                      : (regenFindings.orderFound ?? firstFindings.orderFound),
+                }
+              : {}),
+            ...(regenFindings.escalationCreated !== undefined || firstFindings.escalationCreated !== undefined
+              ? {
+                  escalationCreated:
+                    regenFindings.escalationCreated === true || firstFindings.escalationCreated === true
+                      ? true
+                      : (regenFindings.escalationCreated ?? firstFindings.escalationCreated),
+                }
+              : {}),
+          },
         });
         const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
         if (regeneratedText && regeneratedText !== finalText) {
