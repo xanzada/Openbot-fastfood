@@ -210,9 +210,15 @@ function proactiveSignals(ctx: FastFoodContext) {
 function operationalRuntime(ctx: FastFoodContext) {
   const live = ctx.hardRealtimeContext || {};
   const waitMinutes = Number(live.wait_time || 0);
+  // An operator's "120 мин" preset is a delay announcement even when the runtime
+  // counter still reads zero: the kitchen-block rule below used to answer
+  // "working at normal pace, no delays" over it (live round, 2026-08-24).
+  const noticeMinutes = operatorWaitNoticeMinutes(ctx.activeShiftNotes);
+  const effectiveWait = Math.max(waitMinutes, noticeMinutes);
   const policy = classifyKitchenSalesPolicy(ctx.runtimeStatus);
   return {
     wait_time: waitMinutes,
+    ...(noticeMinutes > waitMinutes ? { operator_wait_notice_minutes: noticeMinutes } : {}),
     // The gate no longer answers for you when the kitchen is merely busy, so the
     // wait has to be raised in conversation before the order is placed.
     wait_consent_required: policy.requiresConsent,
@@ -231,8 +237,8 @@ function operationalRuntime(ctx: FastFoodContext) {
     // ordering for no reason.
     timing_answer_rule: policy.requiresConsent
       ? "If the customer asks how long, say the kitchen is loaded and name the wait out loud, then say you will write the moment it is ready. Never answer that you have no information."
-      : waitMinutes > 0
-        ? "If the customer asks how long, name the wait above as the normal readiness window - without calling the kitchen busy - then say you will write the moment it is ready. Never answer that you have no information."
+      : effectiveWait > 0
+        ? `If the customer asks how long, name ${effectiveWait === noticeMinutes && noticeMinutes > waitMinutes ? formatKitchenWait(noticeMinutes, ctx.language === "ru" ? "ru" : "kk") + " (the kitchen announced a temporary delay)" : formatKitchenWait(effectiveWait, ctx.language === "ru" ? "ru" : "kk")} as the approximate readiness window - without calling the kitchen busy - then say you will write the moment it is ready. Never say there are no delays. Never answer that you have no information.`
         : "If the customer asks how long, say the kitchen is working at its normal pace and give the usual readiness window, then say you will write the moment it is ready. Never answer that you have no information.",
   };
 }
