@@ -172,6 +172,18 @@ test("a percentage is still cut even inside a grounded promo reply", () => {
   assert.doesNotMatch(out.text, /20\s*%/, "the invented percentage does not");
 });
 
+test("a percentage computed from real prices is still not a fact we may state", () => {
+  // Live QA R6-02.2: asked "пайызы қанша пайыз?", the model divided the two prices itself
+  // and answered "16. 7% жеңілдік" - arithmetic on real numbers, but the restaurant never
+  // announced a percentage and the rounding is ours. The old pattern needed the promo word
+  // BEFORE the number, so a percent-first sentence walked straight through.
+  const computed = "«Донер» үшін 16.7% жеңілдік, «Цезарь» үшін 25% жеңілдік.";
+  const out = validateFinalText(computed, ctx({ menuSnapshot: discountedSnapshot }), {
+    toolsCalled: ["searchMenu"],
+  });
+  assert.doesNotMatch(out.text, /%/, out.text);
+});
+
 test("an invented discount on a dish that is not discounted is still cut", () => {
   // The relaxation must be per-sentence and per-dish, or it becomes a licence to invent.
   const reply = "Макидзуси роллына бүгін 50% жеңілдік береміз.";
