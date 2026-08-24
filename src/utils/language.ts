@@ -100,14 +100,32 @@ export function resolveLockedLanguage(storedLang: string | null | undefined, det
   return storedLang === "kk" || storedLang === "ru" ? storedLang : detected;
 }
 
-export async function detectLanguageDecision(text: string, classifier: (request: MediaRequest) => Promise<string> = generateMediaText): Promise<LanguageDetectionDecision> {
+export async function detectLanguageDecision(
+  text: string,
+  classifier: (request: MediaRequest) => Promise<string> = generateMediaText,
+  // Recent customer messages, oldest first. A short turn like "ащы ма" or "барма"
+  // carries no Kazakh-specific letter, so classified alone it reads as Russian and
+  // the bot answered a Kazakh dialogue in Russian (owner report, 2026-08-24).
+  // Gemini now decides WITH the conversation, exactly as a human would.
+  contextMessages: string[] = [],
+): Promise<LanguageDetectionDecision> {
   if (!isLanguageBearingCustomerText(text)) return { language: detectLang(text), detector: "fallback", confidence: 0, lockable: false };
+  const recent = (Array.isArray(contextMessages) ? contextMessages : [])
+    .map((entry) => String(entry || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(-6);
   try {
     const aiText = await classifier({
-      prompt: `Determine the intended language of this WhatsApp customer message. Return JSON only: {"language":"kk"|"ru","confidence":0..1}. Message: ${JSON.stringify(String(text).slice(0, 1000))}`,
+      prompt: [
+        recent.length
+          ? `Earlier messages from the SAME customer, oldest first:\n${recent.map((entry, index) => `${index + 1}. ${entry}`).join("\n")}`
+          : "",
+        `Newest message: ${JSON.stringify(String(text).slice(0, 1000))}`,
+        'Return JSON only: {"language":"kk"|"ru","confidence":0..1}.',
+      ].filter(Boolean).join("\n\n"),
       base64: "",
       mimeType: "text/plain",
-      systemPrompt: "You are a strict Kazakh-versus-Russian language classifier. Analyze grammar, word order, suffixes, slang, and intent. Kazakh may be misspelled, transliterated, typed without ә ғ қ ң ө ұ ү і, or mixed with Russian loanwords. Do not rely only on special Kazakh letters. Choose ru only when Russian grammar and vocabulary dominate. Return JSON only.",
+      systemPrompt: "You are a strict Kazakh-versus-Russian language classifier for a restaurant's WhatsApp. Decide which language the customer is WRITING IN and therefore expects an answer in. Analyze grammar, word order, suffixes, slang, and intent. Kazakh may be misspelled, transliterated, typed without ә ғ қ ң ө ұ ү і, or mixed with Russian loanwords - such a message is still Kazakh. Short follow-ups (\"ащы ма\", \"барма\", \"қанша\", \"жарайды\") must be judged together with the earlier messages: a customer does not switch language for a two-word follow-up. Choose ru only when Russian grammar and vocabulary genuinely dominate the newest message. Return JSON only.",
     });
     const parsed = parseGeminiLanguageDecision(aiText);
     if (!parsed) throw new Error("INVALID_GEMINI_LANGUAGE_JSON");

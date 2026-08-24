@@ -113,6 +113,10 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   let language: "kk" | "ru" = storedLang || siteLanguageHint || "kk";
   let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
   let languageLocked = Boolean(storedLang);
+  // Diagnostics that travel into FACTS so the model can see HOW the language was
+  // decided (and the audit log can explain a wrong answer after the fact).
+  let languageConfidence: number | undefined;
+  let languageDecisionSource: string | undefined;
   // The 24-hour language lock belongs to guests who arrived through the site:
   // the site already told us their language. A guest who wrote straight to
   // WhatsApp gets their language resolved again on every message instead.
@@ -120,8 +124,19 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // A signal-free message ("👍", "ок", a bare number) keeps the language the
   // guest last actually used - see lastCustomerLanguage.
   const priorCustomerLanguage = lastCustomerLanguage(chatHistory);
+  // Gemini decides the language WITH the conversation, not from one bare turn.
+  // "ащы ма" after two Kazakh messages is Kazakh; alone it looks Russian, which
+  // is exactly how a Kazakh dialogue got a Russian answer (owner report, 2026-08-24).
+  const recentCustomerMessages = (Array.isArray(chatHistory) ? chatHistory : [])
+    .filter((entry: any) => {
+      const role = String(entry?.role || "").toLowerCase();
+      return role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+    })
+    .map((entry: any) => String(entry?.text || entry?.content || ""))
+    .filter((value: string) => isLanguageBearingCustomerText(value))
+    .slice(-6);
   if (siteOriginated && storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
-    const decision = await detectLanguageDecision(languageCandidateText);
+    const decision = await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages);
     const previousLanguage = priorCustomerLanguage;
     const decisiveNow = textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language);
     if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language, decisiveNow)) {
@@ -132,7 +147,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       }
     }
   } else if (siteOriginated && !storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
-    const decision = await detectLanguageDecision(languageCandidateText);
+    const decision = await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages);
     language = decision.language;
     languageDetector = decision.detector;
     // Only a real classification earns the 24-hour lock. The regex fallback
@@ -153,7 +168,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     }
   } else {
     const decision = isLanguageBearingCustomerText(languageCandidateText)
-      ? await detectLanguageDecision(languageCandidateText)
+      ? await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages)
       : null;
     const priorLanguage = storedLang || priorCustomerLanguage;
     const resolved = resolveOrganicLanguage({
@@ -179,6 +194,8 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       : resolved.source === "site_hint" ? "site_hint"
       : "fallback";
     languageLocked = false;
+    languageConfidence = decision?.confidence;
+    languageDecisionSource = resolved.source;
   }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";
   if (domain) safeConfig.domain = domain;
@@ -325,6 +342,8 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       cached: Boolean(storedLang),
       locked: languageLocked,
       detector: languageDetector,
+      ...(languageConfidence !== undefined ? { confidence: languageConfidence } : {}),
+      ...(languageDecisionSource ? { decisionSource: languageDecisionSource } : {}),
       output: language === "ru" ? "pure_ru_only" : "pure_kk_only",
       rule:
         language === "ru"

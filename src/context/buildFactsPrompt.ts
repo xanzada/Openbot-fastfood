@@ -269,17 +269,13 @@ function operationalShiftNotes(ctx: FastFoodContext) {
 // them to nothing and the agent never saw the delay the operator had just
 // announced - it answered "no delays" while the note was pinned (live round,
 // 2026-08-24). Extract the announced minutes so the notice survives as a fact.
+// Kept as a thin wrapper so both prompt blocks and every deterministic gate read
+// the SAME notice parser (kitchenPolicy.extractOperatorWaitNotice). A second
+// private regex here is how the prompt and the gate started disagreeing about
+// whether a delay existed - "на 2 часа" was a delay for one and not the other.
 export function operatorWaitNoticeMinutes(notes: any[] = []): number {
-  let max = 0;
-  for (const note of Array.isArray(notes) ? notes : []) {
-    const text = String(note?.text || "");
-    if (!/мин|минут|minute/i.test(text)) continue;
-    for (const match of text.matchAll(/(\d{1,3})\s*(?:мин|minutes?)/gi)) {
-      const value = Number(match[1]);
-      if (Number.isFinite(value) && value > 0 && value <= 600 && value > max) max = value;
-    }
-  }
-  return max;
+  const notice = extractOperatorWaitNotice(notes);
+  return Math.max(notice.overall, notice.delivery, notice.pickup);
 }
 
 function operationalShiftNotesBlock(ctx: FastFoodContext) {
@@ -407,8 +403,14 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           reply_in: ctx.language,
           locked: Boolean(ctx.languagePolicy?.locked),
           detector: ctx.languagePolicy?.detector || "",
+          ...(ctx.languagePolicy?.confidence !== undefined ? { confidence: ctx.languagePolicy.confidence } : {}),
+          ...(ctx.languagePolicy?.decisionSource ? { decided_by: ctx.languagePolicy.decisionSource } : {}),
           lock_ttl_hours: 24,
-          rule: "Reply only in reply_in (kk = Kazakh, ru = Russian), whatever language the incoming message or the system data happens to be in. Keep brand names, product names, addresses and names the customer used exactly as written.",
+          // reply_in is decided by a Gemini classifier that reads this turn TOGETHER
+          // with the guest's recent messages, so a two-word follow-up ("ащы ма") stays
+          // in the language of the conversation instead of flipping on a missing letter
+          // (owner report, 2026-08-24). The model must not re-decide it.
+          rule: "Reply only in reply_in (kk = Kazakh, ru = Russian), whatever language the incoming message or the system data happens to be in. This value was decided from the whole conversation, not from one message - never override it because the newest message looks like the other language, and never switch mid-reply. Keep brand names, product names, addresses and names the customer used exactly as written.",
         },
         restaurant: {
           instance_id: ctx.instanceId,

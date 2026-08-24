@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { detectLanguageDecision } from "../src/utils/language.js";
 
 process.env.REDIS_URL = "redis://127.0.0.1:1";
 process.env.REDIS_CONNECT_TIMEOUT_MS = "500";
@@ -127,4 +128,39 @@ test("both lanes measure decisiveness with the same function", async () => {
   // and the same message would switch one and not the other.
   assert.match(preload, /detectedIsDecisive: Boolean\(/);
   assert.match(preload, /textCarriesDecisiveLanguageSignal\(languageCandidateText, decision\.language\)/);
+});
+
+// The classifier now sees the CONVERSATION, not one bare turn. "ащы ма" carries
+// no Kazakh-specific letter, so alone it was classified Russian and a Kazakh
+// dialogue got a Russian answer (owner report, 2026-08-24).
+test("a short Kazakh follow-up is classified with the conversation, not alone", async () => {
+  const prompts: string[] = [];
+  const classifier = async (request: any) => {
+    prompts.push(String(request?.prompt || ""));
+    return JSON.stringify({ language: "kk", confidence: 0.9 });
+  };
+
+  const decision = await detectLanguageDecision("ащы ма", classifier, [
+    "анау тауықтысы барма",
+    "қанша тұрады",
+  ]);
+
+  assert.equal(decision.language, "kk");
+  assert.equal(decision.detector, "gemini");
+  assert.ok(prompts[0].includes("Earlier messages from the SAME customer"), "context must reach the classifier");
+  assert.ok(prompts[0].includes("анау тауықтысы барма"), "the earlier Kazakh turn travels with the request");
+  assert.ok(prompts[0].includes("ащы ма"), "the newest message is still the one being judged");
+});
+
+test("with no history the classifier is still asked about the single message", async () => {
+  const prompts: string[] = [];
+  const classifier = async (request: any) => {
+    prompts.push(String(request?.prompt || ""));
+    return JSON.stringify({ language: "ru", confidence: 0.8 });
+  };
+
+  const decision = await detectLanguageDecision("здравствуйте, сколько стоит доставка", classifier);
+
+  assert.equal(decision.language, "ru");
+  assert.ok(!prompts[0].includes("Earlier messages"), "no phantom context when there is none");
 });
