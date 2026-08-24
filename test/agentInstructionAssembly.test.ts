@@ -32,5 +32,10 @@ test("tenant voice is injected exactly once and remains bounded", () => {
   // ...then from 17 800 for the unknown-kitchen rule (a failed runtime read is reported
   // as unknown instead of "normal", and the agent is told to confirm with getKitchenStatus
   // before committing to an order).
-  assert.ok(instructions.length < 18_200, `assembled prompt is unexpectedly large: ${instructions.length}`);
+  // ...then from 18 200 for the restored wait-consent contract (mandatory ask,
+  // per-channel delivery/pickup delays, clarify-on-unclear) plus the warm-voice
+  // rules the owner asked for: fresh composition per guest, human-sized message
+  // splitting, one-emoji cap, URL on its own line, and no system-flavoured link
+  // wording (2026-08-24).
+  assert.ok(instructions.length < 20_000, `assembled prompt is unexpectedly large: ${instructions.length}`);
 });

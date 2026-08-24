@@ -99,7 +99,11 @@ function randomTypingDelayMs() {
 }
 
 function pushSized(chunks: string[], value = "") {
-  const text = value.replace(/\s+/g, " ").trim();
+  // Single newlines INSIDE a block are the author's own line breaks (a warm
+  // sentence, then the invitation under it). Collapsing every whitespace run
+  // flattened them into one long line, which is exactly the wall of text a
+  // person would never send - so only spaces/tabs are normalised here.
+  const text = value.replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean).join("\n").trim();
   if (!text) return;
   if (text.length <= RESPONSE_CHUNK_MAX) {
     chunks.push(text);
@@ -147,11 +151,13 @@ export function splitWhatsProResponse(text = ""): string[] {
   // whole, with the link on its own line so it still renders as a preview. The
   // URL's own length does not count: a magic-link token cannot be chunked.
   if (urls.length === 1) {
-    const intro = cleanText.replace(URL_RE, "").replace(/\s+/g, " ").trim();
+    const intro = cleanText.replace(URL_RE, "").replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean).join("\n").trim();
     if (intro.length <= RESPONSE_CHUNK_MAX) return [intro ? `${intro}\n${urls[0]}` : urls[0]];
   }
-  // Remove URLs from text body
-  const textOnly = cleanText.replace(URL_RE, "").replace(/[ \t]+\n/g, "\n").replace(/\s{2,}/g, " ").trim();
+  // Remove URLs from text body. Author line breaks survive (see pushSized): a
+  // blank line still starts a new WhatsApp message, a single newline stays a
+  // line break inside one message.
+  const textOnly = cleanText.replace(URL_RE, "").replace(/[ \t]+/g, " ").replace(/[ \t]*\n/g, "\n").trim();
 
   const chunks: string[] = [];
 

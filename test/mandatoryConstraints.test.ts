@@ -109,3 +109,30 @@ test("per-channel consent facts reach the briefing", () => {
   assert.ok(out.includes("delivery_wait_label"));
   assert.ok(out.includes("pickup_wait_label"));
 });
+
+// The voice must stay human: warm openings, an open-door close, one emoji at
+// most, short human-sized sentences, and the URL alone on its own line. These
+// are the guardrails a future prompt trim must not quietly remove
+// (owner request, 2026-08-24).
+test("instructions define a warm human voice with an open-door close", () => {
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("warm, competent human on WhatsApp"));
+  assert.ok(/қысылмай жазыңыз/.test(FASTFOOD_AGENT_INSTRUCTIONS), "the Kazakh open-door phrasing is calibrated");
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("composed fresh for THIS person"));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never text to copy"), "examples must never become templates");
+});
+
+test("instructions keep replies short, split and never one long paragraph", () => {
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never one long paragraph"));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("separate short sentences or separate short messages"));
+});
+
+test("instructions cap emoji and keep the URL on its own line", () => {
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("at most one, and only where a real person would use it"));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Never in an apology, a complaint, a payment or a delay message"));
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("A URL always sits alone on its own line"));
+});
+
+test("instructions forbid system-flavoured link wording", () => {
+  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("the menu made for them"));
+  assert.ok(/Never call it a "token"/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+});

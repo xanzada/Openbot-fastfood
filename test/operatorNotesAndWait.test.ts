@@ -111,7 +111,14 @@ test("accepting even a legacy wait consent resumes the personal order link", asy
     },
   );
 
-  assert.equal(reply, "Жақсы, рақмет! Мәзірді жіберіп отырмын — осы арқылы кіріп, тапсырысыңызды бересіз.");
+  // The exact wording is deliberately NOT pinned here: the voice is meant to stay
+  // warm and human, and a byte-exact assertion turns every tone improvement into
+  // a test failure. What must hold is the contract: the guest is told about the
+  // MENU (never a "token"/"personal link" in system language), the invitation to
+  // ask more is there, and the URL travels on its own line.
+  assert.ok(/[Мм]әзір/.test(String(reply)), "the guest hears about the menu");
+  assert.ok(!/сілтемеңізді жіберіп/.test(String(reply)), "no system-flavoured 'your link' wording");
+  assert.ok(/қысылмай|сұрағыңыз/.test(String(reply)), "the open-door invitation stays");
   assert.equal(continuationCtx.magicLinkGranted, true);
   assert.equal(continuationCtx.magicLink, "https://storefront.alemi.kz/auth/whatsapp#token=test");
   assert.deepEqual(issued, ["prestige:77476884956:kk"]);
@@ -130,7 +137,10 @@ test("a deferred link failure stays honest and in the guest language", async () 
     },
   );
 
-  assert.equal(reply, "Спасибо, что подтвердили ожидание. Меню сейчас подготовить не получилось из-за технической ошибки — попросите ещё раз через пару минут.");
+  // Honest about the failure, in the guest's language, without exposing plumbing.
+  assert.ok(/техническ/i.test(String(reply)), "the guest is told plainly that it is a technical hiccup");
+  assert.ok(/минут/i.test(String(reply)), "a concrete retry window is offered");
+  assert.ok(!/token|ссылк[ау]\s+не\s+удалось\s+подготовить\s+из-за/i.test(String(reply)), "no system-flavoured link wording");
   assert.equal(continuationCtx.magicLinkGranted, false);
   assert.equal(continuationCtx.magicLinkFailed, true);
 });
