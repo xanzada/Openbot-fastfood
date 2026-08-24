@@ -21,6 +21,9 @@ Object.defineProperty(redisClient, "isOpen", { get: () => true, configurable: tr
 (redisClient as any).ttl = async () => -1;
 (redisClient as any).lRange = async (key: string) => lists.get(key) ?? [];
 (redisClient as any).expire = async () => 1;
+(redisClient as any).sAdd = async (key: string, member: string) => { hubSeen.add(`${key}:${member}`); return 1; };
+(redisClient as any).sIsMember = async (key: string, member: string) => (hubSeen.has(`${key}:${member}`) ? 1 : 0);
+const hubSeen = new Set<string>();
 (redisClient as any).multi = () => {
   const ops: Array<() => void> = [];
   const chain: any = {
@@ -40,6 +43,7 @@ const B = "other-resto";
 async function seed() {
   store.clear();
   lists.clear();
+  hubSeen.clear();
   await saveShiftNote(A, "101", "Ірімшік бітті");
   await saveShiftNote(A, "102", "Кешкі кезек ұзақ");
   await saveShiftNote(B, "201", "Тек өзі алып кету");
@@ -171,17 +175,19 @@ test("a summary survives when the delete removed nothing from that history", asy
   );
 });
 
-test("the authoritative runtime snapshot restores missed notes and removes stale ones", async () => {
+test("the authoritative snapshot restores hub notes and revokes only hub-known ids", async () => {
   await seed();
-  await syncShiftNotesSnapshot(A, [{
-    id: "runtime-301",
-    text: "Кола закончилась, предлагай пепси",
-    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-  }]);
+  // First the hub lists two notes: one already local, one new.
+  await syncShiftNotesSnapshot(A, [
+    { id: "101", text: "Ірімшік бітті" },
+    { id: "runtime-301", text: "Кола закончилась, предлагай пепси", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+  ]);
+  // Then the hub drops the first one but keeps the second.
+  await syncShiftNotesSnapshot(A, [{ id: "runtime-301", text: "Кола закончилась, предлагай пепси" }]);
 
   const notes = await getActiveShiftNotes(A);
-  assert.deepEqual(notes.map((note) => note.noteId), ["runtime-301"]);
-  assert.equal(notes[0].text, "Кола закончилась, предлагай пепси");
+  assert.deepEqual(notes.map((note) => note.noteId).sort(), ["102", "runtime-301"],
+    "a hub-listed note is revoked by the snapshot; a webhook-only note survives");
   assert.equal(store.has(`shift_note:${B}:201`), true, "another tenant is untouched");
 });
 
@@ -199,10 +205,11 @@ test("an empty snapshot from a hub that never tracked notes wipes nothing", asyn
 test("once a hub has shown it tracks notes, an empty snapshot corrects the drift", async () => {
   await seed();
   await syncShiftNotesSnapshot(A, [{ id: "runtime-401", text: "Кола закончилась" }]);
-  assert.deepEqual((await getActiveShiftNotes(A)).map((n) => n.noteId), ["runtime-401"]);
+  assert.deepEqual((await getActiveShiftNotes(A)).map((n) => n.noteId).sort(), ["101", "102", "runtime-401"]);
 
-  // The operator deleted the last note in the panel; the hub now reports none.
+  // The operator deleted the last hub note in the panel; the hub now reports none.
   await syncShiftNotesSnapshot(A, []);
 
-  assert.deepEqual(await getActiveShiftNotes(A), [], "a tracking hub's empty list is authoritative");
+  assert.deepEqual((await getActiveShiftNotes(A)).map((n) => n.noteId).sort(), ["101", "102"],
+    "the hub-tracked note is revoked, while webhook-delivered notes keep their own lane");
 });

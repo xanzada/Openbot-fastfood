@@ -1103,26 +1103,27 @@ export async function syncShiftNotesSnapshot(
       if (await saveShiftNote(instanceId, noteId, text, expiry)) desiredIds.add(noteId);
     }
 
-    // An EMPTY snapshot used to mean "delete every local note". A hub that merely
-    // echoes shift_notes: [] - this one does, even seconds after its own panel
-    // webhook delivered a note - wiped every note within one runtime poll, and the
-    // bot went back to selling a dish the operator had pulled (live round,
-    // 2026-08-24). An empty snapshot now wipes only after this hub has once shown
-    // it actually tracks notes (a non-empty snapshot); explicit
-    // shift_note_deleted webhooks and the TTL remain the cleanup paths otherwise.
-    const managedKey = `shift_notes_hub_managed:${instanceId}`;
-    if (!desiredIds.size) {
-      const managed = await redisClient.get(managedKey);
-      if (!managed) return 0;
-    } else {
-      await redisClient.setEx(managedKey, 7 * 24 * 3600, "1");
+    // Track which note ids the hub itself has ever listed. Only those may be
+    // revoked by a later snapshot: a hub that echoes shift_notes: [] while its
+    // own panel notes travel by webhook used to erase every Redis note within
+    // one poll (live round, 2026-08-24), and a "hub once sent notes" flag alone
+    // brought the same wipe back the moment the operator cleared the panel.
+    // Notes the hub has NEVER listed belong to the webhook lane - explicit
+    // shift_note_deleted events and the TTL decide their fate.
+    const hubSeenKey = `shift_notes_hub_seen:${instanceId}`;
+    for (const id of desiredIds) {
+      await redisClient.sAdd(hubSeenKey, id).catch(() => undefined);
     }
+    await redisClient.expire(hubSeenKey, 7 * 24 * 3600).catch(() => undefined);
 
     let changed = 0;
     const existingKeys = await scanKeys(`shift_note:${instanceId}:*`);
     for (const key of existingKeys) {
       const noteId = key.split(":").pop() || "";
-      if (noteId && !desiredIds.has(noteId)) changed += await deleteShiftNote(instanceId, noteId);
+      if (!noteId || desiredIds.has(noteId)) continue;
+      const knownToHub = await redisClient.sIsMember(hubSeenKey, noteId).catch(() => false);
+      if (!knownToHub) continue;
+      changed += await deleteShiftNote(instanceId, noteId);
     }
     return changed + desiredIds.size;
   });
