@@ -658,6 +658,63 @@ export function shouldIgnoreSavedContacts(env: Record<string, string | undefined
   return String(env.BOT_IGNORE_SAVED_CONTACTS ?? "true").trim().toLowerCase() !== "false";
 }
 
+/**
+ * Per-tenant contact policy, stored on the tenant row in the WhatsPro platform
+ * and edited from tenants.html. Absent fields mean "not configured" — the
+ * platform-wide env behaviour stands in, so deploying this changes nothing for
+ * a restaurant until its operator touches the switches in the panel.
+ */
+export interface TenantContactPolicy {
+  allowSavedContacts?: boolean;
+  allowUnsavedContacts?: boolean;
+  ignoredContacts?: string[];
+}
+
+/** A list entry hits either a phone (suffix match, so +7/8 prefixes agree) or a saved-contact name (whole words, identity fields only — never the message text). */
+export function matchesIgnoredContactEntry(
+  entry: string,
+  phone: string,
+  senderMeta?: Record<string, any>
+): boolean {
+  const normalizeKzDigits = (digits: string) =>
+    digits.length === 11 && digits.startsWith("8") ? `7${digits.slice(1)}` : digits.length === 10 ? `7${digits}` : digits;
+  const phoneDigits = normalizeKzDigits(digitsOf(phone));
+  const entryDigits = normalizeKzDigits(digitsOf(entry));
+  if (entryDigits.length >= 10 && phoneDigits.length >= 10 && phoneDigits.slice(-10) === entryDigits.slice(-10)) {
+    return true;
+  }
+  const keywordTokens = tokenizeContactText(entry);
+  if (!keywordTokens.length) return false;
+  const identities = [
+    senderMeta?.contactName,
+    senderMeta?.contactShortName,
+    senderMeta?.contactPushName,
+    senderMeta?.pushName,
+  ]
+    .map(tokenizeContactText)
+    .filter((tokens) => tokens.length > 0);
+  if (!identities.length) return false;
+  return identities.some((tokens) => ` ${tokens.join(" ")} `.includes(` ${keywordTokens.join(" ")} `));
+}
+
+async function loadTenantContactPolicy(instanceId: string): Promise<TenantContactPolicy | null> {
+  const config = await getRestaurantConfig(instanceId).catch(() => null);
+  if (!config || typeof config !== "object") return null;
+  const policy: TenantContactPolicy = {};
+  if (config.allow_saved_contacts !== undefined && config.allow_saved_contacts !== null) {
+    policy.allowSavedContacts = Boolean(config.allow_saved_contacts);
+  }
+  if (config.allow_unsaved_contacts !== undefined && config.allow_unsaved_contacts !== null) {
+    policy.allowUnsavedContacts = Boolean(config.allow_unsaved_contacts);
+  }
+  if (Array.isArray(config.ignored_contacts)) {
+    policy.ignoredContacts = config.ignored_contacts.map((item: unknown) => String(item ?? "").trim()).filter(Boolean);
+  }
+  return policy.ignoredContacts?.length || policy.allowSavedContacts !== undefined || policy.allowUnsavedContacts !== undefined
+    ? policy
+    : null;
+}
+
 async function getTestModeAllowedPhones(instanceId: string) {
   const config = await getRestaurantConfig(instanceId).catch(() => null);
   return testModeAllowedPhones(config);
@@ -717,6 +774,26 @@ export function derivedInboundId(
   return `derived:${sha1(`${instanceId}|${phone}|${body}|${mediaMark}`)}`;
 }
 
+/** Pure decision: per-tenant contact rules for one inbound message, or null when the sender is in scope. */
+export function evaluateTenantContactRules(input: {
+  phone: string;
+  senderMeta?: Record<string, any>;
+  contactPolicy?: TenantContactPolicy | null;
+}): GuardResult | null {
+  const policy = input.contactPolicy;
+  if (policy?.ignoredContacts?.length) {
+    const ignoredHit = policy.ignoredContacts.find((entry) => matchesIgnoredContactEntry(entry, input.phone, input.senderMeta));
+    if (ignoredHit) return { blocked: true, reason: "ignored_contact" };
+  }
+  const isSavedSender = Boolean(input.senderMeta?.isMyContact);
+  const savedAllowed = policy?.allowSavedContacts !== undefined ? policy.allowSavedContacts : !shouldIgnoreSavedContacts();
+  const unsavedAllowed = policy?.allowUnsavedContacts !== undefined ? policy.allowUnsavedContacts : true;
+  if (isSavedSender ? !savedAllowed : !unsavedAllowed) {
+    return { blocked: true, reason: isSavedSender ? "private_saved_contact" : "unsaved_contact_policy" };
+  }
+  return null;
+}
+
 export async function guardIncomingMessage(input: {
   instanceId: string;
   phone: string;
@@ -725,6 +802,7 @@ export async function guardIncomingMessage(input: {
   fromMe?: boolean;
   isGroup?: boolean;
   senderMeta?: Record<string, any>;
+  contactPolicy?: TenantContactPolicy | null;
 }): Promise<GuardResult> {
   const instanceId = String(input.instanceId || "").trim();
   const phone = normalizeChatPhone(input.phone);
@@ -742,6 +820,14 @@ export async function guardIncomingMessage(input: {
       return { blocked: true, reason: "test_mode_blocked" };
     }
   }
+
+  // Per-tenant contact policy runs before anything that leaves a trace: someone
+  // on the ignored list must be as invisible as a wrong number - no history, no
+  // metrics, no typing, no reply. The scope switches decide saved vs unsaved
+  // senders; an absent tenant field falls back to the platform-wide env rule.
+  const contactPolicy = input.contactPolicy !== undefined ? input.contactPolicy : await loadTenantContactPolicy(instanceId);
+  const contactRuleVerdict = evaluateTenantContactRules({ phone, senderMeta: input.senderMeta, contactPolicy });
+  if (contactRuleVerdict) return contactRuleVerdict;
 
   const privateNames = [
     input.senderMeta?.contactName,
