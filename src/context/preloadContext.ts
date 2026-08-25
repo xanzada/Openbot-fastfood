@@ -175,8 +175,19 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       detected: decision?.lockable ? decision.language : null,
       // Same decisiveness test the locked path uses, so both lanes agree on what counts
       // as an unmistakable request to switch.
+      //
+      // A CONFIDENT classification counts as decisive too, and it has to: the
+      // dialogue's "prior" language is derived by a REGEX (lastCustomerLanguage ->
+      // detectLang), and that regex calls any text without ә ғ қ ң ө ұ ү і Russian.
+      // So a Kazakh conversation made of ordinary words ("ащы ма", "барма",
+      // "қанша тұрады" typed without special letters) produced prior=ru, which then
+      // outvoted a Gemini verdict of kk/1.0 and the guest was answered in Russian
+      // (owner report, reproduced from the [OPENBOT:LANG] line, 2026-08-24).
+      // A regex guess must never outrank a confident classifier.
       detectedIsDecisive: Boolean(
-        decision?.lockable && textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language)
+        decision?.lockable
+          && (textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language)
+            || (decision.confidence ?? 0) >= 0.8)
       ),
       priorLanguage,
       contactName: firstValue(
@@ -199,7 +210,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     // One line that explains any wrong-language answer after the fact: what the
     // classifier said, what the dialogue said, and which one won.
     console.info(
-      `[OPENBOT:LANG] instance=${instanceId} detected=${decision?.language || "-"}/${decision?.confidence ?? "-"}${decision?.lockable ? "" : "(weak)"} prior=${priorLanguage || "-"} decisive=${Boolean(decision?.lockable && textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language))} chose=${resolved.language} via=${resolved.source} ctx=${recentCustomerMessages.length}`
+      `[OPENBOT:LANG] instance=${instanceId} detected=${decision?.language || "-"}/${decision?.confidence ?? "-"}${decision?.lockable ? "" : "(weak)"} prior=${priorLanguage || "-"} decisive=${Boolean(decision?.lockable && (textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language) || (decision.confidence ?? 0) >= 0.8))} chose=${resolved.language} via=${resolved.source} ctx=${recentCustomerMessages.length}`
     );
   }
   const domain = normalizeMenuDomain(safeConfig.domain || "") || "";

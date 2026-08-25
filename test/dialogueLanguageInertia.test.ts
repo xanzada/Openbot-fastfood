@@ -164,3 +164,33 @@ test("with no history the classifier is still asked about the single message", a
   assert.equal(decision.language, "ru");
   assert.ok(!prompts[0].includes("Earlier messages"), "no phantom context when there is none");
 });
+
+// The "prior" language of a dialogue is derived by a REGEX that calls any text
+// without ә ғ қ ң ө ұ ү і Russian. A Kazakh conversation typed in ordinary words
+// therefore produced prior=ru, which outvoted a Gemini verdict of kk/1.0 and the
+// guest was answered in Russian (owner report, reproduced from the
+// [OPENBOT:LANG] line, 2026-08-24). A confident classifier must win.
+test("a confident classification outranks a regex-derived dialogue language", () => {
+  const confident = resolveOrganicLanguage({
+    detected: "kk",
+    detectedIsDecisive: true, // preloadContext sets this for confidence >= 0.8
+    priorLanguage: "ru",
+  });
+  assert.equal(confident.language, "kk");
+  assert.equal(confident.source, "message");
+});
+
+test("a weak classification still yields to the established dialogue", () => {
+  const weak = resolveOrganicLanguage({
+    detected: "ru",
+    detectedIsDecisive: false,
+    priorLanguage: "kk",
+  });
+  assert.equal(weak.language, "kk", "one weak token must not flip a Kazakh dialogue");
+  assert.equal(weak.source, "history");
+});
+
+test("preloadContext treats high classifier confidence as decisive", async () => {
+  const src = await readFile(new URL("../src/context/preloadContext.ts", import.meta.url), "utf8");
+  assert.match(src, /\(decision\.confidence \?\? 0\) >= 0\.8/, "the confidence override must stay in the organic lane");
+});
