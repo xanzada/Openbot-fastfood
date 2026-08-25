@@ -234,12 +234,13 @@ function openRouterMediaPart(request: MediaRequest) {
 }
 
 export async function callOpenRouter(request: MediaRequest) {
-  return callOpenRouterWith(envText("OPENROUTER_API_KEY"), getMediaFallbackModel(), request);
+  return callOpenAiCompatible("https://openrouter.ai/api/v1", envText("OPENROUTER_API_KEY"), getMediaFallbackModel(), request);
 }
 
-/** Same reserve lane, but with an explicit key and model — the workspace pools use it entry by entry. */
-export async function callOpenRouterWith(apiKey: string, model: string, request: MediaRequest) {
+/** Any OpenAI-compatible chat/completions endpoint, with an explicit base URL, key and model — the workspace pools use it entry by entry. */
+export async function callOpenAiCompatible(baseUrl: string, apiKey: string, model: string, request: MediaRequest) {
   const trimmedKey = String(apiKey || "").trim();
+  const base = String(baseUrl || "").trim().replace(/\/+$/, "") || "https://openrouter.ai/api/v1";
   if (!trimmedKey) throw new Error("OPENROUTER_API_KEY_NOT_CONFIGURED");
 
   // Text-only requests reach this reserve too (language detection, and any media
@@ -252,7 +253,7 @@ export async function callOpenRouterWith(apiKey: string, model: string, request:
     { role: "user", content: [{ type: "text", text: request.prompt }, ...mediaParts] },
   ];
 
-  const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetchWithTimeout(`${base}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${trimmedKey}`,
@@ -267,14 +268,19 @@ export async function callOpenRouterWith(apiKey: string, model: string, request:
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    throw new Error(`OPENROUTER_MEDIA_${response.status}: ${errorText.slice(0, 240)}`);
+    throw new Error(`OPENAI_COMPATIBLE_${response.status}: ${errorText.slice(0, 240)}`);
   }
 
   const data = await response.json();
   const text = String(data?.choices?.[0]?.message?.content || "").trim();
-  if (!text) throw new Error("OPENROUTER_MEDIA_EMPTY_RESPONSE");
-  console.info(`[LLM:MEDIA] provider=openrouter model=${model}`);
+  if (!text) throw new Error("OPENAI_COMPATIBLE_EMPTY_RESPONSE");
+  console.info(`[LLM:MEDIA] provider=openai-compatible base=${base} model=${model}`);
   return text;
+}
+
+/** Kept for existing callers: the OpenRouter lane with env key/model. */
+export async function callOpenRouterWith(apiKey: string, model: string, request: MediaRequest) {
+  return callOpenAiCompatible("https://openrouter.ai/api/v1", apiKey, model, request);
 }
 
 // MEDIA_USE_FREE_KEYS=false sends media straight to the paid reserve. The free
@@ -293,9 +299,9 @@ export async function generateMediaText(request: MediaRequest) {
   const workspace = getLlmWorkspacePools();
   for (const entry of workspace?.media || []) {
     try {
-      const text = entry.provider === "gemini"
+      const text = entry.type === "gemini"
         ? await callGeminiChannel(request, [entry.key], entry.model, `workspace:${entry.name}`)
-        : await callOpenRouterWith(entry.key, entry.model, request);
+        : await callOpenAiCompatible(entry.baseUrl, entry.key, entry.model, request);
       if (text) return text;
     } catch (error: any) {
       console.warn(`[LLM:MEDIA] workspace_failed name=${entry.name} model=${entry.model} error=${error?.message || error}`);

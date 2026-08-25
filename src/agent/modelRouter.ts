@@ -167,12 +167,12 @@ export function getTextModelId() {
   };
 }
 
-// The panel's "Жұмыс кеңістігі" text pool, when the operator filled it. Entries
-// must be OpenRouter-compatible (tool calls travel over chat-completions), so a
-// gemini-typed entry is skipped with a note rather than silently breaking tools.
+// The panel's "API key" text pool, when the operator filled it. Entries must be
+// OpenAI-compatible (tool calls travel over chat-completions), so a gemini-typed
+// entry is skipped with a note rather than silently breaking tools.
 function workspaceTextChain(): { model: any; timeout: number; label: string }[] {
   const pools = getLlmWorkspacePools();
-  const entries = (pools?.text || []).filter((entry) => entry.provider === "openrouter");
+  const entries = (pools?.text || []).filter((entry) => entry.type === "openai");
   if ((pools?.text || []).length !== entries.length) {
     console.warn("[MODEL:TEXT] workspace: gemini-typed text keys are not supported for tool-calling; skipped");
   }
@@ -182,7 +182,7 @@ function workspaceTextChain(): { model: any; timeout: number; label: string }[] 
   const lastTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
   return entries.map((entry, index) => {
     const provider = createOpenAI({
-      baseURL: "https://openrouter.ai/api/v1",
+      baseURL: entry.baseUrl,
       apiKey: entry.key,
     });
     const keyFingerprint = createHash("sha1").update(entry.key).digest("hex").slice(0, 8);

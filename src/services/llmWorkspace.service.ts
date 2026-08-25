@@ -11,11 +11,12 @@ import { envText } from "./llm.service.js";
  * always better than no snapshot.
  */
 
-export type LlmProvider = "gemini" | "openrouter";
+export type LlmProvider = "openai" | "gemini";
 
 export interface LlmKeyEntry {
   name: string;
-  provider: LlmProvider;
+  type: LlmProvider;
+  baseUrl: string;
   model: string;
   key: string;
 }
@@ -25,8 +26,25 @@ export interface LlmWorkspacePools {
   media: LlmKeyEntry[];
 }
 
-const PROVIDERS = new Set<string>(["gemini", "openrouter"]);
+const TYPES = new Set<string>(["openai", "gemini"]);
 const MAX_ENTRIES_PER_POOL = 12;
+const DEFAULT_BASE_URL: Record<string, string> = {
+  openai: "https://openrouter.ai/api/v1",
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
+};
+
+function normalizeBaseUrl(value: unknown, type: string): string {
+  const raw = String(value ?? "").trim().replace(/\/+$/, "");
+  const fallback = DEFAULT_BASE_URL[type] || DEFAULT_BASE_URL.openai;
+  if (!raw) return fallback;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return fallback;
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return fallback;
+  }
+}
 
 export function sanitizeWorkspace(raw: unknown): LlmWorkspacePools {
   const sanitizePool = (list: unknown): LlmKeyEntry[] => {
@@ -35,20 +53,24 @@ export function sanitizeWorkspace(raw: unknown): LlmWorkspacePools {
     const seen = new Set<string>();
     for (const item of source) {
       const record = (item && typeof item === "object" ? item : {}) as Record<string, any>;
-      const provider = String(record.provider || "").trim().toLowerCase();
+      let type = String(record.type || "").trim().toLowerCase();
+      let baseUrl = String(record.baseUrl ?? "").trim().replace(/\/+$/, "");
+      if (!type && record.provider) {
+        // Legacy rows from the first cut used a provider select.
+        const legacy = String(record.provider).trim().toLowerCase();
+        if (legacy === "gemini") { type = "gemini"; baseUrl = baseUrl || DEFAULT_BASE_URL.gemini; }
+        else if (legacy === "openrouter") { type = "openai"; baseUrl = baseUrl || DEFAULT_BASE_URL.openai; }
+      }
+      if (!TYPES.has(type)) type = "openai";
       const model = String(record.model || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 120);
       const key = String(record.key ?? "").replace(/\s+/g, "").slice(0, 400);
       if (!model || !key) continue;
       const name = String(record.name || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 80) || model;
-      const fingerprint = `${provider}|${model}|${key}`;
+      const normalizedBase = normalizeBaseUrl(baseUrl, type);
+      const fingerprint = `${type}|${normalizedBase}|${model}|${key}`;
       if (seen.has(fingerprint)) continue;
       seen.add(fingerprint);
-      out.push({
-        name,
-        provider: (PROVIDERS.has(provider) ? provider : "openrouter") as LlmProvider,
-        model,
-        key,
-      });
+      out.push({ name, type: type as LlmProvider, baseUrl: normalizedBase, model, key });
       if (out.length >= MAX_ENTRIES_PER_POOL) break;
     }
     return out;
