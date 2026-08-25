@@ -1,4 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai";
+import { getLlmWorkspacePools } from "./llmWorkspace.service.js";
 
 export type LlmRole = "system" | "user" | "assistant";
 
@@ -20,7 +21,7 @@ export interface TextModelChain {
   reserve: string;
 }
 
-function envText(name: string, fallback = "") {
+export function envText(name: string, fallback = "") {
   const value = String(process.env[name] || "").trim();
   return value || fallback;
 }
@@ -233,10 +234,14 @@ function openRouterMediaPart(request: MediaRequest) {
 }
 
 export async function callOpenRouter(request: MediaRequest) {
-  const apiKey = envText("OPENROUTER_API_KEY");
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY_NOT_CONFIGURED");
+  return callOpenRouterWith(envText("OPENROUTER_API_KEY"), getMediaFallbackModel(), request);
+}
 
-  const model = getMediaFallbackModel();
+/** Same reserve lane, but with an explicit key and model — the workspace pools use it entry by entry. */
+export async function callOpenRouterWith(apiKey: string, model: string, request: MediaRequest) {
+  const trimmedKey = String(apiKey || "").trim();
+  if (!trimmedKey) throw new Error("OPENROUTER_API_KEY_NOT_CONFIGURED");
+
   // Text-only requests reach this reserve too (language detection, and any media
   // call whose payload never downloaded). Attaching an empty data URL made
   // OpenRouter reject the whole request with 400, so the reserve died exactly
@@ -250,7 +255,7 @@ export async function callOpenRouter(request: MediaRequest) {
   const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${trimmedKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -282,6 +287,21 @@ export function usesFreeMediaKeys() {
 }
 
 export async function generateMediaText(request: MediaRequest) {
+  // The panel-curated workspace pool goes first: every entry is tried in order,
+  // a failing entry just means the next one. An empty or unreachable workspace
+  // changes nothing — the platform-wide env channels below stand as before.
+  const workspace = getLlmWorkspacePools();
+  for (const entry of workspace?.media || []) {
+    try {
+      const text = entry.provider === "gemini"
+        ? await callGeminiChannel(request, [entry.key], entry.model, `workspace:${entry.name}`)
+        : await callOpenRouterWith(entry.key, entry.model, request);
+      if (text) return text;
+    } catch (error: any) {
+      console.warn(`[LLM:MEDIA] workspace_failed name=${entry.name} model=${entry.model} error=${error?.message || error}`);
+    }
+  }
+
   // Channel 2 first when it is switched on: the paid Pro pool for our own
   // project. It never touches the client key pool below.
   if (usesProMediaChannel()) {

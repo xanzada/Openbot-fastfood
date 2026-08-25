@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { FastFoodContext } from "../context/types.js";
 import { getTextModels } from "../services/llm.service.js";
+import { getLlmWorkspacePools } from "../services/llmWorkspace.service.js";
 
 const openrouterProvider = createOpenAI({
   baseURL: "https://openrouter.ai/api/v1",
@@ -115,22 +117,26 @@ async function callChain(
 }
 
 function createFallbackModel(primary: any, secondary: any, reserve: any): any {
-  const wrapped = { ...primary };
   const primaryTimeout = envTimeout("TEXT_PRIMARY_TIMEOUT_MS", 15_000);
   const fallbackTimeout = envTimeout("TEXT_FALLBACK_TIMEOUT_MS", 15_000);
   const reserveTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
 
-  const chain = [
+  return wrapChain([
     { model: primary, timeout: primaryTimeout, label: "primary" },
     { model: secondary, timeout: fallbackTimeout, label: "fallback" },
     { model: reserve, timeout: reserveTimeout, label: "reserve" },
-  ];
+  ]);
+}
 
-  if (typeof primary.doGenerate === "function") {
+/** Wraps an ordered chain into one model object whose every call walks the chain. */
+function wrapChain(chain: { model: any; timeout: number; label: string }[]): any {
+  const wrapped = { ...chain[0].model };
+
+  if (typeof chain[0].model.doGenerate === "function") {
     wrapped.doGenerate = (options: any) => callChain(chain, "doGenerate", options);
   }
 
-  if (typeof primary.doStream === "function") {
+  if (typeof chain[0].model.doStream === "function") {
     wrapped.doStream = (options: any) => callChain(chain, "doStream", options);
   }
 
@@ -161,6 +167,46 @@ export function getTextModelId() {
   };
 }
 
+// The panel's "Жұмыс кеңістігі" text pool, when the operator filled it. Entries
+// must be OpenRouter-compatible (tool calls travel over chat-completions), so a
+// gemini-typed entry is skipped with a note rather than silently breaking tools.
+function workspaceTextChain(): { model: any; timeout: number; label: string }[] {
+  const pools = getLlmWorkspacePools();
+  const entries = (pools?.text || []).filter((entry) => entry.provider === "openrouter");
+  if ((pools?.text || []).length !== entries.length) {
+    console.warn("[MODEL:TEXT] workspace: gemini-typed text keys are not supported for tool-calling; skipped");
+  }
+  if (!entries.length) return [];
+
+  const stepTimeout = envTimeout("TEXT_PRIMARY_TIMEOUT_MS", 15_000);
+  const lastTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
+  return entries.map((entry, index) => {
+    const provider = createOpenAI({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey: entry.key,
+    });
+    const keyFingerprint = createHash("sha1").update(entry.key).digest("hex").slice(0, 8);
+    const model = provider.chat(entry.model) as any;
+    model.modelId = `${entry.model}:${keyFingerprint}`;
+    return { model, timeout: index === entries.length - 1 ? lastTimeout : stepTimeout, label: `workspace:${entry.name}` };
+  });
+}
+
+const ENV_CHAIN = (() => {
+  const primaryTimeout = envTimeout("TEXT_PRIMARY_TIMEOUT_MS", 15_000);
+  const fallbackTimeout = envTimeout("TEXT_FALLBACK_TIMEOUT_MS", 15_000);
+  const reserveTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
+  return [
+    { model: openrouterProvider.chat(textPrimaryModel), timeout: primaryTimeout, label: "primary" },
+    { model: openrouterProvider.chat(textFallbackModel), timeout: fallbackTimeout, label: "fallback" },
+    { model: openrouterProvider.chat(textReserveModel), timeout: reserveTimeout, label: "reserve" },
+  ];
+})();
+
 export function resolveModel(_ctx: FastFoodContext) {
-  return textModel;
+  // Workspace pool first, env chain always behind it as the last resort — so a
+  // half-filled pool can never leave the bot with fewer options than before.
+  const chain = [...workspaceTextChain(), ...ENV_CHAIN];
+  if (chain.length === ENV_CHAIN.length) return textModel;
+  return wrapChain(chain);
 }

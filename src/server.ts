@@ -12,6 +12,7 @@ import { connectRedis } from "./services/redis.service.js";
 import { logStartupDiagnostics } from "./services/diagnostics.service.js";
 import { startDailyCron } from "./cron/statsCron.js";
 import { startRuntimeWatcher } from "./cron/runtimeWatch.js";
+import { startLlmWorkspacePolling } from "./services/llmWorkspace.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "./services/developerNotify.service.js";
 import { startWhatsProOutboxWorker } from "./transport/whatspro.client.js";
 import { safeCompare } from "./services/tenantAuth.service.js";
@@ -93,6 +94,7 @@ await connectRedis().catch((error) => {
 startDailyCron();
 startWhatsProOutboxWorker();
 startRuntimeWatcher();
+startLlmWorkspacePolling();
 
 httpServer.listen(port, () => {
   console.log(`[OPENBOT] VoltAgent FastFood agent listening on ${port}`);
