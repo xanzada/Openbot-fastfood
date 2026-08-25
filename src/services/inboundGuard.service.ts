@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
 import { getRestaurantConfig } from "./platformConfig.service.js";
+import { getRuntimeSettings, runtimeTestModeEnabled } from "./llmWorkspace.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
@@ -647,9 +648,12 @@ export function testModeAllowedPhones(
   config: Record<string, any> | null | undefined,
   env: Record<string, string | undefined> = process.env
 ) {
+  // The panel's Настройки page is the source of truth; env stays as fallback.
+  const settings = getRuntimeSettings();
   return new Set([
     ...phoneListOf(config?.dev_phone),
     ...phoneListOf(config?.test_phones ?? config?.testPhones),
+    ...phoneListOf(settings?.testAllowedPhones),
     ...phoneListOf(env.TEST_MODE_ALLOWED_PHONES),
   ]);
 }
@@ -814,7 +818,9 @@ export async function guardIncomingMessage(input: {
   if (!INSTANCE_RE.test(instanceId)) return { blocked: true, reason: "bad_instance" };
   if (!PHONE_RE.test(phone)) return { blocked: true, reason: "bad_phone" };
 
-  if (process.env.TEST_MODE_ENABLED === "true") {
+  // Test mode: the panel's Настройки switch wins; env is the fallback.
+  const testModeEnabled = runtimeTestModeEnabled();
+  if (testModeEnabled) {
     const allowed = await getTestModeAllowedPhones(instanceId);
     if (!allowed.size || !allowed.has(phone)) {
       return { blocked: true, reason: "test_mode_blocked" };

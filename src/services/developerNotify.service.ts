@@ -2,7 +2,15 @@ import crypto from "node:crypto";
 import { getAllRestaurantConfigs, getRestaurantConfig } from "./platformConfig.service.js";
 import { redisClient } from "./redis.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
+import { getRuntimeSettings } from "./llmWorkspace.service.js";
 import { envNumber } from "../utils/envNumber.js";
+
+/** Tenant dev_phone first, then the panel's Настройки value, then env. */
+function resolveDeveloperPhone(config?: Record<string, any> | null) {
+  return normalizePhone(
+    config?.dev_phone || getRuntimeSettings()?.developerPhone || process.env.OPENBOT_DEVELOPER_PHONE
+  );
+}
 
 const ALERT_DEDUPE_SECONDS = envNumber(process.env.OPENBOT_DEV_ALERT_DEDUPE_SECONDS, 60, { min: 10 });
 // A boot dependency failure repeats identically on every container restart, and a
@@ -243,7 +251,7 @@ export async function drainDeveloperAlertOutbox(instanceId: string): Promise<Dev
     noteDrainFailure(instanceId);
     return { retried: 0, sent: 0, abandoned: 0, skipped: "tenant_disabled" };
   }
-  const developerPhone = normalizePhone(config?.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE);
+  const developerPhone = resolveDeveloperPhone(config);
   if (!developerPhone) {
     noteDrainFailure(instanceId);
     return { retried: 0, sent: 0, abandoned: 0, skipped: "dev_phone_missing" };
@@ -309,7 +317,7 @@ async function sendAlertWithConfig(
   error: unknown,
   meta: Record<string, unknown>
 ): Promise<boolean> {
-  const developerPhone = normalizePhone(config.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE);
+  const developerPhone = resolveDeveloperPhone(config);
   if (!developerPhone) {
     console.error(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=dev_phone_missing`);
     return false;
@@ -369,7 +377,7 @@ export async function notifyAllDevelopersSystemFailure(
     for (const config of configs) {
       const instanceId = String(config?.instance_id || config?.instance || "").trim();
       if (!instanceId) continue;
-      const developerPhone = normalizePhone(config?.dev_phone || process.env.OPENBOT_DEVELOPER_PHONE);
+      const developerPhone = resolveDeveloperPhone(config);
       if (!developerPhone) continue;
       const current = unique.get(developerPhone);
       const currentEnabled = current ? !isDisabledTenant(current) : false;

@@ -3,6 +3,7 @@ import { generateText, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
 import { getOpenRouterProvider } from "./llm.service.js";
+import { getRuntimeSettings } from "./llmWorkspace.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 const SHPOR_CONTEXT_LIMIT = envNumber(process.env.SHPOR_CONTEXT_LIMIT, 8, { min: 1 });
@@ -59,6 +60,7 @@ export function normalizeRestaurantConfig(
     record.developer_phone ||
     record.developer ||
     record.devPhone ||
+    getRuntimeSettings()?.developerPhone ||
     process.env.OPENBOT_DEVELOPER_PHONE
   );
   const instanceId = String(firstValue(record.instance_id, record.instance, record.restaurant_instance, record.restaurantInstance)).trim();

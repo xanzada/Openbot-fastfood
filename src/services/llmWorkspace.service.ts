@@ -108,7 +108,11 @@ async function refreshOnce(): Promise<void> {
 export function startLlmWorkspacePolling(): void {
   if (polling) return;
   void refreshOnce();
-  polling = setInterval(() => { void refreshOnce(); }, 60_000);
+  void refreshSettingsOnce();
+  polling = setInterval(() => {
+    void refreshOnce();
+    void refreshSettingsOnce();
+  }, 60_000);
   (polling as any)?.unref?.();
 }
 
@@ -117,6 +121,63 @@ export function getLlmWorkspacePools(): LlmWorkspacePools | null {
   if (!latest) return null;
   if (!latest.text.length && !latest.media.length) return null;
   return latest;
+}
+
+export interface RuntimeSettings {
+  developerPhone?: string;
+  testModeEnabled?: boolean;
+  testAllowedPhones?: string[];
+  receiptFilterEnabled?: boolean;
+}
+
+function sanitizeSettings(raw: unknown): RuntimeSettings {
+  const source = (raw && typeof raw === "object" ? raw : {}) as Record<string, any>;
+  const out: RuntimeSettings = {};
+  const dev = String(source.developer_phone ?? "").replace(/[^\d+]/g, "").trim();
+  if (dev) out.developerPhone = dev;
+  if (source.test_mode_enabled === true || source.test_mode_enabled === false) {
+    out.testModeEnabled = Boolean(source.test_mode_enabled);
+  }
+  if (Array.isArray(source.test_allowed_phones)) {
+    out.testAllowedPhones = source.test_allowed_phones
+      .map((item: unknown) => String(item ?? "").replace(/\D/g, ""))
+      .filter((phone: string) => phone.length >= 10);
+  }
+  if (source.receipt_filter_enabled === true || source.receipt_filter_enabled === false) {
+    out.receiptFilterEnabled = Boolean(source.receipt_filter_enabled);
+  }
+  return out;
+}
+
+let latestSettings: RuntimeSettings | null = null;
+
+async function refreshSettingsOnce(): Promise<void> {
+  const base = envText("TENANTS_PLATFORM_BASE_URL").replace(/\/+$/, "");
+  const token = envText("TENANTS_PLATFORM_API_TOKEN");
+  if (!base || !token) return;
+  try {
+    const response = await fetch(`${base}/api/wa/runtime-settings`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    } as any);
+    if (!response.ok) return;
+    const payload = await response.json().catch(() => null);
+    if (!payload || typeof payload !== "object") return;
+    const settings = sanitizeSettings((payload as any).settings);
+    latestSettings = Object.keys(settings).length ? settings : {};
+  } catch {
+    // Keep the previous snapshot.
+  }
+}
+
+/** Platform runtime controls, or null before the first successful poll. */
+export function getRuntimeSettings(): RuntimeSettings | null {
+  return latestSettings;
+}
+
+/** Test-mode switch: the panel's Настройки toggle wins, env is the fallback. */
+export function runtimeTestModeEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return getRuntimeSettings()?.testModeEnabled ?? env.TEST_MODE_ENABLED === "true";
 }
 
 export function stopLlmWorkspacePolling(): void {

@@ -4,6 +4,8 @@ import { getMediaFallbackModel, getMediaPrimaryKeys, getMediaPrimaryModel, getTe
 import { getWhatsProOutboxSummary } from "../transport/whatspro.client.js";
 import { getAllRestaurantConfigs, getRestaurantConfig } from "./platformConfig.service.js";
 import { callAlemiCommand } from "./alemiApi.service.js";
+import { getRuntimeSettings, runtimeTestModeEnabled } from "./llmWorkspace.service.js";
+import { receiptFilterEnabled } from "./mediaAnalysis.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 type CheckResult = {
@@ -152,11 +154,9 @@ export function getConfigSummary() {
     openrouter_key: envPresent("OPENROUTER_API_KEY") ? "present" : "missing",
     openbot_webhook_secret: envPresent("OPENBOT_WEBHOOK_SECRET") ? "present" : "missing",
     runtime_controls: {
-      test_mode: String(process.env.TEST_MODE_ENABLED || "false").trim().toLowerCase() === "true",
-      developer_phone: envPresent("OPENBOT_DEVELOPER_PHONE") ? "present" : "missing",
-      receipt_ai_filter: !["false", "0", "off", "no"].includes(
-        String(process.env.RECEIPT_AI_FILTER_ENABLED ?? "true").trim().toLowerCase()
-      ),
+      test_mode: runtimeTestModeEnabled(),
+      developer_phone: (getRuntimeSettings()?.developerPhone || envPresent("OPENBOT_DEVELOPER_PHONE")) ? "present" : "missing",
+      receipt_ai_filter: receiptFilterEnabled(),
       inbound_buffer_ms: envNumber(process.env.OPENBOT_INBOUND_BUFFER_MS, 2400, { min: 600 }),
       response_chunk_max: envNumber(process.env.OPENBOT_RESPONSE_CHUNK_MAX, 320, { min: 180 }),
     },

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { generateMediaText } from "./llm.service.js";
+import { getRuntimeSettings } from "./llmWorkspace.service.js";
 
 export interface ReceiptValidationContext {
   expectedAmount?: number;
@@ -8,6 +9,9 @@ export interface ReceiptValidationContext {
 }
 
 export function receiptFilterEnabled(env: Record<string, string | undefined> = process.env) {
+  // The panel's Настройки switch wins; env is the fallback.
+  const fromSettings = getRuntimeSettings()?.receiptFilterEnabled;
+  if (typeof fromSettings === "boolean") return fromSettings;
   return !["false", "0", "off", "no"].includes(String(env.RECEIPT_AI_FILTER_ENABLED ?? "true").trim().toLowerCase());
 }
 

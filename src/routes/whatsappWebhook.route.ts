@@ -75,6 +75,7 @@ import {
 } from "../services/mediaAnalysis.service.js";
 import { detectLanguageDecision } from "../utils/language.js";
 import { getTextModels } from "../services/llm.service.js";
+import { getRuntimeSettings, runtimeTestModeEnabled } from "../services/llmWorkspace.service.js";
 import { classifyKitchenSalesPolicyForContext, consentRequirement, formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import { hasMenuBrowsingIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, isUnownedOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -755,8 +756,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
       if (isIncomingVoiceCall(body) && instanceId && phone) {
         // Someone rang the bot's WhatsApp number. Reply with a text redirect
         // so the customer knows to write instead of call.
-        if (process.env.TEST_MODE_ENABLED === "true") {
-          const devPhone = String(process.env.OPENBOT_DEVELOPER_PHONE || "").replace(/\D/g, "");
+        if (runtimeTestModeEnabled()) {
+          const devPhone = String(
+            getRuntimeSettings()?.developerPhone || process.env.OPENBOT_DEVELOPER_PHONE || ""
+          ).replace(/\D/g, "");
           if (devPhone && phone !== devPhone) {
             return; // test_mode: only handle developer_phone calls
           }

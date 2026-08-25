@@ -45,7 +45,7 @@ test("OpenRouter text models use chat completions rather than the hanging Respon
   assert.match(transport, /requestScope \|\| crypto\.randomUUID\(\)/);
   assert.match(transport, /payload\.phone\}\|\$\{requestScope\}/);
   assert.match(server, /startWhatsProOutboxWorker\(\)/);
-  assert.match(platform, /openrouter\.chat\("openai\/gpt-4o-mini"\)/);
+  assert.match(platform, /getOpenRouterProvider\(\)\.chat\("openai\/gpt-4o-mini"\)/);
 });
 
 test("identity policy is natural without permitting a false human claim", () => {
