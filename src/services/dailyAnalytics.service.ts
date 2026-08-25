@@ -368,11 +368,14 @@ export function composeDailyAnalytics(
     return fromAi || heuristic[key];
   };
 
-  const criticalAlert = aiJudgement
-    ? asText(aiJudgement.critical_alert, 240)
-    : facts.total_chats > 0
-      ? "AI талдау қолжетімсіз болды: сандар нақты, мәтін эвристикамен жазылды."
-      : "";
+  // A day with no guests is a quiet day, not an incident. The model kept
+  // restating "no guests today" here, which would train the owner to ignore the
+  // one column that must mean something.
+  const criticalAlert = facts.total_chats === 0
+    ? ""
+    : aiJudgement
+      ? asText(aiJudgement.critical_alert, 240)
+      : "AI талдау қолжетімсіз болды: сандар нақты, мәтін эвристикамен жазылды.";
 
   return {
     total_chats: facts.total_chats,
@@ -396,6 +399,10 @@ export async function buildDailyAnalyticsRow(
   deps: { analyze?: typeof analyzeDayWithAi } = {}
 ): Promise<DailyAnalyticsRow> {
   const facts = computeDailyFacts(inputs);
+  // A day nobody wrote in has nothing to analyse. Asking the model anyway spent
+  // a call per tenant per empty day and came back with a different phrasing of
+  // "no data" each time, so identical days read as different findings.
+  if (facts.total_chats === 0) return composeDailyAnalytics(inputs, facts, buildHeuristicJudgement(inputs, facts));
   const analyze = deps.analyze || analyzeDayWithAi;
   const aiJudgement = await analyze(inputs, facts).catch(() => null);
   return composeDailyAnalytics(inputs, facts, aiJudgement);

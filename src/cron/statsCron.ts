@@ -54,6 +54,16 @@ function tenantTimezone(config: Record<string, any> = {}) {
   return value || ANALYTICS_TIMEZONE;
 }
 
+/**
+ * A tenant whose bot is switched off has no bot day to report, and its hub
+ * credentials are not guaranteed to be live - agentqa answered 401 on every
+ * reconcile and filled the log with a failure that was never a defect. The
+ * startup diagnostics already skip such a tenant for exactly this reason.
+ */
+function tenantReportsAnalytics(config: Record<string, any> = {}) {
+  return config.bot_enabled === undefined || config.bot_enabled === null ? true : Boolean(config.bot_enabled);
+}
+
 function getLocalReportDate(timeZone = ANALYTICS_TIMEZONE) {
   return localDayKey(timeZone);
 }
@@ -197,6 +207,10 @@ export async function processDailyAnalytics() {
   }
 
   for (const config of configs) {
+    if (!tenantReportsAnalytics(config)) {
+      console.log(`[CRON] analytics skipped instance=${config?.instance_id || "unknown"} reason=bot_disabled`);
+      continue;
+    }
     const reportDate = getLocalReportDate(tenantTimezone(config));
     try {
       await processRestaurantAnalytics(config, reportDate);
@@ -221,6 +235,7 @@ export async function reconcileDailyAnalytics() {
   if (!configs.length) return;
 
   for (const config of configs) {
+    if (!tenantReportsAnalytics(config)) continue;
     try {
       await reconcileRestaurantAnalytics(config);
     } catch (error: any) {

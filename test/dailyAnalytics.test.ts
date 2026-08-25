@@ -149,6 +149,21 @@ test("buildDailyAnalyticsRow survives an analyzer that throws", async () => {
   assert.match(row.critical_alert, /AI талдау қолжетімсіз/);
 });
 
+test("a day nobody wrote in is not sent to the model at all", async () => {
+  let called = false;
+  const row = await buildDailyAnalyticsRow(inputs(), {
+    analyze: async () => {
+      called = true;
+      return null;
+    },
+  });
+  assert.equal(called, false);
+  assert.equal(row.avg_mood, "Дерек жоқ");
+  assert.match(row.ai_daily_advice, /жаңа диалог түспеді/);
+  // A quiet day is not an incident, and never raises the alert column.
+  assert.equal(row.critical_alert, "");
+});
+
 test("the analyst prompt carries the facts and the guest notes, and no secrets", () => {
   const day = inputs({
     leads: [{ phone: "+77009000606", interest: "суши", sales_stage: "CANCELED", psycho_analysis: "күте алмады" }],
