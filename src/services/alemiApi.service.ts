@@ -409,16 +409,30 @@ export function mapLegacyAlemiAction(action: AlemiLegacyAction, payload: Record<
       };
     case "get_today_crm":
       return { command: "crm.today.get", data: { date: String(payload.date || "") } };
+    // Every column `store_daily_ai_analytics` fills from the bot, not a subset.
+    // This mapper used to forward only eight fields, so `avg_mood`,
+    // `intent_orders`, `intent_payments`, `escalated_tickets`,
+    // `top_complaints_tags` and `cancellation_reasons` were computed by the cron
+    // and then silently dropped at the wire: the hub's own admin table showed
+    // them as "—" on every single day while the owner was told the bot reports
+    // daily analytics (audit, 2026-08-25). Hub accepts all fourteen — verified
+    // live against prestige before this change.
     case "save_daily_analytics":
       return {
         command: "analytics.daily.upsert",
         data: {
           report_date: String(payload.report_date || ""),
           total_chats: Number(payload.total_chats || 0),
+          intent_orders: Number(payload.intent_orders || 0),
+          intent_payments: Number(payload.intent_payments || 0),
           total_complaints: Number(payload.total_complaints || 0),
           total_canceled: Number(payload.total_canceled || 0),
+          escalated_tickets: Number(payload.escalated_tickets || 0),
           conversion_rate: Number(payload.conversion_rate || 0),
+          avg_mood: payload.avg_mood ?? "",
           popular_items: payload.popular_items ?? "",
+          top_complaints_tags: payload.top_complaints_tags ?? "",
+          cancellation_reasons: payload.cancellation_reasons ?? "",
           critical_alert: payload.critical_alert ?? "",
           ai_daily_advice: payload.ai_daily_advice ?? "",
         },

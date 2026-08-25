@@ -140,12 +140,56 @@ test("legacy actions map to the documented Hub commands and data", () => {
     data: {
       report_date: "2026-08-09",
       total_chats: 7,
+      intent_orders: 0,
+      intent_payments: 0,
       total_complaints: 2,
       total_canceled: 1,
+      escalated_tickets: 0,
       conversion_rate: 0.5,
+      avg_mood: "",
       popular_items: ["pizza"],
+      top_complaints_tags: "",
+      cancellation_reasons: "",
       critical_alert: "",
       ai_daily_advice: "keep pace",
+    },
+  });
+
+  // Every column the hub's store_daily_ai_analytics table fills from the bot
+  // must survive the mapper. Six of them used to be computed and then dropped
+  // here, so the owner's table showed "—" forever (audit, 2026-08-25).
+  assert.deepEqual(mapLegacyAlemiAction("save_daily_analytics", {
+    report_date: "2026-08-25",
+    total_chats: 12,
+    intent_orders: 5,
+    intent_payments: 3,
+    total_complaints: 1,
+    total_canceled: 2,
+    escalated_tickets: 4,
+    conversion_rate: 60,
+    avg_mood: "Асығыс",
+    popular_items: "донер, кола",
+    top_complaints_tags: "кешігу",
+    cancellation_reasons: "клиент күте алмады",
+    critical_alert: "2 тапсырыс болдырылмады",
+    ai_daily_advice: "Кешігу себебін тексеру керек.",
+  }), {
+    command: "analytics.daily.upsert",
+    data: {
+      report_date: "2026-08-25",
+      total_chats: 12,
+      intent_orders: 5,
+      intent_payments: 3,
+      total_complaints: 1,
+      total_canceled: 2,
+      escalated_tickets: 4,
+      conversion_rate: 60,
+      avg_mood: "Асығыс",
+      popular_items: "донер, кола",
+      top_complaints_tags: "кешігу",
+      cancellation_reasons: "клиент күте алмады",
+      critical_alert: "2 тапсырыс болдырылмады",
+      ai_daily_advice: "Кешігу себебін тексеру керек.",
     },
   });
 });

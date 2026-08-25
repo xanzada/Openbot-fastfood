@@ -107,12 +107,19 @@ server.ts
 
 ### statsCron.ts
 - setTimeout chain (нақты cron кітапханасыз)
-- ANALYTICS_CRON_EXPR (default: "59 23 * * *")
-- ANALYTICS_TIMEZONE (default: "Asia/Almaty")
-- Әр ресторан үшін:
-  1. getTodayCrmLeads() → DLE
-  2. buildDailyAnalytics() → fallback analytics
-  3. saveDailyAnalytics() → DLE
+- ANALYTICS_CRON_EXPR (default: "59 23 * * *") — күнді жабатын жүріс
+- ANALYTICS_TIMEZONE (default: "Asia/Almaty") — тенант конфигінде `timezone` болса, ол басым
+- ANALYTICS_BACKFILL_DAYS (default: 7) — қуып жетуге рұқсат етілген артқы күндер
+- ANALYTICS_RECONCILE_INTERVAL_MS (default: 6 сағат) — кепілдік жүрісінің аралығы
+- ANALYTICS_BOOT_DELAY_MS (default: 90000) — көтерілгеннен кейінгі бірінші жүріс
+- ANALYTICS_MODEL / ANALYTICS_MODEL_TIMEOUT_MS — күндік талдау моделі
+- Әр ресторан, әр жетпеген күн үшін:
+  1. `crm.today.get` → hub лидтері
+  2. `metrics:<instance>:<YYYYMMDD>` → нақты санауыштар
+  3. `readLearningNotes()` → ішкі ақаулар
+  4. `buildDailyAnalyticsRow()` → сандар фактіден, мәтін моделден (құламаса — эвристикадан)
+  5. `analytics.daily.upsert` → hub-тың 14 өрісі
+  6. `analytics:sent:<instance>` → күн жабылса «жеткен» деп белгілеу
 
 ## Error Handling
 

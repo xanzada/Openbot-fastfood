@@ -2,93 +2,60 @@ import { redisClient } from "../services/redis.service.js";
 import { callAlemiLegacyAction } from "../services/alemiApi.service.js";
 import { getAllRestaurantConfigs, getRestaurantConfig } from "../services/platformConfig.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
+import {
+  buildDailyAnalyticsRow,
+  hasAnalyticsBeenSent,
+  localDayKey,
+  markAnalyticsSent,
+  normalizeLeadRows,
+  pendingReportDates,
+  readDailyMetrics,
+  readLearningNotes,
+  readSentDates,
+  type DailyAnalyticsRow,
+} from "../services/dailyAnalytics.service.js";
+import { envNumber } from "../utils/envNumber.js";
+
+/**
+ * Daily analytics delivery.
+ *
+ * Two defects lived here together and made the hub's AI-аналитика table look
+ * like the bot was reporting nothing (audit, 2026-08-25):
+ *
+ *  - The day was only ever attempted ONCE, at 23:59 local. A restart, a deploy,
+ *    a network blip or a hub 5xx in that single minute lost the day for good -
+ *    which is exactly what the owner saw as missing rows (2026-08-10 and
+ *    2026-08-25 absent for Crazy Суши, every day absent for kabab #1 before
+ *    2026-08-23). There is now a delivery ledger per tenant and a periodic
+ *    reconcile that re-sends any recent day the hub never confirmed, so a missed
+ *    window is caught up instead of lost.
+ *  - buildDailyAnalytics() was `normalizeAnalyticsPayload({}, leads)`: an empty
+ *    AI object, so the regex fallback always won and `ai_daily_advice` said the
+ *    analysis was "temporarily unavailable" every single day. The real analysis
+ *    now lives in dailyAnalytics.service.
+ *
+ * Today's row is upserted on every sweep (report_date is the hub's key, so this
+ * is idempotent) and only marked final once the day is over. The owner therefore
+ * sees today filling in as it happens, not at midnight.
+ */
 
 const ANALYTICS_TIMEZONE = process.env.ANALYTICS_TIMEZONE || "Asia/Almaty";
 const ANALYTICS_CRON_EXPR = process.env.ANALYTICS_CRON_EXPR || "59 23 * * *";
+const ANALYTICS_BACKFILL_DAYS = envNumber(process.env.ANALYTICS_BACKFILL_DAYS, 7, { min: 0, max: 30 });
+const ANALYTICS_RECONCILE_INTERVAL_MS = envNumber(
+  process.env.ANALYTICS_RECONCILE_INTERVAL_MS,
+  6 * 60 * 60 * 1000,
+  { min: 15 * 60 * 1000, max: 24 * 60 * 60 * 1000 },
+);
+const ANALYTICS_BOOT_DELAY_MS = envNumber(process.env.ANALYTICS_BOOT_DELAY_MS, 90_000, { min: 5_000, max: 30 * 60 * 1000 });
+
+function tenantTimezone(config: Record<string, any> = {}) {
+  const value = String(config.timezone || config.time_zone || config.tz || "").trim();
+  return value || ANALYTICS_TIMEZONE;
+}
 
 function getLocalReportDate(timeZone = ANALYTICS_TIMEZONE) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-
-  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${byType.year}-${byType.month}-${byType.day}`;
-}
-
-function asNumber(value: unknown, fallback = 0) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
-function asText(value: unknown) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
-}
-
-function normalizeLeadRows(rows: any[] = []) {
-  return (Array.isArray(rows) ? rows : [])
-    .map((row) => ({
-      instance: asText(row.instance || row.restaurant_id),
-      interest: asText(row.interest),
-      sales_stage: asText(row.sales_stage),
-      psycho_analysis: asText(row.psycho_analysis),
-    }))
-    .filter((row) => row.interest || row.sales_stage || row.psycho_analysis);
-}
-
-function buildFallbackAnalytics(logs: any[] = [], reason = "") {
-  const blob = logs
-    .map((log) => [log.action, log.interest, log.sales_stage, log.psycho_analysis, log.text].map(asText).join(" "))
-    .join("\n")
-    .toLowerCase();
-
-  const totalChats = logs.length;
-  const intentOrders = (blob.match(/order|menu|food|заказ|меню|еда|тапсырыс|мәзір|тамақ|тағам/gi) || []).length;
-  const intentPayments = (blob.match(/receipt|payment|paid|чек|оплат|төлем|төлед/gi) || []).length;
-  const complaints = (blob.match(/complaint|refund|cancel|bad|жалоб|возврат|отмен|шағым|қайтар|болдыр/gi) || []).length;
-
-  return {
-    total_chats: totalChats,
-    intent_orders: intentOrders,
-    intent_payments: intentPayments,
-    conversion_rate: intentOrders > 0 ? Number(((intentPayments / intentOrders) * 100).toFixed(2)) : 0,
-    total_complaints: complaints,
-    top_complaints_tags: "",
-    total_canceled: (blob.match(/cancel|отмен|болдыр/gi) || []).length,
-    cancellation_reasons: "",
-    popular_items: "",
-    avg_mood: totalChats > 0 ? "Қалыпты" : "Дерек жоқ",
-    escalated_tickets: (blob.match(/operator|admin|human|оператор|админ/gi) || []).length,
-    ai_daily_advice: totalChats > 0
-      ? "Бүгінгі диалогтар сақталды. Толық AI талдау уақытша қолжетімсіз болса да, негізгі статистика жазылды."
-      : "Бүгін ботқа жаңа диалог түспеді.",
-    critical_alert: reason ? `Fallback analytics used: ${reason}` : "",
-  };
-}
-
-function normalizeAnalyticsPayload(aiData: Record<string, any> = {}, logs: any[] = []) {
-  const fallback = buildFallbackAnalytics(logs);
-
-  return {
-    total_chats: asNumber(aiData.total_chats, fallback.total_chats),
-    intent_orders: asNumber(aiData.intent_orders, fallback.intent_orders),
-    intent_payments: asNumber(aiData.intent_payments, fallback.intent_payments),
-    conversion_rate: asNumber(aiData.conversion_rate, fallback.conversion_rate),
-    total_complaints: asNumber(aiData.total_complaints, fallback.total_complaints),
-    top_complaints_tags: asText(aiData.top_complaints_tags || fallback.top_complaints_tags),
-    total_canceled: asNumber(aiData.total_canceled, fallback.total_canceled),
-    cancellation_reasons: asText(aiData.cancellation_reasons || fallback.cancellation_reasons),
-    popular_items: asText(aiData.popular_items || fallback.popular_items),
-    avg_mood: asText(aiData.avg_mood || fallback.avg_mood),
-    escalated_tickets: asNumber(aiData.escalated_tickets, fallback.escalated_tickets),
-    ai_daily_advice: asText(aiData.ai_daily_advice || fallback.ai_daily_advice),
-    critical_alert: asText(aiData.critical_alert || fallback.critical_alert),
-  };
+  return localDayKey(timeZone);
 }
 
 async function fetchTodayCrmLeads(config: Record<string, any>, reportDate: string) {
@@ -99,23 +66,18 @@ async function fetchTodayCrmLeads(config: Record<string, any>, reportDate: strin
     { action: "get_today_crm", restaurant_id: instanceId, date: reportDate },
     { config, timeoutMs: 15000 }
   );
-  const rows = Array.isArray(result) ? result : result?.data || result?.rows || result?.leads || [];
-  return normalizeLeadRows(rows);
+  return normalizeLeadRows(result);
 }
 
-async function sendAnalyticsToSite(config: Record<string, any>, reportDate: string, analytics: Record<string, any>) {
+async function sendAnalyticsToSite(config: Record<string, any>, reportDate: string, analytics: DailyAnalyticsRow) {
   const instanceId = String(config.instance_id || "").trim();
   if (!instanceId) throw new Error("missing instance_id");
   await callAlemiLegacyAction(
     "save_daily_analytics",
     { action: "save_daily_analytics", restaurant_id: instanceId, report_date: reportDate, ...analytics },
-    { config, timeoutMs: 15000 }
+    { config, timeoutMs: 20000 }
   );
   return true;
-}
-
-async function buildDailyAnalytics(logs: any[] = []) {
-  return normalizeAnalyticsPayload({}, logs);
 }
 
 type TenantConfigLoader = (
@@ -145,25 +107,88 @@ export async function hydrateAnalyticsTenantConfig(
   return hydrated;
 }
 
+/** One tenant, one date: gather the facts, analyse them, deliver the row. */
+export async function reportRestaurantDay(
+  hydratedConfig: Record<string, any>,
+  reportDate: string,
+  options: { final: boolean },
+) {
+  const instanceId = String(hydratedConfig.instance_id || "").trim();
+  if (!instanceId) return false;
+
+  const [leads, metrics, learningNotes] = await Promise.all([
+    fetchTodayCrmLeads(hydratedConfig, reportDate),
+    readDailyMetrics(instanceId, reportDate),
+    readLearningNotes(instanceId, reportDate),
+  ]);
+
+  const analytics = await buildDailyAnalyticsRow({
+    instanceId,
+    reportDate,
+    brand: String(hydratedConfig.brand || ""),
+    leads,
+    metrics,
+    learningNotes,
+  });
+
+  await sendAnalyticsToSite(hydratedConfig, reportDate, analytics);
+  if (options.final) await markAnalyticsSent(instanceId, reportDate);
+
+  console.log(
+    `[CRON] analytics sent instance=${instanceId} date=${reportDate} final=${options.final} guests=${analytics.total_chats}`
+    + ` orders=${analytics.intent_orders} payments=${analytics.intent_payments} complaints=${analytics.total_complaints}`
+    + ` canceled=${analytics.total_canceled} escalated=${analytics.escalated_tickets} mood="${analytics.avg_mood}"`
+  );
+  return true;
+}
+
+/**
+ * Every recent day this tenant still owes the hub, oldest first, plus today.
+ * Past days are marked delivered; today is left open so later sweeps refresh it.
+ */
+export async function reconcileRestaurantAnalytics(config: Record<string, any>, nowDate?: string) {
+  const hydratedConfig = await hydrateAnalyticsTenantConfig(config);
+  const instanceId = String(hydratedConfig.instance_id || "").trim();
+  if (!instanceId) return;
+
+  const today = nowDate || getLocalReportDate(tenantTimezone(hydratedConfig));
+  const sent = await readSentDates(instanceId);
+  const dates = pendingReportDates(today, ANALYTICS_BACKFILL_DAYS, sent);
+
+  for (const date of dates) {
+    try {
+      await reportRestaurantDay(hydratedConfig, date, { final: date !== today });
+    } catch (error: any) {
+      console.error(`[CRON] analytics day failed instance=${instanceId} date=${date}:`, error?.message || error);
+      throw error;
+    }
+  }
+}
+
 async function processRestaurantAnalytics(config: Record<string, any>, reportDate: string) {
   const hydratedConfig = await hydrateAnalyticsTenantConfig(config);
   const instanceId = String(hydratedConfig.instance_id || "").trim();
   if (!instanceId) return;
 
-  const leads = await fetchTodayCrmLeads(hydratedConfig, reportDate);
-  console.log(`[CRON] analytics ${instanceId}: bot_leads=${leads.length}, report_date=${reportDate}`);
+  // The end-of-day run closes today, and also sweeps up any earlier day that
+  // never landed - a tenant onboarded mid-week, or a hub outage last night.
+  const sent = await readSentDates(instanceId);
+  const backlog = pendingReportDates(reportDate, ANALYTICS_BACKFILL_DAYS, sent).filter((date) => date !== reportDate);
+  for (const date of backlog) {
+    try {
+      await reportRestaurantDay(hydratedConfig, date, { final: true });
+    } catch (error: any) {
+      console.error(`[CRON] analytics backlog failed instance=${instanceId} date=${date}:`, error?.message || error);
+    }
+  }
 
-  const analytics = await buildDailyAnalytics(leads);
-  await sendAnalyticsToSite(hydratedConfig, reportDate, analytics);
-
-  console.log(`[CRON] analytics saved: ${instanceId}`);
+  await reportRestaurantDay(hydratedConfig, reportDate, { final: true });
 }
 
 export async function processDailyAnalytics() {
   console.log("[CRON] Daily AI analytics started...");
   if (!redisClient.isOpen) return;
 
-  const reportDate = getLocalReportDate();
   const configs = await getAllRestaurantConfigs();
 
   if (!configs.length) {
@@ -172,6 +197,7 @@ export async function processDailyAnalytics() {
   }
 
   for (const config of configs) {
+    const reportDate = getLocalReportDate(tenantTimezone(config));
     try {
       await processRestaurantAnalytics(config, reportDate);
     } catch (error: any) {
@@ -182,6 +208,35 @@ export async function processDailyAnalytics() {
       }).catch(() => undefined);
     }
   }
+}
+
+/**
+ * The safety net: runs on boot and on a slow interval, so a day is never lost
+ * to a single missed 23:59. Failures are logged per tenant and never abort the
+ * sweep - one tenant with a rotated secret must not hide the others.
+ */
+export async function reconcileDailyAnalytics() {
+  if (!redisClient.isOpen) return;
+  const configs = await getAllRestaurantConfigs();
+  if (!configs.length) return;
+
+  for (const config of configs) {
+    try {
+      await reconcileRestaurantAnalytics(config);
+    } catch (error: any) {
+      console.error(`[CRON] analytics reconcile error (${config?.instance_id || "unknown"}):`, error?.message || error);
+    }
+  }
+}
+
+/** Days already delivered, for diagnostics and tests. */
+export async function analyticsDeliveryState(instanceId: string) {
+  const dates = [...(await readSentDates(instanceId))].sort();
+  return { instanceId, delivered: dates };
+}
+
+export async function isAnalyticsDelivered(instanceId: string, reportDate: string) {
+  return hasAnalyticsBeenSent(instanceId, reportDate);
 }
 
 function parseDailyCron(expr = ANALYTICS_CRON_EXPR) {
@@ -236,5 +291,17 @@ export function startDailyCron() {
   };
 
   scheduleNext();
-  console.log(`[CRON] Daily AI analytics scheduled: ${ANALYTICS_CRON_EXPR} ${ANALYTICS_TIMEZONE}`);
+
+  const sweep = () => {
+    reconcileDailyAnalytics().catch((error: any) => {
+      console.error("[CRON] analytics reconcile fatal:", error?.message || error);
+    });
+  };
+  setTimeout(sweep, ANALYTICS_BOOT_DELAY_MS).unref?.();
+  setInterval(sweep, ANALYTICS_RECONCILE_INTERVAL_MS).unref?.();
+
+  console.log(
+    `[CRON] Daily AI analytics scheduled: ${ANALYTICS_CRON_EXPR} ${ANALYTICS_TIMEZONE}`
+    + ` reconcile_every=${Math.round(ANALYTICS_RECONCILE_INTERVAL_MS / 60000)}min backfill_days=${ANALYTICS_BACKFILL_DAYS}`
+  );
 }

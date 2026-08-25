@@ -333,14 +333,36 @@ completed, done, finished, closed, cancelled, canceled, refunded
 
 #### `analytics.daily.upsert`
 
+Hub-тағы `store_daily_ai_analytics` кестесінің боттан толатын **14 өрісі**
+толығымен жіберіледі (2026-08-25-ке дейін тек 8-і кететін, қалғаны есептеліп
+жолда жоғалып қалатын — сондықтан админкада `avg_mood`, `top_complaints_tags`,
+`cancellation_reasons`, `popular_items` мәңгі «—» болып тұрды):
+
 ```json
 {
-  "report_date": "2026-08-11",
-  "total_chats": 42, "total_complaints": 1, "total_canceled": 2,
-  "conversion_rate": 0.31,
-  "popular_items": "...", "critical_alert": "", "ai_daily_advice": "..."
+  "report_date": "2026-08-25",
+  "total_chats": 42, "intent_orders": 18, "intent_payments": 11,
+  "total_complaints": 1, "total_canceled": 2, "escalated_tickets": 3,
+  "conversion_rate": 61.11,
+  "avg_mood": "Асығыс",
+  "popular_items": "донер, кола",
+  "top_complaints_tags": "кешігу",
+  "cancellation_reasons": "клиент күте алмады",
+  "critical_alert": "",
+  "ai_daily_advice": "..."
 }
 ```
+
+Сандар тек нақты фактілерден есептеледі (hub-тың өз CRM лидтері +
+`metrics:<instance>:<YYYYMMDD>` санауыштары), мәтін өрістерін бір арзан модель
+жазады. Модель жауап бермесе — эвристика жазады, ал `critical_alert` соны
+ашық көрсетеді. `report_date` — ресторанның өз белдеуіндегі күн.
+
+Жеткізу кепілдігі: `analytics:sent:<instance>` Redis hash-і қай күн hub-қа
+жеткенін сақтайды. Бот көтерілгенде және әр 6 сағатта reconcile жүріп, соңғы 7
+күннің ішінде жетпеген күндерді қуып жібереді (`ANALYTICS_BACKFILL_DAYS`,
+`ANALYTICS_RECONCILE_INTERVAL_MS`). Бүгінгі жол әр өтуде жаңарып тұрады және
+күн жабылғанда ғана «жеткен» деп белгіленеді.
 
 #### `customer.access_link.issue` — клиентке қорғалған сілтеме
 
