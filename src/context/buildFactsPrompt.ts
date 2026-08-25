@@ -1,6 +1,7 @@
 import type { FastFoodContext } from "./types.js";
 import { matchingNoteIds, menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints } from "../services/noteProvenance.service.js";
 import { classifyKitchenSalesPolicyForContext, extractOperatorWaitNotice, formatKitchenWait } from "../services/kitchenPolicy.service.js";
+import { planResponse, readCustomerStyle } from "../services/responsePlan.service.js";
 import { ONLINE_PREPAYMENT_POLICY } from "../services/paymentPolicy.service.js";
 
 function firstConfigText(config: Record<string, any>, ...keys: string[]) {
@@ -182,6 +183,26 @@ function turnAnalysis(ctx: FastFoodContext) {
     what_they_actually_want: thinking.reasoning_brief || null,
     worth_mentioning_unasked: thinking.proactive_note || null,
     rule: "Silent pre-analysis for this turn. Use it to choose tone and priority. Never quote it, never treat it as a fact, and still verify prices, stock and order state with tools.",
+  };
+}
+
+/**
+ * How to speak on this turn, derived in code from the guest's own writing (see
+ * responsePlan.service). Deterministic, free, and wording-only: it never
+ * overrides a fact, a warning or a mandatory question.
+ */
+function replyShape(ctx: FastFoodContext) {
+  const style = readCustomerStyle(ctx);
+  const plan = planResponse(ctx, style);
+  return {
+    max_sentences: plan.maxSentences,
+    verbosity: plan.length,
+    messages: plan.segments,
+    emoji: plan.emoji,
+    register: plan.register,
+    guest_writes: style.writesShort ? "short" : style.writesLong ? "long" : "normal",
+    guest_uses_emoji: style.usesEmoji,
+    rule: plan.rule,
   };
 }
 
@@ -465,6 +486,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         conversation_policy: "recent_dialog is your working memory: up to 8 customer and 8 business-side messages in chronological order, operator kept as a distinct human role. Continue from the last unresolved point, greet at most once, answer once, do not re-ask what was answered, and never expose internal reasoning.",
         customer_memory: customerMemory(ctx),
         turn_analysis: turnAnalysis(ctx),
+        reply_shape: replyShape(ctx),
         active_mission: activeMission(ctx),
         proactive_signals: proactiveSignals(ctx),
         last_turn: lastTurnAwareness(ctx),

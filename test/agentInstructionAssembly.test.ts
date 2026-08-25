@@ -37,5 +37,8 @@ test("tenant voice is injected exactly once and remains bounded", () => {
   // rules the owner asked for: fresh composition per guest, human-sized message
   // splitting, one-emoji cap, URL on its own line, and no system-flavoured link
   // wording (2026-08-24).
-  assert.ok(instructions.length < 20_000, `assembled prompt is unexpectedly large: ${instructions.length}`);
+  // ...then from 20 000 for reply_shape: the code-computed wording plan (length,
+  // message splitting, emoji policy, register) that replaced "adapt to the
+  // customer" as a hope in prose with an actual per-turn input (2026-08-24).
+  assert.ok(instructions.length < 21_500, `assembled prompt is unexpectedly large: ${instructions.length}`);
 });
