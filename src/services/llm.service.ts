@@ -97,9 +97,17 @@ export function usesProMediaChannel() {
 }
 
 export function getOpenRouterProvider() {
+  // The panel's API key page is the source of truth: the first
+  // OpenAI-compatible entry (text pool, then media) carries the platform key.
+  // Env stays as the fallback so a panel outage never silences the side lanes
+  // (thinking, critic, shpor curation, memory, analytics).
+  const pools = getLlmWorkspacePools();
+  const key = pools?.text.find((entry) => entry.type === "openai")?.key
+    || pools?.media.find((entry) => entry.type === "openai")?.key
+    || envText("OPENROUTER_API_KEY");
   return createOpenAI({
     baseURL: "https://openrouter.ai/api/v1",
-    apiKey: process.env.OPENROUTER_API_KEY,
+    apiKey: key,
   });
 }
 

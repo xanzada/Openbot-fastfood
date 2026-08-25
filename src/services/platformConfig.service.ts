@@ -1,8 +1,8 @@
 import axios from "axios";
 import { generateText, stepCountIs, tool } from "ai";
-import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
+import { getOpenRouterProvider } from "./llm.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 const SHPOR_CONTEXT_LIMIT = envNumber(process.env.SHPOR_CONTEXT_LIMIT, 8, { min: 1 });
@@ -12,10 +12,6 @@ const runtimeConfigMemory = new Map<string, { value: Record<string, any>; expire
 const REDACTED_INDEX_FIELDS = ["alemi_secret", "crm_secret_token", "webhook_secret"] as const;
 const botControlMemory = new Map<string, { enabled: boolean; expiresAt: number }>();
 let allConfigsMemory: { value: Record<string, any>[]; expiresAt: number } | null = null;
-const openrouter = createOpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY,
-});
 
 function cleanInline(value = "", max = 240) {
   const text = String(value || "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
@@ -602,7 +598,7 @@ reason must be brief and in Kazakh.
 `;
 
     const result = await generateText({
-      model: openrouter.chat("openai/gpt-4o-mini"),
+      model: getOpenRouterProvider().chat("openai/gpt-4o-mini"),
       system: systemPrompt,
       prompt: `[DIALOGUE]\nClient: ${question}\nBot: ${answer}`,
       allowSystemInMessages: true,
