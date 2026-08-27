@@ -5,7 +5,15 @@ import { reportOperatorSos } from "./alemiApi.service.js";
 
 export type OperatorCaseKind = "complaint" | "human_request" | "courier_request" | "cancel_request" | "long_voice" | "unresolved" | "critical";
 export const CASE_TTL_SECONDS = 7 * 24 * 60 * 60;
-export const SOS_TTL_SECONDS = 60 * 60;
+// An SOS must outlive the shift it was raised in. One hour meant a complaint that
+// arrived at night was silently gone from the operator's SOS column by morning: the
+// case itself lives CASE_TTL_SECONDS (7 days) and the red row stayed, but the SOS
+// marker, the unread key and the index entry had all expired, so the panel tab read
+// zero and the site's green button never had a count to show (owner report,
+// 2026-08-27). 24h matches how a restaurant actually works - a shift hands over and
+// the next operator still sees what happened - and stays well inside the case's own
+// life so the two can never disagree about a live episode.
+export const SOS_TTL_SECONDS = 24 * 60 * 60;
 
 function clean(value: unknown, max = 900) {
   return String(value || "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
