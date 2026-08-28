@@ -481,6 +481,12 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           url: ctx.magicLink,
           validity_rule: "Magic link is valid for 1 month and is tied to the customer's WhatsApp number.",
           resend_rule: "already_sent is informational only - there is NO daily limit. If the guest asks again or the previous link failed, call sendMenuLink again; never refuse just because one was sent earlier.",
+          // explicit_request is a keyword pre-warm, not a permission. The model read it as
+          // one - a guest writing "2 донер жасап қойшы" matched no pattern, so the field
+          // said false, the model believed the link was off-limits and merely PROMISED a
+          // menu it never sent (owner report, 2026-08-28).
+          decision_rule: "explicit_request only reports whether the wording obviously named the menu; it is NOT permission and false does NOT mean you may not send the link. You decide from the conversation whether the guest is ordering (naming dishes or quantities counts) and call sendMenuLink. value_available=false likewise does not block you: the tool issues the link itself when it is needed.",
+          promise_rule: "Never tell the guest you are sending the menu or the link unless sendMenuLink returned allowed=true on this turn. If it refused, relay its message instead - saying a menu is coming and sending nothing is the one failure a guest never forgives.",
         },
         recent_dialog: compactConversationHistory(ctx.chatHistory),
         conversation_policy: "recent_dialog is your working memory: up to 8 customer and 8 business-side messages in chronological order, operator kept as a distinct human role. Continue from the last unresolved point, greet at most once, answer once, do not re-ask what was answered, and never expose internal reasoning.",

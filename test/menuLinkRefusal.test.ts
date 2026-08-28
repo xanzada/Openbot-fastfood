@@ -32,10 +32,21 @@ test("An explicit request whose fresh link failed to mint is an issue failure ev
   assert.equal(reason, "link_issue_failed");
 });
 
-test("A spurious call on a turn with no link need is answered without a link", () => {
+// The keyword flag used to be a permission: a guest writing "2 донер жасап қойшы"
+// matched no pattern, so the tool refused with "link_not_needed" (whose message is
+// null) and the reply promised a menu nobody ever received (owner report,
+// 2026-08-28). The agent's decision to call the tool IS the intent now; only facts
+// about the restaurant can still refuse.
+test("The agent's own decision is enough - no keyword flag required", () => {
+  const reason = classifyMenuLinkRefusal({ ...live, explicitMenuLinkIntent: false, magicLink: "https://x/auth/whatsapp/t" });
+
+  assert.equal(reason, null);
+});
+
+test("A tool call with no link minted is an issue failure, never a silent 'not needed'", () => {
   const reason = classifyMenuLinkRefusal({ ...live, explicitMenuLinkIntent: false, magicLink: null, magicLinkAlreadySent: true });
 
-  assert.equal(reason, "link_not_needed");
+  assert.equal(reason, "link_issue_failed");
 });
 
 test("An unreachable kitchen outranks every link question", () => {
@@ -103,4 +114,12 @@ test("The gate stays armed while consent is owed - no checkout grace is written"
   assert.ok(body.indexOf("if (refusal)") < body.indexOf("markKitchenCheckoutStarted"));
   assert.match(body, /getKitchenCheckoutFingerprint\(ctx\.instanceId, ctx\.phone\)/);
   assert.match(body, /acceptedFingerprint === policy\.fingerprint/);
+  // Minting on demand must itself respect the gates: issuing a link and only then
+  // refusing would burn a token and mark nothing, and a closed kitchen must never
+  // reach the hub at all.
+  const mintAt = body.indexOf("ensureCustomerAccessLink");
+  assert.ok(mintAt > 0, "the skill mints the link itself when preload did not");
+  const mintGuard = body.slice(body.lastIndexOf("if (", mintAt), mintAt);
+  assert.match(mintGuard, /policy\.blocksAllSales/);
+  assert.match(mintGuard, /policy\.requiresConsent \|\| consentAccepted/);
 });

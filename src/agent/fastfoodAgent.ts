@@ -6,6 +6,7 @@ import { validateFinalText } from "./finalValidator.js";
 import { buildAgentInstructions } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
+import { honorMenuLinkPromise } from "./linkPromise.js";
 import { envNumber } from "../utils/envNumber.js";
 
 /**
@@ -228,6 +229,20 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
         validation = { ...validation, warnings: [...validation.warnings, "critic_regen_failed"] };
       }
     }
+  }
+
+  // A promise the guest can see must be a promise the guest receives. Runs after every
+  // rewrite, so it judges the text that will actually be sent.
+  const promise = await honorMenuLinkPromise(ctx, finalText).catch(() => ({ action: "none" as const }));
+  if (promise.action === "granted") {
+    validation = { ...validation, warnings: [...validation.warnings, "link_promise_honored"] };
+    console.info(`[LINK PROMISE] honored instance=${ctx.instanceId}`);
+  } else if (promise.action === "stripped") {
+    finalText = promise.text || (ctx.language === "kk"
+      ? "Тыңдап тұрмын, не қажет екенін жазыңыз."
+      : "Слушаю, напишите, что нужно.");
+    validation = { ...validation, warnings: [...validation.warnings, `link_promise_removed_${promise.reason}`] };
+    console.warn(`[LINK PROMISE] removed instance=${ctx.instanceId} reason=${promise.reason}`);
   }
 
   if (ctx.magicLinkGranted && ctx.magicLink && GRANTED_LINK_REFUSAL_RE.test(finalText)) {
