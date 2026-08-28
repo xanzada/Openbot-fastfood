@@ -187,7 +187,12 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     // A payment shortfall is a measured amount, not a sentence to classify. The
     // guest's caption on the receipt photo often mentions a dish, and reading that
     // as a menu question would silently drop an underpayment (found 2026-08-23).
-    && input.source !== "payment_shortfall";
+    && input.source !== "payment_shortfall"
+    // Same reason, one step earlier in the money path: a file we could not read may
+    // be a receipt, and its caption often names a dish. Dropping it here would put
+    // the guest back on "try again later" with nobody looking at the payment
+    // (owner, 2026-08-28).
+    && input.source !== "media_unreadable_evidence";
   if (menuSkipApplies && isLikelyMenuQuestion(input.customerText || ctx.text)) {
     return {
       action: "skipped_menu_question",

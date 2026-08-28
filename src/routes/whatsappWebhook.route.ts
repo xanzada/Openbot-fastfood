@@ -1009,6 +1009,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
     let mediaPreemptiveSource = "";
     let mediaDeveloperError = "";
     let mediaDeveloperErrorIsUserInput = false;
+    // Set when the file we failed to read could have been payment evidence, so the
+    // failure has a second lane instead of ending at "try again later".
+    let mediaUnreadableEvidence = false;
     let immediateComplaintSummary = "";
     let immediateComplaintMedia: ComplaintMediaPayload | null = null;
     let immediateComplaintUrgency: ComplaintUrgency = "normal";
@@ -1235,6 +1238,18 @@ async function processWhatsAppWebhook(body: any, started: number) {
           mediaDeveloperErrorIsUserInput =
             /MEDIA_40[0134]|Unable to process input image|unsupported|invalid_image|corrupt/i.test(failureText) &&
             !/50[03]|TIMEOUT|EXHAUSTED|quota/i.test(failureText);
+          // SECOND LANE FOR MONEY. An image or PDF we could not read may well be a
+          // payment receipt, and "try again later" is the one answer that loses money:
+          // the guest has already paid, the file is in our hands, and nobody is told
+          // (owner, 2026-08-28: "клиент ақша жіберіп, оны сайтқа жібермесе, проблеманың
+          // көкесі болады"). When the reader is down the evidence goes to a human
+          // instead - the operator opens the file and checks the payment by hand. Audio
+          // is excluded: a voice note is never a receipt.
+          mediaUnreadableEvidence = Boolean(
+            mediaContext.base64
+            && mediaContext.kind !== "audio"
+            && mediaContext.kind !== "sticker"
+          );
           mediaPreemptiveReply =
             (mediaAnalysis as any).reply_to_customer ||
             stripEscalationSignals(mediaAnalysis.analysis) ||
@@ -1305,6 +1320,42 @@ async function processWhatsAppWebhook(body: any, started: number) {
         messageId,
         customerPhone: maskPhone(ctx.phone),
       }).catch(() => undefined);
+
+      // The second lane. A file we could not read may be money already sent, so it is
+      // handed to a human with the image attached instead of dying as "try again
+      // later" (owner, 2026-08-28). The operator case is what makes a human look:
+      // routeComplaintToAdmin opens it, flags the panel row and signals the site, and
+      // it carries its own source so neither the menu-question skip nor the
+      // clarify-first gate can swallow it.
+      if (mediaUnreadableEvidence && mediaContext) {
+        const evidenceBase64 = String(mediaContext.base64 || "");
+        const evidenceRouting = await routeComplaintToAdmin(ctx, {
+          summary: `Клиент файл жіберді, бірақ ИИ оны оқи алмады (медиа талдау істен шықты). Файл осы кейске тіркелді - операторға қолмен тексеру керек. Егер бұл төлем чегі болса, төлемді растап, тапсырысты алға жылжытыңыз. Клиент мәтіні: ${String(text || "").replace(/\s+/g, " ").trim().slice(0, 300)}`,
+          customerText: text,
+          customerReply: "",
+          urgency: "high",
+          media: evidenceBase64
+            ? {
+                base64: evidenceBase64,
+                mimeType: String(mediaContext.mimeType || mediaContext.mediaType || "image/jpeg"),
+                filename: "unreadable-media",
+              }
+            : null,
+          source: "media_unreadable_evidence",
+        }).catch(() => null);
+
+        // Only promise the human when one was actually told. The reply otherwise stays
+        // the plain retry line, which is honest about what happened.
+        const handedOver = Boolean(evidenceRouting && evidenceRouting.action === "operator_case_created");
+        const evidenceReply = handedOver
+          ? ctx.language === "ru"
+            ? "Файл получил, но автоматически прочитать его не удалось. Передал оператору — он посмотрит вручную. Если это чек об оплате, платёж учтём, ничего отправлять заново не нужно."
+            : "Файлды алдым, бірақ автоматты оқи алмадым. Операторға бердім — ол қолмен қарайды. Егер бұл төлем чегі болса, төлем есепке алынады, қайта жіберудің қажеті жоқ."
+          : mediaPreemptiveReply;
+        await sendCustomerReplyAndFinish(ctx, messageId, evidenceReply, handedOver ? "media_unreadable_escalated" : mediaPreemptiveSource);
+        return;
+      }
+
       await sendCustomerReplyAndFinish(ctx, messageId, mediaPreemptiveReply, mediaPreemptiveSource);
       return;
     }

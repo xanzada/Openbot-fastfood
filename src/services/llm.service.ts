@@ -65,11 +65,24 @@ export function getMediaPrimaryModel() {
     "MEDIA_PRIMARY_MODEL",
     envText("GEMINI_MEDIA_MODEL", envText("GEMINI_MODEL", "gemini-3.6-flash"))
   );
-  // Google returns 404 for these retired direct-API media models. Silently
-  // retaining an old Dokploy override breaks every voice note, so upgrade the
-  // known retired values while preserving deliberate current-model overrides.
+  return normalizeGeminiMediaModel(configured);
+}
+
+/**
+ * Google answers 404 for retired direct-API media models, with a message naming the
+ * replacement. A stale value therefore breaks every voice note and every receipt.
+ *
+ * Exported because the panel's key pool needs the same protection: each workspace
+ * entry carries its own model string, typed by hand months ago, and those bypassed
+ * this map entirely - on 2026-08-28 five of six Gemini entries answered
+ * "models/gemini-2.5-flash is no longer available to new users" and the whole media
+ * chain collapsed to the env reserve, which the key migration had already emptied.
+ * A deliberate current-model override still passes through untouched.
+ */
+export function normalizeGeminiMediaModel(value: string) {
+  const configured = String(value || "").trim();
   const normalized = configured.toLowerCase().replace(/^models\//, "");
-  if (["gemini-2.5-flash", "gemini-2.5-flash-lite"].includes(normalized)) {
+  if (["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"].includes(normalized)) {
     return "gemini-3.6-flash";
   }
   return configured;
@@ -301,18 +314,31 @@ export function usesFreeMediaKeys() {
 }
 
 export async function generateMediaText(request: MediaRequest) {
+  // Every failure is collected so the last-resort error names what actually went
+  // wrong. It used to surface only the final env-channel message
+  // (OPENROUTER_API_KEY_NOT_CONFIGURED), which is the least useful line in the
+  // chain: it hid that six workspace keys had answered 404 and 402 first, and it
+  // paged the owner with a cause that was not the cause (2026-08-28).
+  const failures: string[] = [];
+
   // The panel-curated workspace pool goes first: every entry is tried in order,
   // a failing entry just means the next one. An empty or unreachable workspace
   // changes nothing — the platform-wide env channels below stand as before.
   const workspace = getLlmWorkspacePools();
   for (const entry of workspace?.media || []) {
+    // A retired model string typed into the panel months ago is still a 404 today.
+    // The env lane has normalised this since the model was retired; the workspace
+    // lane did not, so five of six Gemini entries died on every receipt.
+    const model = entry.type === "gemini" ? normalizeGeminiMediaModel(entry.model) : entry.model;
     try {
       const text = entry.type === "gemini"
-        ? await callGeminiChannel(request, [entry.key], entry.model, `workspace:${entry.name}`)
-        : await callOpenAiCompatible(entry.baseUrl, entry.key, entry.model, request);
+        ? await callGeminiChannel(request, [entry.key], model, `workspace:${entry.name}`)
+        : await callOpenAiCompatible(entry.baseUrl, entry.key, model, request);
       if (text) return text;
+      failures.push(`${entry.name}:empty`);
     } catch (error: any) {
-      console.warn(`[LLM:MEDIA] workspace_failed name=${entry.name} model=${entry.model} error=${error?.message || error}`);
+      failures.push(`${entry.name}:${String(error?.message || error).slice(0, 80)}`);
+      console.warn(`[LLM:MEDIA] workspace_failed name=${entry.name} model=${model} error=${error?.message || error}`);
     }
   }
 
@@ -326,15 +352,19 @@ export async function generateMediaText(request: MediaRequest) {
       try {
         return await callGeminiChannel(request, proKeys, getMediaProModel(), "gemini_pro");
       } catch (error: any) {
+        failures.push(`pro:${String(error?.message || error).slice(0, 80)}`);
         console.warn(`[LLM:MEDIA] pro_channel_failed reason=${error?.message || error}`);
       }
     }
   }
 
   // Channel 1: the free key pool the client instances run on.
+  const openRouterKey = envText("OPENROUTER_API_KEY");
   if (!usesFreeMediaKeys()) {
     console.info(`[LLM:MEDIA] provider=openrouter reason=free_keys_disabled model=${getMediaFallbackModel()}`);
-    return callOpenRouter(request);
+    if (openRouterKey) return callOpenRouter(request);
+    failures.push("openrouter:key_missing");
+    throw new Error(`MEDIA_ALL_CHANNELS_FAILED: ${failures.join(" | ")}`);
   }
   try {
     return await callGemini(request);
@@ -343,7 +373,12 @@ export async function generateMediaText(request: MediaRequest) {
     // that: a retired model 404s hard, and this branch used to fire only for an
     // all-429 sweep, so a paid OpenRouter fallback sat unused while receipts
     // came back as "could not process the file".
+    failures.push(`gemini_env:${String(error?.message || error).slice(0, 80)}`);
     console.warn(`[LLM:MEDIA] failover=openrouter reason=${error?.message || error}`);
+    // The env reserve is empty by design since the keys moved into the panel, so
+    // calling it would raise OPENROUTER_API_KEY_NOT_CONFIGURED and bury every real
+    // failure above it. Report the whole chain instead.
+    if (!openRouterKey) throw new Error(`MEDIA_ALL_CHANNELS_FAILED: ${failures.join(" | ")}`);
     return callOpenRouter(request);
   }
 }
