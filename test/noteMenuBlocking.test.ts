@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints, mergeShiftNoteSources } from "../src/services/noteProvenance.service.js";
+import { matchingNoteIds, menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints, mergeShiftNoteSources } from "../src/services/noteProvenance.service.js";
 
 // Real rows from the live tenant menu: the doner never names "лаваш" in its
 // title, only deep inside the description, which is exactly where an honest
@@ -121,4 +121,40 @@ test("mergeShiftNoteSources keeps Redis-only notes when the hub reports none", a
   assert.equal(hubWins[0].text, "fresh text", "a hub entry wins on id collision");
 
   assert.deepEqual(mergeShiftNoteSources(null, null), []);
+});
+
+// The live note was "пиццалар әзірше болмайды, сұраса уақытша жоқ де" and the bot
+// took pizza orders anyway (owner report, 2026-08-28). The Kazakh plural "пиццалар"
+// stems to "пиццал", the menu says "Пицца", and only `menuWord.startsWith(stem(term))`
+// was tested - so the note matched no dish at all. The stem comparison now runs both
+// ways, which is what makes a plural note govern a singular menu.
+test("a Kazakh plural in the note blocks the singular dish on the menu", () => {
+  const catalog = [DONER, PEPPERONI, FOUR_SEASONS];
+  const vocabulary = menuVocabulary(catalog);
+  const notes = [{ id: "live-pizza", text: "пиццалар әзірше болмайды , сұраса уақытша жоқ де" }];
+
+  assert.equal(menuItemBlockedByNotes(notes, PEPPERONI, vocabulary).blocked, true);
+  assert.equal(menuItemBlockedByNotes(notes, FOUR_SEASONS, vocabulary).blocked, true);
+  // And it must stay narrow: a doner is not a pizza.
+  assert.equal(menuItemBlockedByNotes(notes, DONER, vocabulary).blocked, false);
+});
+
+test("the reverse direction does not turn a stem into a substring match", () => {
+  const vocabulary = menuVocabulary([DONER, PEPPERONI, FOUR_SEASONS]);
+  // "моцарелла" and "молоко" share no stem; a shared prefix of two letters must not
+  // be enough, or one note would erase half the catalog.
+  const notes = [{ id: "narrow", text: "молоко жоқ" }];
+  assert.equal(menuItemBlockedByNotes(notes, PEPPERONI, vocabulary).blocked, false);
+  assert.equal(menuItemBlockedByNotes(notes, FOUR_SEASONS, vocabulary).blocked, false);
+});
+
+// mandatoryConstraints reports operator_notes_hit_by_current_message from this, and it
+// used substring containment - so "пицца бар ма?" did not hit a note written
+// "пиццалар" and the mandatory block told the model nothing was relevant.
+test("an inflected guest question hits the note that governs it", () => {
+  const notes = [{ id: "live-pizza", text: "пиццалар әзірше болмайды" }];
+
+  assert.deepEqual(matchingNoteIds(notes, "пицца бар ма"), ["live-pizza"]);
+  assert.deepEqual(matchingNoteIds(notes, "пиццаны алам"), ["live-pizza"]);
+  assert.deepEqual(matchingNoteIds(notes, "донер бар ма"), []);
 });

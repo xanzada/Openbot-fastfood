@@ -46,12 +46,17 @@ function availabilityConstraintTerms(text: unknown): string[] {
 export function matchingNoteIds(notes: any[] = [], value: unknown): string[] {
   const haystack = normalize(value);
   if (!haystack) return [];
+  const words = haystack.split(" ").filter(Boolean);
   return notes.filter((note) => {
     // Only a note that actually says something is unavailable may be reported as
     // hit by the message: an informational note ("Бүгін Цезарь салаты қосылды")
     // counted as a hit made the model announce a newly added dish as out.
     const terms = availabilityConstraintTerms(note?.text);
-    return terms.length > 0 && terms.some((term) => haystack.includes(term));
+    // Substring containment missed every inflected form, which is the same defect
+    // menuItemBlockedByNotes had: a guest asking "пицца бар ма?" did not "hit" a note
+    // written as "пиццалар", so operator_notes_hit_by_current_message stayed empty and
+    // the mandatory-check block told the model nothing was relevant (2026-08-28).
+    return terms.length > 0 && terms.some((term) => textCarriesTerm(words, term));
   }).map(noteId).filter(Boolean);
 }
 
@@ -70,9 +75,24 @@ function stemOf(term: string) {
   return term;
 }
 
+// The comparison has to work in BOTH directions, and that is the whole bug behind
+// "жаңа пиццаларға заказ алма" being ignored (owner report, 2026-08-28).
+//
+// The note carried the Kazakh plural "пиццалар" (stem "пиццал"); the menu says
+// "Пицца". Only `word.startsWith(stemOf(term))` was tested, and "пицца" does not
+// start with "пиццал" - so the note matched no dish, blocked_dishes came back
+// empty, searchMenu kept every pizza on sale and the bot took the order. Measured:
+// menuWord.startsWith(stem(noteTerm)) === false while noteTerm.startsWith(stem(menuWord)) === true.
+//
+// Testing the menu word's stem as well makes the longer form match the shorter one
+// whichever side it appears on. Precision is unchanged: both directions still
+// compare whole words by a stem, never a substring anywhere inside a word.
+function termsShareStem(word: string, term: string) {
+  return word.startsWith(stemOf(term)) || term.startsWith(stemOf(word));
+}
+
 function textCarriesTerm(words: string[], term: string) {
-  const stem = stemOf(term);
-  return words.some((word) => word.startsWith(stem));
+  return words.some((word) => termsShareStem(word, term));
 }
 
 // "лаваш бітіп қалды, донер жоқ" blocked nothing at all: every content word of

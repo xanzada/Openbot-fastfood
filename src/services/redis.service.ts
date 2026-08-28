@@ -930,10 +930,28 @@ function parseShiftNoteRecord(raw = "") {
   }
 }
 
+/**
+ * Erase a deleted note's trace from everything the next turn will read.
+ *
+ * "Заметканы өшіргенде миынан жоғалтып жіберу" (owner, 2026-08-28). Deleting the
+ * Redis key is not enough: the sentence the note produced lives on in three other
+ * places the prompt is built from, and any one of them puts the retired restriction
+ * back in front of the guest.
+ *
+ * 1. OpenBot's own history rows, tagged with sourceNoteIds when they were written.
+ * 2. The GATEWAY timeline (chatwoot:history:*). getChatHistory merges both lists,
+ *    and the gateway copy carries no sourceNoteIds - it is the same assistant text
+ *    mirrored by the transport - so it survived every purge and kept telling the
+ *    model pizza was unavailable after the operator had removed the note. Matched
+ *    by exact text of the rows we just removed, which is the only key the two
+ *    copies share.
+ * 3. The rolling summary, which is derived from that history.
+ */
 async function purgeShiftNoteIdsFromHistory(instanceId: string, noteIds: string[]): Promise<number> {
   const ids = new Set(noteIds.map(String).filter(Boolean));
   if (!ids.size) return 0;
   let removedTotal = 0;
+  const purgedTexts = new Set<string>();
   const keys = await scanKeys(`history:${instanceId}:*`);
   for (const key of keys) {
     const ttlBefore = await redisClient.ttl(key).catch(() => -1);
@@ -942,7 +960,12 @@ async function purgeShiftNoteIdsFromHistory(instanceId: string, noteIds: string[
       try {
         const entry = JSON.parse(raw);
         const sourceNoteIds = Array.isArray(entry?.sourceNoteIds) ? entry.sourceNoteIds.map(String) : [];
-        return !sourceNoteIds.some((id: string) => ids.has(id));
+        const noteDerived = sourceNoteIds.some((id: string) => ids.has(id));
+        if (noteDerived) {
+          const text = String(entry?.text || entry?.body || "").trim();
+          if (text) purgedTexts.add(text);
+        }
+        return !noteDerived;
       } catch { return true; }
     });
     const removed = rows.length - kept.length;
@@ -961,6 +984,32 @@ async function purgeShiftNoteIdsFromHistory(instanceId: string, noteIds: string[
     // actually left, which is the only state the guest may hear about.
     await redisClient.del(key.replace(/^history:/, "conv_summary:")).catch(() => undefined);
     removedTotal += removed;
+  }
+
+  // The gateway timeline holds the same sentences without the note tag, and
+  // getChatHistory merges it into recent_dialog. Left alone, the retired note keeps
+  // arguing its case in the prompt.
+  if (purgedTexts.size) {
+    const mirrorKeys = await scanKeys(`chatwoot:history:${instanceId}:*`).catch(() => []);
+    for (const key of mirrorKeys) {
+      const ttlBefore = await redisClient.ttl(key).catch(() => -1);
+      const rows = await redisClient.lRange(key, 0, -1).catch(() => []);
+      const kept = rows.filter((raw) => {
+        try {
+          const entry = JSON.parse(raw);
+          const text = String(entry?.text || entry?.body || "").trim();
+          return !text || !purgedTexts.has(text);
+        } catch { return true; }
+      });
+      const removed = rows.length - kept.length;
+      if (!removed) continue;
+      const multi = redisClient.multi().del(key);
+      kept.forEach((row) => multi.rPush(key, row));
+      await multi.exec();
+      if (kept.length) await redisClient.expire(key, ttlBefore > 0 ? ttlBefore : CHAT_HISTORY_TTL_SECONDS);
+      await redisClient.del(`conv_summary:${instanceId}:${key.split(":").pop()}`).catch(() => undefined);
+      removedTotal += removed;
+    }
   }
   return removedTotal;
 }

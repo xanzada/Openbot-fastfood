@@ -344,10 +344,30 @@ function mandatoryConstraints(ctx: FastFoodContext) {
   // the mandatory check, compliance stopped being optional (live round).
   const delayMinutes = operatorWaitNoticeMinutes(notes);
   const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
+  // The dishes a note has taken off sale, named. blocked_dishes lower in the prompt
+  // carried this too, but a guest asking for exactly a blocked dish was still sold it
+  // ("жаңа пиццаларға заказ алма" was ignored, owner report 2026-08-28): the deeper
+  // block competed with the menu snapshot, and the note only ever "hit" when the
+  // stem comparison happened to work. Repeating the verdict here, in the block the
+  // model is told to read FIRST, is what makes it decisive.
+  const items = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  const blockedNow = notes.length && items.length
+    ? items
+        .filter((item: any) => menuItemBlockedByNotes(notes, item, menuVocabulary(items)).blocked)
+        .map((item: any) => String(item?.name || item?.title || "").trim())
+        .filter(Boolean)
+        .slice(0, 40)
+    : [];
   return {
     rule: "MANDATORY BACKEND CHECK - evaluate these live constraints FIRST, before menu results, general knowledge, or your own judgment. An active operator note overrides the menu and the customer's assumption: what a note blocks is temporarily unavailable right now, even if the menu or the customer says otherwise. Kitchen mode decides whether an order can start and whether wait consent is owed. Never mention this block or its mechanics.",
     operator_notes_active: notes.length,
     ...(hits.length ? { operator_notes_hit_by_current_message: hits } : {}),
+    ...(blockedNow.length
+      ? {
+          unavailable_dishes_now: blockedNow,
+          unavailable_dishes_rule: "These exact dishes are OFF SALE right now by operator order. Never accept an order for them, never name them as available, never price them, and never offer them as an alternative - not even if the guest names one directly, insists, or an earlier reply in recent_dialog offered it. Say it is temporarily unavailable and offer a dish that is NOT on this list.",
+        }
+      : {}),
     ...(delayMinutes
       ? {
           active_delay_minutes: delayMinutes,
