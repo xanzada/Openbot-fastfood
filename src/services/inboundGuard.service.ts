@@ -269,6 +269,15 @@ export function extractSenderMeta(body: any) {
     contactShortName: eventData.contact?.shortName || body?.contact?.shortName || "",
     contactPushName: eventData.contact?.pushName || eventData.contact?.pushname || body?.contact?.pushName || body?.contact?.pushname || "",
     isMyContact: Boolean(eventData.isMyContact || body?.isMyContact || eventData.contact?.isMyContact || body?.contact?.isMyContact),
+    // Whether the transport could see an address book at all this turn. A fresh QR pairing
+    // has an empty contact map, so isMyContact:false there means "unknown", not "stranger" -
+    // and reading it as "stranger" silenced a saved-contacts-only tenant completely after a
+    // number change (owner report, 2026-08-30). Absent means "assume known", which keeps
+    // every older caller and the wwebjs transport behaving exactly as before.
+    addressBookKnown:
+      eventData.addressBookKnown ?? body?.addressBookKnown
+      ?? eventData.contact?.addressBookKnown ?? body?.contact?.addressBookKnown
+      ?? true,
     // derivedInboundId hashes these to tell two uncaptioned photos apart. They were never
     // populated, so mediaMark was always empty: the first captionless photo set msg_done for
     // 24h and every later one was dropped as duplicate_done. A guest paying in two transfers
@@ -792,6 +801,22 @@ export function evaluateTenantContactRules(input: {
   const isSavedSender = Boolean(input.senderMeta?.isMyContact);
   const savedAllowed = policy?.allowSavedContacts !== undefined ? policy.allowSavedContacts : !shouldIgnoreSavedContacts();
   const unsavedAllowed = policy?.allowUnsavedContacts !== undefined ? policy.allowUnsavedContacts : true;
+
+  // A fresh WhatsApp pairing has NO address book: Baileys fills its contact map only from
+  // contacts.upsert/update, and with history sync off those events may never arrive. So
+  // isMyContact:false can mean either "this guest is a stranger" or "we cannot tell", and
+  // the two must not share a verdict. A tenant serving only saved contacts went completely
+  // silent after the owner changed the number and re-scanned the QR: every real guest was
+  // dropped as unsaved_contact_policy (owner report, 2026-08-30).
+  //
+  // When the book is unknown, the safe direction is to SERVE: a restaurant would rather
+  // answer someone it cannot classify than ignore a paying guest. The saved-contact side
+  // still holds, because a guest we positively recognise is a fact either way.
+  const addressBookKnown = input.senderMeta?.addressBookKnown === undefined
+    ? true
+    : Boolean(input.senderMeta.addressBookKnown);
+  if (!isSavedSender && !unsavedAllowed && !addressBookKnown) return null;
+
   if (isSavedSender ? !savedAllowed : !unsavedAllowed) {
     return { blocked: true, reason: isSavedSender ? "private_saved_contact" : "unsaved_contact_policy" };
   }
