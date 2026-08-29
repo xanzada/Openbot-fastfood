@@ -140,3 +140,23 @@ export function planResponse(ctx: FastFoodContext, style: CustomerStyle = readCu
 
   return { length, maxSentences, emoji, segments, register: style.register, rule };
 }
+
+/**
+ * How fast the reply should be paced on the wire.
+ *
+ * The typing rhythm is there to make the bot feel human, but a guest who is angry,
+ * in a hurry, or being handed to an operator must not watch a performance - for them
+ * speed IS the courtesy. Read from the same silent analysis the wording plan uses, so
+ * the two never disagree about the mood of the turn.
+ */
+export function resolvePaceUrgency(ctx: FastFoodContext): "urgent" | "normal" | "calm" {
+  const analysis: any = ctx.thinking || null;
+  const mood = String(analysis?.mood || "");
+  const urgency = String(analysis?.urgency || "");
+  const risk = String(analysis?.risk || "");
+  if (urgency === "high" || risk === "high" || ["rushed", "upset", "angry"].includes(mood)) return "urgent";
+  // A confused guest benefits from the slower, more deliberate rhythm - it reads as
+  // someone taking care rather than firing back.
+  if (["confused", "unsure"].includes(mood)) return "calm";
+  return "normal";
+}

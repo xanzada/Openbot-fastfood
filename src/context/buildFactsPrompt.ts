@@ -2,6 +2,8 @@ import type { FastFoodContext } from "./types.js";
 import { matchingNoteIds, menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints } from "../services/noteProvenance.service.js";
 import { classifyKitchenSalesPolicyForContext, extractOperatorWaitNotice, formatKitchenWait } from "../services/kitchenPolicy.service.js";
 import { planResponse, readCustomerStyle } from "../services/responsePlan.service.js";
+import { localTimeBlock } from "../services/localTime.service.js";
+import { phrasingMemoryBlock } from "../services/phrasingMemory.service.js";
 import { ONLINE_PREPAYMENT_POLICY } from "../services/paymentPolicy.service.js";
 
 function firstConfigText(config: Record<string, any>, ...keys: string[]) {
@@ -511,6 +513,8 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         recent_dialog: compactConversationHistory(ctx.chatHistory),
         conversation_policy: "recent_dialog is your working memory: up to 8 customer and 8 business-side messages in chronological order, operator kept as a distinct human role. Continue from the last unresolved point, greet at most once, answer once, do not re-ask what was answered, and never expose internal reasoning.",
         customer_memory: customerMemory(ctx),
+        local_time: localTimeBlock(ctx.config, ctx.language),
+        phrasing_memory: phrasingMemoryBlock(ctx),
         turn_analysis: turnAnalysis(ctx),
         reply_shape: replyShape(ctx),
         active_mission: activeMission(ctx),

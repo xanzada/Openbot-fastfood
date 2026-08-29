@@ -40,5 +40,11 @@ test("tenant voice is injected exactly once and remains bounded", () => {
   // ...then from 20 000 for reply_shape: the code-computed wording plan (length,
   // message splitting, emoji policy, register) that replaced "adapt to the
   // customer" as a hope in prose with an actual per-turn input (2026-08-24).
-  assert.ok(instructions.length < 21_500, `assembled prompt is unexpectedly large: ${instructions.length}`);
+  // ...then from 21 500 for the three inputs the owner asked for on 2026-08-29: a
+  // vocabulary rule in VOICE (range, varied verbs, varied sentence length, no repeated
+  // adjective), local_time (the real clock at the restaurant, the greeting that fits
+  // this hour, the meal moment) and phrasing_memory (the openings and closing lines
+  // this bot already spent on this guest). All three are per-turn facts the model could
+  // not previously see, which is why "sound human" had to live as prose.
+  assert.ok(instructions.length < 24_000, `assembled prompt is unexpectedly large: ${instructions.length}`);
 });

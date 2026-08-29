@@ -6,6 +6,7 @@ import { getRestaurantConfig } from "../services/platformConfig.service.js";
 import crypto from "node:crypto";
 import { connectRedis, redisClient, scanKeys } from "../services/redis.service.js";
 import { envNumber } from "../utils/envNumber.js";
+import { planHumanPacing, regroupBySentence, type PaceUrgency } from "./humanPace.js";
 
 const RESPONSE_CHUNK_MAX = envNumber(process.env.OPENBOT_RESPONSE_CHUNK_MAX, 320, { min: 180 });
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
@@ -92,10 +93,6 @@ function endpointFromTransport(rawUrl: string, baseUrl: string, path: "/api/send
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function randomTypingDelayMs() {
-  return 900 + Math.floor(Math.random() * 1400);
 }
 
 function pushSized(chunks: string[], value = "") {
@@ -501,16 +498,26 @@ export async function sendWhatsProResponseSequence(payload: {
   phone: string;
   text: string;
   requestScope?: string;
+  /** Collapses the human pauses: an angry guest or an escalation must not wait on a show. */
+  pace?: PaceUrgency;
 }) {
-  const chunks = splitWhatsProResponse(payload.text);
+  // Sentence-complete chunks first: the size-based splitter cuts on a character
+  // budget and could send half a sentence as its own message ("сөйлемді аяқтап",
+  // owner request 2026-08-29).
+  const chunks = regroupBySentence(splitWhatsProResponse(payload.text), RESPONSE_CHUNK_MAX);
   if (!chunks.length) throw new Error("WHATSPRO_EMPTY_RESPONSE");
   // Stable for retries of one inbound message, but unique for a later customer
   // turn that happens to produce the same reply text.
   const requestScope = String(payload.requestScope || crypto.randomUUID());
+  // How a person would have paced this: a beat to read, then typing time per message.
+  const pacing = planHumanPacing(chunks, payload.pace || "normal");
   const sent: any[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
+    // "typing…" starts BEFORE the pause, so the guest sees composing for the whole
+    // wait instead of silence followed by a sudden message.
     await sendWhatsProPresence(payload);
-    if (index > 0) await delay(randomTypingDelayMs());
+    const pause = index === 0 ? pacing.readPauseMs + (pacing.typingMs[0] || 0) : pacing.typingMs[index] || 0;
+    if (pause > 0) await delay(pause);
     const outboundId = crypto.createHash("sha256")
       .update(`${payload.instanceId}|${payload.phone}|${requestScope}|${index}|${chunks[index]}`)
       .digest("hex");

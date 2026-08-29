@@ -60,6 +60,7 @@ import {
 import { syncKanbanEvent } from "../services/kanbanSync.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { markWhatsProChatRead, sendWhatsProResponseSequence, startWhatsProTyping } from "../transport/whatspro.client.js";
+import { resolvePaceUrgency } from "../services/responsePlan.service.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { customerOrderFromRecord, pickConversationOrder, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
@@ -710,6 +711,7 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
       phone: ctx.phone,
       text: cleanReply,
       requestScope: messageId,
+      pace: resolvePaceUrgency(ctx),
     });
     if (!delivery.ok) throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");
     await saveToHistory(ctx.instanceId, ctx.phone, "assistant", cleanReply, { source, ...noteHistoryMeta(ctx, cleanReply) });
@@ -1684,6 +1686,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       phone: ctx.phone,
       text: finalText,
       requestScope: messageId,
+      pace: resolvePaceUrgency(ctx),
     });
 
     if (!sendResult.ok) throw new Error("WHATSPRO_SEQUENCE_NOT_ACKNOWLEDGED");
