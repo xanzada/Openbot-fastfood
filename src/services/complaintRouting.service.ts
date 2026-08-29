@@ -54,8 +54,23 @@ function getRestaurantLabel(ctx: FastFoodContext, liveConfig: Record<string, any
   return cleanLine(liveConfig.name || liveConfig.restaurant_name || ctx.config?.name || ctx.config?.restaurant_name || ctx.instanceId, 120);
 }
 
+// The operator's first question is always "which order?", so the number a HUMAN can
+// read comes first. The 2026-08-29 nail complaint reached the operator with
+// order_number "not_found" while order #61 sat in the same conversation: the lookup
+// only tried the internal uuid fields and never display_number/order_number, which is
+// what both the guest and the panel actually use.
 function getOrderLabel(ctx: FastFoodContext) {
-  return cleanLine(ctx.activeOrder?.order_id || ctx.activeOrder?.id || ctx.activeOrder?.orderId || "not_found", 80);
+  const order = ctx.activeOrder as Record<string, any> | null | undefined;
+  const candidate =
+    order?.display_number
+    ?? order?.order_number
+    ?? order?.number
+    ?? order?.order_no
+    ?? order?.order_id
+    ?? order?.id
+    ?? order?.orderId
+    ?? "not_found";
+  return cleanLine(candidate, 80);
 }
 
 function toWhatsProMedia(media: ComplaintMediaPayload | null) {
@@ -140,6 +155,28 @@ export function buildComplaintClarificationReply(language: "kk" | "ru") {
   return language === "ru"
     ? "Пожалуйста, коротко опишите проблему текстом. Я передам фото и описание администратору."
     : "Мәселені қысқаша мәтінмен сипаттап жіберіңіз. Фото мен сипаттаманы админге жіберемін.";
+}
+
+/**
+ * The photo already showed what went wrong, so the guest is never asked to describe it.
+ *
+ * A photo of a nail in the food was answered "please describe the problem in text" -
+ * twice, once per photo (owner report, 2026-08-29). The reader had seen it and written
+ * a summary; the code threw that away and asked anyway. When there is nothing left to
+ * ask, this acknowledges and hands over. When one detail genuinely helps the operator
+ * (which dish, which order), the model supplies that ONE question and it is appended -
+ * never a generic "describe the issue".
+ */
+export function buildEvidenceSeenReply(language: "kk" | "ru", detailQuestion = "") {
+  const detail = String(detailQuestion || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  if (language === "ru") {
+    return detail
+      ? `Извините за это. Фото передал администратору. ${detail}`
+      : "Извините за это. Фото передал администратору — он свяжется с вами.";
+  }
+  return detail
+    ? `Кешіріңіз. Фотоны админге жібердім. ${detail}`
+    : "Кешіріңіз. Фотоны админге жібердім — ол сізбен байланысады.";
 }
 
 export function buildComplaintAckReply(language: "kk" | "ru") {

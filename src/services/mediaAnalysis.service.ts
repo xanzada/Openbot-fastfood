@@ -115,6 +115,12 @@ export function normalizeMediaAnalysisResponse(rawText = "") {
     transaction_id: String(parsed.transaction_id || "").trim(),
     is_valid_receipt: parsed.is_valid_receipt === true,
     validation_reason: String(parsed.validation_reason || "").trim(),
+    // The reader SAW the problem, so the guest must not be asked to describe it.
+    // Strictly opt-in: an older model answer without the field behaves exactly as
+    // before and still earns the clarifying question (owner report, 2026-08-29 -
+    // the bot asked "describe the issue" twice at a photo of a nail in the food).
+    evidence_visible: parsed.evidence_visible === true,
+    evidence_detail: String(parsed.evidence_detail || "").trim(),
   };
 }
 
@@ -189,6 +195,8 @@ ${pdfInstruction}
 [COMPLAINT ESCALATION]
 - admin_summary: specific short summary in Kazakh.
 - reply_to_customer: polite apology in the customer's language, mentioning that the issue was passed to the admin.
+- evidence_visible: true ONLY when the IMAGE ITSELF shows the problem clearly enough that a human operator looking at it would understand what went wrong without asking - a hair or nail in the food, mould, a foreign object, a spilled or crushed order, a visibly wrong or missing dish. False for a plain photo of food with nothing wrong visible, a blurry or dark frame, a screenshot, or anything where you are only guessing from the caption. When it is true, name what you SEE in admin_summary ("тағамның үстінде тырнақ көрініп тұр") - that summary goes straight to the operator instead of a question to the guest.
+- evidence_detail: when evidence_visible is true, the ONE short thing still worth asking the guest in their language, or empty when nothing is needed. Ask about the ORDER or the DISH ("Қай тағамнан шықты?"), never "describe the problem" - you can already see it.
 
 [CUSTOMER LANGUAGE]: ${userLang === "ru" ? "RUSSIAN" : "KAZAKH"}
 [ACCOMPANYING TEXT / CAPTION / BUFFERED TEXT]: ${caption || "[Empty]"}
@@ -207,6 +215,8 @@ Return STRICT JSON only:
   ,"transaction_id": string
   ,"is_valid_receipt": boolean
   ,"validation_reason": string
+  ,"evidence_visible": boolean
+  ,"evidence_detail": string
 }
 `;
 }

@@ -135,7 +135,8 @@ Rules:
 - usual_address: a delivery address the customer themselves gave, shortened to one line.
 - preferred_tone: how this person visibly prefers to be spoken to (short, warm, formal), only if their messages show it.
 - lessons: at most 2 short notes on what worked or failed in serving this customer (e.g. "answers better in short messages", "was upset about late delivery").
-- Preferences and dislikes must be about food, channel, timing, or payment, quoted close to their own words.
+- Preferences and dislikes must be about food, channel, timing, or payment, quoted close to their own words. Each one is a SETTLED taste written as a short statement ("мәзірді мәтінмен алғанды жақсы көреді", "самовывоз"), never the customer's own question or request copied verbatim: "Курьеру наличкой можно?" is a question they asked once, not a preference, and storing it that way put nonsense on the operator's screen during an urgent complaint (found 2026-08-29). If it ends in a question mark or reads as a one-off request, leave it out.
+- The summary is written in the customer's own language (Kazakh or Russian), never in English: it is read by a human operator during a handoff.
 - The summary is at most 3 sentences of what matters for serving this person next time.
 - open_point is the single unresolved thing from the end of the conversation, or an empty string.
 - Answer with JSON only.`;

@@ -11,6 +11,7 @@ claimReceiptFingerprint,
   getLastKnownOrderId,
   getPendingKitchenConsent,
   hasReceiptSeen,
+  hasComplaintClarificationPending,
   markComplaintClarificationPending,
   markKitchenCheckoutStarted,
   markMagicLinkSent,
@@ -27,6 +28,7 @@ import {
   buildComplaintAckReply,
   buildComplaintClarificationReply,
   buildEscalationClarifyQuestion,
+  buildEvidenceSeenReply,
   complaintHasActionableDetail,
   hasEscalateAdminSignal,
   hasPendingComplaintMedia,
@@ -1283,9 +1285,25 @@ async function processWhatsAppWebhook(body: any, started: number) {
         }
         if (mediaAnalysis.type === "complaint" && mediaContext.base64) {
           await saveComplaintMedia(ctx.instanceId, ctx.phone, mediaContext.base64, mediaContext.mimeType || mediaContext.mediaType || "image/jpeg");
-          if (!hasMeaningfulMediaDescription(text, mediaContext)) {
-            mediaPreemptiveReply = buildComplaintClarificationReply(ctx.language);
-            mediaPreemptiveSource = "complaint_media_needs_text";
+          // The reader SAW the defect, so asking the guest to describe it is absurd - and
+          // that is exactly what happened to a photo of a nail in the food, twice, once
+          // per photo (owner report, 2026-08-29). Visible evidence goes straight to the
+          // operator with the summary the reader already wrote; at most ONE specific
+          // question rides along ("which dish?"), never "describe the problem".
+          const evidenceVisible = Boolean((mediaAnalysis as any).evidence_visible);
+          if (!evidenceVisible && !hasMeaningfulMediaDescription(text, mediaContext)) {
+            // One question per episode. A guest sending three photos of the same problem
+            // used to be asked three times, because nothing remembered that the question
+            // was already out.
+            const alreadyAsked = await hasComplaintClarificationPending(ctx.instanceId, ctx.phone).catch(() => false);
+            if (alreadyAsked) {
+              mediaPreemptiveReply = "";
+              mediaPreemptiveSource = "complaint_media_awaiting_text";
+            } else {
+              await markComplaintClarificationPending(ctx.instanceId, ctx.phone, text || "[photo]").catch(() => false);
+              mediaPreemptiveReply = buildComplaintClarificationReply(ctx.language);
+              mediaPreemptiveSource = "complaint_media_needs_text";
+            }
           } else {
             immediateComplaintSummary = mediaAnalysis.admin_summary || mediaAnalysis.analysis || text;
             immediateComplaintMedia = {
@@ -1296,8 +1314,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
             mediaPreemptiveReply =
               (mediaAnalysis as any).reply_to_customer ||
               stripEscalationSignals(mediaAnalysis.analysis) ||
-              buildComplaintAckReply(ctx.language);
-            mediaPreemptiveSource = "media_complaint";
+              (evidenceVisible
+                ? buildEvidenceSeenReply(ctx.language, String((mediaAnalysis as any).evidence_detail || ""))
+                : buildComplaintAckReply(ctx.language));
+            mediaPreemptiveSource = evidenceVisible ? "media_complaint_evidence_seen" : "media_complaint";
           }
         }
       }

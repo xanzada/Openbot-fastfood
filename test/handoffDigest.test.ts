@@ -15,12 +15,17 @@ function ctx(overrides: Record<string, any> = {}) {
   } as any;
 }
 
-test("the digest carries goal, mood and urgency from the think layer", () => {
-  const digest = buildHandoffDigest(ctx({ thinking: { goal: "complaint", mood: "upset", urgency: "high" } }), "заказ опоздал на час");
-  assert.match(digest, /заказ опоздал на час/);
-  assert.match(digest, /complaint/);
-  assert.match(digest, /upset/);
-  assert.match(digest, /high/);
+// The digest used to print "мақсат=info, көңіл-күй=neutral, шұғылдылық=normal" on
+// every case, which told the operator nothing and pushed the real content down the
+// screen (owner report, 2026-08-29). Only a state worth warning a human about
+// survives, and the reason itself always leads.
+test("the digest warns about a bad mood and stays quiet about an ordinary one", () => {
+  const upset = buildHandoffDigest(ctx({ thinking: { goal: "complaint", mood: "upset", urgency: "high" } }), "заказ опоздал на час");
+  assert.match(upset, /заказ опоздал на час/);
+  assert.match(upset, /upset/);
+
+  const ordinary = buildHandoffDigest(ctx({ thinking: { goal: "info", mood: "neutral", urgency: "normal" } }), "просит меню");
+  assert.equal(ordinary, "просит меню", "a neutral turn adds nothing at all");
 });
 
 test("the digest tells the operator what we remember about this customer", () => {

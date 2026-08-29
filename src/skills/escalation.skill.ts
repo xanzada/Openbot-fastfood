@@ -9,32 +9,73 @@ import { routeComplaintToAdmin } from "../services/complaintRouting.service.js";
  * A raw "customer is angry about a late order" used to be all the operator
  * received, so their first messages went into re-collecting what the bot
  * already knew. This digest hands over the situation the way a good colleague
- * would: what the customer wants, how they feel, what we remember about them,
- * and what has already been verified - so the human continues the conversation
- * instead of restarting it. Deterministic from ctx only: no extra model call.
+ * would - but ONLY what a colleague would actually say out loud.
+ *
+ * The 2026-08-29 nail complaint showed what happens without that discipline: the
+ * operator's case read "Тамақтан тырнақ шыққан", then a line calling three of the
+ * guest's own past questions their "preferences" ("получать меню в текстовом виде,
+ * Курьеру наличкой можно?"), then an ENGLISH paragraph about pizzas ordered days
+ * earlier. The one fact that mattered - which order - was missing entirely. Noise
+ * around an urgent fact is not context; it buries the fact.
+ *
+ * So: the reason first, the order number second (the operator's first question),
+ * and everything else only when it earns its place. Deterministic from ctx only.
  */
+
+// The guest's own words end in a question mark or read like a request, not a taste.
+// The memory layer collects those into `preferences`, which is fine for tone and
+// useless - actively misleading - on an operator's screen.
+const NOT_A_PREFERENCE_RE = /[?？]|можно|болады ма|бар ма|айтшы|жібер|скинь|дай/iu;
+
+function usefulPreferences(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((value) => String(value || "").replace(/\s+/g, " ").trim())
+    .filter((value) => value.length >= 3 && value.length <= 40 && !NOT_A_PREFERENCE_RE.test(value))
+    .slice(0, 2);
+}
+
+// The rolling summary is written by a model and often lands in English, while the
+// operator reads Kazakh or Russian. A wall of foreign text at the bottom of an
+// urgent case is skipped, so it is better dropped than shown.
+function looksLatin(text: string) {
+  const letters = text.replace(/[^\p{L}]/gu, "");
+  if (letters.length < 12) return false;
+  const latin = (letters.match(/[a-z]/gi) || []).length;
+  return latin / letters.length > 0.6;
+}
+
 export function buildHandoffDigest(ctx: FastFoodContext, reason: string): string {
   const parts: string[] = [String(reason || "").trim()];
+
+  // The operator's very first question is always "which order?". A complaint that
+  // reaches a human without it costs one round trip to the guest every time.
+  const order = ctx.activeOrder as Record<string, any> | null | undefined;
+  const orderNumber = order?.display_number || order?.number || order?.order_number || order?.id || order?.order_id;
+  if (orderNumber) parts.push(`Тапсырыс: №${String(orderNumber)}`);
+
   const thinking = ctx.thinking as Record<string, any> | null | undefined;
-  if (thinking?.goal || thinking?.mood) {
-    parts.push(
-      `Контекст: мақсат=${String(thinking?.goal || "-")}, көңіл-күй=${String(thinking?.mood || "-")}, шұғылдылық=${String(thinking?.urgency || "-")}`
-    );
+  // Only a mood worth warning a human about. "мақсат=info, көңіл-күй=neutral" told
+  // the operator nothing and pushed the real content down the screen.
+  const mood = String(thinking?.mood || "").toLowerCase();
+  if (["upset", "angry", "rushed"].includes(mood) || String(thinking?.urgency || "") === "high") {
+    parts.push(`Күйі: ${mood || "шұғыл"}`);
   }
+
   const profile = ctx.customerProfile as Record<string, any> | null | undefined;
   const memoryBits: string[] = [];
   if (profile?.self_introduced_name) memoryBits.push(`аты: ${String(profile.self_introduced_name)}`);
-  if (profile?.complaint_count) memoryBits.push(`бұрынғы шағымдар: ${Number(profile.complaint_count)}`);
-  if (Array.isArray(profile?.preferences) && profile.preferences.length) {
-    memoryBits.push(`тілейіндері: ${profile.preferences.slice(0, 3).join(", ")}`);
-  }
-  if (memoryBits.length) parts.push(`Клиент жайлы белгілісі: ${memoryBits.join("; ")}`);
-  const order = ctx.activeOrder as Record<string, any> | null | undefined;
-  const orderNumber = order?.number || order?.order_number || order?.id || order?.order_id;
-  if (orderNumber) parts.push(`Белсенді тапсырыс: №${String(orderNumber)}`);
-  const summary = (ctx.conversationSummary as Record<string, any> | null | undefined)?.summary;
-  if (summary) parts.push(`Алдыңғы сөйлесу қорытындысы: ${String(summary).slice(0, 220)}`);
-  return parts.filter(Boolean).join("\n").slice(0, 900);
+  // A repeat complainer is a real fact for whoever picks this up.
+  if (Number(profile?.complaint_count) > 0) memoryBits.push(`бұрынғы шағымдар: ${Number(profile?.complaint_count)}`);
+  const preferences = usefulPreferences(profile?.preferences);
+  if (preferences.length) memoryBits.push(`ұнататыны: ${preferences.join(", ")}`);
+  if (memoryBits.length) parts.push(`Клиент: ${memoryBits.join("; ")}`);
+
+  const summary = String((ctx.conversationSummary as Record<string, any> | null | undefined)?.summary || "").trim();
+  // Kept short and only when the operator can actually read it.
+  if (summary && !looksLatin(summary)) parts.push(`Бұған дейін: ${summary.slice(0, 160)}`);
+
+  return parts.filter(Boolean).join("\n").slice(0, 700);
 }
 
 export function createEscalateToAdminSkill(ctx: FastFoodContext) {
