@@ -845,8 +845,14 @@ async function processWhatsAppWebhook(body: any, started: number) {
           media: safeMediaMetadata(mediaContext),
         });
       }
+      // A contact-policy skip used to print only its verdict, so telling "this guest is
+      // genuinely not in the book" apart from "we could not read the book at all" meant
+      // reasoning from source instead of reading the log (owner incident, 2026-08-30).
+      const contactTrace = guard.reason === "unsaved_contact_policy" || guard.reason === "private_saved_contact"
+        ? ` saved=${senderMeta.isMyContact ? "yes" : "no"} book=${senderMeta.addressBookKnown ? "known" : "unknown"}`
+        : "";
       console.log(
-        `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=${guard.reason || "blocked"} elapsed=${Date.now() - started}ms`
+        `[OPENBOT:INBOUND:SKIP] instance=${instanceId || "-"} phone=${maskPhone(phone)} reason=${guard.reason || "blocked"}${contactTrace} elapsed=${Date.now() - started}ms`
       );
       return;
     }
