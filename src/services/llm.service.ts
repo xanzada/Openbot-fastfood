@@ -284,7 +284,13 @@ function openRouterMediaPart(request: MediaRequest) {
   const dataUrl = `data:${request.mimeType};base64,${request.base64}`;
   if (request.mimeType.startsWith("image/")) return { type: "image_url", image_url: { url: dataUrl } };
   if (request.mimeType === "application/pdf") return { type: "file", file: { filename: "document.pdf", file_data: dataUrl } };
-  if (request.mimeType.startsWith("audio/")) return { type: "input_audio", input_audio: { data: request.base64, format: getAudioFormat(request.mimeType) } };
+  if (request.mimeType.startsWith("audio/")) {
+    // Use image_url with data URI — most OpenAI-compatible Gemini proxies
+    // understand this format; the Realtime-only "input_audio" type is not
+    // supported by OpenAI-compatible endpoints for chat completions.
+    const dataUrl = `data:${request.mimeType};base64,${request.base64}`;
+    return { type: "image_url", image_url: { url: dataUrl } };
+  }
   return { type: "file", file: { filename: "media", file_data: dataUrl } };
 }
 
@@ -327,6 +333,7 @@ export async function callOpenAiCompatible(baseUrl: string, apiKey: string, mode
       temperature: 0,
       max_tokens: 8192,
       messages,
+      response_format: { type: "json_object" },
     }),
   });
 

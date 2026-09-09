@@ -1,9 +1,9 @@
-import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { getAnalysisModel } from "./llm.service.js";
 import { auditError } from "./auditLogger.service.js";
 
 function voiceModel() {
-  const modelId = String(process.env.THINK_MODEL || "").trim() || getTextModels().reserve;
-  return getOpenRouterProvider().chat(modelId);
+  // Use workspace MEDIA analysis model (workspace pool goes first, env fallback)
+  return getAnalysisModel();
 }
 
 async function generateWithTimeout(model: any, args: Record<string, any>, timeoutMs: number) {
