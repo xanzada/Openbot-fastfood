@@ -2,7 +2,7 @@ import axios from "axios";
 import { generateText, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import { deleteCache, getJsonCache, setJsonCache } from "./redis.service.js";
-import { getOpenRouterProvider } from "./llm.service.js";
+import { getOpenRouterProvider, getAnalysisModel } from "./llm.service.js";
 import { getRuntimeSettings } from "./llmWorkspace.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
@@ -600,7 +600,8 @@ reason must be brief and in Kazakh.
 `;
 
     const result = await generateText({
-      model: getOpenRouterProvider().chat("openai/gpt-4o-mini"),
+      // SHPOR curation uses workspace MEDIA pool for auth correctness
+      model: getAnalysisModel(),
       system: systemPrompt,
       prompt: `[DIALOGUE]\nClient: ${question}\nBot: ${answer}`,
       allowSystemInMessages: true,

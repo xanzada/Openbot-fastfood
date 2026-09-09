@@ -1,4 +1,4 @@
-import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { getAnalysisModel } from "./llm.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 /**
@@ -37,8 +37,8 @@ export function needsSmartMerge(parts: string[]): boolean {
 }
 
 function brainModel() {
-  const modelId = String(process.env.THINK_MODEL || "").trim() || getTextModels().reserve;
-  return getOpenRouterProvider().chat(modelId);
+  // Internal merge: use workspace MEDIA pool, not text pool.
+  return getAnalysisModel();
 }
 
 const MERGE_SYSTEM_PROMPT = `You merge fragmented WhatsApp messages from ONE customer into one clean message.

@@ -110,18 +110,52 @@ export function usesProMediaChannel() {
 }
 
 export function getOpenRouterProvider() {
-  // The panel's API key page is the source of truth: the first
-  // OpenAI-compatible entry (text pool, then media) carries the platform key.
-  // Env stays as the fallback so a panel outage never silences the side lanes
-  // (thinking, critic, shpor curation, memory, analytics).
-  const pools = getLlmWorkspacePools();
-  const key = pools?.text.find((entry) => entry.type === "openai")?.key
-    || pools?.media.find((entry) => entry.type === "openai")?.key
-    || envText("OPENROUTER_API_KEY");
+  // OpenRouter-specific provider: uses ONLY the env key.
+  // Workspace keys (apinex, kiosapi, furry, etc.) belong to their own
+  // base URLs — sending them to openrouter.ai caused "Missing Authentication header"
+  // on every internal analysis call (think, critic, SHPOR, memory).
+  // Use getAnalysisModel() for internal analysis instead of this function.
+  const key = envText("OPENROUTER_API_KEY") || "no-key";
   return createOpenAI({
     baseURL: "https://openrouter.ai/api/v1",
     apiKey: key,
   });
+}
+
+/**
+ * Returns a ready-to-use chat model for internal AI analysis:
+ * think-layer, critic, buffer-brain, customer-memory, SHPOR curation.
+ *
+ * Routing (highest priority first):
+ * 1. First openai-compatible entry in the workspace MEDIA pool  ← preferred
+ * 2. First openai-compatible entry in the workspace TEXT pool   ← fallback
+ * 3. OpenRouter env key with the configured reserve text model  ← last resort
+ *
+ * TEXT pool (customer chat) and MEDIA pool (analysis + vision) stay
+ * strictly separate: customer replies always go through resolveModel(),
+ * never through this function.
+ */
+export function getAnalysisModel() {
+  const pools = getLlmWorkspacePools();
+  // 1. Workspace media pool first (openai-compatible entry)
+  const mediaEntry = (pools?.media || []).find((e) => e.type === "openai");
+  if (mediaEntry) {
+    const provider = createOpenAI({ baseURL: mediaEntry.baseUrl, apiKey: mediaEntry.key });
+    return provider.chat(mediaEntry.model);
+  }
+  // 2. Workspace text pool fallback
+  const textEntry = (pools?.text || []).find((e) => e.type === "openai");
+  if (textEntry) {
+    const provider = createOpenAI({ baseURL: textEntry.baseUrl, apiKey: textEntry.key });
+    return provider.chat(textEntry.model);
+  }
+  // 3. OpenRouter env key last resort
+  const envKey = envText("OPENROUTER_API_KEY");
+  const provider = createOpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: envKey || "no-key",
+  });
+  return provider.chat(getTextModels().reserve);
 }
 
 function isTransientStatus(status: number) {
@@ -255,10 +289,11 @@ function openRouterMediaPart(request: MediaRequest) {
 }
 
 export async function callOpenRouter(request: MediaRequest) {
-  // WhatsPro panel is the source of truth. Env key is the absolute last resort.
+  // callOpenRouter is the MEDIA reserve channel.
+  // Use ONLY the media pool — text/media pools are strictly separate.
+  // Text pool entries (customer chat) must never be used here.
   const pools = getLlmWorkspacePools();
-  const wsEntry = pools?.text.find((e) => e.type === "openai")
-    ?? pools?.media.find((e) => e.type === "openai");
+  const wsEntry = (pools?.media || []).find((e) => e.type === "openai");
   const baseUrl = wsEntry?.baseUrl ?? "https://openrouter.ai/api/v1";
   const key = wsEntry?.key ?? envText("OPENROUTER_API_KEY");
   const model = wsEntry?.model ?? getMediaFallbackModel();

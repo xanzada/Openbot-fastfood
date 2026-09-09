@@ -1,4 +1,4 @@
-import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { getAnalysisModel } from "./llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { envNumber } from "../utils/envNumber.js";
 
@@ -88,8 +88,10 @@ function shortText(value: unknown, max: number) {
 }
 
 function thinkModel() {
-  const modelId = String(process.env.THINK_MODEL || "").trim() || getTextModels().reserve;
-  return getOpenRouterProvider().chat(modelId);
+  // Internal analysis: use workspace MEDIA pool.
+  // TEXT pool is strictly for customer chat (resolveModel).
+  // If THINK_MODEL env is set, it acts as model-name override on media pool.
+  return getAnalysisModel();
 }
 
 async function generateWithTimeout(model: any, args: Record<string, any>, timeoutMs: number) {

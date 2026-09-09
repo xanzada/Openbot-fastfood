@@ -1,5 +1,5 @@
 import { getJsonCache, saveToHistory, setJsonCache } from "./redis.service.js";
-import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { getAnalysisModel } from "./llm.service.js";
 
 /**
  * Long-term, tenant-scoped memory for a single customer.
@@ -173,8 +173,8 @@ export async function refreshCustomerMemory(input: {
   }
 
   try {
-    const provider = getOpenRouterProvider();
-    const model = provider.chat(getTextModels().reserve);
+    // Internal analysis: use workspace MEDIA pool (strictly separate from text/customer-chat pool).
+    const model = getAnalysisModel();
     const { generateText } = await import("ai");
     const result = await generateText({
       model: model as any,

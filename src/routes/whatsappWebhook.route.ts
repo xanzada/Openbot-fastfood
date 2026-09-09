@@ -1530,7 +1530,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
     void bumpMetric(ctx.instanceId, "turns");
 
     const textModels = getTextModels();
-    console.log(`[OPENBOT:AI] generating provider=openrouter primary=${textModels.primary} fallback=${textModels.fallback}`);
+    const wsChain = (getLlmWorkspacePools()?.text || []);
+    const aiProvider = wsChain.length > 0 ? `workspace(${wsChain.map((e: any) => e.name).join(',')})` : 'openrouter';
+    console.log(`[OPENBOT:AI] generating provider=${aiProvider} primary=${textModels.primary} fallback=${textModels.fallback}`);
     const result = await runFastFoodAgent(ctx);
     console.log(
       `[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"} link=${result.hasLink}` +
