@@ -1,5 +1,5 @@
 import { connectRedis, redisClient } from "./redis.service.js";
-import { callGemini, getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { callGemini, getOpenRouterProvider, getTextModels, getAnalysisModel } from "./llm.service.js";
 import { readLearningEvents } from "./learningLoop.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
@@ -336,15 +336,12 @@ export async function analyzeDayWithAi(
 }
 
 async function defaultGenerate(args: { system: string; prompt: string; timeoutMs: number }) {
-  // Use free Gemini keys (env MEDIA_PRIMARY_KEYS) — no OpenRouter credits needed.
-  // Analytics needs only text, so base64 is empty.
+  // Use workspace MEDIA pool model (same as internal analysis services).
+  const { generateText } = await import("ai");
+  const model = getAnalysisModel();
   return await Promise.race([
-    callGemini({
-      prompt: args.prompt,
-      base64: "",
-      mimeType: "text/plain",
-      systemPrompt: args.system,
-    }),
+    generateText({ model, system: args.system, prompt: args.prompt })
+      .then((r) => r.text),
     new Promise<never>((_resolve, reject) =>
       setTimeout(() => reject(new Error(`ANALYTICS_MODEL_TIMEOUT:${args.timeoutMs}ms`)), args.timeoutMs)
     ),
