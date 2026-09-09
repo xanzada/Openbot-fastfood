@@ -1,5 +1,5 @@
 import { connectRedis, redisClient } from "./redis.service.js";
-import { getOpenRouterProvider, getTextModels } from "./llm.service.js";
+import { callGemini, getOpenRouterProvider, getTextModels } from "./llm.service.js";
 import { readLearningEvents } from "./learningLoop.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
@@ -336,19 +336,19 @@ export async function analyzeDayWithAi(
 }
 
 async function defaultGenerate(args: { system: string; prompt: string; timeoutMs: number }) {
-  const { generateText } = await import("ai");
-  const result = await Promise.race([
-    generateText({
-      model: getOpenRouterProvider().chat(analyticsModelId()),
-      system: args.system,
+  // Use free Gemini keys (env MEDIA_PRIMARY_KEYS) — no OpenRouter credits needed.
+  // Analytics needs only text, so base64 is empty.
+  return await Promise.race([
+    callGemini({
       prompt: args.prompt,
-      temperature: 0,
-    } as any),
+      base64: "",
+      mimeType: "text/plain",
+      systemPrompt: args.system,
+    }),
     new Promise<never>((_resolve, reject) =>
       setTimeout(() => reject(new Error(`ANALYTICS_MODEL_TIMEOUT:${args.timeoutMs}ms`)), args.timeoutMs)
     ),
   ]);
-  return String((result as any)?.text || "");
 }
 
 /**
