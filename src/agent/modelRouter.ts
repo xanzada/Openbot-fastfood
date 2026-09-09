@@ -187,8 +187,10 @@ function workspaceTextChain(): { model: any; timeout: number; label: string }[] 
     });
     const keyFingerprint = createHash("sha1").update(entry.key).digest("hex").slice(0, 8);
     const model = provider.chat(entry.model, { maxTokens: 8192 }) as any;
-    model.modelId = `${entry.model}:${keyFingerprint}`;
-    return { model, timeout: index === entries.length - 1 ? lastTimeout : stepTimeout, label: `workspace:${entry.name}` };
+    // NOTE: Do NOT modify model.modelId — AI SDK uses it as the actual model sent
+    // to the API. Adding a fingerprint suffix breaks the API request with
+    // "Model not found". Fingerprint goes in the label only (for logs).
+    return { model, timeout: index === entries.length - 1 ? lastTimeout : stepTimeout, label: `workspace:${entry.name}(${keyFingerprint})` };
   });
 }
 
