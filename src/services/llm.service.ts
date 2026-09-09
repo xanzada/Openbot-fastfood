@@ -255,7 +255,14 @@ function openRouterMediaPart(request: MediaRequest) {
 }
 
 export async function callOpenRouter(request: MediaRequest) {
-  return callOpenAiCompatible("https://openrouter.ai/api/v1", envText("OPENROUTER_API_KEY"), getMediaFallbackModel(), request);
+  // WhatsPro panel is the source of truth. Env key is the absolute last resort.
+  const pools = getLlmWorkspacePools();
+  const wsEntry = pools?.text.find((e) => e.type === "openai")
+    ?? pools?.media.find((e) => e.type === "openai");
+  const baseUrl = wsEntry?.baseUrl ?? "https://openrouter.ai/api/v1";
+  const key = wsEntry?.key ?? envText("OPENROUTER_API_KEY");
+  const model = wsEntry?.model ?? getMediaFallbackModel();
+  return callOpenAiCompatible(baseUrl, key, model, request);
 }
 
 /** Any OpenAI-compatible chat/completions endpoint, with an explicit base URL, key and model — the workspace pools use it entry by entry. */
@@ -283,6 +290,7 @@ export async function callOpenAiCompatible(baseUrl: string, apiKey: string, mode
     body: JSON.stringify({
       model,
       temperature: 0,
+      max_tokens: 8192,
       messages,
     }),
   });
