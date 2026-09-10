@@ -166,11 +166,16 @@ function extractGeminiText(data: any) {
   return String(data?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text || "").join("") || "").trim();
 }
 
-async function fetchWithTimeout(url: string, options: RequestInit = {}, ms = 30000) {
+export async function fetchTextWithTimeout(url: string, options: RequestInit = {}, ms = 30000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    // Keep the timeout active until the body is consumed. A provider can send
+    // headers and then stall forever; clearing the timer after fetch() left the
+    // media pipeline hung despite having a configured request timeout.
+    const text = await response.text();
+    return { response, text };
   } finally {
     clearTimeout(timer);
   }
@@ -216,20 +221,19 @@ async function callGeminiChannel(request: MediaRequest, keys: string[], model: s
     const key = keys[index];
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
     try {
-      const response = await fetchWithTimeout(url, {
+      const { response, text: responseText } = await fetchTextWithTimeout(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(geminiPayload(request)),
       });
 
       if (!response.ok) {
-        const errorText = await response.text().catch(() => "");
-        const error = new Error(`GEMINI_MEDIA_${response.status}: ${errorText.slice(0, 240)}`) as Error & { status?: number };
+        const error = new Error(`GEMINI_MEDIA_${response.status}: ${responseText.slice(0, 240)}`) as Error & { status?: number };
         error.status = response.status;
         throw error;
       }
 
-      const text = extractGeminiText(await response.json());
+      const text = extractGeminiText(JSON.parse(responseText));
       if (!text) throw new Error("GEMINI_MEDIA_EMPTY_RESPONSE");
       console.info(`[LLM:MEDIA] provider=${label} model=${model} key_index=${index + 1}/${keys.length}`);
       return text;
@@ -322,7 +326,7 @@ export async function callOpenAiCompatible(baseUrl: string, apiKey: string, mode
     { role: "user", content: [{ type: "text", text: request.prompt }, ...mediaParts] },
   ];
 
-  const response = await fetchWithTimeout(`${base}/chat/completions`, {
+  const { response, text: responseText } = await fetchTextWithTimeout(`${base}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${trimmedKey}`,
@@ -338,11 +342,10 @@ export async function callOpenAiCompatible(baseUrl: string, apiKey: string, mode
   });
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    throw new Error(`OPENAI_COMPATIBLE_${response.status}: ${errorText.slice(0, 240)}`);
+    throw new Error(`OPENAI_COMPATIBLE_${response.status}: ${responseText.slice(0, 240)}`);
   }
 
-  const data = await response.json();
+  const data = JSON.parse(responseText);
   const text = String(data?.choices?.[0]?.message?.content || "").trim();
   if (!text) throw new Error("OPENAI_COMPATIBLE_EMPTY_RESPONSE");
   console.info(`[LLM:MEDIA] provider=openai-compatible base=${base} model=${model}`);

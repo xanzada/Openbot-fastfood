@@ -26,6 +26,7 @@ export const MAX_IMAGE_BYTES = envNumber(process.env.OPENBOT_MAX_IMAGE_BYTES || 
 export const MAX_DOCUMENT_BYTES = envNumber(process.env.OPENBOT_MAX_DOCUMENT_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES, 5 * 1024 * 1024, { min: 1024 });
 export const MAX_AUDIO_BYTES = envNumber(process.env.OPENBOT_MAX_AUDIO_BYTES, 8 * 1024 * 1024, { min: 1024 });
 export const MAX_VOICE_SECONDS = envNumber(process.env.OPENBOT_MAX_VOICE_SECONDS, 180, { min: 1 });
+export const MEDIA_DOWNLOAD_TIMEOUT_MS = envNumber(process.env.OPENBOT_MEDIA_DOWNLOAD_TIMEOUT_MS, 30_000, { min: 1_000, max: 120_000 });
 const MEDIA_AI_LIMIT_PER_5_MINUTES = envNumber(process.env.OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES, 6, { min: 1 });
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
 const PRIVATE_CONTACT_KEYWORDS = (process.env.PRIVATE_CONTACT_KEYWORDS || "")
@@ -511,7 +512,35 @@ async function whatsproHeaders(instanceId = "") {
   return headers;
 }
 
-export async function getBase64Media(body: any, mediaContext: InboundMediaContext | null = extractInboundMedia(body)) {
+export async function readResponseBodyLimited(response: Response, maxBytes: number) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength > maxBytes) throw new Error("MEDIA_TOO_LARGE");
+    return buffer;
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value?.byteLength) continue;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel("MEDIA_TOO_LARGE").catch(() => undefined);
+      throw new Error("MEDIA_TOO_LARGE");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
+export async function getBase64Media(
+  body: any,
+  mediaContext: InboundMediaContext | null = extractInboundMedia(body),
+  options: { timeoutMs?: number } = {},
+) {
   const mimeType = mediaContext?.mimeType || firstString(body?.mimeType, body?.mediaType) || "application/octet-stream";
   const direct = cleanDataUrlBase64(directMediaBase64(body), mimeType);
   const maxBytes = maxBytesForKind(mediaContext?.kind || "unknown");
@@ -524,16 +553,21 @@ export async function getBase64Media(body: any, mediaContext: InboundMediaContex
   const url = mediaDownloadUrl(body);
   if (!url) return null;
 
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1, Number(options.timeoutMs || MEDIA_DOWNLOAD_TIMEOUT_MS));
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { headers: await whatsproHeaders(webhookInstanceId(body)) });
+    const response = await fetch(url, {
+      headers: await whatsproHeaders(webhookInstanceId(body)),
+      signal: controller.signal,
+    });
     if (!response.ok) throw new Error(`MEDIA_HTTP_${response.status}`);
     const contentLength = Number(response.headers.get("content-length") || 0);
     if (contentLength > maxBytes) throw new Error("MEDIA_TOO_LARGE");
 
-    const arrayBuffer = await response.arrayBuffer();
-    if (arrayBuffer.byteLength > maxBytes) throw new Error("MEDIA_TOO_LARGE");
+    const buffer = await readResponseBodyLimited(response, maxBytes);
     const responseMimeType = response.headers.get("content-type")?.split(";")[0] || mimeType;
-    const base64 = Buffer.from(arrayBuffer).toString("base64");
+    const base64 = buffer.toString("base64");
     return {
       dataUrl: `data:${responseMimeType};base64,${base64}`,
       base64,
@@ -542,6 +576,8 @@ export async function getBase64Media(body: any, mediaContext: InboundMediaContex
   } catch (error: any) {
     console.error("[DOWNLOAD MEDIA ERROR]:", error?.message || error);
     return { error: error?.message === "MEDIA_TOO_LARGE" ? "media_too_large" as const : "media_download_failed" as const };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
