@@ -129,7 +129,7 @@ export async function reportRestaurantDay(
   const [leads, metrics, learningNotes] = await Promise.all([
     fetchTodayCrmLeads(hydratedConfig, reportDate),
     readDailyMetrics(instanceId, reportDate),
-    readLearningNotes(instanceId, reportDate),
+    readLearningNotes(instanceId, reportDate, 40, tenantTimezone(hydratedConfig)),
   ]);
 
   const analytics = await buildDailyAnalyticsRow({
@@ -180,8 +180,8 @@ async function processRestaurantAnalytics(config: Record<string, any>, reportDat
   const instanceId = String(hydratedConfig.instance_id || "").trim();
   if (!instanceId) return;
 
-  // The end-of-day run closes today, and also sweeps up any earlier day that
-  // never landed - a tenant onboarded mid-week, or a hub outage last night.
+  // The end-of-day run refreshes today's provisional row and also sweeps up any
+  // earlier day that never landed - a tenant onboarded mid-week, or a hub outage.
   const sent = await readSentDates(instanceId);
   const backlog = pendingReportDates(reportDate, ANALYTICS_BACKFILL_DAYS, sent).filter((date) => date !== reportDate);
   for (const date of backlog) {
@@ -192,13 +192,20 @@ async function processRestaurantAnalytics(config: Record<string, any>, reportDat
     }
   }
 
-  await reportRestaurantDay(hydratedConfig, reportDate, { final: true });
+  // The scheduled run starts at 23:59, while the local day is still accepting
+  // events. Leave that row provisional; the first reconcile after midnight
+  // closes it after every event from the previous day can be included.
+  await reportRestaurantDay(hydratedConfig, reportDate, { final: false });
 }
 
 export async function processDailyAnalytics() {
   console.log("[CRON] Daily AI analytics started...");
   if (!redisClient.isOpen) return;
 
+  // One run is one reporting instant. The first tenant can take long enough to
+  // cross midnight, but later tenants must still receive the same local day's
+  // report (production incident 2026-09-09).
+  const runStartedAt = new Date();
   const configs = await getAllRestaurantConfigs();
 
   if (!configs.length) {
@@ -211,7 +218,7 @@ export async function processDailyAnalytics() {
       console.log(`[CRON] analytics skipped instance=${config?.instance_id || "unknown"} reason=bot_disabled`);
       continue;
     }
-    const reportDate = getLocalReportDate(tenantTimezone(config));
+    const reportDate = localDayKey(tenantTimezone(config), runStartedAt);
     try {
       await processRestaurantAnalytics(config, reportDate);
     } catch (error: any) {

@@ -134,11 +134,21 @@ export async function readDailyMetrics(instanceId: string, reportDate: string): 
   }
 }
 
-export async function readLearningNotes(instanceId: string, reportDate: string, limit = 40): Promise<string[]> {
+export function learningEventMatchesReportDate(at: string, reportDate: string, timeZone = "Asia/Almaty") {
+  const instant = new Date(at);
+  return Number.isFinite(instant.getTime()) && localDayKey(timeZone, instant) === reportDate;
+}
+
+export async function readLearningNotes(
+  instanceId: string,
+  reportDate: string,
+  limit = 40,
+  timeZone = "Asia/Almaty",
+): Promise<string[]> {
   try {
     const events = await readLearningEvents(instanceId, 200);
     return events
-      .filter((event) => String(event?.at || "").slice(0, 10) === reportDate)
+      .filter((event) => learningEventMatchesReportDate(String(event?.at || ""), reportDate, timeZone))
       .slice(0, limit)
       .map((event) => `${event.type}: ${asText(event.detail, 160)}`)
       .filter(Boolean);

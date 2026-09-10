@@ -90,18 +90,22 @@ function stripDataUrl(base64Media = "") {
 
 function extractJson(text = "") {
   const cleanText = String(text || "").replace(/```json/gi, "").replace(/```/g, "").trim();
-  const start = cleanText.indexOf("{");
-  const end = cleanText.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
+  if (!cleanText) return null;
   try {
-    return JSON.parse(cleanText.slice(start, end + 1));
+    return JSON.parse(cleanText);
   } catch {
     return null;
   }
 }
 
 export function normalizeMediaAnalysisResponse(rawText = "") {
-  const parsed = extractJson(rawText) || {};
+  const parsed = extractJson(rawText);
+  // A truncated provider response used to become type="reply" and the raw JSON
+  // fragment was sent to the customer. Treat non-object output as the existing
+  // technical media failure instead (production audit 2026-09-10).
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("MEDIA_ANALYSIS_INVALID_JSON");
+  }
   return {
     type: ["receipt", "complaint", "reply", "technical_error"].includes(parsed.type) ? parsed.type : "reply",
     transcript: String(parsed.transcript || "").trim(),

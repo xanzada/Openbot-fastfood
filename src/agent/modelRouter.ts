@@ -186,7 +186,7 @@ function workspaceTextChain(): { model: any; timeout: number; label: string }[] 
       apiKey: entry.key,
     });
     const keyFingerprint = createHash("sha1").update(entry.key).digest("hex").slice(0, 8);
-    const model = provider.chat(entry.model, { maxTokens: 8192 }) as any;
+    const model = provider.chat(entry.model) as any;
     // NOTE: Do NOT modify model.modelId — AI SDK uses it as the actual model sent
     // to the API. Adding a fingerprint suffix breaks the API request with
     // "Model not found". Fingerprint goes in the label only (for logs).
@@ -199,9 +199,9 @@ const ENV_CHAIN = (() => {
   const fallbackTimeout = envTimeout("TEXT_FALLBACK_TIMEOUT_MS", 15_000);
   const reserveTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
   return [
-    { model: openrouterProvider.chat(textPrimaryModel, { maxTokens: 8192 }), timeout: primaryTimeout, label: "primary" },
-    { model: openrouterProvider.chat(textFallbackModel, { maxTokens: 8192 }), timeout: fallbackTimeout, label: "fallback" },
-    { model: openrouterProvider.chat(textReserveModel, { maxTokens: 8192 }), timeout: reserveTimeout, label: "reserve" },
+    { model: openrouterProvider.chat(textPrimaryModel), timeout: primaryTimeout, label: "primary" },
+    { model: openrouterProvider.chat(textFallbackModel), timeout: fallbackTimeout, label: "fallback" },
+    { model: openrouterProvider.chat(textReserveModel), timeout: reserveTimeout, label: "reserve" },
   ];
 })();
 

@@ -11,6 +11,7 @@ import { connectRedis, redisClient } from "./redis.service.js";
  */
 
 const METRICS_TTL_SECONDS = 60 * 60 * 24 * 45;
+const METRICS_TIMEZONE = process.env.METRICS_TIMEZONE || process.env.ANALYTICS_TIMEZONE || "Asia/Almaty";
 
 export type MetricName =
   | "turns"
@@ -25,11 +26,18 @@ export type MetricName =
   | "latency_medium"
   | "latency_slow";
 
-function dayKey(date = new Date()) {
-  return date.toISOString().slice(0, 10).replace(/-/g, "");
+export function metricsDayKey(date = new Date(), timeZone = METRICS_TIMEZONE) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}${byType.month}${byType.day}`;
 }
 
-export function metricsKey(instanceId: string, day = dayKey()) {
+export function metricsKey(instanceId: string, day = metricsDayKey()) {
   return `metrics:${instanceId}:${day}`;
 }
 
@@ -58,10 +66,10 @@ export async function snapshotMetrics(instanceId: string, days = 7): Promise<Rec
     await connectRedis();
     for (let i = 0; i < days; i += 1) {
       const date = new Date(Date.now() - i * 86_400_000);
-      const key = metricsKey(instanceId, dayKey(date));
+      const key = metricsKey(instanceId, metricsDayKey(date));
       const raw = await redisClient.hGetAll(key).catch(() => ({} as Record<string, string>));
       if (raw && Object.keys(raw).length) {
-        result[dayKey(date)] = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, Number(v) || 0]));
+        result[metricsDayKey(date)] = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, Number(v) || 0]));
       }
     }
   } catch {

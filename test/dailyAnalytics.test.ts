@@ -6,6 +6,7 @@ import {
   composeDailyAnalytics,
   computeDailyFacts,
   localDayKey,
+  learningEventMatchesReportDate,
   normalizeLeadRows,
   pendingReportDates,
   type DailyAnalyticsInputs,
@@ -198,4 +199,9 @@ test("the report date follows the restaurant's own clock", () => {
   const afterAlmatyMidnight = new Date("2026-08-25T19:30:00Z");
   assert.equal(localDayKey("Asia/Almaty", afterAlmatyMidnight), "2026-08-26");
   assert.equal(localDayKey("UTC", afterAlmatyMidnight), "2026-08-25");
+});
+
+test("learning events around UTC midnight belong to the restaurant's local day", () => {
+  assert.equal(learningEventMatchesReportDate("2026-09-09T20:30:00Z", "2026-09-10", "Asia/Almaty"), true);
+  assert.equal(learningEventMatchesReportDate("2026-09-09T20:30:00Z", "2026-09-09", "Asia/Almaty"), false);
 });
