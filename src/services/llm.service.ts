@@ -289,11 +289,10 @@ function openRouterMediaPart(request: MediaRequest) {
   if (request.mimeType.startsWith("image/")) return { type: "image_url", image_url: { url: dataUrl } };
   if (request.mimeType === "application/pdf") return { type: "file", file: { filename: "document.pdf", file_data: dataUrl } };
   if (request.mimeType.startsWith("audio/")) {
-    // Use image_url with data URI — most OpenAI-compatible Gemini proxies
-    // understand this format; the Realtime-only "input_audio" type is not
-    // supported by OpenAI-compatible endpoints for chat completions.
-    const dataUrl = `data:${request.mimeType};base64,${request.base64}`;
-    return { type: "image_url", image_url: { url: dataUrl } };
+    // Audio is not an image. OpenAI-compatible multimodal endpoints reject an
+    // audio data URI under image_url as unsupported_file_type. The workspace's
+    // audio-capable provider accepts the standard input_audio content part.
+    return { type: "input_audio", input_audio: { data: request.base64, format: getAudioFormat(request.mimeType) } };
   }
   return { type: "file", file: { filename: "media", file_data: dataUrl } };
 }

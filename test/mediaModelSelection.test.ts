@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { getMediaPrimaryModel, normalizeGeminiMediaModel } from "../src/services/llm.service.js";
+import { callOpenAiCompatible, getMediaPrimaryModel, normalizeGeminiMediaModel } from "../src/services/llm.service.js";
 
 const MODEL_ENV_NAMES = ["MEDIA_PRIMARY_MODEL", "GEMINI_MEDIA_MODEL", "GEMINI_MODEL"] as const;
 
@@ -70,4 +70,33 @@ test("every media channel is attempted, and the last-resort error names the real
   assert.match(fn, /MEDIA_ALL_CHANNELS_FAILED/);
   // Two guards, both required: the reserve is only called when it actually has a key.
   assert.equal((fn.match(/if \(!openRouterKey\)|if \(openRouterKey\)/g) || []).length, 2);
+});
+
+test("OpenAI-compatible audio uses input_audio instead of pretending to be an image", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody: any;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body || "{}"));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "{\"type\":\"reply\"}" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    await callOpenAiCompatible("https://provider.example/v1", "test-key", "audio-model", {
+      prompt: "Transcribe",
+      base64: "T2dnUw==",
+      mimeType: "audio/ogg",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const mediaPart = requestBody.messages[0].content[1];
+  assert.deepEqual(mediaPart, {
+    type: "input_audio",
+    input_audio: { data: "T2dnUw==", format: "ogg" },
+  });
+  assert.equal(mediaPart.image_url, undefined);
 });
