@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   evaluateTenantContactRules,
@@ -41,6 +42,16 @@ test("a tenant without any policy keeps the platform-wide behaviour", () => {
   // exactly as before this feature existed.
   assert.equal(decide(null, { isMyContact: true })?.reason, "private_saved_contact");
   assert.equal(decide(null, { isMyContact: false }), null);
+});
+
+test("the async guard applies the global saved-contact default only without tenant policy", () => {
+  const source = readFileSync(new URL("../src/services/inboundGuard.service.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export async function guardIncomingMessage");
+  const end = source.indexOf("export async function", start + 30);
+  const guardBody = source.slice(start, end > start ? end : undefined);
+  assert.ok(guardBody.includes("evaluateTenantContactRules"));
+  assert.match(guardBody, /if \(!contactPolicy && ignoreSavedContacts && Boolean\(input\.senderMeta\?\.isMyContact\)\)/);
+  assert.doesNotMatch(guardBody, /if \(ignoreSavedContacts && Boolean\(input\.senderMeta\?\.isMyContact\)\)/);
 });
 
 test("entry matching details", () => {

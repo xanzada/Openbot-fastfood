@@ -905,7 +905,12 @@ export async function guardIncomingMessage(input: {
   ].filter(Boolean);
   const ignoreSavedContacts = shouldIgnoreSavedContacts();
   if (hasPrivateKeyword(privateNames)) return { blocked: true, reason: "private_contact_keyword" };
-  if (ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact)) return { blocked: true, reason: "private_saved_contact" };
+  // The environment flag is only the fallback for tenants without their own
+  // contact policy. Reapplying it after an explicit allow_saved_contacts=true
+  // silently discarded legitimate guests before the agent could run.
+  if (!contactPolicy && ignoreSavedContacts && Boolean(input.senderMeta?.isMyContact)) {
+    return { blocked: true, reason: "private_saved_contact" };
+  }
 
   try {
     await connectRedis();
