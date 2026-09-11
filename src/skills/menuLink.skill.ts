@@ -89,7 +89,11 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // previousLinkBroken stays in the schema so the model can flag a broken
       // report; it no longer gates anything, because every genuine request now
       // takes the normal grant path (no calendar rationing, 2026-08-14).
-      void previousLinkBroken;
+      const explicitlyRequestedThisTurn = Boolean(ctx.explicitMenuLinkIntent);
+      if (ctx.magicLinkAlreadySent && !explicitlyRequestedThisTurn && !previousLinkBroken) {
+        ctx.magicLinkGranted = false;
+        return { allowed: false, link: null, reason: "link_already_sent", message: null };
+      }
       // Calling this tool IS the decision that the guest is ordering. Recording it
       // keeps the rest of the turn consistent: finalValidator uses the same flag to
       // decide whether a URL in the text was authorised, and it used to strip the

@@ -14,11 +14,19 @@ import { envText } from "./llm.service.js";
 export type LlmProvider = "openai" | "gemini";
 
 export interface LlmKeyEntry {
+  id?: string;
   name: string;
   type: LlmProvider;
   baseUrl: string;
   model: string;
   key: string;
+  enabled?: boolean;
+  health?: {
+    status?: "healthy" | "unknown" | "suspect" | "unavailable" | "disabled";
+    lastCheckedAt?: string | null;
+    latencyMs?: number | null;
+    errorCode?: string | null;
+  };
 }
 
 export interface LlmWorkspacePools {
@@ -70,7 +78,17 @@ export function sanitizeWorkspace(raw: unknown): LlmWorkspacePools {
       const fingerprint = `${type}|${normalizedBase}|${model}|${key}`;
       if (seen.has(fingerprint)) continue;
       seen.add(fingerprint);
-      out.push({ name, type: type as LlmProvider, baseUrl: normalizedBase, model, key });
+      const id = String(record.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || undefined;
+      const healthStatus = String(record.health?.status || "").toLowerCase();
+      const health = ["healthy", "unknown", "suspect", "unavailable", "disabled"].includes(healthStatus)
+        ? {
+            status: healthStatus as NonNullable<LlmKeyEntry["health"]>["status"],
+            lastCheckedAt: String(record.health?.lastCheckedAt || "").slice(0, 40) || null,
+            latencyMs: Number.isFinite(Number(record.health?.latencyMs)) ? Math.max(0, Number(record.health.latencyMs)) : null,
+            errorCode: String(record.health?.errorCode || "").replace(/[^A-Z0-9_-]/g, "").slice(0, 80) || null,
+          }
+        : undefined;
+      out.push({ id, name, type: type as LlmProvider, baseUrl: normalizedBase, model, key, enabled: record.enabled !== false, health });
       if (out.length >= MAX_ENTRIES_PER_POOL) break;
     }
     return out;

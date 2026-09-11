@@ -48,6 +48,11 @@ export async function honorMenuLinkPromise(ctx: FastFoodContext, finalText: stri
   if (!promisesMenuLink(finalText)) return { action: "none" };
   // The tool already granted it - the transport will deliver, nothing to fix.
   if (ctx.magicLinkGranted && ctx.magicLink) return { action: "none" };
+  // A generic ordering reply must not resend the same link on every follow-up.
+  // An explicit menu/link request still passes because preload marks that intent.
+  if (ctx.magicLinkAlreadySent && !ctx.explicitMenuLinkIntent) {
+    return { action: "stripped", text: stripMenuLinkPromise(finalText), reason: "link_already_sent" };
+  }
 
   const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   const runtimeAvailable = Boolean(ctx.hardRealtimeContext?.runtime_available);

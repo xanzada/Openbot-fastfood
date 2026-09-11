@@ -724,6 +724,7 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
       phone: ctx.phone,
       text: ctx.magicLink,
       requestScope: `${messageId}:magic-link`,
+      immediate: true,
     }).catch(() => null);
     if (linkDelivery?.ok) {
       await saveToHistory(ctx.instanceId, ctx.phone, "assistant", ctx.magicLink, { source: "openbot-agent" });
@@ -1729,6 +1730,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
         phone: ctx.phone,
         text: ctx.magicLink,
         requestScope: `${messageId}:magic-link`,
+        immediate: true,
       }).catch(() => null);
       if (linkSend?.ok) {
         await saveToHistory(ctx.instanceId, ctx.phone, "assistant", ctx.magicLink, { source: "openbot-agent" });

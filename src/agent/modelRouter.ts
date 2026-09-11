@@ -3,6 +3,8 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { FastFoodContext } from "../context/types.js";
 import { getTextModels } from "../services/llm.service.js";
 import { getLlmWorkspacePools } from "../services/llmWorkspace.service.js";
+import type { LlmKeyEntry } from "../services/llmWorkspace.service.js";
+import { noteProviderOutcome, providersForRequest } from "../services/llmProviderHealth.service.js";
 
 const openrouterProvider = createOpenAI({
   baseURL: "https://openrouter.ai/api/v1",
@@ -90,21 +92,24 @@ export function clearModelCooldowns() {
  * turn must still produce an answer when every provider is unhappy.
  */
 async function callChain(
-  chain: { model: any; timeout: number; label: string }[],
+  chain: { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry }[],
   operation: "doGenerate" | "doStream",
   options: any
 ) {
-  const usable = chain.filter((entry, index) => index === chain.length - 1 || !modelIsCoolingDown(entry.model.modelId));
+  const usable = chain.filter((entry, index) => index === chain.length - 1 || !modelIsCoolingDown(entry.label));
   let lastError: any = new Error("MODEL_CHAIN_EMPTY");
   for (let index = 0; index < usable.length; index += 1) {
     const entry = usable[index];
+    const startedAt = Date.now();
     try {
       const result = await timedModelCall(entry.model, operation, options, entry.timeout);
-      noteModelSuccess(entry.model.modelId);
+      noteModelSuccess(entry.label);
+      if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: true, latencyMs: Date.now() - startedAt });
       return result;
     } catch (error: any) {
       lastError = error;
-      noteModelFailure(entry.model.modelId);
+      noteModelFailure(entry.label);
+      if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: false, latencyMs: Date.now() - startedAt, error });
       const next = usable[index + 1];
       console.warn(
         `[MODEL:TEXT] ${entry.label}=${entry.model.modelId} failed; ` +
@@ -129,7 +134,7 @@ function createFallbackModel(primary: any, secondary: any, reserve: any): any {
 }
 
 /** Wraps an ordered chain into one model object whose every call walks the chain. */
-function wrapChain(chain: { model: any; timeout: number; label: string }[]): any {
+function wrapChain(chain: { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry }[]): any {
   const wrapped = { ...chain[0].model };
 
   if (typeof chain[0].model.doGenerate === "function") {
@@ -170,10 +175,11 @@ export function getTextModelId() {
 // The panel's "API key" text pool, when the operator filled it. Entries must be
 // OpenAI-compatible (tool calls travel over chat-completions), so a gemini-typed
 // entry is skipped with a note rather than silently breaking tools.
-function workspaceTextChain(): { model: any; timeout: number; label: string }[] {
+function workspaceTextChain(): { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry }[] {
   const pools = getLlmWorkspacePools();
-  const entries = (pools?.text || []).filter((entry) => entry.type === "openai");
-  if ((pools?.text || []).length !== entries.length) {
+  const openAiEntries = (pools?.text || []).filter((entry) => entry.type === "openai");
+  const entries = providersForRequest(openAiEntries, "text");
+  if ((pools?.text || []).length !== openAiEntries.length) {
     console.warn("[MODEL:TEXT] workspace: gemini-typed text keys are not supported for tool-calling; skipped");
   }
   if (!entries.length) return [];
@@ -190,7 +196,7 @@ function workspaceTextChain(): { model: any; timeout: number; label: string }[] 
     // NOTE: Do NOT modify model.modelId — AI SDK uses it as the actual model sent
     // to the API. Adding a fingerprint suffix breaks the API request with
     // "Model not found". Fingerprint goes in the label only (for logs).
-    return { model, timeout: index === entries.length - 1 ? lastTimeout : stepTimeout, label: `workspace:${entry.name}(${keyFingerprint})` };
+    return { model, timeout: index === entries.length - 1 ? lastTimeout : stepTimeout, label: `workspace:${entry.name}(${keyFingerprint})`, providerEntry: entry };
   });
 }
 

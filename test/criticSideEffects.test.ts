@@ -168,9 +168,9 @@ test("the failover chain has no per-call retry storm and keeps a last resort", a
   // Every step of a 6-step turn used to re-try a dead primary (15s) and a dead
   // fallback (15s) before reaching the reserve (40s): ~70s per step.
   assert.match(source, /function callChain\(/);
-  assert.match(source, /index === chain\.length - 1 \|\| !modelIsCoolingDown\(entry\.model\.modelId\)/,
+  assert.match(source, /index === chain\.length - 1 \|\| !modelIsCoolingDown\(entry\.label\)/,
     "the last model stays a genuine last resort even while cooling down");
-  assert.match(source, /noteModelSuccess\(entry\.model\.modelId\)/,
+  assert.match(source, /noteModelSuccess\(entry\.label\)/,
     "a model that answers must return to rotation immediately");
   assert.doesNotMatch(source, /catch \(fallbackError: any\)/, "the nested try/catch ladder must be gone");
 });

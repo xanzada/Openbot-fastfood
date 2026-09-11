@@ -70,6 +70,28 @@ test("a promise backed by a granted link is left exactly as written", async () =
   assert.deepEqual(await honorMenuLinkPromise(ctx, "Мәзірді жіберемін."), { action: "none" });
 });
 
+test("a generic follow-up does not send the same menu link again", async () => {
+  const ctx = {
+    instanceId: "kabab-1",
+    phone: "77010000009",
+    language: "kk",
+    magicLink: "https://kebab1.alemi.kz/?phone=77010000009&hash=ab",
+    magicLinkGranted: false,
+    magicLinkAlreadySent: true,
+    explicitMenuLinkIntent: false,
+    hardRealtimeContext: { runtime_available: true },
+    runtimeStatus: {},
+    activeShiftNotes: [],
+    config: {},
+  } as any;
+
+  const outcome = await honorMenuLinkPromise(ctx, "Мәзірді жіберемін.");
+  assert.equal(outcome.action, "stripped");
+  assert.equal((outcome as any).reason, "link_already_sent");
+  assert.equal(promisesMenuLink((outcome as any).text), false);
+  assert.equal(ctx.magicLinkGranted, false);
+});
+
 // The whole point: a promise the tool never granted is HONORED, not silently dropped,
 // whenever the restaurant can actually sell right now.
 test("an unbacked promise mints the link instead of leaving the guest waiting", async () => {

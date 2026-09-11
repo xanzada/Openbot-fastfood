@@ -1,5 +1,6 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { getLlmWorkspacePools } from "./llmWorkspace.service.js";
+import { noteProviderOutcome, providersForRequest } from "./llmProviderHealth.service.js";
 
 export type LlmRole = "system" | "user" | "assistant";
 
@@ -127,29 +128,20 @@ export function getOpenRouterProvider() {
  * think-layer, critic, buffer-brain, customer-memory, SHPOR curation.
  *
  * Routing (highest priority first):
- * 1. First openai-compatible entry in the workspace MEDIA pool  ← preferred
- * 2. First openai-compatible entry in the workspace TEXT pool   ← fallback
- * 3. OpenRouter env key with the configured reserve text model  ← last resort
+ * 1. First healthy openai-compatible entry in the workspace TEXT pool
+ * 2. OpenRouter env key with the configured reserve text model
  *
- * TEXT pool (customer chat) and MEDIA pool (analysis + vision) stay
- * strictly separate: customer replies always go through resolveModel(),
- * never through this function.
+ * Internal thinking, language, memory and analytics are text workloads. Sending
+ * them through MEDIA made ordinary chat wait behind broken vision/audio keys.
  */
 export function getAnalysisModel() {
   const pools = getLlmWorkspacePools();
-  // 1. Workspace media pool first (openai-compatible entry)
-  const mediaEntry = (pools?.media || []).find((e) => e.type === "openai");
-  if (mediaEntry) {
-    const provider = createOpenAI({ baseURL: mediaEntry.baseUrl, apiKey: mediaEntry.key });
-    return provider.chat(mediaEntry.model);
-  }
-  // 2. Workspace text pool fallback
-  const textEntry = (pools?.text || []).find((e) => e.type === "openai");
+  const textEntry = providersForRequest((pools?.text || []).filter((e) => e.type === "openai"), "text")[0];
   if (textEntry) {
     const provider = createOpenAI({ baseURL: textEntry.baseUrl, apiKey: textEntry.key });
     return provider.chat(textEntry.model);
   }
-  // 3. OpenRouter env key last resort
+  // Environment reserve is used only when the text workspace is empty/unavailable.
   const envKey = envText("OPENROUTER_API_KEY");
   const provider = createOpenAI({
     baseURL: "https://openrouter.ai/api/v1",
@@ -377,18 +369,30 @@ export async function generateMediaText(request: MediaRequest) {
   // a failing entry just means the next one. An empty or unreachable workspace
   // changes nothing — the platform-wide env channels below stand as before.
   const workspace = getLlmWorkspacePools();
-  for (const entry of workspace?.media || []) {
+  for (const entry of providersForRequest(workspace?.media || [], "media")) {
     // A retired model string typed into the panel months ago is still a 404 today.
     // The env lane has normalised this since the model was retired; the workspace
     // lane did not, so five of six Gemini entries died on every receipt.
     const model = entry.type === "gemini" ? normalizeGeminiMediaModel(entry.model) : entry.model;
+    const startedAt = Date.now();
     try {
       const text = entry.type === "gemini"
         ? await callGeminiChannel(request, [entry.key], model, `workspace:${entry.name}`)
         : await callOpenAiCompatible(entry.baseUrl, entry.key, model, request);
-      if (text) return text;
+      if (text) {
+        noteProviderOutcome({ entry, pool: "media", ok: true, latencyMs: Date.now() - startedAt });
+        return text;
+      }
+      noteProviderOutcome({
+        entry,
+        pool: "media",
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        error: new Error("MEDIA_EMPTY_RESPONSE"),
+      });
       failures.push(`${entry.name}:empty`);
     } catch (error: any) {
+      noteProviderOutcome({ entry, pool: "media", ok: false, latencyMs: Date.now() - startedAt, error });
       failures.push(`${entry.name}:${String(error?.message || error).slice(0, 80)}`);
       console.warn(`[LLM:MEDIA] workspace_failed name=${entry.name} model=${model} error=${error?.message || error}`);
     }

@@ -500,6 +500,8 @@ export async function sendWhatsProResponseSequence(payload: {
   requestScope?: string;
   /** Collapses the human pauses: an angry guest or an escalation must not wait on a show. */
   pace?: PaceUrgency;
+  /** Operational follow-ups such as an already-prepared URL must leave immediately. */
+  immediate?: boolean;
 }) {
   // Sentence-complete chunks first: the size-based splitter cuts on a character
   // budget and could send half a sentence as its own message ("сөйлемді аяқтап",
@@ -510,7 +512,9 @@ export async function sendWhatsProResponseSequence(payload: {
   // turn that happens to produce the same reply text.
   const requestScope = String(payload.requestScope || crypto.randomUUID());
   // How a person would have paced this: a beat to read, then typing time per message.
-  const pacing = planHumanPacing(chunks, payload.pace || "normal");
+  const pacing = payload.immediate
+    ? { readPauseMs: 0, typingMs: chunks.map(() => 0), totalMs: 0 }
+    : planHumanPacing(chunks, payload.pace || "normal");
   const sent: any[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     // "typing…" starts BEFORE the pause, so the guest sees composing for the whole

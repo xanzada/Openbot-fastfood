@@ -35,6 +35,29 @@ test("the workspace sanitizer keeps only complete, deduped entries in order", ()
   assert.equal(pools.media[2].baseUrl, "https://openrouter.ai/api/v1");
 });
 
+test("runtime identity and sanitized provider health survive the workspace poll", () => {
+  const pools = sanitizeWorkspace({
+    text: [{
+      id: "llm_text_1",
+      name: "Primary",
+      type: "openai",
+      baseUrl: "https://provider.example/v1",
+      model: "model-1",
+      key: "secret",
+      enabled: true,
+      health: { status: "healthy", lastCheckedAt: "2026-09-11T12:00:00Z", latencyMs: 123, errorCode: null },
+    }],
+  });
+  assert.equal(pools.text[0].id, "llm_text_1");
+  assert.equal(pools.text[0].enabled, true);
+  assert.deepEqual(pools.text[0].health, {
+    status: "healthy",
+    lastCheckedAt: "2026-09-11T12:00:00Z",
+    latencyMs: 123,
+    errorCode: null,
+  });
+});
+
 test("an empty or malformed workspace means 'not configured', never a broken pool", () => {
   assert.deepEqual(sanitizeWorkspace(null), { text: [], media: [] });
   assert.deepEqual(sanitizeWorkspace({ text: "oops" }), { text: [], media: [] });
