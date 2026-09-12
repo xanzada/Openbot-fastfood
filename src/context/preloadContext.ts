@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage } from "../utils/language.js";
+import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage, lastResolvedCustomerLanguage } from "../utils/language.js";
 import { hasBrokenLinkReport, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getMenuContext, getOrderStatus, getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
@@ -24,7 +24,7 @@ import { orderMentionedByItems, pickConversationOrder } from "../services/custom
 import { matchingNoteIds, mergeShiftNoteSources } from "../services/noteProvenance.service.js";
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
-import { resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
+import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
 /**
@@ -124,6 +124,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // A signal-free message ("👍", "ок", a bare number) keeps the language the
   // guest last actually used - see lastCustomerLanguage.
   const priorCustomerLanguage = lastCustomerLanguage(chatHistory);
+  const resolvedHistoryLanguage = lastResolvedCustomerLanguage(chatHistory);
   // Gemini decides the language WITH the conversation, not from one bare turn.
   // "ащы ма" after two Kazakh messages is Kazakh; alone it looks Russian, which
   // is exactly how a Kazakh dialogue got a Russian answer (owner report, 2026-08-24).
@@ -170,7 +171,15 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     const decision = isLanguageBearingCustomerText(languageCandidateText)
       ? await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages)
       : null;
-    const priorLanguage = storedLang || priorCustomerLanguage;
+    const priorDecision = resolvePriorConversationLanguage({
+      storedLanguage: storedLang,
+      resolvedHistoryLanguage,
+      siteLanguageHint,
+      heuristicHistoryLanguage: priorCustomerLanguage,
+    });
+    // Let resolveOrganicLanguage report site_hint as its true source instead of
+    // disguising it as history. Resolved history and locks remain dialogue prior.
+    const priorLanguage = priorDecision.source === "site_hint" ? null : priorDecision.language;
     const resolved = resolveOrganicLanguage({
       detected: decision?.lockable ? decision.language : null,
       // Same decisiveness test the locked path uses, so both lanes agree on what counts

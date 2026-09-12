@@ -98,6 +98,23 @@ export function lastCustomerLanguage(history: unknown, lookback = 12): "kk" | "r
   return null;
 }
 
+export function lastResolvedCustomerLanguage(history: unknown, lookback = 12): "kk" | "ru" | null {
+  if (!Array.isArray(history)) return null;
+  let scanned = 0;
+  for (let index = history.length - 1; index >= 0 && scanned < lookback; index -= 1) {
+    const entry: any = history[index];
+    const role = String(entry?.role || "").toLowerCase();
+    const isCustomer = role === "user" || entry?.direction === "incoming" || entry?.fromMe === false;
+    if (!isCustomer) continue;
+    scanned += 1;
+    const value = String(entry?.text || entry?.content || "");
+    if (!isLanguageBearingCustomerText(value)) continue;
+    const language = String(entry?.language || entry?.lang || "").toLowerCase();
+    if (language === "kk" || language === "ru") return language;
+  }
+  return null;
+}
+
 export function resolveLockedLanguage(storedLang: string | null | undefined, detected: "kk" | "ru"): "kk" | "ru" {
   return storedLang === "kk" || storedLang === "ru" ? storedLang : detected;
 }

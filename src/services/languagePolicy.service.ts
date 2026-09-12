@@ -43,6 +43,21 @@ export function resolveSiteOutboundLanguage(
   return payloadLanguage || lockedLanguage || siteLanguageHint || "kk";
 }
 
+export function resolvePriorConversationLanguage(input: {
+  storedLanguage?: CustomerLanguage | null;
+  resolvedHistoryLanguage?: CustomerLanguage | null;
+  siteLanguageHint?: CustomerLanguage | null;
+  heuristicHistoryLanguage?: CustomerLanguage | null;
+}): { language: CustomerLanguage | null; source: "lock" | "history" | "site_hint" | "heuristic" | "none" } {
+  if (input.storedLanguage) return { language: input.storedLanguage, source: "lock" };
+  if (input.resolvedHistoryLanguage) return { language: input.resolvedHistoryLanguage, source: "history" };
+  // A site selection is explicit customer input. It outranks only legacy
+  // history where language was guessed from letters and no resolved metadata exists.
+  if (input.siteLanguageHint) return { language: input.siteLanguageHint, source: "site_hint" };
+  if (input.heuristicHistoryLanguage) return { language: input.heuristicHistoryLanguage, source: "heuristic" };
+  return { language: null, source: "none" };
+}
+
 // Kazakh and Russian given names carry a reliable language signal, and for a
 // guest who arrives straight on WhatsApp with a two-word message the contact
 // name is often the only signal available. Only unambiguous markers count;
