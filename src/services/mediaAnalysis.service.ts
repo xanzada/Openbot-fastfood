@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { generateMediaText } from "./llm.service.js";
 import { getRuntimeSettings } from "./llmWorkspace.service.js";
+import { renderPdfFirstPage } from "./pdfPreview.service.js";
 
 export interface ReceiptValidationContext {
   expectedAmount?: number;
@@ -225,6 +226,25 @@ Return STRICT JSON only:
 `;
 }
 
+export async function prepareMediaForAnalysis(
+  base64Media: string,
+  mimeType: string,
+  isPdf: boolean,
+  renderPdf: (pdf: Buffer) => Promise<Buffer> = renderPdfFirstPage,
+): Promise<{ base64: string; mimeType: string }> {
+  const base64 = stripDataUrl(base64Media);
+  if (!isPdf && mimeType !== "application/pdf") return { base64, mimeType };
+  try {
+    const preview = await renderPdf(Buffer.from(base64, "base64"));
+    return { base64: preview.toString("base64"), mimeType: "image/png" };
+  } catch (error) {
+    // A provider that supports native documents can still be tried if local
+    // rendering fails. Never discard the customer's original receipt.
+    console.warn("[AI] PDF preview failed, using original document:", error instanceof Error ? error.message : error);
+    return { base64, mimeType };
+  }
+}
+
 export async function analyzeMedia(
   base64Media: string,
   mimeType: string,
@@ -236,10 +256,11 @@ export async function analyzeMedia(
 ) {
   try {
     if (!base64Media) return null;
+    const prepared = await prepareMediaForAnalysis(base64Media, mimeType, isPdf);
     const rawText = await generateMediaText({
       prompt: buildMediaPrompt(mimeType, caption, userLang, isPdf, receiptContext),
-      base64: stripDataUrl(base64Media),
-      mimeType,
+      base64: prepared.base64,
+      mimeType: prepared.mimeType,
       systemPrompt,
     });
     return normalizeMediaAnalysisResponse(rawText);

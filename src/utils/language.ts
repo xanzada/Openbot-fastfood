@@ -91,6 +91,8 @@ export function lastCustomerLanguage(history: unknown, lookback = 12): "kk" | "r
     scanned += 1;
     const value = String(entry?.text || entry?.content || "");
     if (!isLanguageBearingCustomerText(value)) continue;
+    const resolvedLanguage = String(entry?.language || entry?.lang || "").toLowerCase();
+    if (resolvedLanguage === "kk" || resolvedLanguage === "ru") return resolvedLanguage;
     return detectLang(value);
   }
   return null;

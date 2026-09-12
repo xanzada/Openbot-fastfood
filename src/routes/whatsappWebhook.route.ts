@@ -956,6 +956,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       await saveToHistory(ctx.instanceId, ctx.phone, "user", ctx.text, {
         source: "openbot-agent",
         media: safeMediaMetadata(mediaContext),
+        language: ctx.language,
       });
     };
     await recordInboundTurn();
@@ -1284,6 +1285,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
             await saveToHistory(ctx.instanceId, ctx.phone, "user", transcript, {
               source: "voice_transcript",
               messageId,
+              language: ctx.language,
             });
           } else {
             mediaPreemptiveReply = stripEscalationSignals(mediaAnalysis.analysis);

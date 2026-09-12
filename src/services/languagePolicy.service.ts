@@ -38,7 +38,9 @@ export function resolveSiteOutboundLanguage(
   payloadLanguage: CustomerLanguage | null | undefined,
   siteLanguageHint: CustomerLanguage | null | undefined
 ): CustomerLanguage {
-  return lockedLanguage || payloadLanguage || siteLanguageHint || "kk";
+  // The current site order is a fresh customer language choice. It outranks
+  // an older lock; later decisive WhatsApp text can switch the lock again.
+  return payloadLanguage || lockedLanguage || siteLanguageHint || "kk";
 }
 
 // Kazakh and Russian given names carry a reliable language signal, and for a

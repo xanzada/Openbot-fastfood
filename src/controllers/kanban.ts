@@ -13,6 +13,7 @@ import {
   getPhoneByOrderScan,
   getSiteLanguageHint,
   getUserLang,
+  replaceUserLang,
   redisClient,
   saveKitchenStatus,
   saveOrderNotifyCursor,
@@ -936,12 +937,16 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     await emitPrintOnNewOrder(req, body, action);
     await emitPrintOnPaid(req, body, newStatus);
 
-    const lockedLanguage = await getUserLang(instance, phone).catch(() => null);
+    let lockedLanguage = await getUserLang(instance, phone).catch(() => null);
     const payloadLanguage = normalizeSiteLanguage(body.lang || body.language);
     let siteLanguageHint = await getSiteLanguageHint(instance, phone).catch(() => null);
-    if (!lockedLanguage && action === "new_order" && payloadLanguage) {
-      await saveSiteLanguageHint(instance, phone, payloadLanguage).catch(() => false);
+    if (action === "new_order" && payloadLanguage) {
+      await Promise.all([
+        saveSiteLanguageHint(instance, phone, payloadLanguage).catch(() => false),
+        replaceUserLang(instance, phone, payloadLanguage).catch(() => false),
+      ]);
       siteLanguageHint = payloadLanguage;
+      lockedLanguage = payloadLanguage;
     }
     const lang = resolveSiteOutboundLanguage(lockedLanguage, payloadLanguage, siteLanguageHint);
     let textMessage = "";
