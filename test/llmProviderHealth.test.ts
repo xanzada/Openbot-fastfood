@@ -34,6 +34,13 @@ test("a runtime failure opens the local circuit and the next request skips immed
   assert.deepEqual(providersForRequest([failed, reserve], "media").map((item) => item.name), ["reserve"]);
 });
 
+test("transient failures are skipped during cooldown and an all-bad workspace returns no chain", () => {
+  const transient = entry("transient");
+  const unavailable = entry("unavailable", "unavailable");
+  noteProviderOutcome({ entry: transient, pool: "media", ok: false, latencyMs: 2500, error: new Error("HTTP 503 service unavailable") });
+  assert.deepEqual(providersForRequest([transient, unavailable], "media"), []);
+});
+
 test("provider errors are reduced to safe operational categories", () => {
   assert.equal(classifyProviderError(new Error("HTTP 401 unauthorized")), "AUTH_INVALID");
   assert.equal(classifyProviderError(new Error("Daily check-in required to use free models")), "QUOTA_UNAVAILABLE");

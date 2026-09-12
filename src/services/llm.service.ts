@@ -290,15 +290,15 @@ function openRouterMediaPart(request: MediaRequest) {
 }
 
 export async function callOpenRouter(request: MediaRequest) {
-  // callOpenRouter is the MEDIA reserve channel.
-  // Use ONLY the media pool — text/media pools are strictly separate.
-  // Text pool entries (customer chat) must never be used here.
-  const pools = getLlmWorkspacePools();
-  const wsEntry = (pools?.media || []).find((e) => e.type === "openai");
-  const baseUrl = wsEntry?.baseUrl ?? "https://openrouter.ai/api/v1";
-  const key = wsEntry?.key ?? envText("OPENROUTER_API_KEY");
-  const model = wsEntry?.model ?? getMediaFallbackModel();
-  return callOpenAiCompatible(baseUrl, key, model, request);
+  // This is an independent reserve lane. Workspace providers have already been
+  // tried above; selecting one of them again here repeated the same outage and
+  // defeated the reserve exactly when it was needed.
+  return callOpenAiCompatible(
+    "https://openrouter.ai/api/v1",
+    envText("OPENROUTER_API_KEY"),
+    getMediaFallbackModel(),
+    request
+  );
 }
 
 /** Any OpenAI-compatible chat/completions endpoint, with an explicit base URL, key and model — the workspace pools use it entry by entry. */

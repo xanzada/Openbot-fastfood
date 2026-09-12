@@ -1254,11 +1254,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
           // the guest has already paid, the file is in our hands, and nobody is told
           // (owner, 2026-08-28: "клиент ақша жіберіп, оны сайтқа жібермесе, проблеманың
           // көкесі болады"). When the reader is down the evidence goes to a human
-          // instead - the operator opens the file and checks the payment by hand. Audio
-          // is excluded: a voice note is never a receipt.
+          // instead - the operator opens the original media and handles it manually.
+          // Audio uses the same safety lane: it is not a receipt, but silently dropping
+          // a voice note when every provider is down also hides the customer from the panel.
           mediaUnreadableEvidence = Boolean(
             mediaContext.base64
-            && mediaContext.kind !== "audio"
             && mediaContext.kind !== "sticker"
           );
           mediaPreemptiveReply =
@@ -1358,8 +1358,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
       // clarify-first gate can swallow it.
       if (mediaUnreadableEvidence && mediaContext) {
         const evidenceBase64 = String(mediaContext.base64 || "");
+        const isAudioEvidence = mediaContext.kind === "audio";
         const evidenceRouting = await routeComplaintToAdmin(ctx, {
-          summary: `Клиент файл жіберді, бірақ ИИ оны оқи алмады (медиа талдау істен шықты). Файл осы кейске тіркелді - операторға қолмен тексеру керек. Егер бұл төлем чегі болса, төлемді растап, тапсырысты алға жылжытыңыз. Клиент мәтіні: ${String(text || "").replace(/\s+/g, " ").trim().slice(0, 300)}`,
+          summary: isAudioEvidence
+            ? `Клиент аудио жіберді, бірақ барлық медиа-провайдер істен шықты. Аудио осы кейске тіркелді — операторға тыңдап, клиентке жауап беру керек. Клиент мәтіні: ${String(text || "").replace(/\s+/g, " ").trim().slice(0, 300)}`
+            : `Клиент файл жіберді, бірақ ИИ оны оқи алмады (медиа талдау істен шықты). Файл осы кейске тіркелді - операторға қолмен тексеру керек. Егер бұл төлем чегі болса, төлемді растап, тапсырысты алға жылжытыңыз. Клиент мәтіні: ${String(text || "").replace(/\s+/g, " ").trim().slice(0, 300)}`,
           customerText: text,
           customerReply: "",
           urgency: "high",
@@ -1367,7 +1370,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
             ? {
                 base64: evidenceBase64,
                 mimeType: String(mediaContext.mimeType || mediaContext.mediaType || "image/jpeg"),
-                filename: "unreadable-media",
+                filename: isAudioEvidence ? "unreadable-audio" : "unreadable-media",
               }
             : null,
           source: "media_unreadable_evidence",
@@ -1377,9 +1380,13 @@ async function processWhatsAppWebhook(body: any, started: number) {
         // the plain retry line, which is honest about what happened.
         const handedOver = Boolean(evidenceRouting && evidenceRouting.action === "operator_case_created");
         const evidenceReply = handedOver
-          ? ctx.language === "ru"
-            ? "Файл получил, но автоматически прочитать его не удалось. Передал оператору — он посмотрит вручную. Если это чек об оплате, платёж учтём, ничего отправлять заново не нужно."
-            : "Файлды алдым, бірақ автоматты оқи алмадым. Операторға бердім — ол қолмен қарайды. Егер бұл төлем чегі болса, төлем есепке алынады, қайта жіберудің қажеті жоқ."
+          ? isAudioEvidence
+            ? ctx.language === "ru"
+              ? "Аудио получил, но автоматически распознать его не удалось. Передал оператору — он прослушает и ответит здесь."
+              : "Аудионы алдым, бірақ автоматты тани алмадым. Операторға бердім — ол тыңдап, осы чатта жауап береді."
+            : ctx.language === "ru"
+              ? "Файл получил, но автоматически прочитать его не удалось. Передал оператору — он посмотрит вручную. Если это чек об оплате, платёж учтём, ничего отправлять заново не нужно."
+              : "Файлды алдым, бірақ автоматты оқи алмадым. Операторға бердім — ол қолмен қарайды. Егер бұл төлем чегі болса, төлем есепке алынады, қайта жіберудің қажеті жоқ."
           : mediaPreemptiveReply;
         await sendCustomerReplyAndFinish(ctx, messageId, evidenceReply, handedOver ? "media_unreadable_escalated" : mediaPreemptiveSource);
         return;

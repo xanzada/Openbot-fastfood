@@ -48,9 +48,9 @@ test("the guest is only promised a human when the case actually exists", async (
   assert.match(lane, /handedOver \? "media_unreadable_escalated" : mediaPreemptiveSource/);
 });
 
-// A voice note is never a receipt, and a sticker never is either. Paging a human for
-// those would train the operator to ignore the lane.
-test("audio and stickers are excluded from the evidence lane", async () => {
+// A failed voice transcription must still appear in the operator panel with the
+// original audio; stickers stay excluded because they are commonly non-actionable.
+test("audio is included in the evidence lane while stickers stay excluded", async () => {
   const source = await readFile(ROUTE, "utf8");
   const guard = source.slice(
     source.indexOf("mediaUnreadableEvidence = Boolean("),
@@ -58,8 +58,10 @@ test("audio and stickers are excluded from the evidence lane", async () => {
   );
 
   assert.match(guard, /mediaContext\.base64/);
-  assert.match(guard, /kind !== "audio"/);
+  assert.doesNotMatch(guard, /kind !== "audio"/);
   assert.match(guard, /kind !== "sticker"/);
+  assert.match(source, /filename: isAudioEvidence \? "unreadable-audio"/);
+  assert.match(source, /Операторға бердім — ол тыңдап/);
 });
 
 // The menu-question skip exists to stop "суық суы бар ма?" becoming an SOS. It must

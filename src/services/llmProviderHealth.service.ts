@@ -68,8 +68,13 @@ export function providersForRequest(entries: LlmKeyEntry[], pool: LlmPoolName, n
   const ordered = (Array.isArray(entries) ? entries : [])
     .map((entry, index) => ({ entry, index, status: localStatus(entry, pool, now) || remoteStatus(entry) }))
     .sort((a, b) => score[a.status] - score[b.status] || a.index - b.index);
-  const ready = ordered.filter((item) => item.status !== "unavailable" && item.status !== "disabled");
-  return (ready.length ? ready : ordered.filter((item) => item.status !== "disabled")).map((item) => item.entry);
+  // suspect means a transient runtime failure is still inside its cooldown.
+  // Do not immediately retry it on the next customer message. If every
+  // workspace lane is known-bad, return an empty chain so the existing env
+  // reserve or graceful operator fallback runs without waiting on them again.
+  return ordered
+    .filter((item) => item.status === "healthy" || item.status === "unknown")
+    .map((item) => item.entry);
 }
 
 function reportOutcome(entry: LlmKeyEntry, pool: LlmPoolName, ok: boolean, latencyMs: number, errorCode: string) {
