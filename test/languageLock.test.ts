@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { detectLanguageDecision, detectLang, isLanguageBearingCustomerText, lastCustomerLanguage, parseGeminiLanguageDecision } from "../src/utils/language.js";
-import { detectNameLanguage, resolveOrganicLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
+import { detectNameLanguage, resolveOrganicLanguage, resolveSiteOutboundLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
 // regex cannot see it, which is why a failed classification must never be
@@ -179,6 +179,20 @@ test("a signal-free message keeps the language the guest last actually used", ()
     { role: "user", text: "👍" },
   ];
   assert.equal(lastCustomerLanguage(history), "ru");
+});
+
+test("resolved history metadata outranks a Cyrillic fallback guess", () => {
+  const history = [
+    { role: "user", text: "salam", language: "kk" },
+    { role: "assistant", text: "Бағасы көрсетілген." },
+    { role: "user", text: "👍" },
+  ];
+  assert.equal(lastCustomerLanguage(history), "kk");
+});
+
+test("the language selected for a new site order outranks an old lock", () => {
+  assert.equal(resolveSiteOutboundLanguage("ru", "kk", "ru"), "kk");
+  assert.equal(resolveSiteOutboundLanguage("kk", "ru", "kk"), "ru");
 });
 
 test("a Kazakh order intent followed by mhm keeps the conversation in Kazakh", () => {
