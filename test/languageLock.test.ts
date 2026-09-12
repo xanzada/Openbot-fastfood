@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectLanguageDecision, detectLang, isLanguageBearingCustomerText, lastCustomerLanguage, parseGeminiLanguageDecision } from "../src/utils/language.js";
-import { detectNameLanguage, resolveOrganicLanguage, resolveSiteOutboundLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
+import { detectLanguageDecision, detectLang, isLanguageBearingCustomerText, lastCustomerLanguage, lastResolvedCustomerLanguage, parseGeminiLanguageDecision } from "../src/utils/language.js";
+import { detectNameLanguage, resolveOrganicLanguage, resolvePriorConversationLanguage, resolveSiteOutboundLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../src/services/languagePolicy.service.js";
 
 // Kazakh typed without ә ғ қ ң ө ұ ү і is ordinary on a phone keyboard. The
 // regex cannot see it, which is why a failed classification must never be
@@ -188,6 +188,22 @@ test("resolved history metadata outranks a Cyrillic fallback guess", () => {
     { role: "user", text: "👍" },
   ];
   assert.equal(lastCustomerLanguage(history), "kk");
+  assert.equal(lastResolvedCustomerLanguage(history), "kk");
+});
+
+test("a current site choice outranks only legacy heuristic history", () => {
+  assert.deepEqual(resolvePriorConversationLanguage({
+    storedLanguage: null,
+    resolvedHistoryLanguage: null,
+    siteLanguageHint: "kk",
+    heuristicHistoryLanguage: "ru",
+  }), { language: "kk", source: "site_hint" });
+  assert.deepEqual(resolvePriorConversationLanguage({
+    storedLanguage: null,
+    resolvedHistoryLanguage: "ru",
+    siteLanguageHint: "kk",
+    heuristicHistoryLanguage: "kk",
+  }), { language: "ru", source: "history" });
 });
 
 test("the language selected for a new site order outranks an old lock", () => {
