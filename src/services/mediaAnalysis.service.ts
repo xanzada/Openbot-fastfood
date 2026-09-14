@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 import { generateMediaText } from "./llm.service.js";
 import { getRuntimeSettings } from "./llmWorkspace.service.js";
 import { renderPdfFirstPage } from "./pdfPreview.service.js";
+import {
+  transcribeAudio,
+  extractPdfText,
+  fastParseDigitalReceipt,
+  runOcrPerception,
+} from "./mediaAdapter/index.js";
 
 export interface ReceiptValidationContext {
   expectedAmount?: number;
@@ -254,18 +260,83 @@ export async function analyzeMedia(
   systemPrompt = "",
   receiptContext: ReceiptValidationContext = {}
 ) {
+  if (!base64Media) return null;
+  const rawBase64 = stripDataUrl(base64Media);
+
+  // 1. Audio / Voice notes: transcribe via UMA Speech-To-Text (0% host CPU)
+  if (mimeType.startsWith("audio/")) {
+    try {
+      const audioBuffer = Buffer.from(rawBase64, "base64");
+      const transcript = await transcribeAudio(audioBuffer, mimeType, userLang);
+      if (transcript) {
+        return {
+          type: "reply" as const,
+          transcript,
+          analysis: transcript,
+          admin_summary: "",
+          amount: 0,
+          bank_name: "",
+          sender_name: "",
+          order_id: "0",
+          date_time: "0",
+          transaction_id: "",
+          is_valid_receipt: false,
+          validation_reason: "",
+          evidence_visible: false,
+          evidence_detail: "",
+        };
+      }
+    } catch (audioErr) {
+      console.warn("[AI:MEDIA] UMA audio STT failed, trying multimodal fallback:", audioErr instanceof Error ? audioErr.message : audioErr);
+    }
+  }
+
+  // 2. PDF documents: extract digital text via 0% CPU pdftotext
+  if (isPdf || mimeType === "application/pdf") {
+    try {
+      const pdfBuffer = Buffer.from(rawBase64, "base64");
+      const digitalText = await extractPdfText(pdfBuffer);
+      if (digitalText) {
+        const fastResult = fastParseDigitalReceipt(digitalText);
+        if (fastResult) {
+          console.info(`[AI:MEDIA] UMA digital PDF fast parsed: ${fastResult.amount} ₸ (${fastResult.bank_name})`);
+          return fastResult;
+        }
+      }
+    } catch (pdfErr) {
+      console.warn("[AI:MEDIA] UMA PDF digital extraction error:", pdfErr instanceof Error ? pdfErr.message : pdfErr);
+    }
+  }
+
+  // 3. Images or Scanned PDFs:
+  // Try generateMediaText first (Gemini / Multimodal Vision) for full backward compatibility
   try {
-    if (!base64Media) return null;
     const prepared = await prepareMediaForAnalysis(base64Media, mimeType, isPdf);
     const rawText = await generateMediaText({
-      prompt: buildMediaPrompt(mimeType, caption, userLang, isPdf, receiptContext),
+      prompt: buildMediaPrompt(prepared.mimeType, caption, userLang, isPdf, receiptContext),
       base64: prepared.base64,
       mimeType: prepared.mimeType,
       systemPrompt,
     });
     return normalizeMediaAnalysisResponse(rawText);
   } catch (error) {
-    console.error("[AI] Media analysis failed:", error instanceof Error ? error.message : error);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    // If provider rejected image/pdf with unsupported modality (text-only models like GLM-5.3-flash, DeepSeek)
+    if (/400|unsupported|modality|invalid_image|invalid_file_type|file_type/i.test(errMsg)) {
+      console.warn("[AI:MEDIA] Multimodal unsupported by active provider, executing UMA OCR perception fallback...");
+      try {
+        const prepared = await prepareMediaForAnalysis(base64Media, mimeType, isPdf);
+        const ocrRaw = await runOcrPerception(
+          prepared.base64,
+          prepared.mimeType,
+          buildMediaPrompt(prepared.mimeType, caption, userLang, isPdf, receiptContext)
+        );
+        return normalizeMediaAnalysisResponse(ocrRaw);
+      } catch (ocrErr) {
+        console.error("[AI:MEDIA] UMA OCR perception fallback error:", ocrErr instanceof Error ? ocrErr.message : ocrErr);
+      }
+    }
+    console.error("[AI] Media analysis failed:", errMsg);
     return fallbackTechnicalError(error, userLang);
   }
 }

@@ -59,10 +59,32 @@ test("runtime identity and sanitized provider health survive the workspace poll"
 });
 
 test("an empty or malformed workspace means 'not configured', never a broken pool", () => {
-  assert.deepEqual(sanitizeWorkspace(null), { text: [], media: [] });
-  assert.deepEqual(sanitizeWorkspace({ text: "oops" }), { text: [], media: [] });
+  assert.deepEqual(sanitizeWorkspace(null), { text: [], media: [], stt: [], ocr: [] });
+  assert.deepEqual(sanitizeWorkspace({ text: "oops" }), { text: [], media: [], stt: [], ocr: [] });
   const pools = sanitizeWorkspace({ text: [{ type: "openai", model: "m", key: "k" }] });
   assert.equal(pools.media.length, 0);
   // A missing base URL falls back to the OpenRouter lane, not to garbage.
   assert.equal(pools.text[0].baseUrl, "https://openrouter.ai/api/v1");
+});
+
+test("the workspace sanitizer supports stt and ocr pools with groq and cloudflare providers", () => {
+  const pools = sanitizeWorkspace({
+    stt: [
+      { name: "Groq Whisper", type: "groq", model: "whisper-large-v3-turbo", key: "gsk_123" },
+      { name: "Cloudflare Whisper", type: "cloudflare", model: "@cf/openai/whisper", key: "cf_456" }
+    ],
+    ocr: [
+      { name: "Gemini Vision", type: "gemini", model: "gemini-2.5-flash", key: "AIza_789" }
+    ]
+  });
+
+  assert.equal(pools.stt.length, 2);
+  assert.equal(pools.stt[0].type, "groq");
+  assert.equal(pools.stt[0].baseUrl, "https://api.groq.com/openai/v1");
+  assert.equal(pools.stt[1].type, "cloudflare");
+  assert.equal(pools.stt[1].baseUrl, "https://api.cloudflare.com/client/v4");
+
+  assert.equal(pools.ocr.length, 1);
+  assert.equal(pools.ocr[0].type, "gemini");
+  assert.equal(pools.ocr[0].model, "gemini-2.5-flash");
 });
