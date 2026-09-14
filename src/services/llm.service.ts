@@ -199,7 +199,8 @@ function geminiPayload(request: MediaRequest) {
 let mediaKeyCursor = 0;
 
 export async function callGemini(request: MediaRequest) {
-  return callGeminiChannel(request, getMediaPrimaryKeys(), getMediaPrimaryModel(), "gemini");
+  const res: any = await callGeminiChannel(request, getMediaPrimaryKeys(), getMediaPrimaryModel(), "gemini");
+  return typeof res === "string" ? res : res.text;
 }
 
 async function callGeminiChannel(request: MediaRequest, keys: string[], model: string, label: string) {
@@ -225,10 +226,15 @@ async function callGeminiChannel(request: MediaRequest, keys: string[], model: s
         throw error;
       }
 
-      const text = extractGeminiText(JSON.parse(responseText));
+      const parsed = JSON.parse(responseText);
+      const text = extractGeminiText(parsed);
       if (!text) throw new Error("GEMINI_MEDIA_EMPTY_RESPONSE");
+      const usageMetadata = parsed?.usageMetadata;
+      const promptTokens = Number(usageMetadata?.promptTokenCount) || 0;
+      const completionTokens = Number(usageMetadata?.candidatesTokenCount) || 0;
+      const totalTokens = Number(usageMetadata?.totalTokenCount) || (promptTokens + completionTokens);
       console.info(`[LLM:MEDIA] provider=${label} model=${model} key_index=${index + 1}/${keys.length}`);
-      return text;
+      return { text, usage: { promptTokens, completionTokens, totalTokens } } as any;
     } catch (error: any) {
       const status = Number(error?.status || 0);
       if (isTransientStatus(status)) {
@@ -339,13 +345,19 @@ export async function callOpenAiCompatible(baseUrl: string, apiKey: string, mode
   const data = JSON.parse(responseText);
   const text = String(data?.choices?.[0]?.message?.content || "").trim();
   if (!text) throw new Error("OPENAI_COMPATIBLE_EMPTY_RESPONSE");
+  const usage = data?.usage;
+  const promptTokens = Number(usage?.prompt_tokens ?? usage?.promptTokens) || 0;
+  const completionTokens = Number(usage?.completion_tokens ?? usage?.completionTokens) || 0;
+  const totalTokens = Number(usage?.total_tokens ?? usage?.totalTokens) || (promptTokens + completionTokens);
+  const cost = Number(data?.cost ?? usage?.cost) || undefined;
   console.info(`[LLM:MEDIA] provider=openai-compatible base=${base} model=${model}`);
-  return text;
+  return { text, usage: { promptTokens, completionTokens, totalTokens, cost } } as any;
 }
 
 /** Kept for existing callers: the OpenRouter lane with env key/model. */
 export async function callOpenRouterWith(apiKey: string, model: string, request: MediaRequest) {
-  return callOpenAiCompatible("https://openrouter.ai/api/v1", apiKey, model, request);
+  const res: any = await callOpenAiCompatible("https://openrouter.ai/api/v1", apiKey, model, request);
+  return typeof res === "string" ? res : res.text;
 }
 
 // MEDIA_USE_FREE_KEYS=false sends media straight to the paid reserve. The free
@@ -376,11 +388,21 @@ export async function generateMediaText(request: MediaRequest) {
     const model = entry.type === "gemini" ? normalizeGeminiMediaModel(entry.model) : entry.model;
     const startedAt = Date.now();
     try {
-      const text = entry.type === "gemini"
+      const outcome: any = entry.type === "gemini"
         ? await callGeminiChannel(request, [entry.key], model, `workspace:${entry.name}`)
         : await callOpenAiCompatible(entry.baseUrl, entry.key, model, request);
+      const text = typeof outcome === "string" ? outcome : outcome?.text;
       if (text) {
-        noteProviderOutcome({ entry, pool: "media", ok: true, latencyMs: Date.now() - startedAt });
+        noteProviderOutcome({
+          entry,
+          pool: "media",
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+          promptTokens: outcome?.usage?.promptTokens,
+          completionTokens: outcome?.usage?.completionTokens,
+          totalTokens: outcome?.usage?.totalTokens,
+          cost: outcome?.usage?.cost,
+        });
         return text;
       }
       noteProviderOutcome({
@@ -406,7 +428,8 @@ export async function generateMediaText(request: MediaRequest) {
       console.warn("[LLM:MEDIA] MEDIA_PRO_ENABLED is on but MEDIA_PRO_KEYS is empty; falling through");
     } else {
       try {
-        return await callGeminiChannel(request, proKeys, getMediaProModel(), "gemini_pro");
+        const proRes: any = await callGeminiChannel(request, proKeys, getMediaProModel(), "gemini_pro");
+        return typeof proRes === "string" ? proRes : proRes.text;
       } catch (error: any) {
         failures.push(`pro:${String(error?.message || error).slice(0, 80)}`);
         console.warn(`[LLM:MEDIA] pro_channel_failed reason=${error?.message || error}`);

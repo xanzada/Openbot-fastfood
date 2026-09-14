@@ -77,7 +77,14 @@ export function providersForRequest(entries: LlmKeyEntry[], pool: LlmPoolName, n
     .map((item) => item.entry);
 }
 
-function reportOutcome(entry: LlmKeyEntry, pool: LlmPoolName, ok: boolean, latencyMs: number, errorCode: string) {
+function reportOutcome(
+  entry: LlmKeyEntry,
+  pool: LlmPoolName,
+  ok: boolean,
+  latencyMs: number,
+  errorCode: string,
+  usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cost?: number; isPaid?: boolean }
+) {
   const base = String(process.env.TENANTS_PLATFORM_BASE_URL || "").trim().replace(/\/+$/, "");
   const token = String(process.env.TENANTS_PLATFORM_API_TOKEN || "").trim();
   if (!base || !token) return;
@@ -91,6 +98,11 @@ function reportOutcome(entry: LlmKeyEntry, pool: LlmPoolName, ok: boolean, laten
       latencyMs: Math.max(0, Math.round(latencyMs)),
       errorCode: errorCode || null,
       observedAt: new Date().toISOString(),
+      promptTokens: usage?.promptTokens,
+      completionTokens: usage?.completionTokens,
+      totalTokens: usage?.totalTokens,
+      cost: usage?.cost,
+      isPaid: usage?.isPaid,
     }),
     signal: AbortSignal.timeout(2_000),
   }).catch(() => undefined);
@@ -102,11 +114,23 @@ export function noteProviderOutcome(input: {
   ok: boolean;
   latencyMs: number;
   error?: unknown;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cost?: number;
+  isPaid?: boolean;
 }) {
   const key = providerEntryId(input.entry, input.pool);
+  const usage = {
+    promptTokens: input.promptTokens,
+    completionTokens: input.completionTokens,
+    totalTokens: input.totalTokens,
+    cost: input.cost,
+    isPaid: input.isPaid,
+  };
   if (input.ok) {
     localState.delete(key);
-    reportOutcome(input.entry, input.pool, true, input.latencyMs, "");
+    reportOutcome(input.entry, input.pool, true, input.latencyMs, "", usage);
     return;
   }
   const errorCode = classifyProviderError(input.error);
@@ -117,7 +141,7 @@ export function noteProviderOutcome(input: {
     failedUntil: Date.now() + (hard ? HARD_COOLDOWN_MS : TRANSIENT_COOLDOWN_MS),
     consecutiveFailures: (previous?.consecutiveFailures || 0) + 1,
   });
-  reportOutcome(input.entry, input.pool, false, input.latencyMs, errorCode);
+  reportOutcome(input.entry, input.pool, false, input.latencyMs, errorCode, usage);
 }
 
 export function clearProviderHealthForTests() {

@@ -26,6 +26,14 @@ export interface LlmKeyEntry {
     lastCheckedAt?: string | null;
     latencyMs?: number | null;
     errorCode?: string | null;
+    totalTokens?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    cost?: number;
+    callsCount?: number;
+    tier?: "free" | "paid";
+    isFree?: boolean;
+    hasUnexpectedCost?: boolean;
   };
 }
 

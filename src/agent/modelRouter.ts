@@ -104,7 +104,20 @@ async function callChain(
     try {
       const result = await timedModelCall(entry.model, operation, options, entry.timeout);
       noteModelSuccess(entry.label);
-      if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: true, latencyMs: Date.now() - startedAt });
+      if (entry.providerEntry) {
+        const pTokens = Number(result?.usage?.promptTokens) || 0;
+        const cTokens = Number(result?.usage?.completionTokens) || 0;
+        const tTokens = Number(result?.usage?.totalTokens) || (pTokens + cTokens);
+        noteProviderOutcome({
+          entry: entry.providerEntry,
+          pool: "text",
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+          promptTokens: pTokens,
+          completionTokens: cTokens,
+          totalTokens: tTokens,
+        });
+      }
       return result;
     } catch (error: any) {
       lastError = error;
