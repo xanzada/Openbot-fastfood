@@ -45,7 +45,12 @@ export function fastParseDigitalReceipt(text: string): UniversalReceiptResult | 
   let senderName = "";
   const senderMatch = text.match(/(?:отправитель|жіберуші|плательщик)[:\s]*([^\n\r]+)/iu);
   if (senderMatch) {
-    senderName = senderMatch[1].trim().replace(/\s+/g, " ").slice(0, 60);
+    let raw = senderMatch[1].trim();
+    const boundary = raw.search(/(?:номер|дата|уақыты|транзакция|квитанция|сома|сумма|комиссия|аударым|төлем)/iu);
+    if (boundary !== -1) {
+      raw = raw.slice(0, boundary);
+    }
+    senderName = raw.trim().replace(/\s+/g, " ").slice(0, 60);
   }
 
   // 3. Date Time
