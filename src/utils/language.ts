@@ -9,7 +9,7 @@
 // архитектура, семени), so they carry letter-boundary lookarounds instead of a plain
 // substring match.
 //
-// Those lookarounds were written as `[^\\p{L}]` inside a regex LITERAL, where the double
+// Those lookarounds were written as `[^\p{L}]` inside a regex LITERAL, where the double
 // backslash is not an escape at all: the class means "not one of \ p { L }". So the
 // boundary never held, and "ия" matched inside every ordinary Russian word that ends in
 // -ия - аллергия, акция, порция, операция, линия, Россия - which are exactly the words a
@@ -17,29 +17,16 @@
 // lastCustomerLanguage() is built on detectLang, one such message turned a whole Russian
 // conversation Kazakh: reproduced 2026-08-24 with "У меня аллергия на орехи, там есть
 // орехи?" -> kk, and the live QA round then answered the next Russian question in Kazakh.
-const KAZAKH_RE =
-  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|жарайды|жарайд|жарайсын|мақұл|макул|болғаны|болганы|қаншадан|каншадан|qalai|беремын|береміз|алып\s+кетем|тусиндим|тусинбедим|керемет|абдан|жаксы|жаман|шыгар|екен|болаша|болмайды|болмайды го|болмаида|кетемын|барамын|отырмын|жатырмын|(?:^|[^\p{L}])(?:ия|тура|мени)(?![\p{L}])|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
+export const KAZAKH_RE =
+  /[әғқңөұүһі]|(?:сәлем|салем|сәлеметсіз|салеметсиз|ассалаумағалейкум|ассалаумагалейкум|салаумалейкум|қалай|калай|маған|маган|керек|дайын|дайындалып|жатыр\s*ма|қашан|кашан|қанша|канша|бар\s*ма|барма|жоқ|жок|қайда|кайда|тапсырыс|жеткізу|жеткизу|алып\s+кету|мәзір|мазір|төлем|толем|рахмет|рақмет|қазір|казір|берейін|берейин|беремін|беремин|беріңіз|бериниз|жіберші|жиберши|күтем|кутем|күте|куте|тұрады|турады|болады|болама|болса|үшін|ушин|және|жане|бірақ|бирак|деген|туралы|өзім|озим|жарайды|жарайд|жарайсын|мақұл|макул|болғаны|болганы|қаншадан|каншадан|qalai|беремын|береміз|алып\s+кетем|тусиндим|тусинбедим|керемет|абдан|жаксы|жаман|шыгар|екен|болаша|болмайды|болмайды го|болмаида|кетемын|барамын|отырмын|жатырмын|несте(?:ват|п|й|р|у|йм|йк|с)|не\s*(?:хабар|жаналык|жаңалық|болды|боп|болып|дейсин|дейсиз|дейсіз|дейсің)|жаса(?:ват|п\s*жат|п\s*тур|й\s*бер|йм|ймыз)|исте(?:ват|п\s*жат|п\s*тур|й\s*бер|йм|ймыз)|ашык(?:сындар|сыздар|па|пысыздар|\s*па|\s*сындар|\s*сыздар)?|жабык(?:сындар|сыздар|па|\s*па)?|калай(?:сындар|сыздар|сын|сыз|сын\s*ба|сыз\s*ба)?|кайда(?:сындар|сыздар|сын|сыз|дан|га)?|кашан(?:нан|га|да)?|канша(?:дан|га|сы|мен)?|турады|турад|болады|болад|болама|бола\s*ма|болама\s*екен|жокпа|жоқ\s*па|жоқпа|дегем|деп\s*ем|деп\s*едим|дегенбиз|дегенбіз|деп\s*турмын|берейн|берейин|берем|берсем|берейик|жиберд(?:им|ик|ин|из|ің|із|іңіз|і)?|тастад(?:ым|ык|ын|ыз)?|аудард(?:ым|ык|ын|ыз)?|толед(?:им|ик|ин|из)?|акша(?:сын|га)?|мекенжай|адрестериниз|адрестериңіз|каспимен|каспиге|каспиймен|каспийге|жеткиз(?:у|есиндер|есиздер|ип)?|алып\s*кет(?:ем|емиз|ейин|етин)|косымша|оте\s*жаксы|отиниш|отинем|кушти|алло|айтынызшы|айтшы|(?:\p{L}+(?:ватсындар|ватсыздар|ватсын|ватырмыз|ватр|сындарма|сыздарма|синдерме|сиздерме))|(?:^|[^\p{L}])(?:ия|тура|мени)(?![\p{L}])|kalai|magan|maghan|kerek|barma|joq|zhok|qashan|kashan|qansha|kansha|turady|bolady|tapsyrys|jetkizu|zhetkizu|jibershi|zhibershi|kutemin|kute|daiyn|dayin)/iu;
 
 // Short acknowledgements answer the previous question; they do not request a
 // language switch. Treating "мхм" as Russian made a Kazakh wait-consent dialog
 // change language on the exact turn that should continue the order.
-//
-// The list held the CYRILLIC "ок"/"окей" and "okay" but not the plain Latin "ok", which
-// is what people actually type - so a guest who had spoken Kazakh for ten messages and
-// answered "ok" was reclassified as Russian and answered in Russian (owner report,
-// reproduced 2026-08-23). "ok" belongs to no language; neither does a bare "+" or a
-// thumbs-up. Note the optional trailing punctuation: "ok!" and "ок." are the same token.
 const LANGUAGE_NEUTRAL_ACK_RE =
   /^(?:м+\s*-?\s*х?м+|угу+|ага+|ок(?:ей|ей-ок)?|ok+(?:ay|ey|ie)?|k|дк|azhe|jarayd[iy]?)[.!)]*$/iu;
-// A street/building answer continues the current dialog; it is not a request to
-// switch language. Russian street names are common inside otherwise Kazakh
-// conversations (for example "Брусиловский 18").
 const ADDRESS_ONLY_RE = /^[\p{L}.'’\-]+(?:\s+[\p{L}.'’\-]+){0,3}\s+\d+[\p{L}]?(?:[\/-]\d+)?(?:\s*,?\s*(?:кв(?:артира)?|пәтер)\.?\s*\d+)?$/iu;
 
-// generateMediaText, not callGemini: the language of the whole 24-hour lock must
-// not hang on one provider. callGemini alone has no reserve, so while the free
-// keys answered 404 every detection fell through to the regex below, which calls
-// anything without Kazakh letters Russian.
 import { generateMediaText, type MediaRequest } from "../services/llm.service.js";
 
 export interface LanguageDetectionDecision {
@@ -74,12 +61,6 @@ export function detectLang(text: string, storedLang?: string | null): "kk" | "ru
   return KAZAKH_RE.test(text || "") ? "kk" : "ru";
 }
 
-// "👍👍👍" after a Russian dialogue was answered in Kazakh: the caller looked at
-// the single previous customer entry, and when that one carried no language
-// signal either ("ок", a number, an emoji) the whole history was discarded and
-// the default won. The language of a conversation is the last language the guest
-// actually used, so the scan walks back until it finds one (live round,
-// 2026-08-12).
 export function lastCustomerLanguage(history: unknown, lookback = 12): "kk" | "ru" | null {
   if (!Array.isArray(history)) return null;
   let scanned = 0;
@@ -122,10 +103,6 @@ export function resolveLockedLanguage(storedLang: string | null | undefined, det
 export async function detectLanguageDecision(
   text: string,
   classifier: (request: MediaRequest) => Promise<string> = generateMediaText,
-  // Recent customer messages, oldest first. A short turn like "ащы ма" or "барма"
-  // carries no Kazakh-specific letter, so classified alone it reads as Russian and
-  // the bot answered a Kazakh dialogue in Russian (owner report, 2026-08-24).
-  // Gemini now decides WITH the conversation, exactly as a human would.
   contextMessages: string[] = [],
 ): Promise<LanguageDetectionDecision> {
   if (!isLanguageBearingCustomerText(text)) return { language: detectLang(text), detector: "fallback", confidence: 0, lockable: false };
@@ -144,7 +121,7 @@ export async function detectLanguageDecision(
       ].filter(Boolean).join("\n\n"),
       base64: "",
       mimeType: "text/plain",
-      systemPrompt: "You are a strict Kazakh-versus-Russian language classifier for a restaurant's WhatsApp. Decide which language the customer is WRITING IN and therefore expects an answer in. Analyze grammar, word order, suffixes, slang, and intent. Kazakh may be misspelled, transliterated, typed without ә ғ қ ң ө ұ ү і, or mixed with Russian loanwords - such a message is still Kazakh. Short follow-ups (\"ащы ма\", \"барма\", \"қанша\", \"жарайды\") must be judged together with the earlier messages: a customer does not switch language for a two-word follow-up. Choose ru only when Russian grammar and vocabulary genuinely dominate the newest message. Return JSON only.",
+      systemPrompt: "You are a strict Kazakh-versus-Russian language classifier for a restaurant's WhatsApp in Kazakhstan. Decide which language the customer is WRITING IN and therefore expects an answer in. Analyze grammar, word order, suffixes, slang, and intent. CRITICAL RULE: In Kazakhstan, customers very frequently type in Kazakh using Russian Cyrillic keyboards without Kazakh letters (e.g. 'канша турады', 'нестеватсындар', 'донер барма', 'заказ берейн дегем', 'чек жибердим', 'акшасын каспиге тастадым', 'ашыксындарма', 'кайдасындар'). These messages are 100% KAZAKH - return language: 'kk'. Choose 'ru' ONLY when genuine Russian words and grammar dominate. Return JSON only: {\"language\":\"kk\"|\"ru\",\"confidence\":0..1}.",
     });
     const parsed = parseGeminiLanguageDecision(aiText);
     if (!parsed) throw new Error("INVALID_GEMINI_LANGUAGE_JSON");
