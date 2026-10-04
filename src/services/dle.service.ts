@@ -687,16 +687,10 @@ function normalizeOrderItems(items: unknown) {
     .filter((item) => item.name || item.id);
 }
 
-// Hub reports money in minor units (`total_amount_minor: 6000` = 6000 ₸ * 100).
-// The legacy `total_price` field it never sends won the old chain, so every
-// order the bot quoted was worth 0 ₸.
-function minorToMajor(value: unknown) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) return 0;
-  return Math.round(number) / 100;
-}
-
-function normalizeOrderPayload(order: Record<string, any> = {}) {
+// In online context payloads (normalizeOrderPayload), total_amount_minor /
+// subtotal_amount_minor carries the direct Tenge value (e.g. 7000 = 7000 ₸).
+// Dividing by 100 corrupted the order sum to 70 ₸.
+export function normalizeOrderPayload(order: Record<string, any> = {}) {
   const items = normalizeOrderItems(order.items);
   const paymentFields = paymentFieldsFrom(order);
   const id = String(order.id || order.order_id || order.uuid || "").trim();
@@ -710,7 +704,13 @@ function normalizeOrderPayload(order: Record<string, any> = {}) {
     order_number: displayNumber,
     phone: normalizePhone(order.phone || order.phone_e164 || order.customer_phone || ""),
     status: String(order.status || order.order_status || order.workflow_status || order.state || "").trim(),
-    total_price: Number(order.total_price || order.total || 0) || minorToMajor(order.total_amount_minor ?? order.subtotal_amount_minor),
+    total_price: Number(
+      order.total_price ||
+      order.total ||
+      order.total_amount_minor ||
+      order.subtotal_amount_minor ||
+      0
+    ),
     address: String(order.address || "").trim().slice(0, 240),
     comment: String(order.comment || "").trim().slice(0, 500),
     is_pickup: toBool(order.is_pickup, String(order.fulfillment_type || order.delivery_type || "").trim().toLowerCase() === "pickup"),

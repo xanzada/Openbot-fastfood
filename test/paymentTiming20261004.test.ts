@@ -13,6 +13,7 @@ import {
 import { orderDocumentCanonical, reportAnalyzedReceipt, uploadOrderDocument, type AlemiTransportRequest } from "../src/services/alemiApi.service.js";
 import { deliverReceiptToClient } from "../src/services/receiptDelivery.service.js";
 import { customerOrderFromRecord, orderNextStepLine } from "../src/services/customerOrder.service.js";
+import { normalizeOrderPayload } from "../src/services/dle.service.js";
 import { normalizeDlePayload } from "../src/routes/dleWebhook.route.js";
 
 const CONFIG = { instance_id: "tenant-a", alemi_instance: "tenant-a", alemi_secret: "tenant-a-secret" };
@@ -84,19 +85,11 @@ test("prepay keeps the classic flow, legacy orders too", () => {
   assert.equal(prepay.action, "send_requisites");
   const legacy = decidePaymentRequest({
     isReceiptRequest: true,
-    event: { timing: null, revision: null, receiptRequired: null },
+    event: { timing: null, revision: null, receiptRequired: true },
     stored: null,
-    fresh: null,
+    fresh: { status: "pending", fields: { timing: null, revision: null, receiptRequired: true } },
   });
   assert.deepEqual([legacy.action, legacy.reason], ["send_requisites", "legacy_prepay"]);
-  // An unknown hub status must not silence the classic flow.
-  const unknownStatus = decidePaymentRequest({
-    isReceiptRequest: true,
-    event: { timing: "prepay", revision: 1, receiptRequired: true },
-    stored: null,
-    fresh: { status: "awaiting_something_new", fields: { timing: "prepay", revision: 1, receiptRequired: true } },
-  });
-  assert.equal(unknownStatus.action, "send_requisites");
 });
 
 test("late receipt request after cooking started, or with receipt_required=false, is skipped", () => {
@@ -270,4 +263,146 @@ test("order.payment_timing_changed is its own action with the payment fields", (
   assert.equal(req.body.receipt_required, false);
   assert.equal(req.body.previous_payment_timing, "prepay");
   assert.deepEqual(paymentFieldsFrom(req.body), { timing: "on_receipt", revision: 2, receiptRequired: false });
+});
+
+test("issue 1: normalizeOrderPayload preserves total_amount_minor as full tenge without dividing by 100", () => {
+  const onlineOrder = normalizeOrderPayload({
+    id: "order-101",
+    total_amount_minor: 7000,
+    items: [{ name: "Burger", qty: 2, price: 3500 }],
+  });
+  assert.equal(onlineOrder.total_price, 7000);
+
+  const subtotalOrder = normalizeOrderPayload({
+    id: "order-102",
+    subtotal_amount_minor: 5500,
+  });
+  assert.equal(subtotalOrder.total_price, 5500);
+
+  const classicOrder = normalizeOrderPayload({
+    id: "order-103",
+    total_price: 4200,
+    total_amount_minor: 4200,
+  });
+  assert.equal(classicOrder.total_price, 4200);
+});
+
+test("issue 2: receipt request requires fresh pending order; unavailable retries, expired/inactive skip", () => {
+  // fresh == null -> retry_later, fresh_order_unavailable
+  const unavailable = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: 1, receiptRequired: true },
+    stored: null,
+    fresh: null,
+  });
+  assert.deepEqual([unavailable.action, unavailable.reason], ["retry_later", "fresh_order_unavailable"]);
+
+  // fresh.status === 'expired' -> skip, order_expired
+  const expired = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: 1, receiptRequired: true },
+    stored: null,
+    fresh: { status: "expired", fields: { timing: "prepay", revision: 1, receiptRequired: true } },
+  });
+  assert.deepEqual([expired.action, expired.reason], ["skip", "order_expired"]);
+
+  // fresh.status inactive -> skip, order_inactive
+  const completed = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: 1, receiptRequired: true },
+    stored: null,
+    fresh: { status: "completed", fields: { timing: "prepay", revision: 1, receiptRequired: true } },
+  });
+  assert.deepEqual([completed.action, completed.reason], ["skip", "order_inactive"]);
+
+  // fresh.status unknown or progressed -> skip, order_not_pending
+  const unknownStatus = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: 1, receiptRequired: true },
+    stored: null,
+    fresh: { status: "awaiting_something_new", fields: { timing: "prepay", revision: 1, receiptRequired: true } },
+  });
+  assert.deepEqual([unknownStatus.action, unknownStatus.reason], ["skip", "order_not_pending"]);
+
+  // receiptRequired !== true -> skip, receipt_not_required
+  const notRequiredNull = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: 1, receiptRequired: null },
+    stored: null,
+    fresh: { status: "pending", fields: { timing: "prepay", revision: 1, receiptRequired: null } },
+  });
+  assert.deepEqual([notRequiredNull.action, notRequiredNull.reason], ["skip", "receipt_not_required"]);
+});
+
+test("issue 3: receipt request without revision defaults to revision 1 and skips if stale", () => {
+  // Stored state is at revision 3 (switched prepay -> on_receipt -> prepay)
+  // Incoming request has no revision field (event.revision == null) -> defaults to 1
+  const staleNoRevision = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: null, receiptRequired: true },
+    stored: { timing: "prepay", revision: 3, receiptRequired: true },
+    fresh: { status: "pending", fields: { timing: "prepay", revision: 3, receiptRequired: true } },
+  });
+  assert.equal(staleNoRevision.action, "skip");
+  assert.equal(staleNoRevision.reason, "stale_payment_revision");
+
+  // Incoming revision 1 against stored revision 3 -> skip
+  const staleRev1 = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: 1, receiptRequired: true },
+    stored: { timing: "prepay", revision: 3, receiptRequired: true },
+    fresh: { status: "pending", fields: { timing: "prepay", revision: 3, receiptRequired: true } },
+  });
+  assert.equal(staleRev1.action, "skip");
+  assert.equal(staleRev1.reason, "stale_payment_revision");
+
+  // Incoming matching revision 3 -> send_requisites
+  const freshRev3 = decidePaymentRequest({
+    isReceiptRequest: true,
+    event: { timing: "prepay", revision: 3, receiptRequired: true },
+    stored: { timing: "prepay", revision: 3, receiptRequired: true },
+    fresh: { status: "pending", fields: { timing: "prepay", revision: 3, receiptRequired: true } },
+  });
+  assert.equal(freshRev3.action, "send_requisites");
+});
+
+test("issue 4: 409 stale receipt replies adapt to order status without requesting payment for completed/cooking", () => {
+  // Completed order -> do not request payment or new receipt
+  const completedRu = buildStaleReceiptReply("ru", "prepay", "88", "completed");
+  assert.match(completedRu, /уже выполнен/i);
+  assert.match(completedRu, /не требуются/i);
+  assert.doesNotMatch(completedRu, /актуальных реквизитов|новый чек/i);
+
+  const completedKk = buildStaleReceiptReply("kk", "prepay", "88", "delivered");
+  assert.match(completedKk, /орындалған/i);
+  assert.match(completedKk, /қажет емес/i);
+  assert.doesNotMatch(completedKk, /жаңа реквизиттер|жаңа чекті/i);
+
+  // Cancelled or expired order -> do not request payment
+  const cancelledRu = buildStaleReceiptReply("ru", "prepay", "88", "cancelled");
+  assert.match(cancelledRu, /отменён/i);
+  assert.match(cancelledRu, /не требуются/i);
+
+  const expiredKk = buildStaleReceiptReply("kk", "prepay", "88", "expired");
+  assert.match(expiredKk, /жойылған/i);
+  assert.match(expiredKk, /қажет емес/i);
+
+  // Preparing order -> cooking, no new receipt needed
+  const preparingRu = buildStaleReceiptReply("ru", "prepay", "88", "preparing");
+  assert.match(preparingRu, /уже готовится/i);
+  assert.match(preparingRu, /повторный чек/i);
+
+  const onTheWayKk = buildStaleReceiptReply("kk", "prepay", "88", "on_the_way");
+  assert.match(onTheWayKk, /дайындалуда/i);
+  assert.match(onTheWayKk, /қайта чек/i);
+
+  // On receipt timing -> pay on receipt, no receipt needed
+  const onReceiptRu = buildStaleReceiptReply("ru", "on_receipt", "88", "pending");
+  assert.match(onReceiptRu, /оплачивается при получении/i);
+  assert.match(onReceiptRu, /чек отправлять не нужно/i);
+
+  // Still pending with changed prepay terms -> classic prompt for new requisites
+  const pendingPrepayRu = buildStaleReceiptReply("ru", "prepay", "88", "pending");
+  assert.match(pendingPrepayRu, /Условия оплаты по заказу изменились/i);
+  assert.match(pendingPrepayRu, /Дождитесь актуальных реквизитов/i);
 });

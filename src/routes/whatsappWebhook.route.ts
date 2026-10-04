@@ -1254,10 +1254,16 @@ async function processWhatsAppWebhook(body: any, started: number) {
             paymentRevision: deliverPayment.revision || null,
           });
 
-          if (!delivery.success && delivery.errorCode === "payment_revision_conflict") {
-            // 409: the operator changed the payment choice after this receipt
-            // was sent. Re-read once, remember the new state, tell the guest -
-            // and stop. No retry loop, no fallback upload.
+          const isConflict =
+            !delivery.success &&
+            (delivery.errorCode === "payment_revision_conflict" ||
+              delivery.errorCode === "BOT_ORDER_STATE_CONFLICT" ||
+              delivery.errorCode === "BOT_RECEIPT_SOURCE_CONFLICT");
+
+          if (isConflict) {
+            // 409: the operator changed the payment choice or order moved on after
+            // this receipt was sent. Re-read once, remember the new state, tell
+            // the guest - and stop. No retry loop, no fallback upload.
             await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
             const fresh = await readFreshOrderPayment(ctx.instanceId, deliverOrderNumber, { config: ctx.config, phone: ctx.phone })
               .catch(() => null);
@@ -1273,7 +1279,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
             await sendCustomerReplyAndFinish(
               ctx,
               messageId,
-              buildStaleReceiptReply(ctx.language, fresh?.fields.timing ?? null, deliverDisplayNumber),
+              buildStaleReceiptReply(
+                ctx.language,
+                fresh?.fields.timing ?? null,
+                deliverDisplayNumber,
+                fresh?.status ?? null
+              ),
               "payment_receipt_revision_conflict"
             );
             return;

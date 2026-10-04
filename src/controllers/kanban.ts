@@ -1071,6 +1071,20 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         res.status(200).json({ success: true, message: "Payment request skipped", reason: decision.reason });
         return;
       }
+      if (decision.action === "retry_later") {
+        if (lockAcquired && lockKey) {
+          auditDecision("Releasing idempotency lock for retry_later", { orderId, action, instance, lockKey, reason: decision.reason });
+          await redisClient.del(lockKey).catch(() => undefined);
+          lockAcquired = false;
+        }
+        if (eventLockAcquired && eventLockKey) {
+          auditDecision("Releasing event_id lock for retry_later", { orderId, action, instance, eventLockKey, reason: decision.reason });
+          await redisClient.del(eventLockKey).catch(() => undefined);
+          eventLockAcquired = false;
+        }
+        res.status(200).json({ success: true, retry_later: true, message: "Payment request deferred, retry later", reason: decision.reason });
+        return;
+      }
       if (decision.action === "send_on_receipt_accept") {
         auditDecision("Building on-receipt acceptance WhatsApp template", { orderId, action, instance, lang });
         const total = positiveAmount(body.total_price) || storedPayment?.total || freshPayment?.total || null;

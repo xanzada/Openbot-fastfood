@@ -325,7 +325,7 @@ export function isInactiveOrderStatus(status: unknown) {
   return INACTIVE_STATUSES.has(String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_"));
 }
 
-export type PaymentRequestAction = "send_requisites" | "send_on_receipt_accept" | "skip";
+export type PaymentRequestAction = "send_requisites" | "send_on_receipt_accept" | "skip" | "retry_later";
 
 export interface PaymentRequestDecision {
   action: PaymentRequestAction;
@@ -343,24 +343,48 @@ export function decidePaymentRequest(input: {
   fresh: { status: string; fields: PaymentFields } | null;
 }): PaymentRequestDecision {
   const view = currentPaymentView(input.event, input.stored, input.fresh?.fields || null);
-  if (input.event.revision && view.revision > input.event.revision) {
+  const incomingRevision = input.event.revision ?? 1;
+
+  if (view.revision > incomingRevision) {
     return { action: "skip", reason: "stale_payment_revision", view };
   }
+
   if (input.fresh?.status && isInactiveOrderStatus(input.fresh.status)) {
     return { action: "skip", reason: "order_inactive", view };
   }
+
   if (view.timing === "on_receipt") {
     // The hub forbids receipt requests for such orders; a receipt request that
     // still arrives is a leftover of the previous revision.
     if (input.isReceiptRequest) return { action: "skip", reason: "on_receipt_no_receipt", view };
     return { action: "send_on_receipt_accept", reason: "on_receipt", view };
   }
+
   if (input.isReceiptRequest) {
-    if (input.fresh?.status && isProgressedOrderStatus(input.fresh.status)) {
+    if (!input.fresh) {
+      return { action: "retry_later", reason: "fresh_order_unavailable", view };
+    }
+
+    const freshStatus = String(input.fresh.status || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (isInactiveOrderStatus(freshStatus)) {
+      return { action: "skip", reason: "order_inactive", view };
+    }
+    if (freshStatus === "expired") {
+      return { action: "skip", reason: "order_expired", view };
+    }
+    if (freshStatus !== "pending") {
       return { action: "skip", reason: "order_not_pending", view };
     }
-    if (view.receiptRequired === false) return { action: "skip", reason: "receipt_not_required", view };
+
+    if (view.timing && view.timing !== "prepay") {
+      return { action: "skip", reason: "timing_not_prepay", view };
+    }
+
+    if (view.receiptRequired !== true) {
+      return { action: "skip", reason: "receipt_not_required", view };
+    }
   }
+
   return { action: "send_requisites", reason: view.timing ? "prepay" : "legacy_prepay", view };
 }
 
@@ -373,7 +397,8 @@ export function decideTimingChangeNotice(input: {
 }): { action: TimingChangeAction; reason: string; view: PaymentView } {
   const view = currentPaymentView(input.event, input.stored, input.fresh?.fields || null);
   if (!view.timing) return { action: "skip", reason: "timing_unknown", view };
-  if (input.event.revision && view.revision > input.event.revision) {
+  const incomingRevision = input.event.revision ?? 1;
+  if (view.revision > incomingRevision) {
     return { action: "skip", reason: "stale_payment_revision", view };
   }
   if (input.fresh?.status && isInactiveOrderStatus(input.fresh.status)) {
@@ -440,9 +465,52 @@ export function buildReceiptNotNeededReply(lang: Language, orderNumber = "") {
   return `💵 ${number ? `№${number} тапсырыс` : "Бұл тапсырыс"} алған кезде төленеді — чек жіберудің қажеті жоқ. Ақшаны аударып қойған болсаңыз, осында жазыңыз — реттейміз.`;
 }
 
-// Hub answered 409: the receipt belongs to an older payment cycle.
-export function buildStaleReceiptReply(lang: Language, timing: PaymentTiming | null, orderNumber = "") {
-  if (timing === "on_receipt") return buildReceiptNotNeededReply(lang, orderNumber);
+const COMPLETED_ORDER_STATUSES = new Set([
+  "completed", "done", "finished", "delivered", "closed",
+]);
+
+const CANCELLED_ORDER_STATUSES = new Set([
+  "cancelled", "canceled", "rejected", "expired",
+]);
+
+const PREPARING_ORDER_STATUSES = new Set([
+  "preparing", "cooking", "in_progress", "accepted_kitchen",
+  "ready", "ready_for_pickup",
+  "delivery", "on_the_way", "on_delivery", "in_delivery", "delivering", "courier",
+]);
+
+// Hub answered 409: the receipt belongs to an older payment cycle or the order moved on.
+export function buildStaleReceiptReply(
+  lang: Language,
+  timing: PaymentTiming | null,
+  orderNumber = "",
+  status?: string | null,
+) {
+  const number = String(orderNumber || "").trim();
+  const normalizedStatus = String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+
+  if (timing === "on_receipt") {
+    return buildReceiptNotNeededReply(lang, orderNumber);
+  }
+
+  if (COMPLETED_ORDER_STATUSES.has(normalizedStatus)) {
+    return lang === "ru"
+      ? `✅ ${number ? `Заказ №${number}` : "Заказ"} уже выполнен — повторная оплата или чек не требуются.`
+      : `✅ ${number ? `№${number} тапсырыс` : "Тапсырыс"} орындалған — қайта төлем немесе чек қажет емес.`;
+  }
+
+  if (CANCELLED_ORDER_STATUSES.has(normalizedStatus)) {
+    return lang === "ru"
+      ? `❌ ${number ? `Заказ №${number}` : "Заказ"} отменён — повторная оплата или чек не требуются.`
+      : `❌ ${number ? `№${number} тапсырыс` : "Тапсырыс"} жойылған — қайта төлем немесе чек қажет емес.`;
+  }
+
+  if (PREPARING_ORDER_STATUSES.has(normalizedStatus)) {
+    return lang === "ru"
+      ? `🍳 ${number ? `Заказ №${number}` : "Заказ"} уже готовится — повторный чек отправлять не нужно.`
+      : `🍳 ${number ? `№${number} тапсырыс` : "Тапсырыс"} дайындалуда — қайта чек жіберу қажет емес.`;
+  }
+
   return lang === "ru"
     ? "🧾 Условия оплаты по заказу изменились, поэтому этот чек не прикрепился. Дождитесь актуальных реквизитов в этом чате и после оплаты отправьте новый чек."
     : "🧾 Тапсырыстың төлем шарты өзгерді, сондықтан бұл чек тіркелмеді. Осы чатқа жаңа реквизиттер келгенін күтіп, төлегеннен кейін жаңа чекті жіберіңіз.";

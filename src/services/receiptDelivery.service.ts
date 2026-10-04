@@ -85,12 +85,12 @@ export function isAnalyzedReceiptCommandUnsupported(error: any) {
   return status === 422 && /COMMAND|ORDER\.PAYMENT_RECEIPT\.ANALYZED/.test(detail);
 }
 
-// Hub answers 409 when the receipt belongs to an older payment revision (the
-// operator switched prepay <-> on_receipt in between). That is final for this
-// receipt: re-read the context, tell the guest, never retry or fall back.
+// Hub answers 409 when the receipt belongs to an older payment revision or conflicts with order state.
+// That is final for this receipt: re-read the context, tell the guest, never retry or fall back.
 export function isPaymentRevisionConflict(error: any) {
   const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
-  return status === 409;
+  const code = String(error?.code || error?.response?.data?.code || error?.response?.data?.error || "");
+  return status === 409 || /CONFLICT|payment_revision_conflict|BOT_ORDER_STATE_CONFLICT|BOT_RECEIPT_SOURCE_CONFLICT/i.test(code);
 }
 
 export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapter?: ReceiptDeliveryAdapter): Promise<ReceiptDeliveryResult> {
@@ -135,12 +135,17 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
       return { success: true, deliveryId, deliveredAt };
     } catch (error) {
       if (isPaymentRevisionConflict(error)) {
+        const rawCode = String((error as any)?.response?.data?.code || (error as any)?.code || "").trim();
+        const code = /BOT_ORDER_STATE_CONFLICT|BOT_RECEIPT_SOURCE_CONFLICT/i.test(rawCode)
+          ? rawCode
+          : "payment_revision_conflict";
         auditOutbound("Receipt analysis rejected: payment revision changed", {
           instanceId: input.instanceId,
           orderNumber,
           paymentRevision: input.paymentRevision ?? null,
+          code,
         });
-        return failure("payment_revision_conflict", "receipt_payment_revision_conflict");
+        return failure(code, "receipt_payment_revision_conflict");
       }
       if (!isAnalyzedReceiptCommandUnsupported(error)) {
         auditError("Receipt analysis delivery to Alemi failed", error, {
@@ -203,12 +208,17 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
     }, { config: input.config });
   } catch (error) {
     if (isPaymentRevisionConflict(error)) {
+      const rawCode = String((error as any)?.response?.data?.code || (error as any)?.code || "").trim();
+      const code = /BOT_ORDER_STATE_CONFLICT|BOT_RECEIPT_SOURCE_CONFLICT/i.test(rawCode)
+        ? rawCode
+        : "payment_revision_conflict";
       auditOutbound("Receipt upload rejected: payment revision changed", {
         instanceId: input.instanceId,
         orderNumber,
         paymentRevision: input.paymentRevision ?? null,
+        code,
       });
-      return failure("payment_revision_conflict", "receipt_payment_revision_conflict");
+      return failure(code, "receipt_payment_revision_conflict");
     }
     auditError("Receipt upload to Alemi failed", error, {
       instanceId: input.instanceId,
