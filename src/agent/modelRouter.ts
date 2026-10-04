@@ -86,6 +86,11 @@ export function clearModelCooldowns() {
   modelFailedUntil.clear();
 }
 
+function ignoredPinnedTool(options: any, result: any) {
+  const pinned = options?.toolChoice?.type === "tool" || options?.toolChoice?.type === "required";
+  return pinned && !(result?.content || []).some((part: any) => part?.type === "tool-call");
+}
+
 /**
  * Runs the chain in order, skipping any model inside its failure window, and always
  * keeping the LAST model as a genuine last resort even if it is cooling down - a
@@ -103,6 +108,13 @@ async function callChain(
     const startedAt = Date.now();
     try {
       const result = await timedModelCall(entry.model, operation, options, entry.timeout);
+      // A lane that drops `tools` still answers 200, just without the tool: the A6API
+      // gemini-2.5-flash entry ignored a pinned searchMenu and quoted 1200 ₸ for a
+      // 1590 ₸ doner (probe 2026-10-04). A pinned step with no tool call is a failed
+      // lane while another lane is left to try.
+      if (index < usable.length - 1 && ignoredPinnedTool(options, result)) {
+        throw new Error(`TOOL_CHOICE_IGNORED:${entry.model.modelId}`);
+      }
       noteModelSuccess(entry.label);
       if (entry.providerEntry) {
         const pTokens = Number(result?.usage?.promptTokens) || 0;
@@ -231,20 +243,9 @@ function workspaceTextChain(): { model: any; timeout: number; label: string; pro
   return buildChainEntries(entries, "workspace");
 }
 
-const ENV_CHAIN = (() => {
-  const primaryTimeout = envTimeout("TEXT_PRIMARY_TIMEOUT_MS", 15_000);
-  const fallbackTimeout = envTimeout("TEXT_FALLBACK_TIMEOUT_MS", 15_000);
-  const reserveTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
-  return [
-    { model: openrouterProvider.chat(textPrimaryModel), timeout: primaryTimeout, label: "primary" },
-    { model: openrouterProvider.chat(textFallbackModel), timeout: fallbackTimeout, label: "fallback" },
-    { model: openrouterProvider.chat(textReserveModel), timeout: reserveTimeout, label: "reserve" },
-  ];
-})();
-
 export function resolveModel(_ctx: FastFoodContext) {
   // WhatsPro panel is the SINGLE source of truth for API keys.
-  // ENV_CHAIN (hardcoded OpenRouter) is only the absolute last resort
+  // The env OpenRouter chain (textModel) is only the absolute last resort
   // when the workspace panel is completely empty ? never appended to a
   // live workspace pool (a depleted env key would silently eat every
   // request that workspace already handled fine).

@@ -239,8 +239,8 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     console.info(`[LINK PROMISE] honored instance=${ctx.instanceId}`);
   } else if (promise.action === "stripped") {
     finalText = promise.text || (ctx.language === "kk"
-      ? "Тыңдап тұрмын, не қажет екенін жазыңыз."
-      : "Слушаю, напишите, что нужно.");
+      ? "Осындамын — не керек екенін жаза беріңіз."
+      : "Я на связи — напишите, что подсказать.");
     validation = { ...validation, warnings: [...validation.warnings, `link_promise_removed_${promise.reason}`] };
     console.warn(`[LINK PROMISE] removed instance=${ctx.instanceId} reason=${promise.reason}`);
   }

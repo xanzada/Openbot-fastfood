@@ -12,6 +12,26 @@ function normalizeText(value: unknown) {
     .trim();
 }
 
+// Kazakh guests write a dish with a suffix («донерлер», «айранды») and ask for drinks
+// as «сусын», while the catalog is in Russian. Plain substring search found nothing for
+// any of them, so the model answered from memory and missed «Детский сок» (audit sim
+// 2026-10-04). A token also matches a catalog word it starts with, plus a few Kazakh
+// food words mapped to the Russian stem the catalog uses.
+const KAZAKH_MENU_WORDS: Array<[string, string]> = [
+  ["сусын", "напит"], ["тауық", "кури"], ["тауык", "кури"], ["сиыр", "говя"],
+  ["картоп", "картоф"], ["тәтті", "сладост"], ["ірімшік", "сыр"], ["ащы", "остр"],
+];
+
+function tokenForms(token: string, haystack: string): string[] {
+  const forms = [token];
+  for (const [kazakh, stem] of KAZAKH_MENU_WORDS) if (token.startsWith(kazakh)) forms.push(stem);
+  if (!haystack.includes(token)) {
+    const word = haystack.split(/[^\p{L}\d]+/u).find((candidate) => candidate.length >= 4 && token.startsWith(candidate));
+    if (word) forms.push(word);
+  }
+  return forms;
+}
+
 function scoreMenuItem(item: Record<string, any>, tokens: string[], query: string) {
   const name = normalizeText(item.name || item.title);
   const category = normalizeText(item.category_name || item.category);
@@ -25,8 +45,7 @@ function scoreMenuItem(item: Record<string, any>, tokens: string[], query: strin
   if (name.includes(query)) score += 50;
   if (category.includes(query)) score += 30;
   if (label.includes(query)) score += 20;
-  for (const token of tokens) {
-    if (!token) continue;
+  for (const token of tokens.flatMap((raw) => (raw ? tokenForms(raw, haystack) : []))) {
     if (name.includes(token)) score += 12;
     if (category.includes(token)) score += 8;
     if (description.includes(token)) score += 4;

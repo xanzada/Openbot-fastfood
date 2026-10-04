@@ -54,6 +54,8 @@ const ALLERGEN_ASSURANCE_RE = new RegExp(
     + `|${ALLERGEN_NEGATION}[^.!?\\n]*${ALLERGEN_TERM}`
     // single-word assurances that carry no separate negation
     + "|без(?:глютен|лактоз|молочн|ореховы)\\p{L}*"
+    // Kazakh privative suffix: «жаңғақсыз» is «жаңғақ жоқ» in one word
+    + "|(?:жаңғақ|жангак|глютен|лактоз)с[ыі]з\\p{L}*"
     + ")[^.!?\\n]*[.!?]?",
   "iu"
 );
@@ -97,6 +99,12 @@ function uniqueUrls(text: string): string[] {
   return Array.from(new Set((String(text || "").match(URL_RE) || []).map(trimUrlPunctuation).filter(Boolean)));
 }
 
+// A dot between digits is a decimal ("Coca-Cola 0.5л"), not a sentence end. Splitting
+// there turned "0.5л" into "0. 5л" after any clause surgery, and the length cap counted
+// every volume as a sentence and cut the reply at "Fanta 0." (audit sim 2026-10-04).
+const SENTENCE_RE = /(?:[^.!?\n]|\.(?=\d))+[.!?]*/g;
+const TERMINATED_SENTENCE_RE = /(?:[^.!?]|\.(?=\d))*[.!?]+(?!\d)/g;
+
 function textWithoutUrls(text: string): string {
   return String(text || "").replace(URL_RE, " ").replace(/\s{2,}/g, " ").trim();
 }
@@ -104,7 +112,7 @@ function textWithoutUrls(text: string): string {
 function sentenceCount(text: string): number {
   const trimmed = textWithoutUrls(text);
   if (!trimmed) return 0;
-  const sentences = trimmed.match(/[^.!?]*[.!?]+/g);
+  const sentences = trimmed.match(TERMINATED_SENTENCE_RE);
   return sentences ? sentences.length : 1;
 }
 
@@ -133,7 +141,7 @@ function dropSentencesMatchingUnless(
 ): string {
   const urls = uniqueUrls(text);
   const body = textWithoutUrls(text);
-  const sentences = body.match(/[^.!?\n]+[.!?]*/g) || [body];
+  const sentences = body.match(SENTENCE_RE) || [body];
   const kept = sentences
     .map((sentence) => sentence.trim())
     .filter((sentence) => {
@@ -202,7 +210,7 @@ function enforceMaxSentences(text: string, max = 5): string {
   const urls = uniqueUrls(text);
   const trimmed = textWithoutUrls(text);
   if (!trimmed) return text;
-  const sentences = trimmed.match(/[^.!?]*[.!?]+/g);
+  const sentences = trimmed.match(TERMINATED_SENTENCE_RE);
   const body = !sentences || sentences.length <= max ? trimmed : sentences.slice(0, max).map((sentence) => sentence.trim()).join(" ");
   return [body, ...urls].filter(Boolean).join("\n");
 }
@@ -268,8 +276,8 @@ export function stripReasoningPreamble(text: string): { text: string; removed: b
 // one - so the single most frequently sent sentence contradicted the persona.
 function fallback(ctx: FastFoodContext) {
   return ctx.language === "kk"
-    ? "Тыңдап тұрмын, не қажет екенін жазыңыз."
-    : "Слушаю, напишите, что нужно.";
+    ? "Осындамын — не керек екенін жаза беріңіз."
+    : "Я на связи — напишите, что подсказать.";
 }
 
 function noActiveOrderText(ctx: FastFoodContext) {
@@ -521,7 +529,11 @@ export function validateFinalText(
     // Same principle as the kitchen guard: cut the false order claim, keep the
     // rest of the answer. Only when nothing survives do we fall back to the
     // deterministic "no active order" line.
-    const withoutOrderClaims = dropSentencesMatching(text, ORDER_STATUS_RE);
+    // A sentence about the link sendMenuLink granted this turn is an invitation to
+    // order ("собрать заказ и оформить доставку"), not a status claim. Cutting it
+    // answered "кидай ссылку" with "Сейчас нет активного заказа." (audit sim 2026-10-04).
+    const withoutOrderClaims = dropSentencesMatchingUnless(text, ORDER_STATUS_RE,
+      ctx.magicLinkGranted === true ? (sentence) => /(ссылк|сілтеме|link)/iu.test(sentence) : null);
     if (withoutOrderClaims) {
       text = withoutOrderClaims;
       warnings.push("unsupported_order_claim_clause_removed");
@@ -565,6 +577,27 @@ export function validateFinalText(
     warnings.push(ctx.magicLinkAlreadySent ? "duplicate_menu_link_removed" : "unrequested_menu_link_removed");
     if (MENU_LINK_SENT_RE.test(text)) return { text: text || fallback(ctx), hasLink: false, warnings };
     return { text: text || fallback(ctx), hasLink: false, warnings };
+  }
+
+  // The bot never has a reason to type a URL of its own: the personal link comes from
+  // sendMenuLink and business info carries none. "https://dorumclub.kz/order" was
+  // invented by the model and would have reached the guest as a dead link (audit sim
+  // 2026-10-04). Kept: the personal link (and look-alikes, rewritten below), any host
+  // the tenant config names, and a URL already present in this chat.
+  const knownUrlSources = JSON.stringify([ctx.config || {}, ctx.chatHistory || []]).toLowerCase();
+  const inventedUrls = uniqueUrls(text).filter((url) => {
+    if (ctx.magicLink && isLikelyMagicLinkUrl(url, ctx.magicLink)) return false;
+    try {
+      return !knownUrlSources.includes(new URL(url).hostname.toLowerCase());
+    } catch {
+      return true;
+    }
+  });
+  if (inventedUrls.length) {
+    text = text.replace(URL_RE, (url) => (inventedUrls.includes(trimUrlPunctuation(url)) ? "" : url))
+      .replace(/[ \t]{2,}/g, " ").replace(/\n{2,}/g, "\n").trim();
+    warnings.push("invented_url_removed");
+    if (!textWithoutUrls(text)) return { text: fallback(ctx), hasLink: false, warnings };
   }
 
   text = enforceExactMagicLink(text, ctx);
@@ -621,7 +654,7 @@ export function validateFinalText(
     // is part of the same true statement. Cutting it left the answer starting mid-thought
     // with "Мысалы:" (live QA R5-02.1). Percent claims are still cut individually.
     const replyIsGroundedPromo = Boolean(namesDiscountedDish)
-      && (textWithoutUrls(text).match(/[^.!?\n]+[.!?]*/g) || []).some((sentence) =>
+      && (textWithoutUrls(text).match(SENTENCE_RE) || []).some((sentence) =>
         namesDiscountedDish!(sentence) && !PERCENT_DISCOUNT_RE.test(sentence));
     const keepPromoSentence = replyIsGroundedPromo
       ? (sentence: string) => !PERCENT_DISCOUNT_RE.test(sentence)
@@ -644,7 +677,15 @@ export function validateFinalText(
       }
     }
     // Same reasoning, one step stricter: only a menu read can say what is in a dish.
-    const allergenGrounded = grounding.toolsCalled.some((tool) => ALLERGEN_GROUNDING_TOOLS.includes(tool));
+    // A menu read only grounds "no nuts" when the catalog carries ingredients at all. The
+    // dorumclub catalog has none, so one searchMenu call unlocked «құрамында жаңғақ жоқ»
+    // written from general knowledge (audit sim 2026-10-04). Only an explicit empty
+    // composition on every item counts; a snapshot that says nothing changes nothing.
+    const snapshotItems: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+    const catalogHasIngredients = !snapshotItems.length
+      || snapshotItems.some((item) => !("composition" in Object(item)) || String(item.composition || "").trim());
+    const allergenGrounded = catalogHasIngredients
+      && grounding.toolsCalled.some((tool) => ALLERGEN_GROUNDING_TOOLS.includes(tool));
     if (!allergenGrounded && ALLERGEN_ASSURANCE_RE.test(text)) {
       const withoutAssurance = dropSentencesMatching(text, ALLERGEN_ASSURANCE_RE);
       text = withoutAssurance;
