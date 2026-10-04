@@ -748,10 +748,38 @@ import {
 
 export { fallbackReply };
 
+// «Сілтеме чатымызда сәл жоғарыда тұр» / «посмотрите выше» - live 2026-10-04 the guest
+// asked twice for the link and was sent up the chat twice. When the guest asked for the
+// link (or the tool granted it this turn), such a sentence is cut.
+const LINK_SCROLL_UP_RE =
+  /(жоғары(?:да|ға|рақ)?|жогары(?:да|га)?|выше|бұған\s*дейін\s*жіберіл|бурын\s*жибери|бұрын\s*жіберіл|алдында\s*жіберіл|уже\s*(?:отправ|скинул|присыл|был)|ранее\s*(?:отправ|присыл)|already\s*sent|scroll\s*up|пролистай|листа(?:йте|ть))/iu;
+const LINK_WORD_RE = /(сілтеме|силтеме|ссылк|линк|link|мәзір|мазир|меню)/iu;
+
+export function stripLinkScrollUpSentences(text: string, ctx: any): { text: string; changed: string | null } {
+  const value = String(text || "");
+  if (!(ctx?.magicLinkGranted === true || ctx?.explicitMenuLinkIntent === true)) return { text: value, changed: null };
+  if (!LINK_SCROLL_UP_RE.test(value)) return { text: value, changed: null };
+  const sentences = value.split(/(?<=[.!?\u2026])\s+|\n+/);
+  const kept = sentences.filter((sentence) => !(LINK_SCROLL_UP_RE.test(sentence) && LINK_WORD_RE.test(sentence)));
+  if (kept.length === sentences.length) return { text: value, changed: null };
+  const joined = kept.join(" ").replace(/\s{2,}/g, " ").trim();
+  if (joined) return { text: joined, changed: "link_scroll_up_removed" };
+  const kk = ctx?.language === "kk";
+  const replacement = ctx?.magicLinkGranted === true
+    ? (kk ? "Әрине, мінекей сілтеме, мархабат!" : "Конечно, дублирую ссылку для вас!")
+    : (kk ? "Әрине, қазір сілтемені қайта жіберемін." : "Конечно, сейчас продублирую ссылку.");
+  return { text: replacement, changed: "link_scroll_up_replaced" };
+}
+
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
   const result = validateFinalTextCore(...args);
   const warnings = [...result.warnings];
-  const opener = stripRoboticOpener(result.text);
+  const scrollUp = stripLinkScrollUpSentences(result.text, args[1]);
+  if (scrollUp.changed) warnings.push(scrollUp.changed);
+  // A link RESEND keeps the owner's own phrasing «Әрине, мінекей сілтеме, мархабат!» /
+  // «Конечно, дублирую ссылку!» (owner, 2026-10-04); every other turn still drops it.
+  const resendTurn = (args[1] as any)?.magicLinkGranted === true && (args[1] as any)?.magicLinkAlreadySent === true;
+  const opener = resendTurn ? { text: scrollUp.text, changed: null as string | null } : stripRoboticOpener(scrollUp.text);
   if (opener.changed) warnings.push(opener.changed);
   const aligned = alignGreetingReply(opener.text, args[1]);
   if (aligned.changed) warnings.push(aligned.changed);

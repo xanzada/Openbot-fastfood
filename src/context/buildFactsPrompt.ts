@@ -514,7 +514,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
           value_available: Boolean(ctx.magicLink),
           url: ctx.magicLink,
           validity_rule: "Magic link is valid for 1 month and is tied to the customer's WhatsApp number.",
-          resend_rule: "already_sent is informational only - there is NO daily limit. If the guest asks again or the previous link failed, call sendMenuLink again; never refuse just because one was sent earlier.",
+          resend_rule: "already_sent is informational only - there is NO daily limit. If the guest asks again or the previous link failed, call sendMenuLink again; never refuse just because one was sent earlier. When the guest asks in ANY wording to resend, duplicate or show the link again (кері жібер, қайта жібер, тағы жіберші, скинь ещё раз, повтори ссылку, не вижу ссылку), call sendMenuLink with guestAskedToResend=true and reply in one short warm line such as «Әрине, мінекей сілтеме, мархабат!» / «Конечно, дублирую ссылку!». NEVER tell the guest to scroll up, look above in the chat, or that the link was already sent. Do not resend the link unprompted on ordinary questions (composition, hours, small talk).",
           // explicit_request is a keyword pre-warm, not a permission. The model read it as
           // one - a guest writing "2 донер жасап қойшы" matched no pattern, so the field
           // said false, the model believed the link was off-limits and merely PROMISED a

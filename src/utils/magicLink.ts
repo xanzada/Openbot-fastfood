@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { intentMatches } from "./intentText.js";
 
-const LINK_FORCE_RESEND_RE = /(қайта|кайта|жаңа|жана|жаңасын|жанасын|жоғалт|жогалт|жоғалды|жогалды|өшіп|ошип|өшті|ошті|жоқ бол|ашылмай|ашылмады|ашылмай жатыр|таппай|таппай қал|қайдан|жібер|скинь|скин|жұмыс істемей|работать|еще\s*раз|заново|новую|повтор|потерял|не\s+открывается|сбрось|сброс|перешли|переотправ)/iu;
+const LINK_FORCE_RESEND_RE = /(кері\s*жібер|кери\s*жибер|keri\s*zhiber|keri\s*jiber|тағы\s*жібер|тагы\s*жибер|не\s*вижу|не\s*могу\s*найти|көрінбей|коринбей|продублир|дублир|қайта|кайта|жаңа|жана|жаңасын|жанасын|жоғалт|жогалт|жоғалды|жогалды|өшіп|ошип|өшті|ошті|жоқ бол|ашылмай|ашылмады|ашылмай жатыр|таппай|таппай қал|қайдан|жібер|скинь|скин|жұмыс істемей|работать|еще\s*раз|заново|новую|повтор|потерял|не\s+открывается|сбрось|сброс|перешли|переотправ)/iu;
 // The Russian words are matched by STEM: a guest types the accusative
 // ("ссылку скинь", "дайте ссылку"), and spelling only the nominative made every
 // one of those messages invisible to the link path. Kazakh already worked because
@@ -13,7 +13,7 @@ const LINK_FORCE_RESEND_RE = /(қайта|кайта|жаңа|жана|жаңа�
 // the forced first tool, and a CRM lead was written (found 2026-08-22). "меню" is
 // indeclinable - the extra letters bought nothing.
 const MENU_LINK_TOPIC_RE = /(link|menu|catalog|checkout|cart|s[iy]lteme|ssylka|menyu|mazir|m[aá]zir|сілтеме|ссылк\p{L}*|мәзір|мен[юь]|каталог)/iu;
-const MENU_LINK_RESEND_TEXT_RE = /(send|sent|resend|again|new|lost|deleted|open|not\s+sent|didn'?t\s+send|where|give|show|jiber|jibershi|zhber|zhbershi|jibermedin|jibermeding|ber|bershi|korset|tasta|skinte|skin|esh[eё]\s*raz|zanovo|novuyu|povtor|poteryal|ne\s+otkryv|qaita|jana|zhanasin|jogalt|jogaldy|oship|oshti|zhok bol|ashylma|tappai|qaida|жібер|жібермед|жіберші|бер|беріңіз|берші|көрсет|көрсетіңіз|таста|қайта|жаңа|жоғалт|жоғалды|өшіп|өшті|жоқ бол|ашылмай|ашылмады|таппай|қайдан|дай|скин|отправ|дай(те)?|покаж|еще\s*раз|заново|новую|повтор|потерял|не\s+откр|сброс|сбрось|перешли|переотправ)/iu;
+const MENU_LINK_RESEND_TEXT_RE = /(keri\s*zhiber|keri\s*jiber|send|sent|resend|again|new|lost|deleted|open|not\s+sent|didn'?t\s+send|where|give|show|jiber|jibershi|zhber|zhbershi|jibermedin|jibermeding|ber|bershi|korset|tasta|skinte|skin|esh[eё]\s*raz|zanovo|novuyu|povtor|poteryal|ne\s+otkryv|qaita|jana|zhanasin|jogalt|jogaldy|oship|oshti|zhok bol|ashylma|tappai|qaida|жібер|жібермед|жіберші|бер|беріңіз|берші|көрсет|көрсетіңіз|таста|қайта|жаңа|жоғалт|жоғалды|өшіп|өшті|жоқ бол|ашылмай|ашылмады|таппай|қайдан|дай|скин|отправ|дай(те)?|покаж|еще\s*раз|заново|новую|повтор|потерял|не\s+откр|сброс|сбрось|перешли|переотправ)/iu;
 const MENU_LINK_MOJIBAKE_RE = /(мен[юь]|мәзір|сілтеме|ссылк\p{L}*|каталог|заказ|тапсырыс|корзин|себет)/iu;
 const LINK_JUST_NOW_RE = /(жаңа|жана)\s+ғана|только\s+что|just\s+now/iu;
 
@@ -76,6 +76,32 @@ export function isMenuLinkResendRequest(text = ""): boolean {
   if (!hasMenuTopic) return false;
   if (intentMatches(LINK_JUST_NOW_RE, value)) return false;
   return intentMatches(LINK_FORCE_RESEND_RE, value) || intentMatches(MENU_LINK_RESEND_TEXT_RE, value);
+}
+
+// «Кері жібересіз бе», «Кері жіберші», «қайта жібер», «скинь ещё раз», «не вижу ссылку»:
+// right after we sent the ordering link, a SHORT re-send request with no other object
+// is a request for that link, even without the word «сілтеме». Live round 2026-10-04:
+// the guest asked twice and was told twice to scroll up the chat. The other-object
+// guard keeps «ақшаны кері жіберіңіз» (refund), «чекті қайта жібер» (receipt) and
+// «тағы бір донер жібер» (an order) off the link path, and no link in context means
+// no resend - so ordinary questions never get a link.
+const CONTEXT_RESEND_RE =
+  /((?:кері|кери|қайта|кайта|тағы|тагы|тағыда|тагыда|keri|qaita|kaita|tagy)\s*(?:бір\s*|бир\s*)?(?:жібер|жибер|таста|сал(?:ып|ш|ыңыз)|zhiber|jiber|tasta)|(?:скин|кин|отправ|сброс|пришл|перешл|кидан)\p{L}*\s*(?:ещ[её]|снова|повторно|заново)|(?:ещ[её]|снова|повторно|заново)\s*(?:раз\s*)?(?:скин|кин|отправ|пришл|сброс)|продублир\p{L}*|дублир\p{L}*|повтор\p{L}*\s*(?:ссылк|линк|сілтеме)|не\s*(?:вижу|нашел|нашла|нахожу|могу\s*найти)|көрінбей|коринбей|көрмедім|кормедим|таба\s*алмай|таппадым|resend|send\s*(?:it\s*)?again)/iu;
+const RESEND_OTHER_OBJECT_RE =
+  /(ақша|акша|деньг|сумм|оплат|төлем|толем|каспи|kaspi|чек|квитанц|фото|сурет|скрин|видео|номер|адрес|мекенжай|реквизит|счет|счёт|шот|возврат|қайтар|кайтар|донер|бургер|пицц|лаваш|шаурм|сусын|напит|кол[аы])/iu;
+const LINK_IN_HISTORY_RE = /(сілтеме|силтеме|ссылк|линк|link|\/auth\/whatsapp#token=|\?phone=\d{10,15}&hash=)/iu;
+
+export function isContextualLinkResendRequest(
+  text = "",
+  context: { alreadySent?: boolean; recentHistory?: string[] } = {},
+): boolean {
+  const value = String(text || "").trim();
+  if (!value || value.length > 80) return false;
+  const linkInContext = Boolean(context.alreadySent)
+    || (context.recentHistory || []).some((entry) => LINK_IN_HISTORY_RE.test(String(entry || "")));
+  if (!linkInContext) return false;
+  if (intentMatches(RESEND_OTHER_OBJECT_RE, value)) return false;
+  return intentMatches(CONTEXT_RESEND_RE, value);
 }
 
 // "Сілтемені ашқым жоқ, жазып жіберіңіз мәзірді" contains the word "мәзір", so

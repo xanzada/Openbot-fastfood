@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage, lastResolvedCustomerLanguage } from "../utils/language.js";
 import { envNumber } from "../utils/envNumber.js";
-import { hasBrokenLinkReport, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
+import { hasBrokenLinkReport, hasExplicitMenuLinkIntent, isContextualLinkResendRequest, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getMenuContext, getOrderStatus, getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
 import { getRestaurantConfig, getShporContext } from "../services/platformConfig.service.js";
@@ -347,7 +347,12 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     text,
     (Array.isArray(chatHistory) ? chatHistory : []).slice(-6).map((entry: any) => String(entry?.text || "")),
   );
-  const explicitMenuLinkIntent = (hasExplicitMenuLinkIntent(text) || brokenLinkReport)
+  // «Кері жіберші» right after a link went out is a resend request (2026-10-04).
+  const contextualLinkResend = isContextualLinkResendRequest(text, {
+    alreadySent: Boolean(magicLinkAlreadySent),
+    recentHistory: (Array.isArray(chatHistory) ? chatHistory : []).slice(-6).map((entry: any) => String(entry?.text || "")),
+  });
+  const explicitMenuLinkIntent = (hasExplicitMenuLinkIntent(text) || brokenLinkReport || contextualLinkResend)
     && !isLikelyComplaintText(text)
     && !isLikelyOperatorRequestText(text);
   let magicLinkFailed = false;

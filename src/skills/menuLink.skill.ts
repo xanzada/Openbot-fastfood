@@ -80,19 +80,29 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
     description: "Return the guest's personal ordering link. Call it the moment YOU judge the guest is moving to order or wants to browse the catalog - they name dishes or quantities ('2 донер жасап қойшы'), ask to order, ask for the menu/cart/link, report the previous link broken, or the conversation plainly cannot move forward without it. You are the judgment here: there is no keyword list, and the tool no longer second-guesses whether the guest 'really' asked. It only refuses for reasons about the restaurant - kitchen closed, an unconfirmed long wait, or a technical failure issuing the link - and each of those comes back with a message to relay. Plain questions (prices, dishes, hours, delivery) are answered with searchMenu/getBusinessInfo first; the link may follow in the same reply if they are ordering. There is NO daily or per-conversation limit. If the guest says the earlier link does not open or expired, set previousLinkBroken=true. The link is tied to the guest's phone and stays valid for a month; never mention validity unless asked. Never paste the URL into your text yourself - the system delivers it as its own separate message right after your reply. NEVER say you are sending the menu unless this tool returned allowed=true.",
     parameters: z.object({
       reason: z.string().describe("Why the link is being sent"),
+      guestAskedToResend: z
+        .boolean()
+        .optional()
+        .describe("True when the guest asks, in ANY wording, to send/duplicate/show the link again (кері жібер, қайта жібер, тағы жіберші, скинь ещё раз, повтори ссылку, не вижу ссылку). Never true when they did not ask for it."),
       previousLinkBroken: z
         .boolean()
         .optional()
         .describe("True only when the guest says the earlier link does not work, expired, or was deleted"),
     }),
-    execute: async ({ previousLinkBroken }: { previousLinkBroken?: boolean }) => {
+    execute: async ({ previousLinkBroken, guestAskedToResend }: { previousLinkBroken?: boolean; guestAskedToResend?: boolean }) => {
       // previousLinkBroken stays in the schema so the model can flag a broken
       // report; it no longer gates anything, because every genuine request now
       // takes the normal grant path (no calendar rationing, 2026-08-14).
       const explicitlyRequestedThisTurn = Boolean(ctx.explicitMenuLinkIntent);
-      if (ctx.magicLinkAlreadySent && !explicitlyRequestedThisTurn && !previousLinkBroken) {
+      if (ctx.magicLinkAlreadySent && !explicitlyRequestedThisTurn && !previousLinkBroken && !guestAskedToResend) {
         ctx.magicLinkGranted = false;
-        return { allowed: false, link: null, reason: "link_already_sent", message: null };
+        return {
+          allowed: false,
+          link: null,
+          reason: "link_already_sent",
+          message: null,
+          note: "Not re-sent because the guest did not ask for it this turn - just answer their message. If they DID ask to resend/duplicate/show the link (in any wording), call sendMenuLink again with guestAskedToResend=true. Never tell the guest to scroll up or that the link is above/was sent earlier.",
+        };
       }
       // Calling this tool IS the decision that the guest is ordering. Recording it
       // keeps the rest of the turn consistent: finalValidator uses the same flag to
