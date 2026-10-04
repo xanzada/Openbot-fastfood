@@ -86,6 +86,11 @@ function conversationRole(entry: any): ConversationRole | null {
 // few tokens on a flash model but covers a whole ordering conversation.
 const DIALOG_PER_SIDE = 8;
 const DIALOG_TEXT_LIMIT = 500;
+const DIALOG_MIN_ENTRIES = 4;
+function dialogCharBudget() {
+  const value = Number(process.env.OPENBOT_DIALOG_CHAR_BUDGET);
+  return Number.isFinite(value) && value >= 1_000 ? Math.min(value, 20_000) : 4_000;
+}
 
 export function compactConversationHistory(history: any[]) {
   const normalized = (Array.isArray(history) ? history : [])
@@ -105,6 +110,11 @@ export function compactConversationHistory(history: any[]) {
 
   let customerCount = 0;
   let restaurantCount = 0;
+  // Sliding window (2026-10-04): besides the 8+8 cap, the window is bounded in
+  // characters so a long chat (72 stored messages live) cannot inflate the prompt.
+  // The newest DIALOG_MIN_ENTRIES always survive, whatever their length.
+  const charBudget = dialogCharBudget();
+  let usedChars = 0;
   const selected: typeof normalized = [];
   for (let index = normalized.length - 1; index >= 0; index -= 1) {
     const entry = normalized[index];
@@ -115,6 +125,8 @@ export function compactConversationHistory(history: any[]) {
       if (restaurantCount >= DIALOG_PER_SIDE) continue;
       restaurantCount += 1;
     }
+    if (selected.length >= DIALOG_MIN_ENTRIES && usedChars + entry.text.length > charBudget) break;
+    usedChars += entry.text.length;
     selected.push(entry);
     if (customerCount >= DIALOG_PER_SIDE && restaurantCount >= DIALOG_PER_SIDE) break;
   }

@@ -1661,6 +1661,15 @@ async function processWhatsAppWebhook(body: any, started: number) {
     // (2026-08-21 badge noise).
     const toolHandledEscalation = Array.isArray(result.toolCalls)
       && result.toolCalls.some((call: any) => call?.name === "escalateToAdmin");
+    // Guaranteed hand-off (2026-10-04): the plan pinned escalateToAdmin for an actionable
+    // incident, but the model answered without calling it (live: planned=escalateToAdmin,
+    // called=searchMenu, no case, no SOS). Code routes such a turn to the operator itself.
+    const plannedEscalationMissed = !toolHandledEscalation
+      && Array.isArray(result.toolPlan?.requiredTools)
+      && result.toolPlan.requiredTools.includes("escalateToAdmin");
+    if (plannedEscalationMissed) {
+      console.warn(`[OPENBOT:ESCALATION] forced instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} reason=planned_tool_missed`);
+    }
     // Asking for a human, a courier number, or lodging a complaint no longer
     // fires SOS on the spot: a bare demand earns one clarifying question, and
     // only the guest's answer (or a message that already carries the story, or
@@ -1677,6 +1686,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const hasDetailNow = !menuQuestion && complaintHasActionableDetail(ctx.text);
     const needsClarification =
       !toolHandledEscalation
+      && !plannedEscalationMissed
       && !clarificationUnknown
       && (askedForOperator || complaintText || needsAdminEscalation)
       && awaitingDetail === null
@@ -1692,7 +1702,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
       // guard the menu question opened a silent operator case while the reply talked
       // about pizza (found 2026-08-23).
       && !menuQuestion
-      && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null);
+      && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null)
+      || plannedEscalationMissed;
 
     if (needsClarification) {
       await markComplaintClarificationPending(ctx.instanceId, ctx.phone, ctx.text).catch(() => false);
@@ -1718,8 +1729,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
           .join(" — "),
         customerText: [awaitingDetail, ctx.text].filter(Boolean).join(" — "),
         customerReply: finalText,
-        urgency: needsAdminEscalation ? "high" : "normal",
-        source: needsAdminEscalation ? "ai_escalation_signal" : pendingComplaintMedia ? "pending_complaint_media" : detectOperatorCaseKind(ctx.text) || "complaint_text",
+        urgency: needsAdminEscalation || plannedEscalationMissed ? "high" : "normal",
+        source: plannedEscalationMissed ? "planned_escalation_missed" : needsAdminEscalation ? "ai_escalation_signal" : pendingComplaintMedia ? "pending_complaint_media" : detectOperatorCaseKind(ctx.text) || "complaint_text",
       });
       await saveToHistory(
         ctx.instanceId,

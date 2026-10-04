@@ -234,7 +234,11 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     && input.source !== "ai_unavailable"
     // The catalog has no ingredients, so a person has to read the real recipe;
     // skipping it made «асүйден нақтылап беремін» a promise nobody kept (2026-10-04).
-    && input.source !== "composition_check";
+    && input.source !== "composition_check"
+    // The planner already classified this turn as an actionable incident and pinned
+    // escalateToAdmin; the model skipped the tool. A dish named in the complaint must not
+    // turn the guaranteed hand-off back into a silent skip (2026-10-04).
+    && input.source !== "planned_escalation_missed";
   if (menuSkipApplies && isLikelyMenuQuestion(input.customerText || ctx.text)) {
     return {
       action: "skipped_menu_question",

@@ -129,10 +129,23 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   // Skipped entirely for greetings, one-word turns, and turns whose tool plan
   // is already confident - so simple chats pay nothing. Any failure is just
   // "no guidance".
+  //
+  // Zero-lag THINK (2026-10-04): the pre-pass used to block the answer for up to
+  // THINK_TIMEOUT_MS - live, a 39 s turn lost 5 s here and THINK timed out anyway.
+  // It now runs IN PARALLEL with the answer and is joined right after it (bounded by
+  // THINK_JOIN_MS) for the critic, metrics and routing. THINK_MODE=blocking restores
+  // the old order, THINK_MODE=off skips it.
+  const thinkMode = String(process.env.THINK_MODE || "parallel").trim().toLowerCase();
+  let pendingThinking: Promise<TurnAnalysis | null> | null = null;
   if (ctx.thinking === undefined || ctx.thinking === null) {
-    ctx.thinking = await analyzeTurnSituation(ctx, toolPlan).catch(() => null);
+    if (thinkMode === "blocking") {
+      ctx.thinking = await analyzeTurnSituation(ctx, toolPlan).catch(() => null);
+    } else if (thinkMode !== "off") {
+      ctx.thinking = null;
+      pendingThinking = analyzeTurnSituation(ctx, toolPlan).catch(() => null);
+    }
   }
-  const thinking = (ctx.thinking || null) as TurnAnalysis | null;
+  let thinking = (ctx.thinking || null) as TurnAnalysis | null;
 
   // A turn that is nothing but a greeting needs no tool: live calibration (2026-10-04) saw
   // «Сәлем» spend an extra model round on updateCrmLead and take 8-22 s instead of 2-4 s.
@@ -156,6 +169,16 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   };
 
   let result = await buildAgent(ctx).generateText(ctx.text, generateOptions);
+  if (pendingThinking) {
+    const joinMs = envNumber(process.env.THINK_JOIN_MS, 300, { min: 0, max: 5_000 });
+    const joined = await Promise.race([
+      pendingThinking,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), joinMs)),
+    ]);
+    thinking = joined || null;
+    ctx.thinking = thinking;
+    console.info(`[THINK] parallel instance=${ctx.instanceId} joined=${thinking ? "yes" : "no"}`);
+  }
   // Kept separately because the critic can replace `result` below.
   let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
   let validation = validateFinalText(result.text, ctx, {
