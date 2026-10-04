@@ -128,7 +128,16 @@ function noteChainSuccess(entry: ChainEntry, result: any, startedAt: number) {
   });
 }
 
+function isToolChoiceIgnoredError(error: any): boolean {
+  return Boolean(error?.message && String(error.message).startsWith("TOOL_CHOICE_IGNORED"));
+}
+
 function noteChainFailure(entry: ChainEntry, error: any, startedAt: number) {
+  if (isToolChoiceIgnoredError(error)) {
+    // 200 OK with direct text is not a network or provider outage:
+    // do not poison the model with 60s failure cooldown or mark provider suspect.
+    return;
+  }
   noteModelFailure(entry.label);
   if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: false, latencyMs: Date.now() - startedAt, error });
 }
@@ -153,6 +162,7 @@ async function callChainHedged(chain: ChainEntry[], options: any) {
     let pending = 0;
     let settled = false;
     let lastError: any = new Error("MODEL_CHAIN_EMPTY");
+    let lastTextFallback: { entry: ChainEntry; result: any; startedAt: number } | null = null;
     let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
     const controllers: AbortController[] = [];
     const finish = (fn: () => void) => {
@@ -191,7 +201,10 @@ async function callChainHedged(chain: ChainEntry[], options: any) {
           if (settled) return;
           // Accept an imperfect answer only when nothing else can still answer.
           const othersLeft = pending > 0 || launched < usable.length;
-          if (othersLeft && ignoredPinnedTool("doGenerate", options, result)) throw new Error(`TOOL_CHOICE_IGNORED:${entry.model.modelId}`);
+          if (othersLeft && ignoredPinnedTool("doGenerate", options, result)) {
+            lastTextFallback = { entry, result, startedAt };
+            throw new Error(`TOOL_CHOICE_IGNORED:${entry.model.modelId}`);
+          }
           if (othersLeft && emptyCompletion("doGenerate", result)) throw new Error(`EMPTY_COMPLETION:${entry.model.modelId}`);
           noteChainSuccess(entry, result, startedAt);
           finish(() => resolve(result));
@@ -213,7 +226,14 @@ async function callChainHedged(chain: ChainEntry[], options: any) {
             launch("failed");
             scheduleHedge();
           } else if (pending === 0) {
-            finish(() => reject(lastError));
+            if (lastTextFallback) {
+              const fallback = lastTextFallback;
+              console.warn(`[MODEL:TEXT] all subsequent lanes failed; accepting fallback text result from ${fallback.entry.label}`);
+              noteChainSuccess(fallback.entry, fallback.result, fallback.startedAt);
+              finish(() => resolve(fallback.result));
+            } else {
+              finish(() => reject(lastError));
+            }
           }
         });
     };
@@ -244,6 +264,7 @@ async function callChainSequential(
 ) {
   const usable = chain.filter((entry, index) => index === chain.length - 1 || !modelIsCoolingDown(entry.label));
   let lastError: any = new Error("MODEL_CHAIN_EMPTY");
+  let lastTextFallback: { result: any; entry: any; startedAt: number } | null = null;
   for (let index = 0; index < usable.length; index += 1) {
     const entry = usable[index];
     const startedAt = Date.now();
@@ -254,6 +275,7 @@ async function callChainSequential(
       // 1590 ₸ doner (probe 2026-10-04). A pinned step with no tool call is a failed
       // lane while another lane is left to try.
       if (index < usable.length - 1 && ignoredPinnedTool(operation, options, result)) {
+        lastTextFallback = { result, entry, startedAt };
         throw new Error(`TOOL_CHOICE_IGNORED:${entry.model.modelId}`);
       }
       if (index < usable.length - 1 && emptyCompletion(operation, result)) {
@@ -277,15 +299,37 @@ async function callChainSequential(
       return result;
     } catch (error: any) {
       lastError = error;
-      noteModelFailure(entry.label);
-      if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: false, latencyMs: Date.now() - startedAt, error });
+      const toolIgnored = isToolChoiceIgnoredError(error);
+      if (!toolIgnored) {
+        noteModelFailure(entry.label);
+        if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: false, latencyMs: Date.now() - startedAt, error });
+      }
       const next = usable[index + 1];
       console.warn(
-        `[MODEL:TEXT] ${entry.label}=${entry.model.modelId} failed; ` +
+        `[MODEL:TEXT] ${entry.label}=${entry.model.modelId} ${toolIgnored ? "bypassed (tool ignored)" : "failed"}; ` +
         `${next ? `next=${next.model.modelId}` : "no_more_models"}; ` +
         `error=${error?.message || error}`
       );
     }
+  }
+  if (lastTextFallback) {
+    console.warn(`[MODEL:TEXT] all subsequent models failed; accepting fallback text result from ${lastTextFallback.entry.label}`);
+    noteModelSuccess(lastTextFallback.entry.label);
+    if (lastTextFallback.entry.providerEntry) {
+      const pTokens = Number(lastTextFallback.result?.usage?.promptTokens) || 0;
+      const cTokens = Number(lastTextFallback.result?.usage?.completionTokens) || 0;
+      const tTokens = Number(lastTextFallback.result?.usage?.totalTokens) || (pTokens + cTokens);
+      noteProviderOutcome({
+        entry: lastTextFallback.entry.providerEntry,
+        pool: "text",
+        ok: true,
+        latencyMs: Date.now() - lastTextFallback.startedAt,
+        promptTokens: pTokens,
+        completionTokens: cTokens,
+        totalTokens: tTokens,
+      });
+    }
+    return lastTextFallback.result;
   }
   throw lastError;
 }

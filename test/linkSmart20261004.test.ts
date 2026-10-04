@@ -87,7 +87,7 @@ test("a recent flag alone no longer blocks a promise when the link is not in the
 });
 
 test("right after the link went out, a generic pointer is dropped, the facts stay", async () => {
-  const ctx = baseCtx({ magicLinkAlreadySent: true, chatHistory: [
+  const ctx = baseCtx({ magicLinkAlreadySent: true, text: "Донер қанша?", chatHistory: [
     { role: "assistant", text: "Міне, мәзір:" },
     { role: "assistant", text: LINK },
     { role: "user", text: "Донер қанша?" },
@@ -123,11 +123,25 @@ test("the tool grants an order on an old link and refuses only a fresh duplicate
   assert.equal(granted.allowed, true);
   assert.equal(oldLink.magicLinkGranted, true);
 
-  const fresh = baseCtx({ magicLinkAlreadySent: true });
+  const fresh = baseCtx({ magicLinkAlreadySent: true, text: "Сағат нешеге дейін жұмыс істейсіздер?" });
   const refused = await (createSendMenuLinkSkill(fresh) as any).execute({ reason: "follow-up" });
   assert.equal(refused.allowed, false);
   assert.equal(refused.reason, "link_already_sent");
 
   const resend = await (createSendMenuLinkSkill(baseCtx({ magicLinkAlreadySent: true })) as any).execute({ reason: "order", guestAskedToResend: true });
   assert.equal(resend.allowed, true);
+});
+
+test("the tool grants a link on direct order intent even if magicLinkAlreadySent is true", async () => {
+  for (const text of [
+    "Бауырым екі пицца екі донер",
+    "донер алғым келеді",
+    "тапсырыс берейін",
+    "2 донер жасап қойшы",
+  ]) {
+    const orderingCtx = baseCtx({ magicLinkAlreadySent: true, text });
+    const granted = await (createSendMenuLinkSkill(orderingCtx) as any).execute({ reason: "ordering" });
+    assert.equal(granted.allowed, true, text);
+    assert.equal(orderingCtx.magicLinkGranted, true, text);
+  }
 });

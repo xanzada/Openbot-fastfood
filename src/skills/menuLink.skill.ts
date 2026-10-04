@@ -1,3 +1,10 @@
+export const DIRECT_ORDER_INTENT_RE =
+  /(?:(?:тапсырыс|заказ)\s*(?:бер|жаса|ет|қыл|хочу|оформ|сдел)|(?:алғым\s*келе|аламын|алайын|хочу\s*заказ|хочу\s*взять)|(?:[1-9]|екі|бір|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он|один|два|три|две)\s*(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]|порц)|(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]).*(?:жасап|әкел|жеткіз|берші|дайында|алғым|аламын|алайын))/iu;
+
+export function hasDirectOrderIntent(text = ""): boolean {
+  return DIRECT_ORDER_INTENT_RE.test(String(text || ""));
+}
+
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import {
@@ -94,17 +101,27 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // report; it no longer gates anything, because every genuine request now
       // takes the normal grant path (no calendar rationing, 2026-08-14).
       const explicitlyRequestedThisTurn = Boolean(ctx.explicitMenuLinkIntent);
+      const text = String(ctx.text || "");
+      const directOrder = hasDirectOrderIntent(text);
       // magicLinkAlreadySent now means "still on screen" (sent minutes ago / in the
-      // last messages). A link from yesterday is not a duplicate: the guest who is
-      // ordering again simply gets it (owner report, 2026-10-04).
-      if (ctx.magicLinkAlreadySent && !explicitlyRequestedThisTurn && !previousLinkBroken && !guestAskedToResend) {
+      // last messages). If the guest names dishes to order («екі пицца екі донер»),
+      // asks to order («донер алғым келеді», «тапсырыс берейін»), requests resend,
+      // or reported a broken link, grant the link so the bot never promises a link
+      // without delivering it.
+      if (
+        ctx.magicLinkAlreadySent &&
+        !explicitlyRequestedThisTurn &&
+        !directOrder &&
+        !previousLinkBroken &&
+        !guestAskedToResend
+      ) {
         ctx.magicLinkGranted = false;
         return {
           allowed: false,
           link: null,
           reason: "link_already_sent",
           message: null,
-          note: "Not re-sent: the same link was sent moments ago and the guest did not ask for it again - just answer their message, and do NOT write that a link is below/coming. If they DID ask to resend/duplicate/show the link (in any wording), or they are placing an order and need it, call sendMenuLink again with guestAskedToResend=true. Never tell the guest to scroll up or that the link is above/was sent earlier.",
+          note: "Not re-sent: the same link was sent moments ago and the guest did not ask for it again or name dishes - just answer their message, and do NOT write that a link is below/coming. If they DID ask to resend/duplicate/show the link (in any wording), or they are placing an order and need it, call sendMenuLink again with guestAskedToResend=true. Never tell the guest to scroll up or that the link is above/was sent earlier.",
         };
       }
       // Calling this tool IS the decision that the guest is ordering. Recording it

@@ -1,3 +1,4 @@
+import { hasDirectOrderIntent } from "../skills/menuLink.skill.js";
 import type { FastFoodContext } from "../context/types.js";
 import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
 import { getKitchenCheckoutFingerprint, markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
@@ -79,7 +80,7 @@ export async function honorMenuLinkPromise(ctx: FastFoodContext, finalText: stri
   // scrolled away and «төмендегі сілтеме» must really be below (2026-10-04).
   // An explicit request still passes because preload marks that intent, and if
   // dropping the sentence would leave nothing to say, the promise is kept.
-  if (!ctx.explicitMenuLinkIntent && linkInLastBotReply(ctx.chatHistory)) {
+  if (!ctx.explicitMenuLinkIntent && !hasDirectOrderIntent(guestText) && linkInLastBotReply(ctx.chatHistory)) {
     const kept = stripMenuLinkPromise(finalText);
     if (kept) return { action: "stripped", text: kept, reason: "link_already_sent" };
   }

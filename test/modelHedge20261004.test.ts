@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { callModelChain, clearModelCooldowns } from "../src/agent/modelRouter.js";
+import { callModelChain, clearModelCooldowns, modelCooldownState } from "../src/agent/modelRouter.js";
 
 const okResult = (text: string) => ({ content: [{ type: "text", text }], usage: {} });
 function fakeModel(modelId: string, behaviour: (signal: AbortSignal) => Promise<any>, log: string[]) {
@@ -85,5 +85,54 @@ test("TEXT_HEDGE_DELAY_MS=0 keeps the old sequential chain", async () => {
   ], "doGenerate", {});
   assert.equal(result.content[0].text, "from a");
   assert.deepEqual(log, ["start:a"]);
+  delete process.env.TEXT_HEDGE_DELAY_MS;
+});
+
+test("TOOL_CHOICE_IGNORED does not poison cooldown and falls back to text if next lanes fail", async () => {
+  process.env.TEXT_HEDGE_DELAY_MS = "50";
+  clearModelCooldowns();
+  const log: string[] = [];
+  const options = { toolChoice: { type: "tool", toolName: "searchMenu" } };
+
+  const result = await callModelChain([
+    entry(fakeModel("a", after(10, okResult("text from a")), log)),
+    entry(fakeModel("b", async () => { await new Promise((r) => setTimeout(r, 30)); throw new Error("b crashed"); }, log)),
+  ], "doGenerate", options);
+
+  assert.equal(result.content[0].text, "text from a");
+  const cooldowns = modelCooldownState();
+  assert.equal(Boolean(cooldowns["t:a"]), false, "model a should not be in cooldown");
+});
+
+test("sequential chain: TOOL_CHOICE_IGNORED accepts fallback text if later lanes fail and does not poison cooldown", async () => {
+  process.env.TEXT_HEDGE_DELAY_MS = "0";
+  clearModelCooldowns();
+  const log: string[] = [];
+  const options = { toolChoice: { type: "tool", toolName: "searchMenu" } };
+
+  const result = await callModelChain([
+    entry(fakeModel("a", after(10, okResult("direct text")), log)),
+    entry(fakeModel("b", async () => { throw new Error("500 internal server error"); }, log)),
+  ], "doGenerate", options);
+
+  assert.equal(result.content[0].text, "direct text");
+  const cooldowns = modelCooldownState();
+  assert.equal(Boolean(cooldowns["t:a"]), false, "model a should not be in cooldown");
+  delete process.env.TEXT_HEDGE_DELAY_MS;
+});
+
+test("last model in chain accepting text when tool pinned", async () => {
+  process.env.TEXT_HEDGE_DELAY_MS = "0";
+  clearModelCooldowns();
+  const log: string[] = [];
+  const options = { toolChoice: { type: "tool", toolName: "searchMenu" } };
+
+  const result = await callModelChain([
+    entry(fakeModel("lastOnly", after(10, okResult("last answer")), log)),
+  ], "doGenerate", options);
+
+  assert.equal(result.content[0].text, "last answer");
+  const cooldowns = modelCooldownState();
+  assert.equal(Boolean(cooldowns["t:lastOnly"]), false);
   delete process.env.TEXT_HEDGE_DELAY_MS;
 });
