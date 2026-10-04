@@ -8,6 +8,8 @@ import { getRestaurantConfig, getShporContext } from "../services/platformConfig
 import {
   connectRedis,
   getActiveShiftNotes,
+  getDeletedShiftNoteIds,
+  withoutDeletedNotes,
   getChatHistory,
   getSiteLanguageHint,
   getUserLang,
@@ -103,7 +105,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   if (!phone) throw new Error("phone is required");
   if (!text) throw new Error("text is required");
 
-  const [config, storedLang, siteLanguageHint, chatHistory, cachedShiftNotes, magicLinkSentAt] =
+  const [config, storedLang, siteLanguageHint, rawChatHistory, cachedShiftNotes, magicLinkSentAt, deletedNoteIds] =
     await Promise.all([
       getRestaurantConfig(instanceId),
       getUserLang(instanceId, phone).catch(() => null),
@@ -111,7 +113,13 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       getChatHistory(instanceId, phone).catch(() => []),
       getActiveShiftNotes(instanceId).catch(() => []),
       getMagicLinkSentAt(instanceId, phone).catch(() => 0),
+      getDeletedShiftNoteIds(instanceId).catch(() => new Set<string>()),
     ]);
+  // A reply built on a note the operator has just deleted is not shown to the model
+  // again (a turn in flight during the delete can still save one).
+  const chatHistory = deletedNoteIds.size && Array.isArray(rawChatHistory)
+    ? rawChatHistory.filter((entry: any) => !(Array.isArray(entry?.sourceNoteIds) && entry.sourceNoteIds.some((id: unknown) => deletedNoteIds.has(String(id)))))
+    : rawChatHistory;
   // «Already sent» means still on the guest's screen (minutes ago / last messages),
   // not «at some point in the last 30 days» (owner report, 2026-10-04).
   const magicLinkEverSent = Number(magicLinkSentAt) > 0;
@@ -265,7 +273,10 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // Redis copy keep the fast path, but a missed event or a bot deployment must
   // not leave the AI without the current shift notes for even one turn. The merge
   // keeps a hub that echoes shift_notes: [] from shadowing real Redis notes.
-  const activeShiftNotes = mergeShiftNoteSources(runtimeStatus?.shift_notes, cachedShiftNotes);
+  if (deletedNoteIds.size && runtimeStatus && Array.isArray((runtimeStatus as any).shift_notes)) {
+    (runtimeStatus as any).shift_notes = withoutDeletedNotes((runtimeStatus as any).shift_notes, deletedNoteIds);
+  }
+  const activeShiftNotes = withoutDeletedNotes(mergeShiftNoteSources(runtimeStatus?.shift_notes, cachedShiftNotes), deletedNoteIds);
   const activeShiftNotesFingerprint = activeShiftNotes.length
     ? crypto.createHash("sha256").update(activeShiftNotes.map((note: any) => `${String(note?.text || "").trim()}|${Number(note?.expiresAt || 0) || 0}`).sort().join("\n")).digest("hex")
     : "";

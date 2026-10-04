@@ -7,6 +7,8 @@ import {
   connectRedis,
   clearKitchenCheckoutState,
   deleteShiftNote,
+  forgetDeletedShiftNote,
+  refreshAfterShiftNoteSaved,
   getKitchenStatus,
   getOrderNotifyCursor,
   getOrderPhone,
@@ -945,6 +947,8 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       auditDecision("Saving shift note to AI memory", { instance, shiftNotePayload });
       const saved = await saveShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text, shiftNotePayload.expiresAt);
       if (!saved) throw new Error("SHIFT_NOTE_SAVE_FAILED");
+      // The runtime snapshot still carries the previous text under the same id (2026-10-04).
+      await refreshAfterShiftNoteSaved(instance, shiftNotePayload.noteId).catch(() => undefined);
       auditDecision("Shift note saved", { instance, shiftNotePayload });
       res.status(200).json({ success: true, message: "Note saved to AI memory" });
       return;
@@ -962,6 +966,8 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       }
       auditDecision("Deleting shift note from AI memory", { instance, shiftNotePayload });
       const deleted = await deleteShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text);
+      // Gone from every copy the bot reads, not only the Redis key (live test 2026-10-04).
+      await forgetDeletedShiftNote(instance, shiftNotePayload.noteId, shiftNotePayload.text).catch(() => undefined);
       auditDecision("Shift note delete finished", { instance, shiftNotePayload, deleted });
       res.status(200).json({
         success: true,

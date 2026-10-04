@@ -1114,11 +1114,114 @@ export async function deleteShiftNote(
   });
 }
 
+/**
+ * A note deleted on the site must vanish from EVERY copy the bot reads, at once.
+ *
+ * Live test 2026-10-04: «суши жоқ» was deleted, the webhook removed the Redis note
+ * (deleted=1), and the very next question still got «суши уақытша дайындалмай тұр»:
+ * the turn read the hub runtime snapshot (30 s stale-while-revalidate), which still
+ * listed the note, and mergeShiftNoteSources put it straight back. A short-lived
+ * tombstone now blocks the id in every lane (snapshots, hub re-sync, history), and
+ * the snapshots themselves are dropped so the next turn reads the hub fresh.
+ */
+const DELETED_NOTE_TTL_SECONDS = 30 * 60;
+function deletedNotesKey(instanceId: string) {
+  return `shift_note_deleted:${instanceId}`;
+}
+
+export async function getDeletedShiftNoteIds(instanceId: string): Promise<Set<string>> {
+  return safeRedis(new Set<string>(), async () => {
+    const rows = await redisClient.hGetAll(deletedNotesKey(instanceId));
+    const now = Date.now();
+    return new Set(
+      Object.entries(rows || {})
+        .filter(([, at]) => now - Number(at || 0) < DELETED_NOTE_TTL_SECONDS * 1000)
+        .map(([id]) => id),
+    );
+  });
+}
+
+function noteIdOf(note: any) {
+  return String(note?.noteId ?? note?.note_id ?? note?.id ?? "").trim();
+}
+
+export function withoutDeletedNotes<T>(list: T[], ids: Set<string>, text = ""): T[] {
+  const expected = String(text || "").trim().toLowerCase();
+  return (Array.isArray(list) ? list : []).filter((note: any) => {
+    const id = noteIdOf(note);
+    if (id && ids.has(id)) return false;
+    if (expected && String(note?.text || "").trim().toLowerCase() === expected) return false;
+    return true;
+  });
+}
+
+/** Drop the short-lived hub runtime snapshots so the next turn reads the hub fresh. */
+export async function invalidateRuntimeSnapshots(instanceId: string): Promise<void> {
+  await safeRedis(undefined, async () => {
+    await redisClient.del([`runtime_status:${instanceId}`, `runtime_status_swr:${instanceId}`]);
+  });
+}
+
+/**
+ * A note created or edited on the site: the old runtime snapshot (old text under the
+ * same id wins the merge) is dropped, and an id the operator brought back is no
+ * longer treated as deleted.
+ */
+export async function refreshAfterShiftNoteSaved(instanceId: string, noteId?: string | number): Promise<void> {
+  const id = String(noteId || "").trim();
+  await safeRedis(undefined, async () => {
+    if (id) await redisClient.hDel(deletedNotesKey(instanceId), id);
+  });
+  await invalidateRuntimeSnapshots(instanceId);
+}
+
+export async function forgetDeletedShiftNote(instanceId: string, noteId?: string | number, text = ""): Promise<void> {
+  await safeRedis(undefined, async () => {
+    const id = String(noteId || "").trim();
+    const ids = new Set(id && id !== "0" ? [id] : []);
+    const expectedText = String(text || "").trim();
+    if (!ids.size && !expectedText) return;
+    if (ids.size) {
+      await redisClient.multi()
+        .hSet(deletedNotesKey(instanceId), id, String(Date.now()))
+        .expire(deletedNotesKey(instanceId), DELETED_NOTE_TTL_SECONDS)
+        .exec();
+    }
+    // Short-lived hub snapshots are simply dropped: the next turn reads the hub fresh.
+    await invalidateRuntimeSnapshots(instanceId);
+    // The 10-minute backup is the outage fallback - keep it, minus the deleted note.
+    const backupKey = `runtime_status_backup:${instanceId}`;
+    const raw = await redisClient.get(backupKey).catch(() => null);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.shift_notes)) {
+          parsed.shift_notes = withoutDeletedNotes(parsed.shift_notes, ids, expectedText);
+          await redisClient.set(backupKey, JSON.stringify(parsed), { KEEPTTL: true });
+        }
+      } catch { /* a malformed backup is left for its TTL */ }
+    }
+    if (ids.size) {
+      await purgeShiftNoteIdsFromHistory(instanceId, [...ids]).catch(() => 0);
+      // A turn already in flight when the delete arrived may still save a reply
+      // built on the old note; sweep once more after it has finished.
+      setTimeout(() => {
+        void purgeShiftNoteIdsFromHistory(instanceId, [...ids]).catch(() => 0);
+      }, 90_000).unref?.();
+    }
+  });
+}
+
 export async function getActiveShiftNotes(instanceId: string): Promise<Array<{ noteId: string; text: string; expiresAt?: number }>> {
   return safeRedis([], async () => {
     const keys = await scanKeys(`shift_note:${instanceId}:*`);
+    const deleted = await getDeletedShiftNoteIds(instanceId);
     const notes = [];
     for (const key of keys) {
+      if (deleted.has(key.split(":").pop() || "")) {
+        await redisClient.del(key).catch(() => undefined);
+        continue;
+      }
       const note = parseShiftNoteRecord((await redisClient.get(key)) || "");
       if (!note.text || note.expired || note.plain) {
         const noteId = key.split(":").pop() || "";
@@ -1141,10 +1244,13 @@ export async function syncShiftNotesSnapshot(
 ): Promise<number> {
   return safeRedis(0, async () => {
     const desiredIds = new Set<string>();
+    // A hub snapshot fetched just before (or cached across) a site delete must not
+    // resurrect the note the operator has just removed.
+    const deleted = await getDeletedShiftNoteIds(instanceId);
     for (const note of Array.isArray(snapshot) ? snapshot : []) {
       const noteId = String(note?.noteId ?? note?.note_id ?? note?.id ?? "").trim();
       const text = String(note?.text || "").trim();
-      if (!noteId || !text) continue;
+      if (!noteId || !text || deleted.has(noteId)) continue;
       const expiresAt = note?.expiresAt ?? note?.expires_at;
       const expiry = typeof expiresAt === "number" && expiresAt > 0
         ? new Date(expiresAt >= 1e12 ? expiresAt : expiresAt * 1000).toISOString()
