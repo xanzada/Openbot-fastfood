@@ -100,12 +100,144 @@ function emptyCompletion(operation: string, result: any) {
     part?.type === "tool-call" || (part?.type === "text" && String(part.text || "").trim()));
 }
 
+function hedgeDelayMs() {
+  const value = Number(process.env.TEXT_HEDGE_DELAY_MS ?? 4_500);
+  return Number.isFinite(value) ? Math.max(0, Math.min(60_000, value)) : 4_500;
+}
+
+function hedgeAttemptTimeoutMs() {
+  return envTimeout("TEXT_HEDGE_ATTEMPT_TIMEOUT_MS", 15_000);
+}
+
+type ChainEntry = { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry };
+
+function noteChainSuccess(entry: ChainEntry, result: any, startedAt: number) {
+  noteModelSuccess(entry.label);
+  if (!entry.providerEntry) return;
+  const pTokens = Number(result?.usage?.promptTokens) || 0;
+  const cTokens = Number(result?.usage?.completionTokens) || 0;
+  const tTokens = Number(result?.usage?.totalTokens) || (pTokens + cTokens);
+  noteProviderOutcome({
+    entry: entry.providerEntry,
+    pool: "text",
+    ok: true,
+    latencyMs: Date.now() - startedAt,
+    promptTokens: pTokens,
+    completionTokens: cTokens,
+    totalTokens: tTokens,
+  });
+}
+
+function noteChainFailure(entry: ChainEntry, error: any, startedAt: number) {
+  noteModelFailure(entry.label);
+  if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: false, latencyMs: Date.now() - startedAt, error });
+}
+
+/**
+ * Hedged chain (2026-10-04). The A6API lanes answer the same 20k-token prompt in
+ * 5 s one minute and hang for 25-45 s the next. Run strictly one after another,
+ * three such stalls (8 s + 8 s + 20 s) ended a live turn with "AI unavailable"
+ * after 46 s while every provider was in fact up. Now the next lane is started
+ * in PARALLEL as soon as the current one is slower than TEXT_HEDGE_DELAY_MS (or
+ * fails), the first valid answer wins and the losers are aborted. A fast primary
+ * costs exactly one call, as before. TEXT_HEDGE_DELAY_MS=0 restores the old
+ * strictly sequential behaviour. Streams stay sequential.
+ */
+async function callChainHedged(chain: ChainEntry[], options: any) {
+  const usable = chain.filter((entry, index) => index === chain.length - 1 || !modelIsCoolingDown(entry.label));
+  const delay = hedgeDelayMs();
+  const attemptTimeout = hedgeAttemptTimeoutMs();
+  const upstream = options?.abortSignal as AbortSignal | undefined;
+  return await new Promise<any>((resolve, reject) => {
+    let launched = 0;
+    let pending = 0;
+    let settled = false;
+    let lastError: any = new Error("MODEL_CHAIN_EMPTY");
+    let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+    const controllers: AbortController[] = [];
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      for (const controller of controllers) {
+        if (!controller.signal.aborted) controller.abort(new Error("HEDGE_LOSER_ABORTED"));
+      }
+      upstream?.removeEventListener("abort", onUpstreamAbort);
+      fn();
+    };
+    const onUpstreamAbort = () => finish(() => reject(upstream?.reason || new Error("ABORTED")));
+    if (upstream?.aborted) return onUpstreamAbort();
+    upstream?.addEventListener("abort", onUpstreamAbort, { once: true });
+
+    const scheduleHedge = () => {
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      if (delay > 0 && launched < usable.length) hedgeTimer = setTimeout(() => { launch("slow"); scheduleHedge(); }, delay);
+    };
+    const launch = (why: "first" | "slow" | "failed") => {
+      if (settled || launched >= usable.length) return;
+      const index = launched;
+      launched += 1;
+      pending += 1;
+      const entry = usable[index];
+      const isLast = index === usable.length - 1;
+      const timeout = delay > 0 && !isLast ? Math.max(entry.timeout, attemptTimeout) : entry.timeout;
+      const controller = new AbortController();
+      controllers.push(controller);
+      const startedAt = Date.now();
+      if (why === "slow") console.warn(`[MODEL:TEXT] hedge: ${entry.label}=${entry.model.modelId} started in parallel (previous lane slower than ${delay}ms)`);
+      timedModelCall(entry.model, "doGenerate", { ...options, abortSignal: controller.signal }, timeout)
+        .then((result) => {
+          pending -= 1;
+          if (settled) return;
+          // Accept an imperfect answer only when nothing else can still answer.
+          const othersLeft = pending > 0 || launched < usable.length;
+          if (othersLeft && ignoredPinnedTool("doGenerate", options, result)) throw new Error(`TOOL_CHOICE_IGNORED:${entry.model.modelId}`);
+          if (othersLeft && emptyCompletion("doGenerate", result)) throw new Error(`EMPTY_COMPLETION:${entry.model.modelId}`);
+          noteChainSuccess(entry, result, startedAt);
+          finish(() => resolve(result));
+        }, (error) => {
+          pending -= 1;
+          throw error;
+        })
+        .catch((error: any) => {
+          if (settled) return;
+          lastError = error;
+          noteChainFailure(entry, error, startedAt);
+          const hasNext = launched < usable.length;
+          console.warn(
+            `[MODEL:TEXT] ${entry.label}=${entry.model.modelId} failed; ` +
+            `${hasNext ? `next=${usable[launched].model.modelId}` : pending > 0 ? "waiting_parallel" : "no_more_models"}; ` +
+            `error=${error?.message || error}`
+          );
+          if (hasNext) {
+            launch("failed");
+            scheduleHedge();
+          } else if (pending === 0) {
+            finish(() => reject(lastError));
+          }
+        });
+    };
+    launch("first");
+    scheduleHedge();
+  });
+}
+
+export async function callModelChain(
+  chain: ChainEntry[],
+  operation: "doGenerate" | "doStream",
+  options: any
+) {
+  if (operation === "doGenerate" && hedgeDelayMs() > 0) return callChainHedged(chain, options);
+  return callChainSequential(chain, operation, options);
+}
+
 /**
  * Runs the chain in order, skipping any model inside its failure window, and always
  * keeping the LAST model as a genuine last resort even if it is cooling down - a
  * turn must still produce an answer when every provider is unhappy.
  */
-async function callChain(
+async function callChainSequential(
+
   chain: { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry }[],
   operation: "doGenerate" | "doStream",
   options: any
@@ -175,11 +307,11 @@ function wrapChain(chain: { model: any; timeout: number; label: string; provider
   const wrapped = { ...chain[0].model };
 
   if (typeof chain[0].model.doGenerate === "function") {
-    wrapped.doGenerate = (options: any) => callChain(chain, "doGenerate", options);
+    wrapped.doGenerate = (options: any) => callModelChain(chain, "doGenerate", options);
   }
 
   if (typeof chain[0].model.doStream === "function") {
-    wrapped.doStream = (options: any) => callChain(chain, "doStream", options);
+    wrapped.doStream = (options: any) => callModelChain(chain, "doStream", options);
   }
 
   return wrapped;

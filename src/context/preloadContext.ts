@@ -11,7 +11,7 @@ import {
   getChatHistory,
   getSiteLanguageHint,
   getUserLang,
-  hasMagicLinkBeenSent,
+  getMagicLinkSentAt,
   replaceUserLang,
   saveUserLang,
 } from "../services/redis.service.js";
@@ -25,6 +25,7 @@ import { orderMentionedByItems, pickConversationOrder } from "../services/custom
 import { matchingNoteIds, mergeShiftNoteSources } from "../services/noteProvenance.service.js";
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
+import { isMagicLinkRecent } from "../utils/linkRecency.js";
 import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal, unclassifiedTextIsDecisive, instantLanguageDecision } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
@@ -102,15 +103,19 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   if (!phone) throw new Error("phone is required");
   if (!text) throw new Error("text is required");
 
-  const [config, storedLang, siteLanguageHint, chatHistory, cachedShiftNotes, magicLinkAlreadySent] =
+  const [config, storedLang, siteLanguageHint, chatHistory, cachedShiftNotes, magicLinkSentAt] =
     await Promise.all([
       getRestaurantConfig(instanceId),
       getUserLang(instanceId, phone).catch(() => null),
       getSiteLanguageHint(instanceId, phone).catch(() => null),
       getChatHistory(instanceId, phone).catch(() => []),
       getActiveShiftNotes(instanceId).catch(() => []),
-      hasMagicLinkBeenSent(instanceId, phone).catch(() => false),
+      getMagicLinkSentAt(instanceId, phone).catch(() => 0),
     ]);
+  // «Already sent» means still on the guest's screen (minutes ago / last messages),
+  // not «at some point in the last 30 days» (owner report, 2026-10-04).
+  const magicLinkEverSent = Number(magicLinkSentAt) > 0;
+  const magicLinkAlreadySent = isMagicLinkRecent(Number(magicLinkSentAt) || 0, chatHistory);
 
   const safeConfig = { ...(config || {}) };
   const languageCandidateText = String(input.languageCandidateText ?? text).trim();
@@ -349,7 +354,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   );
   // «Кері жіберші» right after a link went out is a resend request (2026-10-04).
   const contextualLinkResend = isContextualLinkResendRequest(text, {
-    alreadySent: Boolean(magicLinkAlreadySent),
+    alreadySent: magicLinkEverSent,
     recentHistory: (Array.isArray(chatHistory) ? chatHistory : []).slice(-6).map((entry: any) => String(entry?.text || "")),
   });
   const explicitMenuLinkIntent = (hasExplicitMenuLinkIntent(text) || brokenLinkReport || contextualLinkResend)
@@ -407,6 +412,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     mediaContext: input.mediaContext || null,
     shporContext: shporContextLive,
     magicLinkAlreadySent,
+    magicLinkEverSent,
     customerProfile,
     conversationSummary,
     lastTurnTrace,

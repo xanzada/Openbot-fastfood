@@ -2,6 +2,8 @@ import type { FastFoodContext } from "../context/types.js";
 import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
 import { getKitchenCheckoutFingerprint, markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
 import { ensureCustomerAccessLink } from "../services/checkoutIntent.service.js";
+import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
+import { linkInLastBotReply } from "../utils/linkRecency.js";
 
 /**
  * "Мәзірді жіберемін" with no link behind it.
@@ -17,8 +19,27 @@ import { ensureCustomerAccessLink } from "../services/checkoutIntent.service.js"
  * link is issued and delivered, and the sentence becomes true. Only when the
  * restaurant genuinely cannot sell is the sentence removed.
  */
-const LINK_PROMISE_RE =
-  /(сілтемені?\s*(?:қазір\s*)?(?:жіберемін|жібердім|жіберіп\s*жатырмын|беремін)|мәзірді?\s*(?:қазір\s*)?(?:жіберемін|жібердім|жіберіп\s*жатырмын|беремін)|мәзір\s*жібер(?:емін|дім)|(?:қазір|дереу)\s*жіберемін|(?:отправ(?:лю|ляю|ил|ила)|скин(?:у|ул)|пришл[юё]|высыла ю|высылаю|высл(?:ал|ала))\s*(?:вам\s*)?(?:сейчас\s*)?(?:ссылк\p{L}*|мен[юь]|каталог)|(?:ссылк\p{L}*|мен[юь])\s*(?:уже\s*)?(?:отправ(?:лю|ил|ила|лена)|скин(?:у|ул)|пришл[юё]))/iu;
+const LINK_PROMISE_RE = new RegExp([
+  // «Мәзірді жіберемін», «Сілтемені қазір жіберемін», «Отправлю ссылку», «Ссылку скину»
+  String.raw`сілтемені?\s*(?:қазір\s*)?(?:жіберемін|жібердім|жіберіп\s*жатырмын|беремін)`,
+  String.raw`мәзірді?\s*(?:қазір\s*)?(?:жіберемін|жібердім|жіберіп\s*жатырмын|беремін)`,
+  String.raw`мәзір\s*жібер(?:емін|дім)`,
+  String.raw`(?:қазір|дереу)\s*жіберемін`,
+  String.raw`(?:отправ(?:лю|ляю|ил|ила)|скин(?:у|ул)|пришл[юё]|высылаю|высл(?:ал|ала))\s*(?:вам\s*)?(?:сейчас\s*)?(?:ссылк\p{L}*|мен[юь]|каталог)`,
+  String.raw`(?:ссылк\p{L}*|мен[юь])\s*(?:уже\s*)?(?:отправ(?:лю|ил|ила|лена)|скин(?:у|ул)|пришл[юё])`,
+  // Pointing at the link as if it is right there (2026-10-04, «Төмендегі сілтеме
+  // арқылы пицца мен донерді таңдап…» with nothing below it).
+  String.raw`төмендегі\s+(?:\p{L}+\s+)?сілтеме`,
+  String.raw`сілтеме(?:міз|ні)?\s+арқылы`,
+  String.raw`сілтемеден`,
+  String.raw`сілтемеге\s+(?:кіріп|өтіп|басып)`,
+  String.raw`сілтемені\s+(?:басып|ашып)`,
+  String.raw`мәзір\s+сілтемесі`,
+  String.raw`ссылк\p{L}*\s+ниже`,
+  String.raw`ниже\s+(?:по\s+)?ссылк`,
+  String.raw`по\s+ссылке`,
+  String.raw`ссылк\p{L}*\s+(?:придёт|придет|будет)\s+(?:ниже|следующим)`,
+].map((part) => `(?:${part})`).join("|"), "iu");
 
 export function promisesMenuLink(text: string) {
   return LINK_PROMISE_RE.test(String(text || ""));
@@ -48,10 +69,19 @@ export async function honorMenuLinkPromise(ctx: FastFoodContext, finalText: stri
   if (!promisesMenuLink(finalText)) return { action: "none" };
   // The tool already granted it - the transport will deliver, nothing to fix.
   if (ctx.magicLinkGranted && ctx.magicLink) return { action: "none" };
-  // A generic ordering reply must not resend the same link on every follow-up.
-  // An explicit menu/link request still passes because preload marks that intent.
-  if (ctx.magicLinkAlreadySent && !ctx.explicitMenuLinkIntent) {
-    return { action: "stripped", text: stripMenuLinkPromise(finalText), reason: "link_already_sent" };
+  // A complaint or a request for a human is never an order: drop the sentence.
+  const guestText = String(ctx.text || "");
+  if (guestText && (isLikelyComplaintText(guestText) || isLikelyOperatorRequestText(guestText))) {
+    return { action: "stripped", text: stripMenuLinkPromise(finalText), reason: "not_an_order_turn" };
+  }
+  // A generic follow-up must not resend the link the bot JUST sent. "Just" is
+  // the previous bot reply, not a 30-day flag: a link from two days ago is long
+  // scrolled away and «төмендегі сілтеме» must really be below (2026-10-04).
+  // An explicit request still passes because preload marks that intent, and if
+  // dropping the sentence would leave nothing to say, the promise is kept.
+  if (!ctx.explicitMenuLinkIntent && linkInLastBotReply(ctx.chatHistory)) {
+    const kept = stripMenuLinkPromise(finalText);
+    if (kept) return { action: "stripped", text: kept, reason: "link_already_sent" };
   }
 
   const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);

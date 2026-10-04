@@ -94,6 +94,9 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // report; it no longer gates anything, because every genuine request now
       // takes the normal grant path (no calendar rationing, 2026-08-14).
       const explicitlyRequestedThisTurn = Boolean(ctx.explicitMenuLinkIntent);
+      // magicLinkAlreadySent now means "still on screen" (sent minutes ago / in the
+      // last messages). A link from yesterday is not a duplicate: the guest who is
+      // ordering again simply gets it (owner report, 2026-10-04).
       if (ctx.magicLinkAlreadySent && !explicitlyRequestedThisTurn && !previousLinkBroken && !guestAskedToResend) {
         ctx.magicLinkGranted = false;
         return {
@@ -101,7 +104,7 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
           link: null,
           reason: "link_already_sent",
           message: null,
-          note: "Not re-sent because the guest did not ask for it this turn - just answer their message. If they DID ask to resend/duplicate/show the link (in any wording), call sendMenuLink again with guestAskedToResend=true. Never tell the guest to scroll up or that the link is above/was sent earlier.",
+          note: "Not re-sent: the same link was sent moments ago and the guest did not ask for it again - just answer their message, and do NOT write that a link is below/coming. If they DID ask to resend/duplicate/show the link (in any wording), or they are placing an order and need it, call sendMenuLink again with guestAskedToResend=true. Never tell the guest to scroll up or that the link is above/was sent earlier.",
         };
       }
       // Calling this tool IS the decision that the guest is ordering. Recording it

@@ -78,7 +78,7 @@ export async function computeProactiveSignals(ctx: FastFoodContext): Promise<Pro
 
     // Abandoned checkout: a link was sent a while ago, no active order exists,
     // and the guest is back. Worth a gentle nudge only if the topic comes up.
-    if (ctx.magicLinkAlreadySent && !ctx.activeOrder) {
+    if ((ctx.magicLinkEverSent ?? ctx.magicLinkAlreadySent) && !ctx.activeOrder) {
       const linkInfo = await getJsonCache<{ at?: number }>(linkSentKey(ctx.instanceId, ctx.phone)).catch(() => null);
       const sentAt = Number(linkInfo?.at || 0);
       const hoursAgo = sentAt ? (now - sentAt) / 3_600_000 : 0;

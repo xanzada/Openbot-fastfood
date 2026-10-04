@@ -16,7 +16,11 @@ export interface FastFoodContext {
   activeShiftNotesFingerprint: string;
   mediaContext: Record<string, any> | null;
   shporContext: any[];
+  // True only while the previous link is still in view (sent minutes ago or in
+  // the last messages) - see utils/linkRecency.ts.
   magicLinkAlreadySent: boolean;
+  // A link was issued to this guest at some point in the last 30 days.
+  magicLinkEverSent?: boolean;
   explicitMenuLinkIntent: boolean;
   magicLink: string | null;
   // Set when the guest asked for the link and issuing it actually failed (hub

@@ -79,13 +79,15 @@ test("a generic follow-up does not send the same menu link again", async () => {
     magicLinkGranted: false,
     magicLinkAlreadySent: true,
     explicitMenuLinkIntent: false,
+    // "Already sent" now means the previous bot reply carried the link (2026-10-04).
+    chatHistory: [{ role: "assistant", text: "https://kebab1.alemi.kz/?phone=77010000009&hash=ab" }, { role: "user", text: "рахмет" }],
     hardRealtimeContext: { runtime_available: true },
     runtimeStatus: {},
     activeShiftNotes: [],
     config: {},
   } as any;
 
-  const outcome = await honorMenuLinkPromise(ctx, "Мәзірді жіберемін.");
+  const outcome = await honorMenuLinkPromise(ctx, "Донер 1590 теңге. Мәзірді жіберемін.");
   assert.equal(outcome.action, "stripped");
   assert.equal((outcome as any).reason, "link_already_sent");
   assert.equal(promisesMenuLink((outcome as any).text), false);
