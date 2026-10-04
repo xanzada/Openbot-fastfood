@@ -11,7 +11,7 @@ import { envText } from "./llm.service.js";
  * always better than no snapshot.
  */
 
-export type LlmProvider = "openai" | "gemini";
+export type LlmProvider = "openai" | "gemini" | "groq" | "cloudflare";
 
 export interface LlmKeyEntry {
   id?: string;
@@ -26,19 +26,31 @@ export interface LlmKeyEntry {
     lastCheckedAt?: string | null;
     latencyMs?: number | null;
     errorCode?: string | null;
+    totalTokens?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    cost?: number;
+    callsCount?: number;
+    tier?: "free" | "paid";
+    isFree?: boolean;
+    hasUnexpectedCost?: boolean;
   };
 }
 
 export interface LlmWorkspacePools {
   text: LlmKeyEntry[];
   media: LlmKeyEntry[];
+  stt: LlmKeyEntry[];
+  ocr: LlmKeyEntry[];
 }
 
-const TYPES = new Set<string>(["openai", "gemini"]);
+const TYPES = new Set<string>(["openai", "gemini", "groq", "cloudflare"]);
 const MAX_ENTRIES_PER_POOL = 12;
 const DEFAULT_BASE_URL: Record<string, string> = {
   openai: "https://openrouter.ai/api/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
+  groq: "https://api.groq.com/openai/v1",
+  cloudflare: "https://api.cloudflare.com/client/v4",
 };
 
 function normalizeBaseUrl(value: unknown, type: string): string {
@@ -94,7 +106,7 @@ export function sanitizeWorkspace(raw: unknown): LlmWorkspacePools {
     return out;
   };
   const source = (raw && typeof raw === "object" ? raw : {}) as Record<string, any>;
-  return { text: sanitizePool(source.text), media: sanitizePool(source.media) };
+  return { text: sanitizePool(source.text), media: sanitizePool(source.media), stt: sanitizePool(source.stt), ocr: sanitizePool(source.ocr) };
 }
 
 let latest: LlmWorkspacePools | null = null;
@@ -137,7 +149,7 @@ export function startLlmWorkspacePolling(): void {
 /** The last known pools, or null when the workspace has never answered. */
 export function getLlmWorkspacePools(): LlmWorkspacePools | null {
   if (!latest) return null;
-  if (!latest.text.length && !latest.media.length) return null;
+  if (!latest.text.length && !latest.media.length && !latest.stt.length && !latest.ocr.length) return null;
   return latest;
 }
 

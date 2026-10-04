@@ -104,7 +104,20 @@ async function callChain(
     try {
       const result = await timedModelCall(entry.model, operation, options, entry.timeout);
       noteModelSuccess(entry.label);
-      if (entry.providerEntry) noteProviderOutcome({ entry: entry.providerEntry, pool: "text", ok: true, latencyMs: Date.now() - startedAt });
+      if (entry.providerEntry) {
+        const pTokens = Number(result?.usage?.promptTokens) || 0;
+        const cTokens = Number(result?.usage?.completionTokens) || 0;
+        const tTokens = Number(result?.usage?.totalTokens) || (pTokens + cTokens);
+        noteProviderOutcome({
+          entry: entry.providerEntry,
+          pool: "text",
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+          promptTokens: pTokens,
+          completionTokens: cTokens,
+          totalTokens: tTokens,
+        });
+      }
       return result;
     } catch (error: any) {
       lastError = error;
@@ -172,18 +185,10 @@ export function getTextModelId() {
   };
 }
 
-// The panel's "API key" text pool, when the operator filled it. Entries must be
-// OpenAI-compatible (tool calls travel over chat-completions), so a gemini-typed
-// entry is skipped with a note rather than silently breaking tools.
-function workspaceTextChain(): { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry }[] {
-  const pools = getLlmWorkspacePools();
-  const openAiEntries = (pools?.text || []).filter((entry) => entry.type === "openai");
-  const entries = providersForRequest(openAiEntries, "text");
-  if ((pools?.text || []).length !== openAiEntries.length) {
-    console.warn("[MODEL:TEXT] workspace: gemini-typed text keys are not supported for tool-calling; skipped");
-  }
-  if (!entries.length) return [];
-
+function buildChainEntries(
+  entries: LlmKeyEntry[],
+  labelPrefix = "workspace"
+): { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry }[] {
   const stepTimeout = envTimeout("TEXT_PRIMARY_TIMEOUT_MS", 15_000);
   const lastTimeout = envTimeout("TEXT_RESERVE_TIMEOUT_MS", 40_000);
   return entries.map((entry, index) => {
@@ -193,11 +198,37 @@ function workspaceTextChain(): { model: any; timeout: number; label: string; pro
     });
     const keyFingerprint = createHash("sha1").update(entry.key).digest("hex").slice(0, 8);
     const model = provider.chat(entry.model) as any;
-    // NOTE: Do NOT modify model.modelId — AI SDK uses it as the actual model sent
+    // NOTE: Do NOT modify model.modelId ? AI SDK uses it as the actual model sent
     // to the API. Adding a fingerprint suffix breaks the API request with
     // "Model not found". Fingerprint goes in the label only (for logs).
-    return { model, timeout: index === entries.length - 1 ? lastTimeout : stepTimeout, label: `workspace:${entry.name}(${keyFingerprint})`, providerEntry: entry };
+    return {
+      model,
+      timeout: index === entries.length - 1 ? lastTimeout : stepTimeout,
+      label: `${labelPrefix}:${entry.name}(${keyFingerprint})`,
+      providerEntry: entry,
+    };
   });
+}
+
+// The panel's "API key" text pool, when the operator filled it. Entries must be
+// OpenAI-compatible (tool calls travel over chat-completions), so a gemini-typed
+// entry is skipped with a note rather than silently breaking tools.
+function workspaceTextChain(): { model: any; timeout: number; label: string; providerEntry?: LlmKeyEntry }[] {
+  const pools = getLlmWorkspacePools();
+  const openAiEntries = (pools?.text || []).filter((entry) => entry.type === "openai");
+  if ((pools?.text || []).length !== openAiEntries.length) {
+    console.warn("[MODEL:TEXT] workspace: gemini-typed text keys are not supported for tool-calling; skipped");
+  }
+
+  let entries = providersForRequest(openAiEntries, "text");
+  if (!entries.length && openAiEntries.length > 0) {
+    console.warn("[MODEL:TEXT] workspace: all text providers suspect/cooling down; keeping workspace entries to prevent empty chain starvation");
+    entries = openAiEntries.filter((e) => (e as any).status !== "disabled" && e.health?.status !== "unavailable" && e.enabled !== false);
+    if (!entries.length) entries = openAiEntries;
+  }
+  if (!entries.length) return [];
+
+  return buildChainEntries(entries, "workspace");
 }
 
 const ENV_CHAIN = (() => {
@@ -214,10 +245,21 @@ const ENV_CHAIN = (() => {
 export function resolveModel(_ctx: FastFoodContext) {
   // WhatsPro panel is the SINGLE source of truth for API keys.
   // ENV_CHAIN (hardcoded OpenRouter) is only the absolute last resort
-  // when the workspace panel is completely empty — never appended to a
+  // when the workspace panel is completely empty ? never appended to a
   // live workspace pool (a depleted env key would silently eat every
   // request that workspace already handled fine).
   const wsChain = workspaceTextChain();
   if (wsChain.length > 0) return wrapChain(wsChain);
-  return textModel; // workspace empty → env chain only
+
+  if (!process.env.OPENROUTER_API_KEY) {
+    const pools = getLlmWorkspacePools();
+    const emergencyEntries = (pools?.text || []).filter((entry) => entry.type === "openai" && entry.key);
+    if (emergencyEntries.length > 0) {
+      console.warn("[MODEL:TEXT] OpenRouter API key missing; using workspace OpenAI entries as emergency fallback");
+      return wrapChain(buildChainEntries(emergencyEntries, "emergency"));
+    }
+  }
+
+  return textModel; // workspace empty ? env chain only
 }
+

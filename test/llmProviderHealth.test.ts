@@ -47,3 +47,20 @@ test("provider errors are reduced to safe operational categories", () => {
   assert.equal(classifyProviderError(new Error("HTTP 503 service unavailable")), "PROVIDER_UNAVAILABLE");
   assert.equal(classifyProviderError(new Error("request timeout")), "TIMEOUT");
 });
+
+test("when all text providers are suspect during cooldown, suspect entries are returned to prevent starvation", () => {
+  const primary = entry("primary");
+  const secondary = entry("secondary");
+  noteProviderOutcome({ entry: primary, pool: "text", ok: false, latencyMs: 40000, error: new Error("TEXT_MODEL_TIMEOUT:gemini-3.8-flash:40000ms") });
+  noteProviderOutcome({ entry: secondary, pool: "text", ok: false, latencyMs: 40000, error: new Error("TEXT_MODEL_TIMEOUT:gemini-3.8-flash:40000ms") });
+  const result = providersForRequest([primary, secondary], "text");
+  assert.deepEqual(result.map((item) => item.name), ["primary", "secondary"]);
+});
+
+test("when text providers have suspect and unavailable, only suspect entries are returned", () => {
+  const down = entry("down", "unavailable");
+  const transient = entry("transient");
+  noteProviderOutcome({ entry: transient, pool: "text", ok: false, latencyMs: 40000, error: new Error("TEXT_MODEL_TIMEOUT:gemini-3.8-flash:40000ms") });
+  const result = providersForRequest([down, transient], "text");
+  assert.deepEqual(result.map((item) => item.name), ["transient"]);
+});

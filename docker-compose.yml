@@ -14,7 +14,11 @@ services:
       REDIS_URL: redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379
       NODE_ENV: production
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
       interval: 30s
       timeout: 5s
       retries: 3
@@ -23,7 +27,7 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "10m"
+        max-size: 10m
         max-file: "3"
     deploy:
       resources:
@@ -31,37 +35,55 @@ services:
           memory: 768M
         reservations:
           memory: 256M
-
+    labels:
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-web.rule=Host(`openbot.alemi.kz`)
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-web.entrypoints=web
+      - traefik.http.services.fastfoodbot-openbotfastfood-ojwxbx-1-web.loadbalancer.server.port=4100
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-web.service=fastfoodbot-openbotfastfood-ojwxbx-1-web
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-web.middlewares=redirect-to-https@file
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-websecure.rule=Host(`openbot.alemi.kz`)
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-websecure.entrypoints=websecure
+      - traefik.http.services.fastfoodbot-openbotfastfood-ojwxbx-1-websecure.loadbalancer.server.port=4100
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-websecure.service=fastfoodbot-openbotfastfood-ojwxbx-1-websecure
+      - traefik.http.routers.fastfoodbot-openbotfastfood-ojwxbx-1-websecure.tls.certresolver=letsencrypt
+      - traefik.enable=true
+    networks:
+      - dokploy-network
+      - default
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"]
-    # Reachable from every container on dokploy-network, so it must not be open.
-    # redis-cli picks the password up from REDISCLI_AUTH, which keeps the
-    # healthcheck below unchanged and free of shell quoting.
+    command:
+      - redis-server
+      - --appendonly
+      - yes
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     volumes:
       - openbot_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD
+        - redis-cli
+        - ping
       interval: 10s
       timeout: 3s
       retries: 5
     logging:
       driver: json-file
       options:
-        max-size: "10m"
+        max-size: 10m
         max-file: "3"
-    # WhatsPro reads the same chatwoot:* keys and subscribes to
-    # chatwoot:events:{instanceId}. Without the shared network this service
-    # resolves only inside the openbot stack, so the SOS signal never arrives.
     networks:
       dokploy-network:
         aliases:
           - openbot-redis
-      default:
-
+      default: null
   backup:
     build:
       context: .
@@ -83,17 +105,17 @@ services:
       - backup_state:/work
       - openbot_state:/source/openbot_state:ro
     healthcheck:
-      test: ["CMD", "/usr/local/bin/backup-healthcheck"]
+      test:
+        - CMD
+        - /usr/local/bin/backup-healthcheck
       interval: 5m
       timeout: 10s
       retries: 4
       start_period: 2m
-
 volumes:
-  openbot_redis_data:
-  backup_state:
-  openbot_state:
-
+  openbot_redis_data: null
+  backup_state: null
+  openbot_state: null
 networks:
   dokploy-network:
     external: true
