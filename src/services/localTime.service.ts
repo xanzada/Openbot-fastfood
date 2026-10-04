@@ -166,7 +166,7 @@ export function localTimeBlock(config: Record<string, any> | null | undefined, l
     greeting_that_fits_now: kk ? reading.greetingKk : reading.greetingRu,
     meal_moment: reading.mealMoment,
     rule: [
-      "This is the real local time at the restaurant right now. Greet with the greeting that fits this hour and never with one that does not - a guest writing at night must not be told \"қайырлы күн\" / \"добрый день\".",
+      "This is the real local time at the restaurant right now. When the guest greeted, answer in THEIR form (Сәлем -> Сәлем, Сәлеметсіз бе -> Сәлеметсіз бе, Салам -> Салам, Ассалаумағалейкум -> Уағалейкум ассалам, Привет -> Привет, Здравствуйте -> Здравствуйте). Use greeting_that_fits_now only when you open without a guest greeting, and never a greeting that does not fit this hour - a guest writing at night must not be told \"қайырлы күн\" / \"добрый день\".",
       "Say \"today\", \"tonight\" or \"tomorrow\" against THIS clock, not against the guest's wording.",
       "Let the hour colour a recommendation when it genuinely helps (something light in the morning, a full set in the evening), but never refuse or invent a shortage because of the time - only the kitchen state and operator notes decide what can be sold.",
       "Never state the time, the day part or the day of week unless the guest asks, and never mention that you were told them.",

@@ -1,3 +1,4 @@
+import { alignGreetingReply, fallbackReply } from "./greeting.js";
 import type { FastFoodContext } from "../context/types.js";
 
 // Only an unverified CONCRETE duration is a factual violation. The old pattern
@@ -272,22 +273,8 @@ export function stripReasoningPreamble(text: string): { text: string; removed: b
   return { text: answer, removed: true };
 }
 
-// «Сәлем» was answered with a bare «Осындамын — не керек екенін жаза беріңіз.» - no
-// greeting at all (owner live test, 2026-10-04). The fallback greets when the guest
-// greeted or the bot has not spoken yet; mid-dialog it does not re-greet.
-const GUEST_GREETING_RE =
-  /^\s*(?:с[әа]лем|салам|ассала|уа?ғалейкум|қайырлы|кайырлы|привет|здравств|добр(?:ый|ое|ого)|hi\b|hello|salem)/iu;
-
-export function fallbackReply(ctx: FastFoodContext) {
-  const history = Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [];
-  const botSpoke = history.some((entry: any) => ["assistant", "model", "bot"].includes(String(entry?.role || "")));
-  const greet = GUEST_GREETING_RE.test(String(ctx.text || "")) || !botSpoke;
-  if (ctx.language === "kk") {
-    return greet ? "Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз." : "Осындамын — не көмек керек, жаза беріңіз.";
-  }
-  return greet ? "Здравствуйте! 😊 Я на связи — напишите, чем помочь." : "Я на связи — напишите, чем помочь.";
-}
-
+// Greeting handling lives in ./greeting.ts (fallback greets; a pure greeting is answered
+// in the guest's own form, without robotic stamps).
 const fallback = fallbackReply;
 
 function noActiveOrderText(ctx: FastFoodContext) {
@@ -371,7 +358,7 @@ function disclosesInternals(sentence: string) {
 
 const INTERNAL_DISCLOSURE_RE = INTERNAL_PROVENANCE_RE;
 
-export function validateFinalText(
+function validateFinalTextCore(
   rawText: string,
   ctx: FastFoodContext,
   // toolFindings carries what the tools actually RETURNED. A gate that only knows a
@@ -758,3 +745,11 @@ import {
   manualCancellationBoundaryText,
   manualOrderBoundaryText,
 } from "../services/orderAuthority.service.js";
+
+export { fallbackReply };
+
+export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
+  const result = validateFinalTextCore(...args);
+  const aligned = alignGreetingReply(result.text, args[1]);
+  return aligned.changed ? { ...result, text: aligned.text, warnings: [...result.warnings, aligned.changed] } : result;
+}
