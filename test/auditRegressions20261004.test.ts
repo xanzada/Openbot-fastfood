@@ -207,3 +207,37 @@ test("live 2026-10-04: robotic openers are dropped, greetings use no tools, a Ru
   const preload = await readFile(new URL("../src/context/preloadContext.ts", import.meta.url), "utf8");
   assert.match(preload, /unclassifiedTextIsDecisive\(languageCandidateText, decision\.language\)/);
 });
+
+test("zero-lag 2026-10-04: short buffer for greetings and finished messages, instant language, instant send, background CRM", async () => {
+  const { inboundBufferDelayMs } = await import("../src/services/inboundGuard.service.js");
+  assert.ok(inboundBufferDelayMs("Сәлем") <= 500);
+  assert.ok(inboundBufferDelayMs("Здравствуйте!") <= 500);
+  assert.ok(inboundBufferDelayMs("донер бар ма?") <= 1000);
+  assert.ok(inboundBufferDelayMs("маған екі донер керек") <= 1000);
+  assert.ok(inboundBufferDelayMs("донер") > 1000, "a bare fragment still waits for the rest");
+
+  const { instantLanguageDecision } = await import("../src/services/languagePolicy.service.js");
+  assert.deepEqual(instantLanguageDecision("Здравствуйте", { hasPrior: false, organic: true }), { language: "ru", detector: "instant", confidence: 1, lockable: true });
+  assert.equal(instantLanguageDecision("Сәлем", { hasPrior: false, organic: true })?.language, "kk");
+  assert.equal(instantLanguageDecision("Добрый день", { hasPrior: false, organic: true })?.language, "ru");
+  assert.equal(instantLanguageDecision("Салам", { hasPrior: false, organic: true }), null, "a new guest's ambiguous word still asks the classifier");
+  const weak = instantLanguageDecision("салем калайсыз", { hasPrior: true, organic: true });
+  assert.equal(weak?.lockable, false, "an ongoing dialogue keeps its language without waiting");
+  assert.equal(instantLanguageDecision("ок", { hasPrior: true, organic: true }), null);
+
+  const { readFile } = await import("node:fs/promises");
+  const transport = await readFile(new URL("../src/transport/whatspro.client.ts", import.meta.url), "utf8");
+  assert.match(transport, /OPENBOT_HUMAN_PACE \|\| "instant"/);
+  const route = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
+  assert.match(route, /greeting_fast_lane/);
+  assert.match(route, /\[OPENBOT:TIMING\]/);
+  const preload = await readFile(new URL("../src/context/preloadContext.ts", import.meta.url), "utf8");
+  assert.match(preload, /staleWhileRevalidateMs: RUNTIME_SWR_MS/);
+
+  const { createUpdateCrmLeadSkill } = await import("../src/skills/crm.skill.js");
+  const tool: any = createUpdateCrmLeadSkill({ instanceId: "sim", phone: "77000000000", config: {} } as any);
+  const t0 = Date.now();
+  const out = await tool.execute({ interest: "doner", salesStage: "NEW" }, {} as any);
+  assert.deepEqual(out, { success: true, queued: true });
+  assert.ok(Date.now() - t0 < 50, "the CRM write never holds the reply");
+});

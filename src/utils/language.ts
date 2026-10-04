@@ -31,7 +31,7 @@ import { generateMediaText, type MediaRequest } from "../services/llm.service.js
 
 export interface LanguageDetectionDecision {
   language: "kk" | "ru";
-  detector: "gemini" | "fallback";
+  detector: "gemini" | "fallback" | "instant";
   confidence: number;
   lockable: boolean;
 }

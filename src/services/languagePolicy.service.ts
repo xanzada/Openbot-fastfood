@@ -1,3 +1,5 @@
+import { detectLang, isLanguageBearingCustomerText, type LanguageDetectionDecision } from "../utils/language.js";
+import { readGuestGreeting } from "../agent/greeting.js";
 export type CustomerLanguage = "kk" | "ru";
 
 // Letters and words that only one of the two languages uses. A message carrying
@@ -131,3 +133,31 @@ export function resolveOrganicLanguage(input: {
   if (input.siteLanguageHint) return { language: input.siteLanguageHint, source: "site_hint" };
   return { language: "kk", source: "default" };
 }
+
+/**
+ * Zero-lag language decision (measured 2026-10-04): the classifier answers in 3-4 s and is
+ * cut off at 2 s, so on every message without Kazakh letters it cost the guest 2 s and
+ * decided nothing - the turn fell back to the dialogue language anyway. A message that is
+ * unmistakable on its face is decided here at once; a weak one in an ongoing dialogue keeps
+ * the dialogue language without waiting, exactly what the timeout produced. Only a weak
+ * first message from a brand-new guest still asks the classifier.
+ */
+export function instantLanguageDecision(
+  text: string,
+  options: { hasPrior: boolean; organic: boolean },
+): LanguageDetectionDecision | null {
+  if (!isLanguageBearingCustomerText(text)) return null;
+  const guess = detectLang(text);
+  if (textCarriesDecisiveLanguageSignal(text, guess) || (options.organic && unclassifiedTextIsDecisive(text, guess))) {
+    return { language: guess, detector: "instant", confidence: 1, lockable: true };
+  }
+  if (!options.hasPrior) {
+    const greeting = readGuestGreeting(text);
+    if (greeting?.pure && (greeting.mirrorLang === "kk" || greeting.mirrorLang === "ru")) {
+      return { language: greeting.mirrorLang, detector: "instant", confidence: 1, lockable: true };
+    }
+    return null;
+  }
+  return { language: guess, detector: "fallback", confidence: 0, lockable: false };
+}
+

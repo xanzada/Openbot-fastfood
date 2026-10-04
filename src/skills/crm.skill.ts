@@ -17,7 +17,7 @@ const CRM_SALES_STAGES = [
 export function createUpdateCrmLeadSkill(ctx: FastFoodContext) {
   return createTool({
     name: "updateCrmLead",
-    description: "Track the customer's current stage in the sales funnel for CRM analytics. This does NOT change any order status in DLE — it only records the customer's progress for reporting.",
+    description: "Track the customer's current stage in the sales funnel for CRM analytics. This does NOT change any order status in DLE — it only records the customer's progress for reporting. Call it only in the SAME step as another tool you need anyway (they run in parallel) - never as a step of its own, never on a greeting.",
     parameters: z.object({
       interest: z.string().optional().describe("What the customer is interested in (e.g., pizza, combo, delivery info)"),
       salesStage: z.enum([...CRM_SALES_STAGES]).optional().describe(
@@ -32,13 +32,19 @@ export function createUpdateCrmLeadSkill(ctx: FastFoodContext) {
       ),
       psychoAnalysis: z.string().optional().describe("Brief mood or behavior note (e.g., 'довольный', 'спешит', 'недоволен задержкой')"),
     }),
+    // Fire-and-forget (zero-lag, 2026-10-04): a CRM write is bookkeeping and must never sit
+    // between the guest and the reply. The tool answers at once; the write runs behind it and
+    // only logs if it fails.
     execute: async ({ interest, salesStage, psychoAnalysis }) => {
-      return updateCrmAction("update_crm", ctx.instanceId, ctx.phone, {
-        config: ctx.config,
-        interest,
-        sales_stage: salesStage,
-        psycho_analysis: psychoAnalysis,
-      });
+      void Promise.resolve()
+        .then(() => updateCrmAction("update_crm", ctx.instanceId, ctx.phone, {
+          config: ctx.config,
+          interest,
+          sales_stage: salesStage,
+          psycho_analysis: psychoAnalysis,
+        }))
+        .catch((error: any) => console.warn(`[CRM] background update failed instance=${ctx.instanceId} reason=${error?.message || error}`));
+      return { success: true, queued: true };
     },
   });
 }

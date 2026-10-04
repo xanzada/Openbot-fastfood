@@ -3,6 +3,7 @@ import { connectRedis, redisClient } from "./redis.service.js";
 import { getRestaurantConfig } from "./platformConfig.service.js";
 import { getRuntimeSettings, runtimeTestModeEnabled } from "./llmWorkspace.service.js";
 import { envNumber } from "../utils/envNumber.js";
+import { readGuestGreeting } from "../agent/greeting.js";
 
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const PHONE_RE = /^(\d{10,15}|\d+@lid)$/;
@@ -15,6 +16,19 @@ const DUPLICATE_TEXT_SECONDS = 5;
 // the leader can fold it in - the guest's second message simply vanished.
 const INBOUND_BUFFER_SECONDS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_TTL_SECONDS, 60, { min: 5 });
 const INBOUND_BUFFER_DELAY_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_MS, 2400, { min: 600 });
+// Zero-lag (2026-10-04): the full window is only for a fragment that is probably not done
+// yet («донер», «2»). A bare greeting or a finished sentence/question is answered almost
+// at once; a part that still arrives inside the short window is merged exactly as before.
+const INBOUND_BUFFER_GREETING_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_GREETING_MS, 500, { min: 200, max: 5_000 });
+const INBOUND_BUFFER_COMPLETE_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_COMPLETE_MS, 1000, { min: 200, max: 5_000 });
+
+export function inboundBufferDelayMs(text: string): number {
+  const value = String(text || "").trim();
+  if (readGuestGreeting(value)?.pure) return Math.min(INBOUND_BUFFER_GREETING_MS, INBOUND_BUFFER_DELAY_MS);
+  const words = value.split(/\s+/).filter(Boolean).length;
+  if (/[?!.…)]\s*$/u.test(value) || words >= 4) return Math.min(INBOUND_BUFFER_COMPLETE_MS, INBOUND_BUFFER_DELAY_MS);
+  return INBOUND_BUFFER_DELAY_MS;
+}
 const INBOUND_BUFFER_MAX_ITEMS = 8;
 const INBOUND_BUFFER_MAX_CHARS = 2000;
 const PROCESSING_LOCK_SECONDS = 180;
@@ -1032,6 +1046,7 @@ export async function bufferInboundText(input: { instanceId: string; phone: stri
   const text = String(input.text || "").trim().slice(0, INBOUND_BUFFER_MAX_CHARS);
   const token = String(input.messageId || crypto.randomUUID()).slice(0, 160);
   if (!instanceId || !phone || !text) return { leader: true, text, parts: text ? 1 : 0, items: text ? [text] : [] };
+  const waitMs = inboundBufferDelayMs(text);
   try {
     await connectRedis();
     const listKey = `inbound_buffer:${instanceId}:${phone}`;
@@ -1042,7 +1057,7 @@ export async function bufferInboundText(input: { instanceId: string; phone: stri
       .expire(listKey, INBOUND_BUFFER_SECONDS)
       .set(latestKey, token, { EX: INBOUND_BUFFER_SECONDS })
       .exec();
-    await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
     if ((await redisClient.get(latestKey)) !== token) return { leader: false, text: "", parts: 0, items: [] };
     const rows = await redisClient.lRange(listKey, 0, -1);
     await redisClient.del([listKey, latestKey]);
@@ -1058,7 +1073,7 @@ export async function bufferInboundText(input: { instanceId: string; phone: stri
     current.latestToken = token;
     current.expiresAt = now + INBOUND_BUFFER_SECONDS * 1000;
     localInboundBuffers.set(key, current);
-    await new Promise((resolve) => setTimeout(resolve, INBOUND_BUFFER_DELAY_MS));
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
     const latest = localInboundBuffers.get(key);
     if (!latest || latest.latestToken !== token) return { leader: false, text: "", parts: 0, items: [] };
     localInboundBuffers.delete(key);

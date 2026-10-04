@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage, lastResolvedCustomerLanguage } from "../utils/language.js";
+import { envNumber } from "../utils/envNumber.js";
 import { hasBrokenLinkReport, hasExplicitMenuLinkIntent, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getMenuContext, getOrderStatus, getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
@@ -24,7 +25,7 @@ import { orderMentionedByItems, pickConversationOrder } from "../services/custom
 import { matchingNoteIds, mergeShiftNoteSources } from "../services/noteProvenance.service.js";
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
-import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal, unclassifiedTextIsDecisive } from "../services/languagePolicy.service.js";
+import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal, unclassifiedTextIsDecisive, instantLanguageDecision } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
 /**
@@ -87,6 +88,9 @@ function firstValue(...values: unknown[]) {
   return "";
 }
 
+// Window in which a turn reads the hub runtime from the Redis snapshot (see getRuntimeStatus).
+const RUNTIME_SWR_MS = envNumber(process.env.OPENBOT_RUNTIME_SWR_MS, 30_000, { min: 0, max: 120_000 });
+
 export async function preloadContext(input: InboundMessage): Promise<FastFoodContext> {
   const redisAvailable = await connectRedis().then(() => true).catch(() => false);
 
@@ -111,7 +115,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   const safeConfig = { ...(config || {}) };
   const languageCandidateText = String(input.languageCandidateText ?? text).trim();
   let language: "kk" | "ru" = storedLang || siteLanguageHint || "kk";
-  let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
+  let languageDetector: "redis_lock" | "gemini" | "fallback" | "site_hint" | "instant" = storedLang ? "redis_lock" : siteLanguageHint ? "site_hint" : "fallback";
   let languageLocked = Boolean(storedLang);
   // Diagnostics that travel into FACTS so the model can see HOW the language was
   // decided (and the audit log can explain a wrong answer after the fact).
@@ -136,8 +140,10 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     .map((entry: any) => String(entry?.text || entry?.content || ""))
     .filter((value: string) => isLanguageBearingCustomerText(value))
     .slice(-6);
+  const hasPriorLanguage = Boolean(storedLang || priorCustomerLanguage || resolvedHistoryLanguage);
   if (siteOriginated && storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
-    const decision = await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages);
+    const decision = instantLanguageDecision(languageCandidateText, { hasPrior: true, organic: false })
+      ?? await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages);
     const previousLanguage = priorCustomerLanguage;
     const decisiveNow = textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language);
     if (decision.lockable && shouldSwitchLockedLanguage(storedLang, previousLanguage, decision.language, decisiveNow)) {
@@ -148,7 +154,8 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       }
     }
   } else if (siteOriginated && !storedLang && isLanguageBearingCustomerText(languageCandidateText)) {
-    const decision = await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages);
+    const decision = instantLanguageDecision(languageCandidateText, { hasPrior: hasPriorLanguage, organic: false })
+      ?? await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages);
     language = decision.language;
     languageDetector = decision.detector;
     // Only a real classification earns the 24-hour lock. The regex fallback
@@ -169,7 +176,8 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     }
   } else {
     const decision = isLanguageBearingCustomerText(languageCandidateText)
-      ? await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages)
+      ? instantLanguageDecision(languageCandidateText, { hasPrior: hasPriorLanguage, organic: true })
+        ?? await detectLanguageDecision(languageCandidateText, undefined, recentCustomerMessages)
       : null;
     const priorDecision = resolvePriorConversationLanguage({
       storedLanguage: storedLang,
@@ -237,7 +245,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // memory enriches the answer, it must never be able to block one.
   const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal, liveMenu] =
     await Promise.all([
-      getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null),
+      getRuntimeStatus(instanceId, domain, { forceFresh: true, staleWhileRevalidateMs: RUNTIME_SWR_MS }).catch(() => null),
       getOrderStatus(instanceId, phone, domain).catch(() => null),
       getShporContext(instanceId, text).catch(() => []),
       getCustomerProfile(instanceId, phone).catch(() => null),

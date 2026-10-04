@@ -506,13 +506,54 @@ export function clearHubAuthCooldown(instanceId?: string) {
   else hubAuthBlockedUntil.clear();
 }
 
+// Zero-lag (2026-10-04): the per-turn hub read is served from a Redis snapshot for up to
+// RUNTIME_SWR window and refreshed in the background once it is older than 5 s, so the
+// guest never waits on the network for it. What can change between two reads is still
+// applied fresh on every turn: the pushed kitchen state is re-overlaid from Redis, and
+// preloadContext merges the Redis shift notes on top (a missed push is picked up by the
+// background refresh on the very next turn).
+const RUNTIME_FRESH_MS = 5_000;
+const runtimeRefreshInFlight = new Map<string, Promise<unknown>>();
+
+function refreshRuntimeInBackground(instanceId: string, domain: string) {
+  if (runtimeRefreshInFlight.has(instanceId)) return;
+  const job = getRuntimeStatus(instanceId, domain, { forceFresh: true })
+    .catch(() => null)
+    .finally(() => runtimeRefreshInFlight.delete(instanceId));
+  runtimeRefreshInFlight.set(instanceId, job);
+}
+
+function fillPaymentDetailsFromPush(status: Record<string, any>, pushed: any) {
+  if (!Array.isArray(status.payment_details) || status.payment_details.length === 0) {
+    const storedDetails = Array.isArray(pushed?.payment_details) ? pushed.payment_details : [];
+    if (storedDetails.length) {
+      status.payment_details = storedDetails;
+      status.payment_details_source = "redis_kitchen_status";
+    }
+  }
+  return status;
+}
+
 export async function getRuntimeStatus(
   instanceId: string,
   domain: string,
-  options: { forceFresh?: boolean } = {}
+  options: { forceFresh?: boolean; staleWhileRevalidateMs?: number } = {}
 ): Promise<Record<string, any> | null> {
   const cacheKey = `runtime_status:${instanceId}`;
   const backupKey = `runtime_status_backup:${instanceId}`;
+  const swrKey = `runtime_status_swr:${instanceId}`;
+
+  const swrWindowMs = Number(options.staleWhileRevalidateMs || 0);
+  if (swrWindowMs > 0 && !hubAuthCooldown(instanceId)) {
+    const entry = await getJsonCache<{ at: number; hub: Record<string, any> }>(swrKey).catch(() => null);
+    const ageMs = entry ? Date.now() - Number(entry.at || 0) : Number.POSITIVE_INFINITY;
+    if (entry?.hub && ageMs >= 0 && ageMs < swrWindowMs) {
+      if (ageMs > RUNTIME_FRESH_MS) refreshRuntimeInBackground(instanceId, domain);
+      const pushed = await getKitchenStatus(instanceId).catch(() => null);
+      const status = fillPaymentDetailsFromPush(overlayPushedKitchenState({ ...entry.hub }, pushed), pushed);
+      return { ...status, runtime_cache_age_ms: ageMs };
+    }
+  }
 
   if (!options.forceFresh) {
     const cached = await getJsonCache<Record<string, any>>(cacheKey);
@@ -531,7 +572,9 @@ export async function getRuntimeStatus(
     const data = await apiBot(domain, { action: "get_runtime_status", restaurant_id: instanceId }, 8000);
     // Read the pushed state BEFORE the sync below overwrites it with the hub's.
     const pushed = await getKitchenStatus(instanceId).catch(() => null);
-    const status = overlayPushedKitchenState(normalizeRuntimeStatus(data || {}), pushed);
+    const hubStatus = normalizeRuntimeStatus(data || {});
+    await setJsonCache(swrKey, 120, { at: Date.now(), hub: JSON.parse(JSON.stringify(hubStatus)) }).catch(() => undefined);
+    const status = overlayPushedKitchenState(hubStatus, pushed);
     if (Array.isArray(status.shift_notes)) {
       await syncShiftNotesSnapshot(instanceId, status.shift_notes).catch((syncError: any) => {
         auditError("Runtime Redis shift-note sync skipped", syncError, { instanceId });

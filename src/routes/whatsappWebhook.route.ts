@@ -96,6 +96,7 @@ import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
 import { recordLearningEvent } from "../services/learningLoop.service.js";
 import { bumpMetric, recordLatency } from "../services/metrics.service.js";
 import { mergeBufferedParts } from "../services/bufferBrain.service.js";
+import { greetingReply, readGuestGreeting } from "../agent/greeting.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
 
@@ -706,7 +707,21 @@ function hasMeaningfulMediaDescription(text = "", mediaContext: Record<string, a
   return clean.length >= 2;
 }
 
+// One line per answered turn with where the time went, so "the bot is slow" is read from
+// the log instead of guessed (zero-lag work, 2026-10-04).
+function logTurnTiming(ctx: FastFoodContext, source: string, sendStartedAt: number) {
+  const t = (ctx as any).turnTiming as { started: number; buffered: number; preloaded: number } | undefined;
+  if (!t) return;
+  const now = Date.now();
+  console.log(
+    `[OPENBOT:TIMING] instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} source=${source}` +
+    ` buffer_lock=${t.buffered - t.started}ms preload=${t.preloaded - t.buffered}ms answer=${sendStartedAt - t.preloaded}ms` +
+    ` send=${now - sendStartedAt}ms total=${now - t.started}ms`
+  );
+}
+
 async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: string, reply: string, source: string) {
+  const sendStartedAt = Date.now();
   const cleanReply = stripEscalationSignals(reply);
   if (cleanReply) {
     const delivery = await sendWhatsProResponseSequence({
@@ -735,6 +750,7 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
   }
   await markInboundDone(ctx.instanceId, messageId);
   await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
+  logTurnTiming(ctx, source, sendStartedAt);
 }
 
 async function processWhatsAppWebhook(body: any, started: number) {
@@ -939,8 +955,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
       }
     }
 
+    const bufferedAt = Date.now();
     mediaContext = await hydrateInboundMedia(body, mediaContext);
     const ctx = await preloadContext({ instanceId, phone, text, languageCandidateText: customerLanguageText, mediaContext, senderMeta });
+    (ctx as any).turnTiming = { started, buffered: bufferedAt, preloaded: Date.now() };
     console.log(
       `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`
     );
@@ -1537,6 +1555,28 @@ async function processWhatsAppWebhook(body: any, started: number) {
     // Deterministic proactive observations (order status changed since the
     // last contact, an abandoned checkout link). Advisory context only: they
     // reach the reply only when relevant to what the guest just said.
+    // Zero-lag greeting lane (owner decision, 2026-10-04): a message that is nothing but a
+    // greeting is answered in the guest's own form at once - no model, no tools. Every gate
+    // above (media, receipts, cancellations, order status, kitchen policy) has already had
+    // its say. A closed, paused or unreadable kitchen still goes to the agent, so the guest
+    // hears that it is closed instead of a cheerful "write what you need".
+    const guestGreeting = readGuestGreeting(ctx.text);
+    const live: any = ctx.hardRealtimeContext || {};
+    if (
+      !mediaContext
+      && guestGreeting?.kind === "greeting"
+      && guestGreeting.pure
+      && live.runtime_available !== false
+      && live.is_accepting_orders !== false
+      && live.within_work_hours !== false
+      && !live.is_emergency
+    ) {
+      console.log(`[OPENBOT:FASTLANE] greeting instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language}`);
+      void bumpMetric(ctx.instanceId, "turns");
+      await sendCustomerReplyAndFinish(ctx, messageId, greetingReply(ctx), "greeting_fast_lane");
+      return;
+    }
+
     ctx.proactiveSignals = await computeProactiveSignals(ctx).catch(() => null);
     void bumpMetric(ctx.instanceId, "turns");
 
@@ -1738,6 +1778,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
     }
 
     // Send main text response
+    const sendStartedAt = Date.now();
     const sendResult = await sendWhatsProResponseSequence({
       instanceId: ctx.instanceId,
       phone: ctx.phone,
@@ -1833,6 +1874,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
     console.log(
       `[OPENBOT:OUTBOUND] sent instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} chunks=${sendResult.chunks || 0} ok=${Boolean(sendResult?.ok)} link_separate=${result.hasLink} elapsed=${Date.now() - started}ms`
     );
+    logTurnTiming(ctx, "agent", sendStartedAt);
   } catch (error) {
     await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);
     await notifyDeveloperSystemFailure(String(instanceId || ""), error, {

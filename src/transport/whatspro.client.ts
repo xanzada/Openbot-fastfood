@@ -9,6 +9,13 @@ import { envNumber } from "../utils/envNumber.js";
 import { planHumanPacing, regroupBySentence, type PaceUrgency } from "./humanPace.js";
 
 const RESPONSE_CHUNK_MAX = envNumber(process.env.OPENBOT_RESPONSE_CHUNK_MAX, 320, { min: 180 });
+// Zero-lag (owner decision, 2026-10-04): the reply leaves the moment it is ready. The old
+// "human" rhythm - a 0.5-1.6 s read pause plus 4 chars/s of fake typing, capped at ~5 s
+// per message - stood between a finished answer and the guest on every single turn.
+// OPENBOT_HUMAN_PACE=human brings it back; later chunks keep a short gap so they land
+// in order and read as separate messages.
+const HUMAN_PACE = String(process.env.OPENBOT_HUMAN_PACE || "instant").trim().toLowerCase() === "human";
+const INSTANT_CHUNK_GAP_MS = envNumber(process.env.OPENBOT_CHUNK_GAP_MS, 350, { min: 0, max: 5_000 });
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 const volatileOutbox = new Map<string, WhatsProOutboxRecord>();
 let outboxTimer: ReturnType<typeof setInterval> | null = null;
@@ -512,14 +519,22 @@ export async function sendWhatsProResponseSequence(payload: {
   // turn that happens to produce the same reply text.
   const requestScope = String(payload.requestScope || crypto.randomUUID());
   // How a person would have paced this: a beat to read, then typing time per message.
-  const pacing = payload.immediate
-    ? { readPauseMs: 0, typingMs: chunks.map(() => 0), totalMs: 0 }
-    : planHumanPacing(chunks, payload.pace || "normal");
+  const humanPaced = HUMAN_PACE && !payload.immediate;
+  const pacing = humanPaced
+    ? planHumanPacing(chunks, payload.pace || "normal")
+    : {
+        readPauseMs: 0,
+        typingMs: chunks.map((_, index) => (payload.immediate || index === 0 ? 0 : INSTANT_CHUNK_GAP_MS)),
+        totalMs: payload.immediate ? 0 : Math.max(0, chunks.length - 1) * INSTANT_CHUNK_GAP_MS,
+      };
   const sent: any[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     // "typing…" starts BEFORE the pause, so the guest sees composing for the whole
     // wait instead of silence followed by a sudden message.
-    await sendWhatsProPresence(payload);
+    // "typing…" is already running since the guard accepted the message; in instant mode
+    // refreshing it must not cost the guest a gateway round trip before every chunk (and a
+    // fire-and-forget refresh could land after the message and leave "typing…" hanging).
+    if (humanPaced) await sendWhatsProPresence(payload);
     const pause = index === 0 ? pacing.readPauseMs + (pacing.typingMs[0] || 0) : pacing.typingMs[index] || 0;
     if (pause > 0) await delay(pause);
     const outboundId = crypto.createHash("sha256")
