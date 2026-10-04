@@ -5,12 +5,24 @@ export type CustomerLanguage = "kk" | "ru";
 // answered in their own language would be rude.
 const DECISIVE_KAZAKH = /[әғқңөұүһі]/u;
 const DECISIVE_RUSSIAN = /(?:здравствуй|привет|пожалуйста|спасибо|хочу|можно|сколько|доставка|заказыва|давайте|ещё|еще раз)/iu;
+// Only for a message the classifier could not read (timeout/invalid JSON): words a Kazakh
+// guest typing without special letters does not use. Kept out of DECISIVE_RUSSIAN on
+// purpose - that one also flips a locked language, where code-switching must not count.
+const UNCLASSIFIED_RUSSIAN =
+  /(?:добр(?:ый|ое|ого)\s+(?:день|дня|вечер|утр)|(?<![а-яёәғқңөұүһі])(?:где|почему|когда|мой|моя|мою|мне|меня|пришл[аио]?|холодн[а-я]*|ребенк[а-я]*|ребёнк[а-я]*)(?![а-яё]))/iu;
 
 export function textCarriesDecisiveLanguageSignal(text: unknown, language: CustomerLanguage) {
   const value = String(text || "").toLowerCase();
   if (!value.trim()) return false;
   if (language === "kk") return DECISIVE_KAZAKH.test(value);
   return !DECISIVE_KAZAKH.test(value) && DECISIVE_RUSSIAN.test(value);
+}
+
+/** Decisiveness for the regex guess when the classifier failed this turn. */
+export function unclassifiedTextIsDecisive(text: unknown, language: CustomerLanguage) {
+  if (textCarriesDecisiveLanguageSignal(text, language)) return true;
+  const value = String(text || "").toLowerCase();
+  return language === "ru" && !DECISIVE_KAZAKH.test(value) && UNCLASSIFIED_RUSSIAN.test(value);
 }
 
 export function shouldSwitchLockedLanguage(

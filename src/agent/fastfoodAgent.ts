@@ -3,6 +3,7 @@ import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
 import { analyzeTurnSituation, critiqueDraftReply, type DraftCritique, type TurnAnalysis } from "../services/agentThinking.service.js";
 import { fallbackReply, validateFinalText } from "./finalValidator.js";
+import { readGuestGreeting } from "./greeting.js";
 import { buildAgentInstructions } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
@@ -133,7 +134,10 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   }
   const thinking = (ctx.thinking || null) as TurnAnalysis | null;
 
-  const stepPolicy = createAgentStepPolicy(toolPlan);
+  // A turn that is nothing but a greeting needs no tool: live calibration (2026-10-04) saw
+  // «Сәлем» spend an extra model round on updateCrmLead and take 8-22 s instead of 2-4 s.
+  const greetingOnly = Boolean(readGuestGreeting(String(ctx.text || ""))?.pure) && !toolPlan.requiredTools.length;
+  const stepPolicy = greetingOnly ? () => ({ toolChoice: "none" as const }) : createAgentStepPolicy(toolPlan);
   // Typed as any on purpose: allowSystemInMessages is valid in AI SDK v6 but
   // missing from @voltagent/core types. The old key name was allowSystemMessages,
   // which the SDK ignored, so every single generation logged a security warning

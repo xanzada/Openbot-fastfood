@@ -1,4 +1,4 @@
-import { alignGreetingReply, fallbackReply } from "./greeting.js";
+import { alignGreetingReply, fallbackReply, stripRoboticOpener } from "./greeting.js";
 import type { FastFoodContext } from "../context/types.js";
 
 // Only an unverified CONCRETE duration is a factual violation. The old pattern
@@ -750,6 +750,10 @@ export { fallbackReply };
 
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
   const result = validateFinalTextCore(...args);
-  const aligned = alignGreetingReply(result.text, args[1]);
-  return aligned.changed ? { ...result, text: aligned.text, warnings: [...result.warnings, aligned.changed] } : result;
+  const warnings = [...result.warnings];
+  const opener = stripRoboticOpener(result.text);
+  if (opener.changed) warnings.push(opener.changed);
+  const aligned = alignGreetingReply(opener.text, args[1]);
+  if (aligned.changed) warnings.push(aligned.changed);
+  return warnings.length === result.warnings.length ? result : { ...result, text: aligned.text, warnings };
 }

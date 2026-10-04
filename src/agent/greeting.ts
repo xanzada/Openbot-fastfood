@@ -135,3 +135,15 @@ export function alignGreetingReply(text: string, ctx: FastFoodContext): { text: 
   // asks for the greeting, and gluing one onto arbitrary text reads worse than none.
   return { text, changed: null };
 }
+
+// «Конечно, отправил ссылку повторно» (owner's phone, 2026-10-04): the prompt bans these
+// openers, the model still reaches for them. Dropping the opener keeps the real answer.
+const ROBOTIC_OPENER_RE = /^\s*(?:конечно|разумеется|отличный вопрос|әрине|тамаша сұрақ)\s*[!,.]+\s*/iu;
+
+export function stripRoboticOpener(text: string): { text: string; changed: string | null } {
+  const match = String(text || "").match(ROBOTIC_OPENER_RE);
+  if (!match) return { text, changed: null };
+  const rest = text.slice(match[0].length);
+  if (rest.trim().length < 8) return { text, changed: null };
+  return { text: rest.charAt(0).toLocaleUpperCase("ru") + rest.slice(1), changed: "robotic_opener_removed" };
+}

@@ -187,3 +187,23 @@ test("every greeting form is answered in the guest's own form, without stamps (l
     assert.ok(readGuestGreeting(g)?.pure, `pure greeting: ${g}`);
   }
 });
+
+test("live 2026-10-04: robotic openers are dropped, greetings use no tools, a Russian guest stays Russian when the classifier times out", async () => {
+  const { validateFinalText } = await import("../src/agent/finalValidator.js");
+  const ru = kkCtx({ text: "можешь отправить повтороно", language: "ru" });
+  const v = validateFinalText("Конечно! Напишите, что именно хотите заказать.", ru, { toolsCalled: [] } as any);
+  assert.equal(v.text, "Напишите, что именно хотите заказать.");
+  assert.ok(v.warnings.includes("robotic_opener_removed"));
+  assert.equal(validateFinalText("Әрине!", kkCtx({ text: "рахмет" }), { toolsCalled: [] } as any).text, "Әрине!", "a lone word is not stripped to nothing");
+  const { unclassifiedTextIsDecisive, textCarriesDecisiveLanguageSignal } = await import("../src/services/languagePolicy.service.js");
+  for (const t of ["Добрый день", "где мой заказ?? 55 минут", "в бургере есть орехи? у ребенка аллергия", "еда пришла холодная и курьер нагрубил"]) {
+    assert.ok(unclassifiedTextIsDecisive(t, "ru"), t);
+  }
+  for (const t of ["салем калайсыз", "жеткизу бар ма", "мен уже кеттим", "Нестеватсындар?"]) assert.ok(!unclassifiedTextIsDecisive(t, "ru"), t);
+  assert.ok(!textCarriesDecisiveLanguageSignal("где мой заказ", "ru"), "the lock-switch signal is unchanged");
+  const { readFile } = await import("node:fs/promises");
+  const agent = await readFile(new URL("../src/agent/fastfoodAgent.ts", import.meta.url), "utf8");
+  assert.match(agent, /greetingOnly \? \(\) => \(\{ toolChoice: "none" as const \}\)/);
+  const preload = await readFile(new URL("../src/context/preloadContext.ts", import.meta.url), "utf8");
+  assert.match(preload, /unclassifiedTextIsDecisive\(languageCandidateText, decision\.language\)/);
+});

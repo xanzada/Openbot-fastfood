@@ -24,7 +24,7 @@ import { orderMentionedByItems, pickConversationOrder } from "../services/custom
 import { matchingNoteIds, mergeShiftNoteSources } from "../services/noteProvenance.service.js";
 import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
-import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal } from "../services/languagePolicy.service.js";
+import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal, unclassifiedTextIsDecisive } from "../services/languagePolicy.service.js";
 import type { FastFoodContext } from "./types.js";
 
 /**
@@ -180,8 +180,14 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     // Let resolveOrganicLanguage report site_hint as its true source instead of
     // disguising it as history. Resolved history and locks remain dialogue prior.
     const priorLanguage = priorDecision.source === "site_hint" ? null : priorDecision.language;
+    // When the classifier timed out (AI_LANG_DETECT_TIMEOUT under load) the message itself
+    // may still be unmistakable: «Здравствуйте» / «Добрый день» / «где мой заказ» from a
+    // new guest were answered in Kazakh by the "default" lane (live calibration 2026-10-04).
+    const fallbackIsDecisive = Boolean(
+      decision && !decision.lockable && unclassifiedTextIsDecisive(languageCandidateText, decision.language)
+    );
     const resolved = resolveOrganicLanguage({
-      detected: decision?.lockable ? decision.language : null,
+      detected: decision?.lockable || fallbackIsDecisive ? decision!.language : null,
       // Same decisiveness test the locked path uses, so both lanes agree on what counts
       // as an unmistakable request to switch.
       //
@@ -194,7 +200,8 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
       // (owner report, reproduced from the [OPENBOT:LANG] line, 2026-08-24).
       // A regex guess must never outrank a confident classifier.
       detectedIsDecisive: Boolean(
-        decision?.lockable
+        fallbackIsDecisive
+        || decision?.lockable
           && (textCarriesDecisiveLanguageSignal(languageCandidateText, decision.language)
             || (decision.confidence ?? 0) >= 0.8)
       ),
