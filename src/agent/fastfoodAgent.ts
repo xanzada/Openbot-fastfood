@@ -2,7 +2,7 @@ import { Agent, stepCountIs } from "@voltagent/core";
 import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
 import { analyzeTurnSituation, critiqueDraftReply, type DraftCritique, type TurnAnalysis } from "../services/agentThinking.service.js";
-import { validateFinalText } from "./finalValidator.js";
+import { fallbackReply, validateFinalText } from "./finalValidator.js";
 import { buildAgentInstructions } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
@@ -238,9 +238,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     validation = { ...validation, warnings: [...validation.warnings, "link_promise_honored"] };
     console.info(`[LINK PROMISE] honored instance=${ctx.instanceId}`);
   } else if (promise.action === "stripped") {
-    finalText = promise.text || (ctx.language === "kk"
-      ? "Осындамын — не керек екенін жаза беріңіз."
-      : "Я на связи — напишите, что подсказать.");
+    finalText = promise.text || fallbackReply(ctx);
     validation = { ...validation, warnings: [...validation.warnings, `link_promise_removed_${promise.reason}`] };
     console.warn(`[LINK PROMISE] removed instance=${ctx.instanceId} reason=${promise.reason}`);
   }

@@ -139,3 +139,19 @@ test("a menu read grounds an allergen answer only when the catalog has ingredien
   const known = validateFinalText(reply, kkCtx({ menuSnapshot: filled }), { toolsCalled: ["searchMenu"] } as any);
   assert.match(known.text, /жаңғақ жоқ/);
 });
+
+test("a greeting is answered with a greeting: «Сәлем! 😊» is not a fragment, and the fallback greets", async () => {
+  const { validateFinalText, fallbackReply } = await import("../src/agent/finalValidator.js");
+  const kk = kkCtx({ text: "Сәлем" });
+  const short = validateFinalText("Сәлем! 😊", kk, { toolsCalled: [] } as any);
+  assert.equal(short.text, "Сәлем! 😊");
+  assert.ok(!short.warnings.includes("truncated_model_output"));
+  const broken = validateFinalText("Өкі", kk, { toolsCalled: [] } as any);
+  assert.equal(broken.text, "Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз.");
+  assert.equal(fallbackReply({ ...kk, language: "ru", text: "Привет" } as any), "Здравствуйте! 😊 Я на связи — напишите, чем помочь.");
+  const midDialog = kkCtx({ text: "иә", chatHistory: [{ role: "user", text: "Сәлем" }, { role: "assistant", text: "Сәлем! 😊" }] });
+  assert.equal(fallbackReply(midDialog), "Осындамын — не көмек керек, жаза беріңіз.", "no re-greeting mid-dialog");
+  const { readFile } = await import("node:fs/promises");
+  const prompt = await readFile(new URL("../src/agent/instructions.ts", import.meta.url), "utf8");
+  assert.match(prompt, /Good: «Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз\.»/);
+});

@@ -272,13 +272,23 @@ export function stripReasoningPreamble(text: string): { text: string; removed: b
   return { text: answer, removed: true };
 }
 
-// The prompt forbids emoji by default, yet the deterministic fallback shipped
-// one - so the single most frequently sent sentence contradicted the persona.
-function fallback(ctx: FastFoodContext) {
-  return ctx.language === "kk"
-    ? "Осындамын — не керек екенін жаза беріңіз."
-    : "Я на связи — напишите, что подсказать.";
+// «Сәлем» was answered with a bare «Осындамын — не керек екенін жаза беріңіз.» - no
+// greeting at all (owner live test, 2026-10-04). The fallback greets when the guest
+// greeted or the bot has not spoken yet; mid-dialog it does not re-greet.
+const GUEST_GREETING_RE =
+  /^\s*(?:с[әа]лем|салам|ассала|уа?ғалейкум|қайырлы|кайырлы|привет|здравств|добр(?:ый|ое|ого)|hi\b|hello|salem)/iu;
+
+export function fallbackReply(ctx: FastFoodContext) {
+  const history = Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [];
+  const botSpoke = history.some((entry: any) => ["assistant", "model", "bot"].includes(String(entry?.role || "")));
+  const greet = GUEST_GREETING_RE.test(String(ctx.text || "")) || !botSpoke;
+  if (ctx.language === "kk") {
+    return greet ? "Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз." : "Осындамын — не көмек керек, жаза беріңіз.";
+  }
+  return greet ? "Здравствуйте! 😊 Я на связи — напишите, чем помочь." : "Я на связи — напишите, чем помочь.";
 }
+
+const fallback = fallbackReply;
 
 function noActiveOrderText(ctx: FastFoodContext) {
   return ctx.language === "kk"
@@ -451,7 +461,9 @@ export function validateFinalText(
 
   // A truncated generation once shipped the single word "Өкі" to a guest. A reply that
   // short with no sentence ending and no URL is a broken fragment, not an answer.
-  const looksUnfinished = text.length < 12 && !/[.!?…:]$/.test(text) && !hasLinkInResponse(text);
+  // A closing emoji ends a sentence too: the prompt's own example greeting «Сәлем! 😊»
+  // was thrown away as a fragment and replaced by the fallback (live, 2026-10-04).
+  const looksUnfinished = text.length < 12 && !/[.!?…:)\p{Extended_Pictographic}\uFE0F]$/u.test(text) && !hasLinkInResponse(text);
   if (looksUnfinished) {
     return { text: fallback(ctx), hasLink: false, warnings: ["truncated_model_output"] };
   }
