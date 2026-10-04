@@ -229,7 +229,12 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     // be a receipt, and its caption often names a dish. Dropping it here would put
     // the guest back on "try again later" with nobody looking at the payment
     // (owner, 2026-08-28).
-    && input.source !== "media_unreadable_evidence";
+    && input.source !== "media_unreadable_evidence"
+    // No model could answer, so ANY question - «донер барма» included - needs a person.
+    && input.source !== "ai_unavailable"
+    // The catalog has no ingredients, so a person has to read the real recipe;
+    // skipping it made «асүйден нақтылап беремін» a promise nobody kept (2026-10-04).
+    && input.source !== "composition_check";
   if (menuSkipApplies && isLikelyMenuQuestion(input.customerText || ctx.text)) {
     return {
       action: "skipped_menu_question",
@@ -260,7 +265,13 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     const guestText = input.customerText || ctx.text || "";
     const clarifyKind = detectOperatorCaseKind(guestText);
     const hasActionableStory = complaintHasActionableDetail(guestText);
-    if (!hasActionableStory && !media && clarifyKind !== "cancel_request") {
+    // The agent's own judgement counts too: a high-urgency call on a turn the think
+    // layer read as angry or high-risk is a conflict, not smalltalk, so it raises SOS
+    // at once instead of asking «что случилось?» a second time (owner, 2026-10-04).
+    const thinking = (ctx.thinking || {}) as Record<string, any>;
+    const agentSeesConflict = input.urgency === "high"
+      && (thinking.risk === "high" || ["angry", "upset"].includes(String(thinking.mood || "")));
+    if (!hasActionableStory && !media && clarifyKind !== "cancel_request" && !agentSeesConflict) {
       const openCaseId = await getActiveOperatorCaseId(ctx.instanceId, ctx.phone).catch(() => null);
       if (!openCaseId) {
         // An unreadable state maps to "nothing pending" here, deliberately: during a
@@ -294,7 +305,9 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
   const summary = cleanLine(input.summary || input.customerText || ctx.text || "Customer complaint requires review.");
   const urgency = input.urgency || "normal";
   const detectedKind = detectOperatorCaseKind(input.customerText || ctx.text);
-  const kind = input.source === "long_voice" ? "long_voice" : detectedKind || "complaint";
+  const kind = input.source === "long_voice" ? "long_voice"
+    : input.source === "ai_unavailable" || input.source === "composition_check" ? "unresolved"
+    : detectedKind || "complaint";
   const signalId = `sos_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
   // WhatsPro Chat is the canonical operator workflow and already stores the

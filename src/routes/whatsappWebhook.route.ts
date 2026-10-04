@@ -3,6 +3,7 @@ import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { refreshCheckoutContextForText } from "../services/checkoutIntent.service.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
+import { answerAgentFailure, answerCompositionQuestion, needsKitchenCompositionCheck } from "../services/turnSafetyNet.service.js";
 import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemory.service.js";
 import {
 claimReceiptFingerprint,
@@ -1543,7 +1544,25 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const wsChain = (getLlmWorkspacePools()?.text || []);
     const aiProvider = wsChain.length > 0 ? `workspace(${wsChain.map((e: any) => e.name).join(',')})` : 'openrouter';
     console.log(`[OPENBOT:AI] generating provider=${aiProvider} primary=${textModels.primary} fallback=${textModels.fallback}`);
-    const result = await runFastFoodAgent(ctx);
+    if (needsKitchenCompositionCheck(ctx)) {
+      const reply = await answerCompositionQuestion(ctx);
+      console.log(`[OPENBOT:PREEMPT] composition question without catalog ingredients -> kitchen check`);
+      await sendCustomerReplyAndFinish(ctx, messageId, reply, "composition_check");
+      return;
+    }
+
+    // The guest is never left without an answer: when every model lane failed (proxy
+    // security-check 400, 429/5xx, timeouts) the turn still replies and raises SOS.
+    let result: Awaited<ReturnType<typeof runFastFoodAgent>>;
+    try {
+      result = await runFastFoodAgent(ctx);
+    } catch (agentError: any) {
+      console.error(`[OPENBOT:AI] all lanes failed instance=${ctx.instanceId} error=${agentError?.message || agentError}`);
+      const reply = await answerAgentFailure(ctx, agentError);
+      await sendCustomerReplyAndFinish(ctx, messageId, reply, "ai_unavailable");
+      void notifyDeveloperSystemFailure(ctx.instanceId, agentError, { scope: "agent_all_lanes_failed", messageId, customerPhone: maskPhone(ctx.phone) }).catch(() => undefined);
+      return;
+    }
     console.log(
       `[OPENBOT:AI] completed chars=${result.text.length} finish=${result.finishReason || "-"} link=${result.hasLink}` +
       ` planned_tools=${result.toolPlan.requiredTools.join(",") || "auto"}` +

@@ -86,9 +86,18 @@ export function clearModelCooldowns() {
   modelFailedUntil.clear();
 }
 
-function ignoredPinnedTool(options: any, result: any) {
+// Only doGenerate returns `content`; a stream is judged by its consumer.
+function ignoredPinnedTool(operation: string, options: any, result: any) {
   const pinned = options?.toolChoice?.type === "tool" || options?.toolChoice?.type === "required";
-  return pinned && !(result?.content || []).some((part: any) => part?.type === "tool-call");
+  return operation === "doGenerate" && pinned && !(result?.content || []).some((part: any) => part?.type === "tool-call");
+}
+
+// A 200 with nothing in it (finish_reason content_filter, a proxy's empty body) is a
+// refusal, not an answer: the guest got the generic fallback while another lane was
+// still untried (audit 2026-10-04).
+function emptyCompletion(operation: string, result: any) {
+  return operation === "doGenerate" && !(result?.content || []).some((part: any) =>
+    part?.type === "tool-call" || (part?.type === "text" && String(part.text || "").trim()));
 }
 
 /**
@@ -112,8 +121,11 @@ async function callChain(
       // gemini-2.5-flash entry ignored a pinned searchMenu and quoted 1200 ₸ for a
       // 1590 ₸ doner (probe 2026-10-04). A pinned step with no tool call is a failed
       // lane while another lane is left to try.
-      if (index < usable.length - 1 && ignoredPinnedTool(options, result)) {
+      if (index < usable.length - 1 && ignoredPinnedTool(operation, options, result)) {
         throw new Error(`TOOL_CHOICE_IGNORED:${entry.model.modelId}`);
+      }
+      if (index < usable.length - 1 && emptyCompletion(operation, result)) {
+        throw new Error(`EMPTY_COMPLETION:${entry.model.modelId}`);
       }
       noteModelSuccess(entry.label);
       if (entry.providerEntry) {
