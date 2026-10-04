@@ -1,5 +1,7 @@
 import type { FastFoodContext } from "../context/types.js";
-import { routeComplaintToAdmin } from "./complaintRouting.service.js";
+import { isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin } from "./complaintRouting.service.js";
+import { honorMenuLinkPromise } from "../agent/linkPromise.js";
+import { foldIntentText, intentMatches } from "../utils/intentText.js";
 
 /**
  * Two answers that must not depend on a model (owner rules, 2026-10-04).
@@ -7,7 +9,8 @@ import { routeComplaintToAdmin } from "./complaintRouting.service.js";
  * 1. No model answered. The A6API proxy rejects angry guests («где мой заказ?? 55 минут»)
  *    with a security-check 400 on every lane, and a lane can time out; the webhook then
  *    threw and the guest got silence on exactly the turn that mattered most. Now the
- *    guest gets a holding line and the operator gets an SOS.
+ *    guest gets a holding line and the operator gets an SOS - unless it was a calm
+ *    catalog turn, which is answered from the menu and the ordering link instead.
  * 2. A composition / allergen question about dishes whose catalog entry has no
  *    ingredients. Any answer would be a guess about a child's allergy, so the bot only
  *    says it is checking with the kitchen - and an SOS makes that sentence true.
@@ -17,8 +20,91 @@ type Route = typeof routeComplaintToAdmin;
 
 const say = (ctx: FastFoodContext, kk: string, ru: string) => (ctx.language === "kk" ? kk : ru);
 
-export async function answerAgentFailure(ctx: FastFoodContext, error: unknown, route: Route = routeComplaintToAdmin) {
+/**
+ * A calm catalog turn - a price, a dish, «мәзір», «заказ берейін» - needs the menu,
+ * not a person. «Пицца қаншадан?» hit a model timeout and became a red high-urgency
+ * SOS in the operator panel about nothing (owner report, 2026-10-04). Such a turn is
+ * answered from facts the bot already holds - catalog prices and the ordering link -
+ * and the SOS stays for what really needs a human: a complaint, a request for a
+ * person, an order that is late, missing or wrong, money.
+ */
+const CATALOG_TURN_RE =
+  /(қанша|сколько|цен[аы]|поч[её]м|баға|прайс|мәзір|меню|menu|каталог|ассортимент|бар\s*ма|барма|есть\s*ли|заказ|тапсырыс|керек|хочу|алайын|аламын|берейін|жасап|оформ|комбо)/iu;
+const NEEDS_PERSON_RE =
+  /(қайда|где|келмеді|келмей|не\s*привез|не\s*пришл|не\s*приш[её]л|кешік|опазд|долго|ұзақ|күттім|күтіп\s*отыр|жду|жд[её]м|отмен|болдырма|возврат|верн|ақшам|деньг|суық|холодн|жалоб|шағым|оператор|менеджер|админ|адаммен|человек|қате|ошиб|неправильн)/iu;
+const ORDER_WORD_RE = /(заказ|тапсырыс)/iu;
+const NON_TEXT_MEDIA_RE = /(image|photo|document|video|sticker|file)/i;
+
+export function isCalmCatalogTurn(ctx: FastFoodContext) {
+  const text = String(ctx.text || "").trim();
+  if (!text || !intentMatches(CATALOG_TURN_RE, text)) return false;
+  if (intentMatches(NEEDS_PERSON_RE, text)) return false;
+  if (isLikelyComplaintText(text) || isLikelyOperatorRequestText(text)) return false;
+  // «Тапсырысым қанша?» with a live order is about that order, not the menu.
+  if (ctx.activeOrder && intentMatches(ORDER_WORD_RE, text)) return false;
+  // A photo / document (receipt, screenshot of a problem) is never catalog talk.
+  const media: any = ctx.mediaContext || null;
+  if (media && NON_TEXT_MEDIA_RE.test(String(media.kind || media.type || media.mimeType || ""))) return false;
+  return true;
+}
+
+const STOP_WORDS = new Set([
+  "қанша", "қаншадан", "қаншаға", "сколько", "стоит", "стоят", "керек", "керегі", "есть", "бауырым", "брат", "братан",
+  "заказ", "заказать", "тапсырыс", "хочу", "маған", "беріңіз", "дайте", "пожалуйста", "сәлем", "салем", "здравствуйте",
+  "привет", "ассалаумағалейкум", "ассалаумалейкум", "срочно", "бірден", "сразу", "можно", "болады", "бересіз", "берейін",
+].map((word) => foldIntentText(word)));
+
+/** Catalog dishes the guest named, with the menu price - facts, not a model's guess. */
+export function catalogPriceLines(ctx: FastFoodContext, max = 6) {
+  const items: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot!.items : [];
+  if (!items.length) return [] as string[];
+  const words = foldIntentText(ctx.text).split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 4 && !STOP_WORDS.has(word));
+  if (!words.length) return [] as string[];
+  const stems = [...new Set(words.map((word) => word.slice(0, Math.max(4, word.length - 3))))];
+  return items
+    .filter((item) => item?.available !== false && Number(item?.price) > 0)
+    .filter((item) => {
+      const haystack = foldIntentText(`${item.name || ""} ${item.category || ""}`);
+      return stems.some((stem) => haystack.includes(stem));
+    })
+    .slice(0, max)
+    .map((item) => `▪️ ${String(item.name).trim()} — ${Math.round(Number(item.price))} ₸`);
+}
+
+type GrantLink = (ctx: FastFoodContext) => Promise<boolean>;
+
+/** Same gates as a promised link: closed kitchen / unconfirmed wait / mint failure => false. */
+export const grantMenuLinkForFallback: GrantLink = async (ctx) => {
+  if (ctx.magicLinkGranted && ctx.magicLink) return true;
+  const outcome = await honorMenuLinkPromise(ctx, ctx.language === "kk" ? "Мәзірді жіберемін." : "Отправлю меню.").catch(() => null);
+  return outcome?.action === "granted" || Boolean(ctx.magicLinkGranted && ctx.magicLink);
+};
+
+export async function answerAgentFailure(
+  ctx: FastFoodContext,
+  error: unknown,
+  route: Route = routeComplaintToAdmin,
+  grantLink: GrantLink = grantMenuLinkForFallback,
+) {
   const reason = String((error as any)?.message || error || "unknown").slice(0, 80);
+  if (isCalmCatalogTurn(ctx)) {
+    const lines = catalogPriceLines(ctx);
+    const linked = await grantLink(ctx).catch(() => false);
+    if (lines.length || linked) {
+      console.warn(`[OPENBOT:SAFETY] model unavailable on a catalog turn - answered from menu (prices=${lines.length} link=${linked}), no SOS reason=${reason}`);
+      const kk = ctx.language === "kk";
+      if (lines.length) {
+        const head = kk ? "Кешіріңіз, жауап сәл кешікті. Бағалары:" : "Извините за задержку. Цены:";
+        const tail = linked
+          ? (kk ? "Толық мәзір және тапсырыс беру — төмендегі сілтемеде." : "Полное меню и оформление заказа — по ссылке ниже.")
+          : (kk ? "Тапсырыс бергіңіз келсе, жазыңыз — сілтемені жіберемін." : "Если хотите заказать, напишите — пришлю ссылку.");
+        return [head, ...lines, tail].join("\n");
+      }
+      return say(ctx,
+        "Кешіріңіз, жауап сәл кешікті. Мәзір мен бағалар төмендегі сілтемеде — сол арқылы бірден тапсырыс бере аласыз.",
+        "Извините за задержку. Меню с ценами — по ссылке ниже, там же можно сразу оформить заказ.");
+    }
+  }
   const routing = await route(ctx, {
     summary: `ИИ жауап бере алмады (${reason}). Клиент жазды: ${String(ctx.text || "").slice(0, 300)}`,
     customerText: ctx.text,
