@@ -15,6 +15,7 @@ import {
 } from "./redis.service.js";
 import { auditError } from "./auditLogger.service.js";
 import { callAlemiLegacyAction } from "./alemiApi.service.js";
+import { paymentFieldsFrom } from "../utils/paymentTiming.js";
 
 const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
 const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;
@@ -697,6 +698,7 @@ function minorToMajor(value: unknown) {
 
 function normalizeOrderPayload(order: Record<string, any> = {}) {
   const items = normalizeOrderItems(order.items);
+  const paymentFields = paymentFieldsFrom(order);
   const id = String(order.id || order.order_id || order.uuid || "").trim();
   const displayNumber = String(
     order.display_number || order.order_number || order.number || order.order_no || order.public_number || order.display_id || id,
@@ -713,6 +715,10 @@ function normalizeOrderPayload(order: Record<string, any> = {}) {
     comment: String(order.comment || "").trim().slice(0, 500),
     is_pickup: toBool(order.is_pickup, String(order.fulfillment_type || order.delivery_type || "").trim().toLowerCase() === "pickup"),
     payment_status: String(order.payment_status || "").trim().slice(0, 80),
+    // null = legacy order (prepayment flow), not "paid" and not "on receipt".
+    payment_timing: paymentFields.timing,
+    payment_revision: paymentFields.revision,
+    receipt_required: paymentFields.receiptRequired,
     ai_comment: String(order.ai_comment || "").trim().slice(0, 1000),
     created_at: String(order.created_at || order.date || order.date_added || order.time || "").trim().slice(0, 80),
     items,

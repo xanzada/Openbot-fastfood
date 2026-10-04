@@ -1,9 +1,10 @@
 import { auditError } from "./auditLogger.service.js";
 import { getOrderContext, normalizePhone } from "./dle.service.js";
 import { formatKitchenWait } from "./kitchenPolicy.service.js";
+import { paymentFieldsFrom, type PaymentTiming } from "../utils/paymentTiming.js";
 
 export type CustomerOrderStage = "awaiting_confirmation" | "awaiting_receipt" | "receipt_review" | "preparing" | "delivery" | "completed" | "cancelled" | "unknown";
-export interface CustomerOrder { orderId: string; orderNumber: string; status: string; stage: CustomerOrderStage; statusLabel: string; statusExplanation: string; items: Array<{ name: string; quantity: number }>; }
+export interface CustomerOrder { orderId: string; orderNumber: string; status: string; stage: CustomerOrderStage; statusLabel: string; statusExplanation: string; items: Array<{ name: string; quantity: number }>; paymentTiming?: PaymentTiming | null; paymentRevision?: number | null; }
 export type CustomerOrderLookup = { state: "found"; order: CustomerOrder } | { state: "not_found" } | { state: "ambiguous" } | { state: "unavailable" };
 
 function statusKey(status: string) { return String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_"); }
@@ -37,13 +38,38 @@ export function describeOrderStage(stage: CustomerOrderStage, language: "kk" | "
   };
   const value = labels[stage] as string[]; return { label: value[0], explanation: value[1] };
 }
+// "Оплата при получении": nothing is paid in advance, so no stage may talk
+// about a transfer, a receipt or a confirmed payment. The stage itself is
+// re-mapped (a confirmed on-receipt order is cooking, not waiting for a receipt)
+// and the wording always says the guest pays on receipt.
+export function classifyOnReceiptStage(stage: CustomerOrderStage): CustomerOrderStage {
+  if (stage === "awaiting_receipt") return "preparing";
+  if (stage === "receipt_review") return "awaiting_confirmation";
+  return stage;
+}
+export function describeOnReceiptStage(stage: CustomerOrderStage, language: "kk" | "ru") {
+  const ru: Partial<Record<CustomerOrderStage, [string, string]>> = {
+    awaiting_confirmation: ["Ждём подтверждения", "заказ оформлен с оплатой при получении, ждём подтверждения ресторана"],
+    preparing: ["Готовится", "заказ принят и готовится, оплата при получении"],
+    delivery: ["В пути", "заказ у курьера и едет к вам, оплата при получении"],
+  };
+  const kk: Partial<Record<CustomerOrderStage, [string, string]>> = {
+    awaiting_confirmation: ["Растауды күтудеміз", "тапсырыс алған кезде төлеу тәсілімен рәсімделді, мейрамхананың растауын күтудеміз"],
+    preparing: ["Дайындалуда", "тапсырыс қабылданды, дайындалып жатыр, төлем алған кезде"],
+    delivery: ["Жолда", "тапсырыс курьерде және сізге келе жатыр, төлем алған кезде"],
+  };
+  const hit = (language === "ru" ? ru : kk)[stage];
+  if (hit) return { label: hit[0], explanation: hit[1] };
+  return describeOrderStage(stage, language);
+}
 export function describeOrderStatus(status: string, language: "kk" | "ru", aiComment: unknown = "") { return describeOrderStage(classifyOrderStage(status, aiComment), language).explanation; }
 function localizedItemName(value: unknown): string { if(typeof value==="string"||typeof value==="number")return String(value).trim();if(!value||typeof value!=="object"||Array.isArray(value))return"";const record=value as Record<string,any>;for(const candidate of [record.ru,record.kk,record.kz,record.name,record.title,record.value]){const text=localizedItemName(candidate);if(text)return text;}return""; }
 function customerItems(value: unknown): Array<{ name: string; quantity: number }> { if (!Array.isArray(value)) return []; return value.map((item:any)=>{const name=localizedItemName(item?.name||item?.title||item?.product_name||item?.product?.name||item?.product?.title).slice(0,120);const quantity=Math.max(1,Math.min(99,Number(item?.qty||item?.quantity||item?.count||1)||1));return name?{name,quantity}:null;}).filter((x):x is {name:string;quantity:number}=>Boolean(x)); }
 export function customerOrderFromRecord(value: Record<string,any>|null|undefined, expectedPhone:string, language:"kk"|"ru"): CustomerOrderLookup {
   const record=value?.order||value?.active_order||value||null; const orderId=String(record?.id||record?.order_id||record?.uuid||value?.order_id||"").trim().slice(0,80); const orderNumber=String(record?.display_number||record?.order_number||record?.number||record?.order_no||orderId).trim().slice(0,40); const status=String(record?.status||value?.status||"").trim().slice(0,80); if(!orderId||!status)return{state:"not_found"};
   const ownerPhone=normalizePhone(record?.phone||record?.phone_e164||value?.phone||value?.phone_e164||""); const requestedPhone=normalizePhone(expectedPhone); if(ownerPhone&&requestedPhone&&ownerPhone!==requestedPhone){auditError("Customer order ownership mismatch",new Error("ORDER_PHONE_MISMATCH"),{orderNumber,expectedPhone:requestedPhone,ownerPhone});return{state:"not_found"};}
-  const stage=classifyOrderStage(status,record?.ai_comment||value?.ai_comment,record?.payment_status||value?.payment_status); const description=describeOrderStage(stage,language); return{state:"found",order:{orderId,orderNumber,status,stage,statusLabel:description.label,statusExplanation:description.explanation,items:customerItems(record?.items||value?.items)}};
+  const payment=paymentFieldsFrom(record||value); const onReceipt=payment.timing==="on_receipt";
+  const baseStage=classifyOrderStage(status,record?.ai_comment||value?.ai_comment,record?.payment_status||value?.payment_status); const stage=onReceipt?classifyOnReceiptStage(baseStage):baseStage; const description=onReceipt?describeOnReceiptStage(stage,language):describeOrderStage(stage,language); return{state:"found",order:{orderId,orderNumber,status,stage,statusLabel:description.label,statusExplanation:description.explanation,items:customerItems(record?.items||value?.items),...(payment.timing?{paymentTiming:payment.timing,paymentRevision:payment.revision}:{})}};
 }
 function orderIdOf(record: any) { return String(record?.id || record?.order_id || "").trim(); }
 function orderMatchesNumber(record: any, value: string) { const expected=String(value||"").trim();return [record?.id,record?.order_id,record?.display_number,record?.order_number,record?.number,record?.order_no].some((candidate)=>String(candidate||"").trim()===expected); }
@@ -112,6 +138,7 @@ export async function getCustomerOrder(instanceId:string,domain:string,phone:str
 // A status line that stops at the label leaves the guest wondering what to do
 // next, so every answer ends with who moves and when.
 export function orderNextStepLine(order:CustomerOrder,language:"kk"|"ru"){
+  if(order.paymentTiming==="on_receipt"&&order.stage==="awaiting_confirmation") return language==="ru"?"Как только ресторан подтвердит заказ, сразу напишем. Оплата — при получении, чек не нужен.":"Мейрамхана растаған бойда бірден хабарлаймыз. Төлем — алған кезде, чек қажет емес.";
   // An order the site has not been paid for is not in the kitchen yet: the guest
   // can still walk away without saying a word. "We will write the moment it is
   // ready" used to be sent for these too, which promised cooking that had not

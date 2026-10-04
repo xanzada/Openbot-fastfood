@@ -29,6 +29,22 @@ import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
 import { normalizeSiteLanguage, resolveSiteOutboundLanguage } from "../services/languagePolicy.service.js";
 import { describeBodyShape } from "../utils/bodyShape.js";
+import {
+  buildOnReceiptAcceptedMessage,
+  buildPaymentTimingChangedMessage,
+  clearReceiptSeenForOrder,
+  decidePaymentRequest,
+  decideTimingChangeNotice,
+  getPaymentState,
+  isOnReceipt,
+  onReceiptNewOrderLine,
+  onReceiptStatusSuffix,
+  paymentFieldsFrom,
+  positiveAmount,
+  readFreshOrderPayment,
+  recordPaymentState,
+  type FreshOrderPayment,
+} from "../services/paymentTiming.service.js";
 
 type Language = "kk" | "ru";
 type PaymentDetail = { label: string; value: string; source?: string };
@@ -44,6 +60,7 @@ const VALID_ACTIONS = new Set([
   "new_order",
   "status_changed",
   "request_payment",
+  "payment_timing_changed",
   "order_rejected",
   "shift_note_created",
   "shift_note_deleted",
@@ -817,11 +834,24 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     const newStatus = cleanInline(body.status || body.new_status || body.order_status, 80);
     const isPickup = parsePickupFlag(body.is_pickup);
 
+    // order.payment_timing_changed deliberately carries neither phone nor sum:
+    // both come from the fresh context of THIS order (contract), never from the
+    // guest's last dialogue.
+    let timingChangeFresh: FreshOrderPayment | null = null;
     if (!isShiftNoteAction) {
       if (!isValidOrderId(orderId) || orderId === "0") {
         auditDecision("Rejected webhook: invalid order id", { orderId, action, instance });
         res.status(400).json({ ok: false, error: "BAD_ORDER_ID" });
         return;
+      }
+      if (action === "payment_timing_changed") {
+        const mappedPhone = phone || (await getOrderPhone(instance, orderId).catch(() => ""));
+        timingChangeFresh = await readFreshOrderPayment(instance, orderId, { config, phone: mappedPhone }).catch(() => null);
+        if (timingChangeFresh?.phone) {
+          phone = timingChangeFresh.phone;
+          body.phone = timingChangeFresh.phone;
+          auditDecision("Order phone taken from fresh order context", { orderId, action, instance, via: timingChangeFresh.via });
+        }
       }
       if (!phone) {
         // Hub status events (status_changed / order_rejected) carry only the
@@ -883,11 +913,18 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     // Every press deserves its own lock, but hub retries of the SAME press must
     // not: event_id is already claimed above, so it is the right discriminator.
     const resendScopeId = String(body.event_id || body.eventId || "").trim() || `t${Math.floor(Date.now() / 60000)}`;
+    // A new payment cycle (prepay -> on_receipt -> prepay) asks for a receipt
+    // again under a NEW revision; the 24 h lock of the first cycle must not
+    // swallow it. Revision 1 / no revision keeps the historical key.
+    const eventPayment = paymentFieldsFrom(body);
+    const revisionScope = eventPayment.revision && eventPayment.revision > 1 ? `:rev${eventPayment.revision}` : "";
     const lockScope = action === "status_changed"
       ? `${action}:${newStatus || "unknown"}`
-      : isReceiptResendRequest
-        ? `${action}:receipt_resend:${resendScopeId}`
-        : action;
+      : action === "payment_timing_changed"
+        ? `${action}:rev${eventPayment.revision || resendScopeId}`
+        : isReceiptResendRequest
+          ? `${action}:receipt_resend:${resendScopeId}`
+          : `${action}${action === "request_payment" ? revisionScope : ""}`;
     lockKey = `kanban_lock:${instance}:${lockId}:${lockScope}`;
     auditDecision("Attempting idempotency lock", { orderId, action, instance, lockKey, lockScope });
     const locked = await redisClient.set(lockKey, "1", { NX: true, EX: isShiftNoteAction ? 5 : 86400 });
@@ -957,9 +994,85 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       // stays internal (it is what Redis and the kitchen keys are built on).
       const displayOrderId = cleanInline(body.order_number || body.orderNumber || orderId, 40);
       textMessage = buildLegacyNewOrderMessage(body, lang, displayOrderId, isPickup);
+      // The sum the guest is told later (payment change, on-receipt accept) is
+      // the one saved with the order, never recomputed from the current menu.
+      const recorded = await recordPaymentState(instance, orderId, eventPayment, {
+        source: "order.created",
+        orderNumber: displayOrderId,
+        total: body.total_price || body.total,
+        phone,
+      });
+      // An older order.created replayed after a payment change must not speak
+      // with the old choice: the stored (newest) revision decides the line.
+      const effectivePayment = recorded.state && recorded.state.revision >= (eventPayment.revision || 0)
+        ? recorded.state
+        : eventPayment;
+      if (isOnReceipt(effectivePayment)) {
+        textMessage = textMessage.replace(/\n\n(⏳[^\n]*)$/u, `\n${onReceiptNewOrderLine(lang)}\n\n$1`);
+        if (!textMessage.includes(onReceiptNewOrderLine(lang))) textMessage += `\n\n${onReceiptNewOrderLine(lang)}`;
+      }
+      auditDecision("Order payment timing", {
+        orderId,
+        instance,
+        paymentTiming: effectivePayment.timing || "legacy",
+        paymentRevision: (effectivePayment as any).revision ?? null,
+        recordOutcome: recorded.outcome,
+      });
     }
+    let notifyRankOverride: number | null = null;
     if (action === "request_payment") {
-      if (isReceiptResendRequest) {
+      // Before any delayed payment message: fresh context (new command_id),
+      // still pending, current timing and revision (contract step 3).
+      const isReceiptRequest = /external_document_requested/i.test(String(body.event_type || "")) || isReceiptResendRequest;
+      const freshPayment = await readFreshOrderPayment(instance, orderId, { config, phone }).catch(() => null);
+      const eventRecord = await recordPaymentState(instance, orderId, eventPayment, {
+        source: String(body.event_type || action),
+        orderNumber: body.order_number,
+        total: body.total_price,
+        phone,
+      });
+      const freshRecord = freshPayment
+        ? await recordPaymentState(instance, orderId, freshPayment.fields, {
+          source: "order.context.get",
+          orderNumber: freshPayment.orderNumber,
+          total: freshPayment.total,
+          phone: freshPayment.phone,
+          authoritative: true,
+        })
+        : null;
+      const storedPayment = freshRecord?.state || eventRecord.state;
+      const decision = decidePaymentRequest({
+        isReceiptRequest,
+        event: eventPayment,
+        stored: storedPayment,
+        fresh: freshPayment ? { status: freshPayment.status, fields: freshPayment.fields } : null,
+      });
+      auditDecision("Payment request decision", {
+        orderId,
+        instance,
+        eventType: body.event_type || "",
+        decision: decision.action,
+        reason: decision.reason,
+        eventRevision: eventPayment.revision,
+        currentRevision: decision.view.revision,
+        paymentTiming: decision.view.timing || "legacy",
+        freshStatus: freshPayment?.status || "",
+        freshVia: freshPayment?.via || "unavailable",
+      });
+      if (decision.action === "skip") {
+        // Finished on purpose: acknowledged with 2xx and no guest message. The
+        // lock stays, so a replay of this very request stays silent too.
+        res.status(200).json({ success: true, message: "Payment request skipped", reason: decision.reason });
+        return;
+      }
+      if (decision.action === "send_on_receipt_accept") {
+        auditDecision("Building on-receipt acceptance WhatsApp template", { orderId, action, instance, lang });
+        const total = positiveAmount(body.total_price) || storedPayment?.total || freshPayment?.total || null;
+        textMessage = buildOnReceiptAcceptedMessage(total, lang);
+        // The guest already heard "принят и готовится": a following
+        // status=preparing/paid would only repeat it.
+        notifyRankOverride = ORDER_NOTIFY_RANK.preparing;
+      } else if (isReceiptResendRequest) {
         // Repeating "Төлем сомасы: X ₸" to someone who has already paid and sent a
         // receipt reads as "we lost your money". Ask for the picture instead.
         auditDecision("Building receipt resend request WhatsApp template", { orderId, action, instance, lang });
@@ -989,6 +1102,21 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       effectiveStatus = resolveStatusTemplateKey(newStatus, isPickup);
       auditDecision("Resolving status_changed template", { orderId, action, instance, lang, newStatus, effectiveStatus });
       textMessage = resolveStatusCustomerMessage(newStatus, isPickup, lang);
+      const storedPayment = await getPaymentState(instance, orderId);
+      const statusPayment = eventPayment.revision && (!storedPayment || eventPayment.revision >= storedPayment.revision)
+        ? eventPayment
+        : storedPayment;
+      if (textMessage && isOnReceipt(statusPayment)) {
+        // A pay-on-receipt order has no receipt to review and no bank
+        // confirmation: "Чек проверяется" / "Оплата подтверждена" would be false.
+        if (effectiveStatus === "review") textMessage = "";
+        else if (effectiveStatus === "paid") {
+          textMessage = buildOnReceiptAcceptedMessage(positiveAmount(body.total_price) || storedPayment?.total || null, lang);
+        } else if (effectiveStatus === "preparing") {
+          textMessage = `${textMessage}\n${onReceiptStatusSuffix(lang)}`;
+        }
+        auditDecision("Status template adjusted for pay-on-receipt order", { orderId, instance, effectiveStatus, sent: Boolean(textMessage) });
+      }
       if (!textMessage) {
         // Nothing was sent, so nothing must be suppressed: a 24 h lock left behind
         // here would swallow the retry of this very order+status once a template
@@ -1003,12 +1131,68 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       }
     }
 
+    let isTimingChangeNotice = false;
+    if (action === "payment_timing_changed") {
+      const eventRecord = await recordPaymentState(instance, orderId, eventPayment, {
+        source: "order.payment_timing_changed",
+        orderNumber: body.order_number,
+        phone,
+      });
+      const freshRecord = timingChangeFresh
+        ? await recordPaymentState(instance, orderId, timingChangeFresh.fields, {
+          source: "order.context.get",
+          orderNumber: timingChangeFresh.orderNumber,
+          total: timingChangeFresh.total,
+          phone: timingChangeFresh.phone,
+          authoritative: true,
+        })
+        : null;
+      const storedPayment = freshRecord?.state || eventRecord.state;
+      const decision = decideTimingChangeNotice({
+        event: eventPayment,
+        stored: storedPayment,
+        fresh: timingChangeFresh ? { status: timingChangeFresh.status, fields: timingChangeFresh.fields } : null,
+      });
+      const cursor = await getOrderNotifyCursor(instance, orderId).catch(() => null);
+      auditDecision("Payment timing change decision", {
+        orderId,
+        instance,
+        previousTiming: body.previous_payment_timing || "",
+        eventTiming: eventPayment.timing,
+        eventRevision: eventPayment.revision,
+        currentTiming: decision.view.timing,
+        currentRevision: decision.view.revision,
+        decision: decision.action,
+        reason: decision.reason,
+        freshVia: timingChangeFresh?.via || "unavailable",
+        notifyCursor: cursor?.rank ?? null,
+      });
+      if (decision.action === "skip" || (cursor && cursor.rank >= ORDER_NOTIFY_RANK.completed)) {
+        res.status(200).json({ success: true, message: "Payment timing change acknowledged", reason: decision.action === "skip" ? decision.reason : "order_finished" });
+        return;
+      }
+      // The previous cycle is over: the old receipt marker and the "payment
+      // already requested" cursor must not shape the next request.
+      await clearReceiptSeenForOrder(instance, orderId);
+      if (cursor && cursor.rank < ORDER_NOTIFY_RANK.ready_delivery) {
+        await saveOrderNotifyCursor(instance, orderId, 0, "payment_timing_changed").catch(() => false);
+      }
+      const timing = decision.view.timing === "on_receipt" ? "on_receipt" : "prepay";
+      textMessage = buildPaymentTimingChangedMessage(timing, {
+        orderNumber: cleanInline(body.order_number || storedPayment?.orderNumber || timingChangeFresh?.orderNumber || "", 40),
+        total: storedPayment?.total || timingChangeFresh?.total || null,
+      }, lang);
+      isTimingChangeNotice = true;
+    }
+
     // One press, one message: a stale replay (hub retries a rejected webhook
     // for hours) must never move the guest backwards - no payment request
     // after a cancellation, no "дайындалып жатыр" after "курьерге берілді".
     // A resend request is a correction, not a step forward: rank 1 is already
     // stored from the first payment request, so ranking it would suppress it.
-    const nextNotifyRank = isReceiptResendRequest ? -1 : orderNotifyRank(action, effectiveStatus);
+    const nextNotifyRank = isReceiptResendRequest || isTimingChangeNotice
+      ? -1
+      : notifyRankOverride ?? orderNotifyRank(action, effectiveStatus);
     if (textMessage && nextNotifyRank >= 0) {
       const previousCursor = await getOrderNotifyCursor(instance, orderId).catch(() => null);
       if (previousCursor && nextNotifyRank <= previousCursor.rank) {

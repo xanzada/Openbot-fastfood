@@ -15,6 +15,8 @@ export interface ReceiptDeliveryInput {
   receiptBase64: string;
   mimeType: string;
   sourceMessageId: string;
+  // Captured when the guest's message arrived (PAYMENT_TIMING.md step 4).
+  paymentRevision?: number | null;
 }
 
 export type ReceiptDeliveryResult =
@@ -83,6 +85,14 @@ export function isAnalyzedReceiptCommandUnsupported(error: any) {
   return status === 422 && /COMMAND|ORDER\.PAYMENT_RECEIPT\.ANALYZED/.test(detail);
 }
 
+// Hub answers 409 when the receipt belongs to an older payment revision (the
+// operator switched prepay <-> on_receipt in between). That is final for this
+// receipt: re-read the context, tell the guest, never retry or fall back.
+export function isPaymentRevisionConflict(error: any) {
+  const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
+  return status === 409;
+}
+
 export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapter?: ReceiptDeliveryAdapter): Promise<ReceiptDeliveryResult> {
   const orderNumber = String(input.orderNumber || "").trim();
   const phone = String(input.phone || "").replace(/\D/g, "");
@@ -105,6 +115,7 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
         amount: input.amount,
         bankName: input.bankName,
         text: note,
+        paymentRevision: input.paymentRevision ?? null,
       }, { config: input.config });
       const deliveredOrderNumber = String(response?.order_id || orderNumber).trim();
       if (deliveredOrderNumber !== orderNumber) {
@@ -123,6 +134,14 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
       });
       return { success: true, deliveryId, deliveredAt };
     } catch (error) {
+      if (isPaymentRevisionConflict(error)) {
+        auditOutbound("Receipt analysis rejected: payment revision changed", {
+          instanceId: input.instanceId,
+          orderNumber,
+          paymentRevision: input.paymentRevision ?? null,
+        });
+        return failure("payment_revision_conflict", "receipt_payment_revision_conflict");
+      }
       if (!isAnalyzedReceiptCommandUnsupported(error)) {
         auditError("Receipt analysis delivery to Alemi failed", error, {
           instanceId: input.instanceId,
@@ -180,8 +199,17 @@ export async function deliverReceiptToClient(input: ReceiptDeliveryInput, adapte
       mimeType,
       documentKind: "receipt",
       ...(note ? { note } : {}),
+      paymentRevision: input.paymentRevision ?? null,
     }, { config: input.config });
   } catch (error) {
+    if (isPaymentRevisionConflict(error)) {
+      auditOutbound("Receipt upload rejected: payment revision changed", {
+        instanceId: input.instanceId,
+        orderNumber,
+        paymentRevision: input.paymentRevision ?? null,
+      });
+      return failure("payment_revision_conflict", "receipt_payment_revision_conflict");
+    }
     auditError("Receipt upload to Alemi failed", error, {
       instanceId: input.instanceId,
       orderNumber,

@@ -67,6 +67,14 @@ import { resolvePaceUrgency } from "../services/responsePlan.service.js";
 import { getPhoneCandidatesFromWebhook, normalizePhoneFromCandidates } from "../services/dle.service.js";
 import { customerOrderFromRecord, pickConversationOrder, formatCustomerOrderStatus, getCustomerOrder } from "../services/customerOrder.service.js";
 import { deliverReceiptToClient } from "../services/receiptDelivery.service.js";
+import {
+  buildReceiptNotNeededReply,
+  buildStaleReceiptReply,
+  paymentFieldsFrom,
+  paymentViewAtIntake,
+  readFreshOrderPayment,
+  recordPaymentState,
+} from "../services/paymentTiming.service.js";
 import { getPaymentRequisitesText } from "../controllers/kanban.js";
 import { evaluateForShpor, getRestaurantConfig, getRestaurantConfigByWhatsAppPhone, isTenantBotEnabled, saveToShpor } from "../services/platformConfig.service.js";
 import { assertTenantSecret, safeCompare } from "../services/tenantAuth.service.js";
@@ -453,7 +461,9 @@ function operationalPreemptionReply(ctx: FastFoodContext): string | null {
   // A text claim is not proof of payment. Asking for the receipt here avoids an
   // unnecessary model call and, critically, cannot mutate the order to paid or
   // accidentally send the menu link again.
-  if (!ctx.mediaContext && isUnverifiedPaymentClaim(ctx.text)) {
+  // A pay-on-receipt order has no transfer to prove; the agent answers that.
+  if (!ctx.mediaContext && isUnverifiedPaymentClaim(ctx.text)
+    && paymentFieldsFrom(ctx.activeOrder?.order || ctx.activeOrder).timing !== "on_receipt") {
     return buildUnverifiedPaymentClaimReply(ctx.language);
   }
 
@@ -1056,6 +1066,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
         return;
       }
       const activeOrder = ctx.activeOrder?.order || ctx.activeOrder || {};
+      // PAYMENT_TIMING step 4: the payment revision is fixed when the message
+      // ARRIVES, not after the analysis - otherwise an old receipt could land in
+      // a new prepayment cycle the operator opened meanwhile.
+      const intakeOrderId = String(activeOrder.id || activeOrder.order_id || "").trim();
+      const intakePayment = await paymentViewAtIntake(ctx.instanceId, intakeOrderId, activeOrder)
+        .catch(() => ({ timing: null, revision: 0, receiptRequired: null }));
       const receiptContext = {
         expectedAmount: Number(ctx.activeOrder?.total_price || activeOrder.total_price || activeOrder.total || 0),
         orderCreatedAt: String(activeOrder.created_at || activeOrder.createdAt || ""),
@@ -1079,6 +1095,22 @@ async function processWhatsAppWebhook(body: any, started: number) {
         // only the blocking gates (validation, duplicates, order lookup) relax.
         const strictFilter = receiptFilterEnabled();
         const aiOrderReference = String(mediaAnalysis.order_id || "").trim();
+        const intakeDisplayNumber = String(activeOrder.display_number || activeOrder.order_number || "");
+        const receiptNamesOtherOrder = Boolean(
+          aiOrderReference && aiOrderReference !== "0"
+          && ![intakeOrderId, intakeDisplayNumber, String(activeOrder.number || "")].includes(aiOrderReference)
+        );
+        if (mediaAnalysis.type === "receipt" && intakePayment.timing === "on_receipt" && !receiptNamesOtherOrder) {
+          // Pay-on-receipt order: there is no transfer to verify and the hub
+          // forbids receipt uploads for it. No requisites, no "send again".
+          await sendCustomerReplyAndFinish(
+            ctx,
+            messageId,
+            buildReceiptNotNeededReply(ctx.language, intakeDisplayNumber),
+            "payment_receipt_on_receipt_order"
+          );
+          return;
+        }
         if (mediaAnalysis.type === "receipt") {
           const validation = validateReceiptAnalysis(mediaAnalysis, receiptContext);
           // A short payment is not a fake receipt: it still goes to the operator
@@ -1185,6 +1217,27 @@ async function processWhatsAppWebhook(body: any, started: number) {
             return;
           }
 
+          const deliverPayment = deliverOrderNumber === intakeOrderId
+            ? intakePayment
+            : await paymentViewAtIntake(
+              ctx.instanceId,
+              deliverOrderNumber,
+              receiptOrder.state === "found"
+                ? { payment_timing: receiptOrder.order.paymentTiming, payment_revision: receiptOrder.order.paymentRevision }
+                : null,
+            ).catch(() => ({ timing: null, revision: 0, receiptRequired: null }));
+          const deliverDisplayNumber = receiptOrder.state === "found" ? receiptOrder.order.orderNumber : intakeDisplayNumber;
+          if (deliverPayment.timing === "on_receipt") {
+            await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+            await sendCustomerReplyAndFinish(
+              ctx,
+              messageId,
+              buildReceiptNotNeededReply(ctx.language, deliverDisplayNumber),
+              "payment_receipt_on_receipt_order"
+            );
+            return;
+          }
+
           const delivery = await deliverReceiptToClient({
             instanceId: ctx.instanceId,
             phone: ctx.phone,
@@ -1198,7 +1251,33 @@ async function processWhatsAppWebhook(body: any, started: number) {
             receiptBase64: String(mediaContext.base64 || ""),
             mimeType: String(mediaContext.mimeType || mediaContext.mediaType || ""),
             sourceMessageId: messageId,
+            paymentRevision: deliverPayment.revision || null,
           });
+
+          if (!delivery.success && delivery.errorCode === "payment_revision_conflict") {
+            // 409: the operator changed the payment choice after this receipt
+            // was sent. Re-read once, remember the new state, tell the guest -
+            // and stop. No retry loop, no fallback upload.
+            await releaseReceiptFingerprint(ctx.instanceId, fingerprint);
+            const fresh = await readFreshOrderPayment(ctx.instanceId, deliverOrderNumber, { config: ctx.config, phone: ctx.phone })
+              .catch(() => null);
+            if (fresh) {
+              await recordPaymentState(ctx.instanceId, deliverOrderNumber, fresh.fields, {
+                source: "order.context.get:receipt_409",
+                orderNumber: fresh.orderNumber,
+                total: fresh.total,
+                phone: fresh.phone,
+                authoritative: true,
+              }).catch(() => null);
+            }
+            await sendCustomerReplyAndFinish(
+              ctx,
+              messageId,
+              buildStaleReceiptReply(ctx.language, fresh?.fields.timing ?? null, deliverDisplayNumber),
+              "payment_receipt_revision_conflict"
+            );
+            return;
+          }
 
           if (delivery.success) {
             // From now on this order has a receipt. The kanban webhook reads this

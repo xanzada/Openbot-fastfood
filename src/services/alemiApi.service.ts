@@ -80,6 +80,8 @@ export interface UploadOrderDocumentInput {
   // Short operator-facing line extracted from the receipt: sender name, amount,
   // bank ("Рахметоллаұлы Б. сумма 8000 ₸ Kaspi"). Hub stores it as the order comment.
   note?: string;
+  // Payment revision captured when the guest's message arrived (PAYMENT_TIMING.md).
+  paymentRevision?: number | null;
 }
 
 export interface ReportAnalyzedReceiptInput {
@@ -91,6 +93,9 @@ export interface ReportAnalyzedReceiptInput {
   amount: number;
   bankName?: string;
   text?: string;
+  // Payment revision captured when the guest's message arrived, NOT a fresh one
+  // read after the analysis: an old receipt must not land in a new cycle.
+  paymentRevision?: number | null;
 }
 
 export interface ReportPrintResultInput {
@@ -477,11 +482,47 @@ export async function reportAnalyzedReceipt(input: ReportAnalyzedReceiptInput, o
   // Nothing is lost: sender, amount and bank are already formatted into `text`
   // by formatReceiptOperatorComment. amountMinor stays as a validation guard.
   const text = firstString(input.text).slice(0, 200);
+  const paymentRevision = validPaymentRevision(input.paymentRevision);
   return callAlemiCommand(instanceId, "order.payment_receipt.analyzed", {
     order_id: orderId,
     source_message_id: sourceMessageId,
     ...(text ? { text } : {}),
+    ...(paymentRevision ? { payment_revision: paymentRevision } : {}),
   }, options);
+}
+
+export function validPaymentRevision(value: unknown): number | null {
+  const revision = Number(value);
+  return Number.isSafeInteger(revision) && revision >= 1 ? revision : null;
+}
+
+// Canonical descriptor of a receipt file upload. The payment revision is the
+// LAST line and only when it is sent at all: "without a revision only the
+// original flow (payment_revision = 1) is allowed; the old signature format does
+// not change" - so revision 1 keeps the exact historical descriptor.
+export function orderDocumentCanonical(input: {
+  commandId: string;
+  instance: string;
+  orderId: string;
+  sourceMessageId: string;
+  kind: string;
+  mimeType: string;
+  contentSha256: string;
+  paymentRevision?: number | null;
+}) {
+  const lines = [
+    "order-document-upload-v1",
+    input.commandId,
+    input.instance,
+    input.orderId,
+    input.sourceMessageId,
+    input.kind,
+    input.mimeType,
+    input.contentSha256,
+  ];
+  const revision = validPaymentRevision(input.paymentRevision);
+  if (revision && revision > 1) lines.push(String(revision));
+  return lines.join("\n");
 }
 
 // Escalation context fills the order label with the literal placeholder
@@ -639,16 +680,18 @@ export async function uploadOrderDocument(input: UploadOrderDocumentInput, optio
     if (!sourceMessageId) throw new Error("ALEMI_SOURCE_MESSAGE_ID_REQUIRED");
     if (!mimeType || !input.bytes?.byteLength) throw new Error("ALEMI_RECEIPT_BYTES_REQUIRED");
     const contentSha256 = crypto.createHash("sha256").update(input.bytes).digest("hex");
-    const canonical = [
-      "order-document-upload-v1",
+    const paymentRevision = validPaymentRevision(input.paymentRevision);
+    const sendRevision = Boolean(paymentRevision && paymentRevision > 1);
+    const canonical = orderDocumentCanonical({
       commandId,
-      credentials.instance,
+      instance: credentials.instance,
       orderId,
       sourceMessageId,
       kind,
       mimeType,
       contentSha256,
-    ].join("\n");
+      paymentRevision,
+    });
     const form = new FormData();
     const blobBytes = new ArrayBuffer(input.bytes.byteLength);
     new Uint8Array(blobBytes).set(input.bytes);
@@ -671,6 +714,7 @@ export async function uploadOrderDocument(input: UploadOrderDocumentInput, optio
         "X-Document-Kind": kind,
         "X-Document-Mime-Type": mimeType,
         "X-Content-SHA256": contentSha256,
+        ...(sendRevision ? { "X-Payment-Revision": String(paymentRevision) } : {}),
       },
       timeoutMs: options.timeoutMs || 15_000,
     });

@@ -3,23 +3,28 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { FASTFOOD_AGENT_INSTRUCTIONS } from "../src/agent/instructions.js";
 import { buildFactsPrompt } from "../src/context/buildFactsPrompt.js";
-import { ONLINE_PREPAYMENT_POLICY } from "../src/services/paymentPolicy.service.js";
+import { PAYMENT_POLICY, paymentPolicyForOrder } from "../src/services/paymentPolicy.service.js";
 import {
   reportAnalyzedReceipt,
   type AlemiTransportRequest,
 } from "../src/services/alemiApi.service.js";
 
-test("orders require online prepayment and reject payment on fulfillment", () => {
-  assert.deepEqual(ONLINE_PREPAYMENT_POLICY, {
-    mode: "online_prepayment_only",
-    prepaymentRequired: true,
-    cashAccepted: false,
-    payOnDeliveryAccepted: false,
-    payOnPickupAccepted: false,
-    rule: "Payment is online and prepaid only. Cash, payment on delivery, and payment on pickup are not accepted.",
-  });
-  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /Every order requires online prepayment before fulfillment/);
-  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /Cash, payment to the courier on delivery, and payment on pickup are not available/);
+test("prepayment stays the default and pay on receipt is neither promised nor denied", () => {
+  assert.equal(PAYMENT_POLICY.mode, "prepay_default_on_receipt_optional");
+  assert.equal(PAYMENT_POLICY.defaultTiming, "prepay");
+  assert.match(PAYMENT_POLICY.payOnReceipt, /Never promise it is available and never say it is impossible/);
+  assert.match(PAYMENT_POLICY.rule, /Never send requisites or ask for a receipt for an order whose payment timing is on_receipt/);
+  assert.doesNotMatch(FASTFOOD_AGENT_INSTRUCTIONS, /Online prepaid only|prepaid only|pay-on-delivery are not available/);
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /«При получении»/);
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /never send requisites or ask for a receipt/);
+});
+
+test("an on_receipt order is reported to the agent as such", () => {
+  assert.equal(paymentPolicyForOrder(null).active_order_payment_timing, "no_active_order");
+  assert.equal(paymentPolicyForOrder({ order: { id: "o1", status: "pending" } }).active_order_payment_timing, "prepay");
+  const onReceipt = paymentPolicyForOrder({ order: { id: "o1", payment_timing: "on_receipt", payment_revision: 2 } });
+  assert.equal(onReceipt.active_order_payment_timing, "on_receipt");
+  assert.match(String(onReceipt.active_order_rule), /no requisites, no receipt/);
 });
 
 test("facts context exposes the mandatory online prepayment policy", () => {
@@ -41,14 +46,14 @@ test("facts context exposes the mandatory online prepayment policy", () => {
 
   const json = prompt.slice(prompt.indexOf("\n") + 1, prompt.lastIndexOf("\n"));
   const facts = JSON.parse(json);
-  assert.deepEqual(facts.payment_policy, ONLINE_PREPAYMENT_POLICY);
+  assert.deepEqual(facts.payment_policy, paymentPolicyForOrder(null));
 });
 
-test("payment tool returns the same strict policy with live requisites", async () => {
+test("payment tool returns the order-aware policy with live requisites", async () => {
   const source = await readFile(new URL("../src/skills/payment.skill.ts", import.meta.url), "utf8");
-  assert.match(source, /paymentPolicy: ONLINE_PREPAYMENT_POLICY/);
-  assert.match(source, /Payment is online and prepaid only/);
-  assert.match(source, /Cash and payment on delivery or pickup are not accepted/);
+  assert.match(source, /paymentPolicyForOrder\(ctx\.activeOrder\)/);
+  assert.match(source, /order_on_receipt/);
+  assert.doesNotMatch(source, /prepaid only/);
 });
 
 test("payment confirmation only signals the operator and never marks an order paid", async () => {

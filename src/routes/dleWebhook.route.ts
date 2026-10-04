@@ -83,6 +83,9 @@ function normalizeAction(value: unknown) {
     // bot to collect payment from the guest. Without this alias every confirm
     // was a 400 BAD_ACTION and the guest was never asked to pay (2026-08-14).
     "order.external_document_requested": "request_payment",
+    // "Оплата при получении" (hub PAYMENT_TIMING.md, 2026-10-04): the operator
+    // switched the payment choice of an existing order. Never a second new_order.
+    "order.payment_timing_changed": "payment_timing_changed",
     // Everything else hub can emit about an order is a status transition; routing
     // it here means an unknown status is answered 200-and-silent instead of a 400
     // that hub counts as a webhook error and retries for hours.
@@ -279,6 +282,12 @@ export function normalizeDlePayload(req: Request) {
       fulfillment.type,
     ),
     reason: firstValue(valueFrom(records, "reason", "cancel_reason", "reject_reason"), order.reason),
+    // Payment timing contract: prepay | on_receipt, a monotonic revision and
+    // whether a transfer receipt is expected. Absent on legacy orders.
+    payment_timing: firstValue(valueFrom(records, "payment_timing", "paymentTiming"), order.payment_timing, order.paymentTiming),
+    previous_payment_timing: firstValue(valueFrom(records, "previous_payment_timing", "previousPaymentTiming")),
+    payment_revision: firstValue(valueFrom(records, "payment_revision", "paymentRevision"), order.payment_revision, order.paymentRevision),
+    receipt_required: firstValue(valueFrom(records, "receipt_required", "receiptRequired"), order.receipt_required, order.receiptRequired),
     note_id: normalizeExternalId(firstValue(valueFrom(records, "note_id", "noteId"), note.note_id, note.noteId, note.id)),
     shift_key: firstValue(valueFrom(records, "shift_key", "shiftKey"), note.shift_key, note.shiftKey),
     // The note payload may arrive as an OBJECT ({note:{id,text}}). Picking the

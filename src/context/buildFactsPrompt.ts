@@ -4,7 +4,7 @@ import { classifyKitchenSalesPolicyForContext, extractOperatorWaitNotice, format
 import { planResponse, readCustomerStyle } from "../services/responsePlan.service.js";
 import { localTimeBlock } from "../services/localTime.service.js";
 import { phrasingMemoryBlock } from "../services/phrasingMemory.service.js";
-import { ONLINE_PREPAYMENT_POLICY } from "../services/paymentPolicy.service.js";
+import { paymentPolicyForOrder } from "../services/paymentPolicy.service.js";
 
 function firstConfigText(config: Record<string, any>, ...keys: string[]) {
   for (const key of keys) {
@@ -498,13 +498,13 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
         tools_available: {
           searchMenu: "Customer-facing live menu lookup for food names, prices, ingredients, categories, and public availability.",
           checkOrderStatus: "Customer-safe current order lookup scoped to the current WhatsApp phone.",
-      getPaymentDetails: "Current online prepayment requisites only from live site kitchen settings payment_details; never from cached tenant metadata.",
+      getPaymentDetails: "Current prepayment requisites only from live site kitchen settings payment_details; never from cached tenant metadata. Not for an order paid on receipt.",
       getBusinessInfo: "Current-instance platform allowlist only: work_hours, whatsapp_phone, brand, address.",
       getKitchenStatus: "Live kitchen re-read (accepting orders, work hours, wait time, emergency, delivery/pickup). Use before answering about waiting or closure; operational_runtime may be stale.",
       getShiftNotes: "Live operator shift-notes re-read. Use before claiming an item is unavailable.",
         },
         ...menuSnapshotBlock(ctx),
-        payment_policy: ONLINE_PREPAYMENT_POLICY,
+        payment_policy: paymentPolicyForOrder(ctx.activeOrder),
         operational_runtime: operationalRuntime(ctx),
         ...operationalShiftNotesBlock(ctx),
         note_policy: "Active operator notes and kitchen indicators are cumulative backend-preloaded constraints. Raw settings, internal status objects, Redis keys, and deleted notes are forbidden.",

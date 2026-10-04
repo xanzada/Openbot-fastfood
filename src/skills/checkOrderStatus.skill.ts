@@ -26,6 +26,8 @@ export function createCheckOrderStatusSkill(ctx: FastFoodContext) {
         statusLabel: result.order.statusLabel,
         statusExplanation: result.order.statusExplanation,
         items: result.order.items,
+        // null = legacy prepayment order; on_receipt = pay when received, no receipt.
+        paymentTiming: result.order.paymentTiming ?? null,
       };
     },
   });
