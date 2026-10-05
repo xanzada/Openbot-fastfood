@@ -166,7 +166,12 @@ export function isIgnoredAlemiEvent(value: unknown) {
   // order.external_document_received is hub's echo of our own receipt upload -
   // acknowledge it so hub stops retrying it for hours, but never notify the
   // guest about it.
-  return /^external(?:[-_.]?document)(?:[-_.]|$)/i.test(v) || v === "order.external_document_received";
+  return /^external(?:[-_.]?document)(?:[-_.]|$)/i.test(v)
+    || v === "order.external_document_received"
+    // Alemi already persisted the operator's bonus correction. OpenBot only
+    // acknowledges this delivery; applying it or messaging the guest here
+    // would duplicate the source-of-truth operation.
+    || v === "customer.loyalty_adjusted";
 }
 
 export function normalizeDlePayload(req: Request) {
@@ -460,7 +465,7 @@ export async function handleDleWebhook(req: Request, res: Response) {
       return;
     }
     if (isIgnoredAlemiEvent(req.body?.event_type)) {
-      auditProcessing("Alemi external-document event acknowledged without customer notification", {
+      auditProcessing("Alemi informational event acknowledged without customer notification", {
         instance: req.body.instance,
         eventType: req.body.event_type,
         eventId: req.body.event_id || "",

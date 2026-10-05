@@ -235,6 +235,27 @@ test("external-document Alemi events are classified for safe acknowledgement", (
   assert.equal(isIgnoredAlemiEvent("order.created"), false);
 });
 
+test("customer.loyalty_adjusted is acknowledged without reapplying bonuses or notifying the customer", async () => {
+  const r = req({
+    event_type: "customer.loyalty_adjusted",
+    event_id: "evt-loyalty-1",
+    data: { instance: "prestige", customer_id: "customer-1", delta: 500 },
+  });
+  normalizeDlePayload(r);
+  assert.equal(isIgnoredAlemiEvent(r.body.event_type), true);
+
+  const response = { statusCode: 200, body: undefined as any };
+  const res = {
+    status(code: number) { response.statusCode = code; return this; },
+    json(body: any) { response.body = body; return this; },
+  } as any;
+
+  await handleDleWebhook(r, res);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { success: true, ignored: true, event_id: "evt-loyalty-1" });
+});
+
 test("external-document delivery is acknowledged without entering customer notification flow", async () => {
   const r = req({
     event_type: "external-document.created",
