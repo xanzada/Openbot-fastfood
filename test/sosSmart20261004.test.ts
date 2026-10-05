@@ -82,3 +82,23 @@ test("price lines come only from the catalog", () => {
   assert.deepEqual(catalogPriceLines(ctx("сколько стоит суши?", "ru")), []);
   assert.equal(catalogPriceLines(ctx("Бауырым екі пицца екі донер")).length, 3);
 });
+
+test("a model timeout never sells a dish blocked by an active operator note", async () => {
+  routed.length = 0;
+  let linkCalls = 0;
+  const c = ctx("Цезарь керек онда", "kk", {
+    activeShiftNotes: [{ noteId: "note-sushi", text: "суши нет пока что" }],
+    menuSnapshot: { items: [{ name: "Цезарь", category: "Суши", price: 3000, available: true }] },
+  });
+  const reply = await answerAgentFailure(
+    c,
+    new Error("TEXT_MODEL_TIMEOUT:gemini-3.6-flash:20000ms"),
+    route("operator_case_created"),
+    async () => { linkCalls += 1; return true; },
+  );
+  assert.equal(routed.length, 0);
+  assert.equal(linkCalls, 0, "an ordering link must not be granted for the blocked dish");
+  assert.doesNotMatch(reply, /3000|сілтеме|https?:/iu);
+  assert.match(reply, /қолжетімсіз/iu);
+  assert.deepEqual(catalogPriceLines(c), []);
+});

@@ -1709,7 +1709,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
       console.error(`[OPENBOT:AI] all lanes failed instance=${ctx.instanceId} error=${agentError?.message || agentError}`);
       const reply = await answerAgentFailure(ctx, agentError);
       await sendCustomerReplyAndFinish(ctx, messageId, reply, "ai_unavailable");
-      void notifyDeveloperSystemFailure(ctx.instanceId, agentError, { scope: "agent_all_lanes_failed", messageId, customerPhone: maskPhone(ctx.phone) }).catch(() => undefined);
+      void notifyDeveloperSystemFailure(ctx.instanceId, agentError, {
+        scope: "agent_all_lanes_failed",
+        messageId,
+        customerPhone: maskPhone(ctx.phone),
+        rawCustomerPhone: ctx.phone,
+      }).catch(() => undefined);
       return;
     }
     console.log(

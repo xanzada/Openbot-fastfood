@@ -2,6 +2,8 @@ import type { FastFoodContext } from "../context/types.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin } from "./complaintRouting.service.js";
 import { honorMenuLinkPromise } from "../agent/linkPromise.js";
 import { foldIntentText, intentMatches } from "../utils/intentText.js";
+import { findBlockedMenuItemMention } from "./operationalPreemption.service.js";
+import { menuItemBlockedByNotes, menuVocabulary } from "./noteProvenance.service.js";
 
 /**
  * Two answers that must not depend on a model (owner rules, 2026-10-04).
@@ -61,8 +63,11 @@ export function catalogPriceLines(ctx: FastFoodContext, max = 6) {
   const words = foldIntentText(ctx.text).split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 4 && !STOP_WORDS.has(word));
   if (!words.length) return [] as string[];
   const stems = [...new Set(words.map((word) => word.slice(0, Math.max(4, word.length - 3))))];
+  const notes: any[] = Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [];
+  const vocabulary = notes.length ? menuVocabulary(items) : [];
   return items
     .filter((item) => item?.available !== false && Number(item?.price) > 0)
+    .filter((item) => !notes.length || !menuItemBlockedByNotes(notes, item, vocabulary).blocked)
     .filter((item) => {
       const haystack = foldIntentText(`${item.name || ""} ${item.category || ""}`);
       return stems.some((stem) => haystack.includes(stem));
@@ -88,6 +93,13 @@ export async function answerAgentFailure(
 ) {
   const reason = String((error as any)?.message || error || "unknown").slice(0, 80);
   if (isCalmCatalogTurn(ctx)) {
+    const items: Record<string, any>[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+    const blockedMention = findBlockedMenuItemMention(ctx.activeShiftNotes || [], items, ctx.text);
+    if (blockedMention) {
+      return say(ctx,
+        "Бұл тағам қазірше қолжетімсіз, басқа тағамдарды таңдап көріңіз.",
+        "Это блюдо сейчас временно недоступно, выберите, пожалуйста, другое.");
+    }
     const lines = catalogPriceLines(ctx);
     const linked = await grantLink(ctx).catch(() => false);
     if (lines.length || linked) {

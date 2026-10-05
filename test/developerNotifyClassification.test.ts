@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { developerAlertInternals } from "../src/services/developerNotify.service.js";
 
-const { buildAlertText, isCustomerPhone } = developerAlertInternals;
+const { buildAlertText, isCustomerPhone, sendAlertWithConfig } = developerAlertInternals;
 
 test("daily analytics failure is classified without claiming a Docker restart", () => {
   const text = buildAlertText(
@@ -51,4 +51,17 @@ test("the current event customer can never receive a developer diagnostic", () =
     ),
     true
   );
+});
+
+test("a developer diagnostic is not sent when dev_phone equals the raw customer phone", async () => {
+  let sends = 0;
+  const sent = await sendAlertWithConfig(
+    "restaurant-1",
+    { dev_phone: "+7 747 688-49-56" },
+    new Error("TEXT_MODEL_TIMEOUT:gemini:20000ms"),
+    { customerPhone: "774***956", rawCustomerPhone: "77476884956" },
+    async () => { sends += 1; return { acknowledged: true } as any; },
+  );
+  assert.equal(sent, false);
+  assert.equal(sends, 0);
 });

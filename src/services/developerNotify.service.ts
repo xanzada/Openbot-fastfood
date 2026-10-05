@@ -42,6 +42,8 @@ function isCustomerPhone(
     config?.whatsapp_phone,
     config?.admin_phone,
     config?.wa_phone,
+    meta.rawCustomerPhone,
+    meta.raw_customer_phone,
     meta.customerPhone,
     meta.customer_phone,
     meta.phone,
@@ -51,7 +53,7 @@ function isCustomerPhone(
   return guestNumbers.includes(phone);
 }
 
-export const developerAlertInternals = { isDisabledTenant, isCustomerPhone, buildAlertText };
+export const developerAlertInternals = { isDisabledTenant, isCustomerPhone, buildAlertText, sendAlertWithConfig };
 
 function cleanAlertText(value: unknown, max = 600) {
   const text = String(value ?? "unknown_error")
@@ -315,7 +317,8 @@ async function sendAlertWithConfig(
   instanceId: string,
   config: Record<string, any>,
   error: unknown,
-  meta: Record<string, unknown>
+  meta: Record<string, unknown>,
+  transport: typeof sendWhatsProMessage = sendWhatsProMessage,
 ): Promise<boolean> {
   const developerPhone = resolveDeveloperPhone(config);
   if (!developerPhone) {
@@ -336,7 +339,7 @@ async function sendAlertWithConfig(
   const incidentId = `${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${fingerprint.slice(0, 6)}`;
   const alertText = buildAlertText(instanceId, error, meta, incidentId);
   try {
-    const result: any = await sendWhatsProMessage({ instanceId, phone: developerPhone, text: alertText });
+    const result: any = await transport({ instanceId, phone: developerPhone, text: alertText });
     if (result?.acknowledged !== true) throw new Error(result?.reason || "DEVELOPER_ALERT_NOT_ACKNOWLEDGED");
     return true;
   } catch (sendError) {
