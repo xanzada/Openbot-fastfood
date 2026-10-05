@@ -775,8 +775,11 @@ export async function getComplaintMedia(instanceId: string, phone: string): Prom
     try {
       const data = await redisClient.get(`complaint_media:${instanceId}:${phone}`);
       return data ? JSON.parse(data) : null;
-    } catch (error: any) {
-      console.warn(`[REDIS] getComplaintMedia read failed (${phone}):`, error?.message || error);
+    } catch {
+      console.warn("[REDIS] getComplaintMedia read failed", {
+        scopeHash: crypto.createHash("sha256").update(`${instanceId}:${phone}`).digest("hex").slice(0, 16),
+        code: "COMPLAINT_MEDIA_READ_FAILED",
+      });
       return null;
     }
   });
