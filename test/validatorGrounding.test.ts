@@ -119,12 +119,10 @@ test("an allergen assurance a menu lookup grounded is kept", () => {
 });
 
 // ---------------------------------------------------------------------------- A7
-test("the sentence telling the guest an operator will help is not deleted", () => {
-  // The escalate tool's customerReply deliberately names the operator, and the
-  // contract says to send it verbatim. Cutting every sentence containing the word
-  // deleted exactly that sentence - and on a short reply collapsed the whole answer
-  // to the generic fallback while a case had just been opened.
-  const reply = "Кешіріңіз. Шағымды операторға жібердім, ол тексеріп сізбен байланысады.";
+test("a recorded operator request survives the internal-disclosure guard", () => {
+  // A persisted request supports registration, not delivery or a human callback.
+  // Naming the operator in that factual sentence is not internal provenance.
+  const reply = "Кешіріңіз. Шағымыңыз операторға арналған өтініш ретінде тіркелді.";
   const result = validateFinalText(reply, BASE(), { toolsCalled: ["escalateToAdmin"], toolFindings: { escalationCreated: true } });
   assert.match(result.text, /оператор/i, "the customer-safe operator sentence must survive");
   assert.ok(!result.warnings.includes("internal_disclosure_removed"));

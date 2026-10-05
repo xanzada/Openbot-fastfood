@@ -48,7 +48,8 @@ test("unsupported human and kitchen future actions do not become promises or fal
   const r=validateFinalText(text,ctx("Цезарьдың құрамы қандай?"),{toolsCalled:["searchMenu"]});assert.notEqual(r.text,text,text);assert.ok(r.warnings.includes("unverified_human_action_removed"),text);
  }
  for(const text of ["Я не буду звать оператора.","Оператор әзірге қосылған жоқ."]){assert.equal(validateFinalText(text,ctx("Рахмет"),{toolsCalled:[]}).text,text);}
- const text="Оператор ответит в этом чате.";assert.equal(validateFinalText(text,ctx("Хочу оператора"),{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true}}).text,text);
+ const text="Оператор ответит в этом чате.";assert.notEqual(validateFinalText(text,ctx("Хочу оператора"),{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true}}).text,text);
+ assert.equal(validateFinalText(text,ctx("Хочу оператора"),{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true,escalationNotificationAccepted:true}}).text,text);
 });
 test("allergen replacement is truthful without promising a kitchen action",()=>{
  const r=validateFinalText("Цезарь безопасен при аллергии.",ctx("Цезарь"),{toolsCalled:["searchMenu"]});assert.doesNotMatch(r.text,/уточню|нақтылап|назову подходящие|жарайтын/iu);
@@ -87,7 +88,7 @@ test("manual cancellation never invents human handoff; only a persisted case gro
   const c=ctx(language==="ru"?"Отмените заказ":"Тапсырысты тоқтатыңыз",{language,activeOrder:{id:42,status:"cooking"}});
   const raw=language==="ru"?"Я отменил ваш заказ.":"Тапсырысыңызды тоқтаттым.";
   for(const toolFindings of [{},{escalationCreated:false}]){const r=validateFinalText(raw,c,{toolsCalled:["escalateToAdmin"],toolFindings});assert.doesNotMatch(r.text,/я передал|жеткіздім|свяжется|байланысады/iu);assert.match(r.text,/не могу|алмаймын/iu);}
-  const actual=validateFinalText(raw,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true}});assert.match(actual.text,/передал|жеткіздім/iu);assert.doesNotMatch(actual.text,/я отменил|тоқтаттым/iu);
+  const actual=validateFinalText(raw,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true}});assert.match(actual.text,/зарегистрирован|тіркел/iu);assert.doesNotMatch(actual.text,/я отменил|тоқтаттым|передал|жеткіздім|свяжется|байланысады/iu);
  }
 });
 
@@ -100,7 +101,7 @@ test("Kazakh past contact needs accepted admin notification; case registration a
  const c=ctx("Операторды шақырыңыз",{language:"kk"});
  for(const text of ["Әкімшіге хабарластық. Олар сізбен жақын арада байланысады.","Операторға хабар бердім.","Әкімшіге хабарладық."]){
   const unaccepted=validateFinalText(text,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}});assert.notEqual(unaccepted.text,text);assert.ok(unaccepted.warnings.includes("unverified_operator_notification_removed"));
-  const accepted=validateFinalText(text,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true,escalationNotificationAccepted:true}});assert.equal(accepted.text,text);
+  const accepted=validateFinalText(text,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true,escalationNotificationAccepted:true}});assert.equal(accepted.text,text.includes("жақын арада")?"Әкімшіге хабарластық.":text);
  }
  const registration="Операторға өтініш тіркелді.";assert.equal(validateFinalText(registration,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}}).text,registration);
  const denial="Әкімшіге хабарласқан жоқпыз.";assert.equal(validateFinalText(denial,c,{toolsCalled:[],toolFindings:{}}).text,denial);

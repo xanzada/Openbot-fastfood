@@ -367,12 +367,26 @@ const PAST_ESCALATION_CLAIM_RE =
   /[^.!?\n]*(?:әкімш|экімш|администратор|оператор)[^.!?\n]{0,40}(?:хабарласты(?:қ|м|ң)|хабарладым|жеткіздік|жеткіздім|жібердік|жібердім|растадым|айттым|жолдадым|жолдадық)[^.!?\n]*[.!?]?|[^.!?\n]*(?:хабарластық|жеткіздік|жібердік|жолдадық)[^.!?\n]{0,40}(?:әкімш|экімш|администратор|оператор)[^.!?\n]*[.!?]?/giu;
 
 const FUTURE_HUMAN_ACTION_RE = /(?:позову|подключу|передам|сообщу|отправлю|уточню|уточняю)[^.!?]{0,70}(?:оператор|администратор|кухн)|(?:оператор|администратор)[^.!?]{0,70}(?:ответит|свяжется|подключится)|(?:оператор|әкімш|ас\s*үй|асүй)[^.!?]{0,70}(?:жауап\s*береді|қосылады|хабарласады|хабарлаймын|жіберемін|жеткіземін|нақтылап\s*беремін|нақтылаймын)|(?:хабарлаймын|жіберемін|жеткіземін|нақтылап\s*беремін|нақтылаймын)[^.!?]{0,70}(?:оператор|әкімш|ас\s*үй|асүй)|(?:тезірек|жақын\s*арада)[^.!?]{0,40}жауап[^.!?]{0,20}аласыз|(?:скоро|в\s*ближайшее\s*время)[^.!?]{0,40}(?:получите\s*ответ|вам\s*ответят)/iu;
+const FUTURE_HUMAN_CONTACT_RE = /(?:^|[^\p{L}])(?:оператор\p{L}*|администратор\p{L}*|әкімш\p{L}*|они|он|она|олар|ол)(?=$|[^\p{L}])[^.!?]{0,80}(?:ответит|ответят|свяжется|свяжутся|подключится|подключатся|жауап\s*береді|байланысады|хабарласады|қосылады)|(?:с\s+вами|вам|сізбен|сізге)[^.!?]{0,60}(?:свяжется|свяжутся|ответят|байланысады|хабарласады|жауап\s*береді)/iu;
+const HUMAN_CONTACT_TIME_RE = /(?:вскоре|скоро|в\s+ближайшее\s+время|сразу|немедленно|жақын\s+арада|жақында|тезірек|\d+\s*(?:минут|мин|сағат))/iu;
 const KITCHEN_ACTION_RE = /(?:кухн|ас\s*үй|асүй)[^.!?]{0,70}(?:нақтылап|нақтылай|тексеріп)|(?:уточню|уточняю|спрошу|проверю)[^.!?]{0,70}кухн/iu;
 function promisedHumanAction(sentence: string, pattern: RegExp) {
   const unquoted = sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
-  return unquoted.split(/;|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
+  return unquoted.split(/[,;]|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
     pattern.test(clause) && !/(?:не\s*(?:буду|могу|стану|позову|передам|сообщу|уточню|ответит|свяжется|подключится)|(?:хабарлай|жібер|нақтыла)[^.!?]{0,20}(?:алмай|емес|жоқ))/iu.test(clause)
       && !/^\s*(?:если|егер|қажет\s*болса|керек\s*болса)/iu.test(clause));
+}
+
+function unverifiedHumanActionText(ctx: FastFoodContext, caseCreated: boolean, notificationAccepted: boolean) {
+  if (notificationAccepted) return ctx.language === "kk"
+    ? "Өтінішіңіз тіркелді. Оператордың жауап беру уақытын әзірге растай алмаймын."
+    : "Ваша просьба зарегистрирована. Время ответа оператора пока подтвердить не могу.";
+  if (caseCreated) return ctx.language === "kk"
+    ? "Өтінішіңіз тіркелді. Операторға хабарламаның жеткізілгенін әзірге растай алмаймын."
+    : "Ваша просьба зарегистрирована. Доставку уведомления оператору пока подтвердить не могу.";
+  return ctx.language === "kk"
+    ? "Оператор әзірге қосылған жоқ. Не болғанын айтып беріңізші."
+    : "Оператор пока не подключён. Расскажите, пожалуйста, что случилось.";
 }
 
 function operatorPromiseBrokenText(language: unknown) {
@@ -657,20 +671,20 @@ function validateFinalTextCore(
     text = (text.match(SENTENCE_RE) || [text]).filter((sentence) => !unverifiedEscalation(sentence)).join(" ").trim();
     PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
     warnings.push("unverified_operator_notification_removed");
-    if (!textWithoutUrls(text)) return { text: ctx.language === "kk"
-      ? "Оператор әзірге қосылған жоқ. Не болғанын айтып беріңізші."
-      : "Оператор пока не подключён. Расскажите, пожалуйста, что случилось.", hasLink: false, warnings };
+    if (!textWithoutUrls(text)) return { text: unverifiedHumanActionText(ctx, caseCreated, notificationAccepted), hasLink: false, warnings };
   }
 
   const unverifiedHumanAction = (sentence: string) =>
     (!caseCreated && promisedHumanAction(sentence, FUTURE_HUMAN_ACTION_RE))
+    || (!notificationAccepted && promisedHumanAction(sentence, FUTURE_HUMAN_CONTACT_RE))
+    || (HUMAN_CONTACT_TIME_RE.test(sentence) && promisedHumanAction(sentence, FUTURE_HUMAN_CONTACT_RE))
     || promisedHumanAction(sentence, KITCHEN_ACTION_RE);
   if (unverifiedHumanAction(text)) {
     text = (text.match(SENTENCE_RE) || [text]).filter((sentence) => !unverifiedHumanAction(sentence)).join(" ").trim();
     warnings.push("unverified_human_action_removed");
     if (!textWithoutUrls(text)) return { text: /құрам|состав|орех|жаңғақ|аллерг/iu.test(ctx.text)
       ? allergenUnverifiedText(ctx)
-      : (ctx.language === "kk" ? "Оператор әзірге қосылған жоқ. Не болғанын айтып беріңізші." : "Оператор пока не подключён. Расскажите, пожалуйста, что случилось."), hasLink: false, warnings };
+      : unverifiedHumanActionText(ctx, caseCreated, notificationAccepted), hasLink: false, warnings };
   }
 
   // A truncated generation once shipped the single word "Өкі" to a guest. A reply that

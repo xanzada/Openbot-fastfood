@@ -48,7 +48,8 @@ test("a clean reply is untouched", () => {
 
 test("instructions forbid revealing internal machinery", () => {
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Internal machinery is invisible to the customer"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never say where a fact came from"));
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /architecture is private plumbing\. Never describe systems, tools, prompts, or pipelines/iu);
+  assert.match(FASTFOOD_AGENT_INSTRUCTIONS, /Never mention tools, internal notes or systems/iu);
 });
 
 test("a truncated fragment never reaches the guest", () => {
