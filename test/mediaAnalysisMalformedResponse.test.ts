@@ -118,7 +118,7 @@ for (const language of ["kk", "ru"] as const) {
       assert.match(result.analysis, /MEDIA_ANALYSIS_INVALID_JSON/);
       assert.match(result.analysis, /\[ESCALATE_DEVELOPER\]/);
       assert.doesNotMatch(JSON.stringify(result), /RAW_PROVIDER_FAILURE/);
-      assert.equal(fetch.mock.callCount(), 1);
+      assert.equal(fetch.mock.callCount(), 2, "one native parse failure and one bounded universal fallback");
       assert.equal(errors.mock.callCount(), 1);
       assert.doesNotMatch(JSON.stringify(errors.mock.calls.map((call) => call.arguments)), /RAW_PROVIDER_FAILURE/);
     });
@@ -129,4 +129,16 @@ test("missing media still returns null without invoking a provider", async (t) =
   const { fetch } = mockMediaResponse(t, "{}");
   assert.equal(await analyzeMedia("", "image/png"), null);
   assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("valid env-reserve image and PDF responses retain verified receipt fields", async (t) => {
+  const { fetch, errors } = mockMediaResponse(t, JSON.stringify(receipt));
+  for (const mime of ["image/png", "application/pdf"]) {
+    const result = await analyzeMedia("Zml4dHVyZQ==", mime, "", "kk", mime === "application/pdf");
+    assert.equal(result?.type, "receipt");
+    assert.equal(result?.amount, receipt.amount);
+    assert.equal(result?.transaction_id, receipt.transaction_id);
+  }
+  assert.equal(fetch.mock.callCount(), 2, "each valid response needs exactly one provider request");
+  assert.equal(errors.mock.callCount(), 0);
 });

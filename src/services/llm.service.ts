@@ -299,12 +299,15 @@ export async function callOpenRouter(request: MediaRequest) {
   // This is an independent reserve lane. Workspace providers have already been
   // tried above; selecting one of them again here repeated the same outage and
   // defeated the reserve exactly when it was needed.
-  return callOpenAiCompatible(
+  const result: any = await callOpenAiCompatible(
     "https://openrouter.ai/api/v1",
     envText("OPENROUTER_API_KEY"),
     getMediaFallbackModel(),
     request
   );
+  // Public media callers require provider text, as in the workspace lane.
+  // Usage metadata remains available from callOpenAiCompatible itself.
+  return typeof result === "string" ? result : result.text;
 }
 
 /** Any OpenAI-compatible chat/completions endpoint, with an explicit base URL, key and model — the workspace pools use it entry by entry. */
