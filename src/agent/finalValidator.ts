@@ -1,4 +1,4 @@
-import { alignGreetingReply, fallbackReply, stripRoboticOpener } from "./greeting.js";
+import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import type { FastFoodContext } from "../context/types.js";
 
 // Only an unverified CONCRETE duration is a factual violation. The old pattern
@@ -780,6 +780,22 @@ export function stripLinkScrollUpSentences(text: string, ctx: any): { text: stri
   return { text: replacement, changed: "link_scroll_up_replaced" };
 }
 
+const GENERIC_VOICE_HELP_RE =
+  /^(?:с[әа]лем(?:етсіз\s*бе)?|салам|здравствуйте|привет)[!,.\s😊🙂]*(?:не\s*болмаса[,\s]*)?(?:не|қандай)?\s*(?:көмек\s*керек|жаза\s*бер|чем\s+помочь|напишите)/iu;
+
+function replaceGenericVoiceGreeting(text: string, ctx: FastFoodContext) {
+  if (!isVoiceContext(ctx) || readGuestGreeting(String(ctx.text || ""))?.pure) return null;
+  if (String(text || "").length > 150 || !GENERIC_VOICE_HELP_RE.test(String(text || ""))) return null;
+  return ctx.language === "ru"
+    ? "Не полностью разобрал голосовой вопрос. Повторите, пожалуйста, коротко ещё раз."
+    : "Дауыстық сұрағыңызды толық түсінбедім. Бір рет қысқаша қайталап айтыңызшы.";
+}
+
+function isVoiceContext(ctx: FastFoodContext) {
+  const media: any = ctx?.mediaContext || null;
+  return Boolean(media && /audio|voice|ptt/i.test(String(media.kind || media.type || media.mimeType || "")));
+}
+
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
   const result = validateFinalTextCore(...args);
   const warnings = [...result.warnings];
@@ -792,5 +808,10 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   if (opener.changed) warnings.push(opener.changed);
   const aligned = alignGreetingReply(opener.text, args[1]);
   if (aligned.changed) warnings.push(aligned.changed);
-  return warnings.length === result.warnings.length ? result : { ...result, text: aligned.text, warnings };
+  const voiceReplacement = replaceGenericVoiceGreeting(aligned.text, args[1]);
+  if (voiceReplacement) warnings.push("generic_voice_greeting_blocked");
+  const finalText = voiceReplacement || aligned.text;
+  return warnings.length === result.warnings.length && finalText === result.text
+    ? result
+    : { ...result, text: finalText, warnings };
 }

@@ -89,14 +89,33 @@ type GrantLink = (ctx: FastFoodContext) => Promise<boolean>;
 
 const VOICE_MENU_OVERVIEW_RE =
   /(мәзірде\s*не\s*бар|не\s*бар\s*мәзірде|сіздерде\s*не(?:\s*бар)?\s*[?.!]*$|что\s*(?:у\s*вас\s*)?есть\s*в\s*меню|что\s+у\s+вас(?:\s+есть)?\s*[?.!]*$|какие\s+(?:у\s+вас\s+)?(?:есть\s+)?(?:блюда|позиции)|ассортимент)/iu;
+const VOICE_BEVERAGE_RE =
+  /((?:ішетін|ишетин)\s*(?:не|нәрсе|сусын)?\s*бар|сусын(?:дар)?\s*(?:не|қандай)?\s*бар|не\s*ішем|что\s+(?:есть\s+)?попить|какие\s+напитки|напитки\s+есть|ішінде\s+не\s+бар[\s\S]{0,40}(?:кола|сусын)|шетінде\s+бар\s+деші)/iu;
+const BEVERAGE_ITEM_RE =
+  /(сусын|напит|кока|coca|cola|кола|pepsi|пепси|sprite|спрайт|fanta|фанта|айран|шай|шәй|чай|кофе|вода|сок|компот|лимонад|морс|энергет)/iu;
 
-export function isVoiceMenuOverview(ctx: FastFoodContext) {
+function isVoice(ctx: FastFoodContext) {
   const media: any = ctx.mediaContext || null;
-  return Boolean(media && /audio|voice|ptt/i.test(String(media.kind || media.type || media.mimeType || ""))
-    && intentMatches(VOICE_MENU_OVERVIEW_RE, String(ctx.text || "")));
+  return Boolean(media && /audio|voice|ptt/i.test(String(media.kind || media.type || media.mimeType || "")));
 }
 
-function voiceMenuExamples(ctx: FastFoodContext, max = 3) {
+export function isVoiceBeverageRequest(ctx: FastFoodContext) {
+  return isVoice(ctx) && intentMatches(VOICE_BEVERAGE_RE, String(ctx.text || ""));
+}
+
+export function isVoiceMenuOverview(ctx: FastFoodContext) {
+  return isVoice(ctx) && (
+    intentMatches(VOICE_MENU_OVERVIEW_RE, String(ctx.text || ""))
+    || isVoiceBeverageRequest(ctx)
+  );
+}
+
+function itemIsBeverage(item: any) {
+  const label = `${item?.name || ""} ${item?.category_name || item?.category || ""}`;
+  return BEVERAGE_ITEM_RE.test(label) || /(?:^|\s)су(?:\s|$)/iu.test(label);
+}
+
+function voiceMenuExamples(ctx: FastFoodContext, max = 3, beveragesOnly = false) {
   const items: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
   const notes: any[] = Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [];
   const vocabulary = notes.length ? menuVocabulary(items) : [];
@@ -104,12 +123,13 @@ function voiceMenuExamples(ctx: FastFoodContext, max = 3) {
     item?.available !== false
     && String(item?.name || "").trim()
     && Number(item?.price) > 0
+    && (!beveragesOnly || itemIsBeverage(item))
     && (!notes.length || !menuItemBlockedByNotes(notes, item, vocabulary).blocked));
   const picked: any[] = [];
   const categories = new Set<string>();
   for (const item of allowed) {
     const category = foldIntentText(item?.category_name || item?.category || "");
-    if (category && categories.has(category)) continue;
+    if (!beveragesOnly && category && categories.has(category)) continue;
     picked.push(item);
     if (category) categories.add(category);
     if (picked.length >= max) break;
@@ -123,7 +143,19 @@ function voiceMenuExamples(ctx: FastFoodContext, max = 3) {
 
 export async function answerVoiceMenuOverview(ctx: FastFoodContext, grantLink: GrantLink = grantMenuLinkForFallback) {
   if (!isVoiceMenuOverview(ctx)) return null;
-  const examples = voiceMenuExamples(ctx);
+  const beverageRequest = isVoiceBeverageRequest(ctx);
+  const examples = voiceMenuExamples(ctx, beverageRequest ? 5 : 3, beverageRequest);
+  if (beverageRequest) {
+    if (!examples.length) {
+      return ctx.language === "ru"
+        ? "Сейчас в меню не вижу доступных напитков. Могу подсказать другие позиции."
+        : "Қазір мәзірде қолжетімді сусын көрінбейді. Басқа тағамдарды айтып бере аламын.";
+    }
+    const drinks = examples.map((item) => `${String(item.name).trim()} — ${Math.round(Number(item.price))} ₸`).join(", ");
+    return ctx.language === "ru"
+      ? `Из напитков есть: ${drinks}. Что выберете?`
+      : `Ішетіннен бар: ${drinks}. Қайсысын қалайсыз?`;
+  }
   if (!examples.length) return null;
   const linked = await grantLink(ctx).catch(() => false);
   const list = examples.map((item) => `${String(item.name).trim()} — ${Math.round(Number(item.price))} ₸`).join(", ");

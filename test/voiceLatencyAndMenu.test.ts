@@ -4,7 +4,8 @@ import {
   isCompatibleWorkspaceSttEntry,
   raceHedgedBatch,
 } from "../src/services/mediaAdapter/speechToText.js";
-import { answerVoiceMenuOverview, isVoiceMenuOverview } from "../src/services/turnSafetyNet.service.js";
+import { answerVoiceMenuOverview, isVoiceBeverageRequest, isVoiceMenuOverview } from "../src/services/turnSafetyNet.service.js";
+import { validateFinalText } from "../src/agent/finalValidator.js";
 
 test("an OpenRouter chat model mislabeled as Gemini is never used as STT", () => {
   assert.equal(isCompatibleWorkspaceSttEntry({
@@ -78,4 +79,62 @@ test("the webhook uses the deterministic voice-menu reply before the general age
   assert.match(transcriptBranch, /answerVoiceMenuOverview\(ctx\)/);
   assert.match(transcriptBranch, /mediaPreemptiveSource = "voice_menu_overview"/);
   assert.ok(source.indexOf('if (mediaPreemptiveReply) {') < source.indexOf("const operationalReply = operationalPreemptionReply(ctx)"));
+});
+
+
+test("spoken beverage intent and the observed STT corruption use the deterministic drink lane", () => {
+  for (const text of [
+    "Ішетін не бар?",
+    "Сусын не бар?",
+    "Что есть попить?",
+    "Ішінде не бар? Соус па, кола ма?",
+    "Шетінде бар деші, шетінде.",
+  ]) {
+    const ctx = { text, mediaContext: { kind: "audio" } } as any;
+    assert.equal(isVoiceBeverageRequest(ctx), true, text);
+    assert.equal(isVoiceMenuOverview(ctx), true, text);
+  }
+});
+
+test("a voice drink question names only available verified drinks and does not wait for a link", async () => {
+  const ctx = {
+    language: "kk", text: "Шетінде бар деші, шетінде.",
+    mediaContext: { kind: "audio", mimeType: "audio/ogg" },
+    activeShiftNotes: [{ noteId: "no-pepsi", text: "пепси жоқ" }],
+    menuSnapshot: { items: [
+      { name: "Coca-Cola 0.5", category_name: "Сусындар", price: 650, available: true },
+      { name: "Пепси 1л", category_name: "Сусындар", price: 900, available: true },
+      { name: "Фанта", category_name: "Напитки", price: 650, available: false },
+      { name: "Су 0.5", category_name: "Сусындар", price: 350, available: true },
+      { name: "Ақ соус", category_name: "Соусы", price: 250, available: true },
+      { name: "Бургер", category_name: "Бургеры", price: 1900, available: true },
+    ] },
+  } as any;
+  let grants = 0;
+  const reply = await answerVoiceMenuOverview(ctx, async () => { grants += 1; return true; });
+  assert.equal(grants, 0, "a drink answer should not wait for or spend a link call");
+  assert.match(String(reply), /Ішетіннен бар:/);
+  assert.match(String(reply), /Coca-Cola 0.5 — 650 ₸/);
+  assert.match(String(reply), /Су 0.5 — 350 ₸/);
+  assert.doesNotMatch(String(reply), /Пепси|Фанта|Ақ соус|Бургер/);
+});
+
+test("a generic greeting cannot answer a meaningful voice transcript", () => {
+  const result = validateFinalText(
+    "Сәлем! 😊 Не болмаса, көмек керек пе? Жаза беріңіз!",
+    { language: "kk", text: "Шетінде бар деші, шетінде.", mediaContext: { kind: "audio" }, chatHistory: [] } as any,
+  );
+  assert.ok(result.warnings.includes("generic_voice_greeting_blocked"), JSON.stringify(result));
+  assert.doesNotMatch(result.text, /Сәлем|көмек керек|жаза бер/iu);
+  assert.match(result.text, /толық түсінбедім/iu);
+});
+
+test("a real voice greeting still receives a greeting", () => {
+  const text = "Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз.";
+  const result = validateFinalText(
+    text,
+    { language: "kk", text: "Сәлем", mediaContext: { kind: "audio" }, chatHistory: [] } as any,
+  );
+  assert.ok(!result.warnings.includes("generic_voice_greeting_blocked"), JSON.stringify(result));
+  assert.match(result.text, /^Сәлем!/u);
 });
