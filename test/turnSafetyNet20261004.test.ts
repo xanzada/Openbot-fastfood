@@ -78,10 +78,10 @@ test("when every lane failed the guest gets a holding line and the operator gets
   assert.match(thrown, /^Извините, уточняем информацию\./, "a failing SOS path still answers");
 });
 
-test("those two lanes are never dropped as «menu questions»", async () => {
+test("composition checks and planned real incidents bypass the menu guard, but ai outages do not", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("../src/services/complaintRouting.service.ts", import.meta.url), "utf8");
   const skip = source.slice(source.indexOf("const menuSkipApplies"), source.indexOf("if (menuSkipApplies"));
-  assert.match(skip, /input\.source !== "ai_unavailable"/);
+  assert.doesNotMatch(skip, /input\.source !== "ai_unavailable"/);
   assert.match(skip, /input\.source !== "composition_check"/);
   assert.doesNotMatch(skip, /ai_tool_escalate_to_admin/);
 });

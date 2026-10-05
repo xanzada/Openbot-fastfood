@@ -34,7 +34,8 @@ test("an escalation pushes the operator flag, not just the case record", async (
   const source = await readFile(new URL("../src/services/complaintRouting.service.ts", import.meta.url), "utf8");
   assert.match(source, /import \{ bumpOperatorCaseSignal, createOperatorCase/);
   assert.match(source, /await bumpOperatorCaseSignal\(ctx\.instanceId, ctx\.phone\)/);
-  // Only for a case that actually exists, and never fatal to the guest's reply.
-  assert.match(source, /operatorCase\s*\n?\s*\?\s*await bumpOperatorCaseSignal/);
+  // Only for a newly created/updated case. A technical timeout that found a real
+  // complaint already open preserves it without pushing another red signal.
+  assert.match(source, /preservedExistingCase[\s\S]*\? true[\s\S]*: await bumpOperatorCaseSignal/);
   assert.match(source, /operatorFlagged: flagged/);
 });

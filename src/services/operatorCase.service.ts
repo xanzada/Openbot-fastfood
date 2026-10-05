@@ -61,6 +61,26 @@ export function detectOperatorCaseKind(text = ""): OperatorCaseKind | null {
   return null;
 }
 
+export function isTechnicalRecoveryCase(value: Record<string, any> | null | undefined): boolean {
+  return String(value?.source || "") === "ai_unavailable" && String(value?.kind || "") === "unresolved";
+}
+
+export function shouldPreserveExistingCase(
+  existing: Record<string, any> | null | undefined,
+  incoming: { source?: string; kind?: string },
+): boolean {
+  return Boolean(existing)
+    && !isTechnicalRecoveryCase(existing)
+    && isTechnicalRecoveryCase(incoming as Record<string, any>);
+}
+
+export function canAutoResolveTechnicalSos(
+  marker: Record<string, any> | null | undefined,
+  operatorCase: Record<string, any> | null | undefined,
+): boolean {
+  return isTechnicalRecoveryCase(marker) && isTechnicalRecoveryCase(operatorCase);
+}
+
 async function activateSos(input: {
   instanceId: string; phone: string; caseId: string; signalId: string; kind: OperatorCaseKind; summary: string; urgency?: string; source?: string;
 }) {
@@ -134,6 +154,9 @@ export async function createOperatorCase(input: {
       // place showed "asked for an operator" and an old order number while the
       // guest was actually complaining about a cold delivery.
       const previous = JSON.parse(existing);
+      if (shouldPreserveExistingCase(previous, input)) {
+        return { ...previous, id: existingId, preservedExistingCase: true, sos: null };
+      }
       const now = Date.now();
       const data = {
         ...previous,
@@ -267,6 +290,70 @@ export function decideCaseFlag(data: { markerPushedAt?: number; updatedAt?: numb
   if (lastTouch && now - lastTouch > CASE_FLAG_QUIET_MS) return "stale";
   if (data?.markerPushedAt) return "already_flagged";
   return "flag";
+}
+
+export async function resolveTechnicalSosAfterRecovery(instanceId: string, rawPhone: string): Promise<boolean> {
+  const customerPhone = phone(rawPhone);
+  if (!instanceId || !customerPhone) return false;
+  await connectRedis();
+  const markerKey = sosMarkerKey(instanceId, customerPhone);
+  const rawMarker = await redisClient.get(markerKey);
+  if (!rawMarker) return false;
+
+  let marker: Record<string, any>;
+  try { marker = JSON.parse(rawMarker); } catch { return false; }
+  const caseId = clean(marker.caseId, 96);
+  if (!caseId) return false;
+  const recordKey = caseKey(instanceId, caseId);
+  const rawCase = await redisClient.get(recordKey);
+  if (!rawCase) return false;
+
+  let operatorCase: Record<string, any>;
+  try { operatorCase = JSON.parse(rawCase); } catch { return false; }
+  if (!canAutoResolveTechnicalSos(marker, operatorCase)) return false;
+
+  const now = Date.now();
+  const resolved = JSON.stringify({
+    ...operatorCase,
+    status: "resolved",
+    unread: false,
+    highlight: "",
+    resolvedAt: now,
+    resolution: "automatic_recovery",
+    updatedAt: now,
+  });
+  const script = [
+    "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end",
+    "redis.call('DEL', KEYS[1], KEYS[2])",
+    "redis.call('ZREM', KEYS[3], ARGV[2])",
+    "if redis.call('GET', KEYS[4]) == ARGV[3] then redis.call('DEL', KEYS[4]) end",
+    "if redis.call('EXISTS', KEYS[5]) == 1 then redis.call('SET', KEYS[5], ARGV[4], 'KEEPTTL') end",
+    "redis.call('DEL', KEYS[6])",
+    "return 1",
+  ].join("\n");
+  const cleared = Number(await redisClient.eval(script, {
+    keys: [
+      markerKey,
+      sosUnreadKey(instanceId, customerPhone),
+      sosIndexKey(instanceId),
+      activeKey(instanceId, customerPhone),
+      recordKey,
+      `sos_hub_sent:${instanceId}:${caseId}`,
+    ],
+    arguments: [rawMarker, customerPhone, caseId, resolved],
+  })) === 1;
+  if (cleared) {
+    await redisClient.publish(`chatwoot:events:${instanceId}`, JSON.stringify({
+      type: "sos.resolved",
+      instanceId,
+      phone: customerPhone,
+      caseId,
+      reason: "automatic_recovery",
+      emittedAt: now,
+      origin: "openbot",
+    })).catch(() => 0);
+  }
+  return cleared;
 }
 
 export async function bumpOperatorCaseSignal(instanceId: string, rawPhone: string) {

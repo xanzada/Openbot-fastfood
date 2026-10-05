@@ -101,7 +101,7 @@ import {
   findBlockedMenuItemMention,
   isUnverifiedPaymentClaim,
 } from "../services/operationalPreemption.service.js";
-import { bumpOperatorCaseSignal, detectOperatorCaseKind, isOrderCancellationRequest } from "../services/operatorCase.service.js";
+import { detectOperatorCaseKind, isOrderCancellationRequest, resolveTechnicalSosAfterRecovery } from "../services/operatorCase.service.js";
 import { computeProactiveSignals } from "../services/proactiveSignals.service.js";
 import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
 import { recordLearningEvent } from "../services/learningLoop.service.js";
@@ -778,7 +778,9 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
     }
   }
   await markInboundDone(ctx.instanceId, messageId);
-  await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
+  if (source !== "ai_unavailable") {
+    await resolveTechnicalSosAfterRecovery(ctx.instanceId, ctx.phone).catch(() => false);
+  }
   logTurnTiming(ctx, source, sendStartedAt);
 }
 
@@ -1933,7 +1935,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
       }
     }
     await markInboundDone(ctx.instanceId, messageId);
-    await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch(() => false);
+    const operatorEscalated = shouldRouteComplaint
+      || result.toolCalls.some((call: { name: string }) => call.name === "escalateToAdmin");
+    if (!operatorEscalated) {
+      await resolveTechnicalSosAfterRecovery(ctx.instanceId, ctx.phone).catch(() => false);
+    }
 
     // Sweep leftovers from the burst we just answered so they cannot become a second
     // reply. What arrived DURING this turn is a different matter: requeueInboundText put
@@ -1959,9 +1965,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
     void updateGoalAfterTurn({
       ctx,
       analysis: result.thinking || null,
-      escalated:
-        shouldRouteComplaint ||
-        result.toolCalls.some((call: { name: string }) => call.name === "escalateToAdmin"),
+      escalated: operatorEscalated,
     }).catch(() => undefined);
     void recordLatency(ctx.instanceId, Date.now() - started);
     if (result.hasLink) void bumpMetric(ctx.instanceId, "links_sent");

@@ -230,8 +230,6 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     // the guest back on "try again later" with nobody looking at the payment
     // (owner, 2026-08-28).
     && input.source !== "media_unreadable_evidence"
-    // No model could answer, so ANY question - «донер барма» included - needs a person.
-    && input.source !== "ai_unavailable"
     // The catalog has no ingredients, so a person has to read the real recipe;
     // skipping it made «асүйден нақтылап беремін» a promise nobody kept (2026-10-04).
     && input.source !== "composition_check"
@@ -355,11 +353,14 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
   // every escalation since it was written has been silent: the guest was told a
   // person would come and no person was told anything. It carries its own
   // already-flagged/stale guard, so calling it here cannot double-flag.
+  const preservedExistingCase = Boolean((operatorCase as any)?.preservedExistingCase);
   const flagged = operatorCase
-    ? await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch((error) => {
-        auditError("Operator case flag push failed", error, { instanceId: ctx.instanceId, signalId, kind });
-        return false;
-      })
+    ? preservedExistingCase
+      ? true
+      : await bumpOperatorCaseSignal(ctx.instanceId, ctx.phone).catch((error) => {
+          auditError("Operator case flag push failed", error, { instanceId: ctx.instanceId, signalId, kind });
+          return false;
+        })
     : false;
 
   return {
