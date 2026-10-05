@@ -59,6 +59,7 @@ test("a promise backed by a granted link is left exactly as written", async () =
     instanceId: "kabab-1",
     phone: "77010000001",
     language: "kk",
+    text: "Отправьте меню для заказа",
     magicLink: "https://kebab1.alemi.kz/?phone=77010000001&hash=ab",
     magicLinkGranted: true,
     hardRealtimeContext: { runtime_available: true },
@@ -79,7 +80,7 @@ test("a generic follow-up does not send the same menu link again", async () => {
     magicLinkGranted: false,
     magicLinkAlreadySent: true,
     explicitMenuLinkIntent: false,
-    // "Already sent" now means the previous bot reply carried the link (2026-10-04).
+    // "Already sent" now means the previous bot reply carried the link; current intent still controls grants.
     chatHistory: [{ role: "assistant", text: "https://kebab1.alemi.kz/?phone=77010000009&hash=ab" }, { role: "user", text: "рахмет" }],
     hardRealtimeContext: { runtime_available: true },
     runtimeStatus: {},
@@ -89,7 +90,7 @@ test("a generic follow-up does not send the same menu link again", async () => {
 
   const outcome = await honorMenuLinkPromise(ctx, "Донер 1590 теңге. Мәзірді жіберемін.");
   assert.equal(outcome.action, "stripped");
-  assert.equal((outcome as any).reason, "link_already_sent");
+  assert.equal((outcome as any).reason, "link_not_requested");
   assert.equal(promisesMenuLink((outcome as any).text), false);
   assert.equal(ctx.magicLinkGranted, false);
 });
@@ -101,6 +102,7 @@ test("an unbacked promise mints the link instead of leaving the guest waiting", 
     instanceId: "kabab-1",
     phone: "77010000002",
     language: "kk",
+    text: "Отправьте меню для заказа",
     magicLink: null,
     magicLinkGranted: false,
     hardRealtimeContext: { runtime_available: true },
@@ -128,6 +130,7 @@ test("a closed kitchen never lets a promise smuggle a link out", async () => {
     instanceId: "kabab-1",
     phone: "77010000003",
     language: "kk",
+    text: "Отправьте меню для заказа",
     magicLink: null,
     magicLinkGranted: false,
     hardRealtimeContext: { runtime_available: true },
@@ -148,6 +151,7 @@ test("an unreachable kitchen is treated the same way", async () => {
     instanceId: "kabab-1",
     phone: "77010000004",
     language: "ru",
+    text: "Отправьте меню для заказа",
     magicLink: null,
     magicLinkGranted: false,
     hardRealtimeContext: { runtime_available: false },

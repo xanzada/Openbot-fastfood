@@ -53,16 +53,27 @@ test("an unflagged stale case is still swept, as before", () => {
   assert.equal(decideCaseFlag({ markerPushedAt: now }, now), "already_flagged");
 });
 
-test("sweeping a case releases the hub dedupe claim with the phone", async () => {
-  const source = await read("../src/services/operatorCase.service.ts");
-  const fn = source.slice(source.indexOf("export async function bumpOperatorCaseSignal"));
-  const stale = fn.slice(fn.indexOf('if (decision === "stale")'));
-  const body = stale.slice(0, stale.indexOf("\n  }") + 4);
-  // Releasing the phone is what lets the next complaint open a NEW case, and a new case
-  // id is what makes notifyHubSos speak to the site again - it dedupes per case for the
-  // case's whole 7-day life.
-  assert.match(body, /\.del\(activeKey\(instanceId, customerPhone\)\)/);
-  assert.match(body, /\.del\(`sos_hub_sent:\$\{instanceId\}:\$\{caseId\}`\)/);
+test("stale episode releases the active pointer while retaining accepted delivery evidence", {
+  skip: !process.env.AUDIT_REDIS_SOCKET && "Requires disposable Redis; no emulated lifecycle.",
+}, async () => {
+  const { operatorLifecycleFixture } = await import("./helpers/operatorLifecycleFixture.js");
+  const h = await operatorLifecycleFixture();
+  try {
+    const first = await h.create();
+    await h.client.set(h.key("ledger", first.id), "accepted", {EX: 604800});
+    h.advance(h.cases.CASE_FLAG_QUIET_MS + 1);
+    assert.equal(await h.cases.bumpOperatorCaseSignal(h.instance, h.phone), false);
+    assert.equal(await h.client.get(h.key("active")), null);
+    assert.equal(await h.client.get(h.key("ledger", first.id)), "accepted");
+    assert.ok(await h.client.get(h.key("marker")));
+    assert.ok(await h.client.get(h.key("unread")));
+    assert.equal(await h.client.lLen(h.key("history")), 1);
+    const next = await h.create({signalId: "fresh_customer_complaint"});
+    assert.notEqual(next.id, first.id);
+    assert.equal(await h.client.get(h.key("active")), next.id);
+    assert.equal(await h.client.get(h.key("ledger", first.id)), "accepted");
+    assert.equal(h.store.records.size, 4, "fresh episode has independent admin and Hub plans");
+  } finally { await h.close(); }
 });
 
 test("the staleness test precedes the flag test in the source", async () => {

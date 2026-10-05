@@ -1,13 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { operatorFixture } from "./helpers/operatorNotificationFixture.js";
+
 
 // No live redis in the test container: fail fast and do not let reconnect
 // timers keep the process alive (same pattern as redisFailover.test.ts).
 process.env.REDIS_URL = "redis://127.0.0.1:1";
 process.env.REDIS_CONNECT_TIMEOUT_MS = "500";
 process.env.REDIS_OPERATION_TIMEOUT_MS = "500";
+
+const { operatorFixture } = await import("./helpers/operatorNotificationFixture.js");
 
 const {
   buildEscalationClarifyQuestion,

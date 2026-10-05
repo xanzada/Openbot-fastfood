@@ -25,10 +25,10 @@ test("an unreadable clarification state reports error, not 'nothing pending'", a
 test("a menu question after a pending clarification no longer opens a silent case", async () => {
   const route = await read("../src/routes/whatsappWebhook.route.ts");
   const block = route.slice(route.indexOf("const shouldRouteComplaint ="), route.indexOf("if (needsClarification)"));
-  // Every other term of this conjunction is already false for a menu question, so without
+  // A menu question without an explicit human request must stand down; without
   // this guard the pending flag alone pushed a pizza question into the escalation lane -
   // case created, reply talked about pizza.
-  assert.match(block, /&& !menuQuestion/);
+  assert.match(block, /&&\s*\(!menuQuestion\s*\|\|\s*explicitHumanRequest\)/);
   // The guard must sit in shouldRouteComplaint itself, not only in needsClarification:
   // dropping the flag happens either way, but the CASE must not be opened.
 });

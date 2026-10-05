@@ -95,7 +95,7 @@ test("right after the link went out, a generic pointer is dropped, the facts sta
   assert.equal(linkInLastBotReply(ctx.chatHistory), true);
   const outcome = await honorMenuLinkPromise(ctx, "Донер 1590 теңге. Сілтеме арқылы тапсырыс бере аласыз.");
   assert.equal(outcome.action, "stripped");
-  assert.equal((outcome as any).reason, "link_already_sent");
+  assert.equal((outcome as any).reason, "link_not_requested");
   assert.match((outcome as any).text, /1590/);
   assert.equal(promisesMenuLink((outcome as any).text), false);
   assert.equal(ctx.magicLinkGranted, false);
@@ -117,7 +117,7 @@ test("a closed kitchen still never gets a link through a promise", async () => {
   assert.equal(ctx.magicLinkGranted, false);
 });
 
-test("the tool grants an order on an old link and refuses only a fresh duplicate", async () => {
+test("the tool grants a current order and refuses a work-hours follow-up", async () => {
   const oldLink = baseCtx({ magicLinkAlreadySent: false, magicLinkEverSent: true });
   const granted = await (createSendMenuLinkSkill(oldLink) as any).execute({ reason: "guest orders 2 pizza 2 doner" });
   assert.equal(granted.allowed, true);
@@ -126,7 +126,7 @@ test("the tool grants an order on an old link and refuses only a fresh duplicate
   const fresh = baseCtx({ magicLinkAlreadySent: true, text: "Сағат нешеге дейін жұмыс істейсіздер?" });
   const refused = await (createSendMenuLinkSkill(fresh) as any).execute({ reason: "follow-up" });
   assert.equal(refused.allowed, false);
-  assert.equal(refused.reason, "link_already_sent");
+  assert.equal(refused.reason, "link_not_requested");
 
   const resend = await (createSendMenuLinkSkill(baseCtx({ magicLinkAlreadySent: true })) as any).execute({ reason: "order", guestAskedToResend: true });
   assert.equal(resend.allowed, true);
