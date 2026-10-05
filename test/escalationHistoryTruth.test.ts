@@ -23,7 +23,8 @@ test("the history entry states the outcome, not the attempt", async () => {
   const route = await read("../src/routes/whatsappWebhook.route.ts");
   // Same class as the escalation_failed action fix, which cost 48 hours of invisible SOS
   // failures: the record has to say what happened.
-  assert.match(route, /routing\.escalationAvailable \? "operator case created" : `operator case FAILED \(\$\{routing\.action\}\)`/);
+  assert.match(route, /routing\.action === "operator_case_created" \? "operator case created"/);
+  assert.match(route, /operator case not created/);
   // The raw action is kept so every failed escalation is greppable, not just countable.
   assert.match(route, /routingAction: routing\.action/);
   assert.match(route, /escalationAvailable: routing\.escalationAvailable/);

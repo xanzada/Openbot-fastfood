@@ -28,6 +28,7 @@ import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiAp
 import { intentMatches, isLikelyMenuQuestion } from "../utils/intentText.js";
 import {
   buildComplaintAckReply,
+  buildEscalationUnavailableReply,
   buildComplaintClarificationReply,
   buildEscalationClarifyQuestion,
   buildEvidenceSeenReply,
@@ -37,6 +38,7 @@ import {
   isLikelyComplaintText,
   isLikelyOperatorRequestText,
   routeComplaintToAdmin,
+  isExplicitHumanOperatorRequest,
   stripEscalationSignals,
   type ComplaintMediaPayload,
   type ComplaintUrgency,
@@ -1036,10 +1038,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
           source: "long_voice",
         });
         const reply = ctx.language === "ru"
-          ? routing.escalationAvailable
+          ? routing.action === "operator_case_created"
             ? "Голосовое сообщение слишком длинное для автоматической обработки. Я передал обращение оператору."
             : "Голосовое сообщение слишком длинное. Пожалуйста, кратко опишите вопрос текстом."
-          : routing.escalationAvailable
+          : routing.action === "operator_case_created"
             ? "Дауыстық хабарлама автоматты өңдеуге тым ұзақ. Өтінішті операторға жібердім."
             : "Дауыстық хабарлама тым ұзақ. Мәселені мәтінмен қысқаша жазып жіберіңіз.";
         await sendCustomerReplyAndFinish(ctx, messageId, reply, "long_voice");
@@ -1558,7 +1560,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
         // beside it - support read the complaint back as handled while no operator had
         // ever been told (found 2026-08-23). Same class as the escalation_failed action
         // fix; that one cost 48 hours of invisible SOS failures.
-        routing.escalationAvailable ? "operator case created" : `operator case FAILED (${routing.action})`,
+        routing.action === "operator_case_created" ? "operator case created"
+          : routing.action === "escalation_failed" ? `operator case FAILED (${routing.action})`
+          : `operator case not created (${routing.action})`,
         {
           source: "operator-case",
           caseId: routing.caseId,
@@ -1567,8 +1571,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
           routingAction: routing.action,
         }
       );
-      void bumpMetric(ctx.instanceId, "escalations");
-      void bumpMetric(ctx.instanceId, "complaints");
+      if (routing.action === "operator_case_created") void bumpMetric(ctx.instanceId, "escalations");
+      if (routing.action === "operator_case_created") void bumpMetric(ctx.instanceId, "complaints");
       void recordLearningEvent(ctx.instanceId, {
         type: "escalation",
         detail: detectOperatorCaseKind(ctx.text) || "complaint_text",
@@ -1628,7 +1632,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
         // beside it - support read the complaint back as handled while no operator had
         // ever been told (found 2026-08-23). Same class as the escalation_failed action
         // fix; that one cost 48 hours of invisible SOS failures.
-        routing.escalationAvailable ? "operator case created" : `operator case FAILED (${routing.action})`,
+        routing.action === "operator_case_created" ? "operator case created"
+          : routing.action === "escalation_failed" ? `operator case FAILED (${routing.action})`
+          : `operator case not created (${routing.action})`,
         {
           source: "operator-case",
           caseId: routing.caseId,
@@ -1637,7 +1643,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
           routingAction: routing.action,
         }
       );
-      void bumpMetric(ctx.instanceId, "escalations");
+      if (routing.action === "operator_case_created") void bumpMetric(ctx.instanceId, "escalations");
       void recordLearningEvent(ctx.instanceId, {
         type: "escalation",
         detail: "cancel_request",
@@ -1802,7 +1808,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
     // only the guest's answer (or a message that already carries the story, or
     // photo evidence) creates the operator case.
     const caseKind = detectOperatorCaseKind(ctx.text);
-    const askedForOperator = !menuQuestion && (caseKind === "human_request" || caseKind === "courier_request");
+    const explicitHumanRequest = isExplicitHumanOperatorRequest(ctx.text);
+    const askedForOperator = explicitHumanRequest || (!menuQuestion && caseKind === "courier_request");
     const complaintText = !menuQuestion && isLikelyComplaintText(ctx.text);
     const awaitingDetailRaw = toolHandledEscalation ? null : await takeComplaintClarification(ctx.instanceId, ctx.phone);
     // "error" means we could not read the state at all. Neither branch may act on a guess:
@@ -1813,9 +1820,10 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const hasDetailNow = !menuQuestion && complaintHasActionableDetail(ctx.text);
     const needsClarification =
       !toolHandledEscalation
+      && !explicitHumanRequest
       && !plannedEscalationMissed
       && !clarificationUnknown
-      && (askedForOperator || complaintText || needsAdminEscalation)
+      && (askedForOperator || complaintText)
       && awaitingDetail === null
       && !pendingComplaintMedia
       && !hasDetailNow;
@@ -1823,12 +1831,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
     const shouldRouteComplaint =
       !toolHandledEscalation
       && !needsClarification
-      && !clarificationUnknown
+      && (!clarificationUnknown || explicitHumanRequest)
       // The pending flag is the guest's answer to OUR question. A menu question is them
       // moving on to something else, not the detail of a complaint - and without this
       // guard the menu question opened a silent operator case while the reply talked
       // about pizza (found 2026-08-23).
-      && !menuQuestion
+      && (!menuQuestion || explicitHumanRequest)
       && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null)
       || plannedEscalationMissed;
 
@@ -1836,7 +1844,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
       await markComplaintClarificationPending(ctx.instanceId, ctx.phone, ctx.text).catch(() => false);
     }
 
-    const finalText =
+    let finalText =
       stripEscalationSignals(result.text)
       || (needsClarification
         ? buildEscalationClarifyQuestion(caseKind, ctx.language)
@@ -1869,7 +1877,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
         // beside it - support read the complaint back as handled while no operator had
         // ever been told (found 2026-08-23). Same class as the escalation_failed action
         // fix; that one cost 48 hours of invisible SOS failures.
-        routing.escalationAvailable ? "operator case created" : `operator case FAILED (${routing.action})`,
+        routing.action === "operator_case_created" ? "operator case created"
+          : routing.action === "escalation_failed" ? `operator case FAILED (${routing.action})`
+          : `operator case not created (${routing.action})`,
         {
           source: "operator-case",
           caseId: routing.caseId,
@@ -1878,6 +1888,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
           routingAction: routing.action,
         }
       );
+      if (routing.action !== "operator_case_created") {
+        finalText = stripEscalationSignals(routing.customerReply || buildEscalationUnavailableReply(ctx.language));
+      }
       if (!routing.escalationAvailable) {
         await notifyDeveloperSystemFailure(ctx.instanceId, new Error("ADMIN_PHONE_NOT_CONFIGURED_FOR_COMPLAINT"), {
           scope: "complaint-routing",

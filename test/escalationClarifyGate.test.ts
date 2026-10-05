@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { operatorFixture } from "./helpers/operatorNotificationFixture.js";
 
 // No live redis in the test container: fail fast and do not let reconnect
 // timers keep the process alive (same pattern as redisFailover.test.ts).
@@ -28,16 +29,16 @@ test.after(() => {
 const CTX = (text: string, language: "kk" | "ru" = "kk") =>
   ({ instanceId: "test-instance", phone: "77000000999", text, language, config: {} }) as any;
 
-test("a bare operator demand via the AI tool earns the clarifying question, not a case", async () => {
+test("an explicit operator demand bypasses clarification and reports unavailable persistence honestly", async () => {
   const result = await routeComplaintToAdmin(CTX("оператормен сөйлесейінші"), {
     summary: "Клиент операторга жалгагысы келедi",
     customerReply: "Бiр сатте",
     source: "ai_tool_escalate_to_admin",
   });
-  assert.equal(result.action, "clarification_requested");
+  assert.equal(result.action, "escalation_failed");
   assert.equal(result.caseId, null);
   assert.equal(result.queuedForChat, false);
-  assert.equal(result.customerReply, buildEscalationClarifyQuestion("human_request", "kk"));
+  assert.notEqual(result.customerReply, buildEscalationClarifyQuestion("human_request", "kk"));
 });
 
 test("a bare complaint via the AI tool asks what happened first", async () => {
@@ -105,10 +106,9 @@ test("the webhook lane stands down when the escalate tool already ran this turn"
 });
 
 test("the site is notified once per case, not once per signal", async () => {
-  const source = await readFile(new URL("../src/services/operatorCase.service.ts", import.meta.url), "utf8");
-  assert.match(source, /sos_hub_sent:\$\{args\.instanceId\}:\$\{args\.caseId\}/);
-  // A failed send releases the claim so the next signal of the case retries.
-  assert.match(source, /redisClient\.del\(dedupeKey\)/);
+  const h = operatorFixture(); await h.queue();
+  await h.run(); await h.queue(); await h.run(2000);
+  assert.equal(h.hub.length, 1); assert.equal(h.sends.length, 1);
 });
 
 test("the escalate tool tells the model what actually happened", async () => {

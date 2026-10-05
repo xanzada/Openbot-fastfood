@@ -33,11 +33,11 @@ const ESCALATION_SIGNAL_RE = /\[(ESCALATE_ADMIN|ESCALATE_DEVELOPER)\]/giu;
 const ADMIN_SIGNAL_RE = /\[ESCALATE_ADMIN\]/iu;
 const DEVELOPER_SIGNAL_RE = /\[ESCALATE_DEVELOPER\]/iu;
 const COMPLAINT_RE =
-  /(шағым|жалоб|претензи|волос|шаш(?!л)|гряз|лас(?!с)|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|дөрек|груб|сапа|качест)/iu;
+  /(шағым|жалоб|претензи|волос|шаш(?!л)|гряз|(?:^|[^\p{L}])лас(?!с)|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|дөрек|груб|сапа|качест)/iu;
 const ACTIONABLE_SERVICE_INCIDENT_RE =
   /(заказ|тапсырыс).{0,40}(опозд|задерж|кешік|кешіг|не\s+(?:приехал|доставлен|привезли)|келмед|жеткізілмед)/iu;
 const CONCRETE_COMPLAINT_DETAIL_RE =
-  /(волос|шаш(?!л)|гряз|лас(?!с)|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|курьер.{0,30}(?:дөрек|груб)|(?:дөрек|груб).{0,30}курьер)/iu;
+  /(волос|шаш(?!л)|гряз|(?:^|[^\p{L}])лас(?!с)|суық|суык|холодн|испорч|бұзыл|бузыл|улан|отрав|не тот заказ|чужой заказ|басқа (?:тапсырыс|заказ)|қате (?:тапсырыс|заказ)|не привезли|жетпей|не хватает|курьер.{0,30}(?:дөрек|груб)|(?:дөрек|груб).{0,30}курьер)/iu;
 
 function normalizePhone(value = "") {
   return String(value || "").replace(/\D/g, "");
@@ -122,10 +122,8 @@ export function buildComplaintDetailQuestion(language: "kk" | "ru") {
     : "Кешіріңіз. Нақты не болғанын жазып жіберіңізші — операторға беремін.";
 }
 
-// SOS is the last resort, not the opening move: a bare "оператор шақыр", a courier-number
-// ask or an unexplained complaint earns ONE clarifying question first. The case
-// is created from the guest's answer, from a message that already carries the
-// story, or from photo evidence - never from a bare demand (2026-08-20).
+// A courier-contact question or unexplained complaint earns one clarification.
+// An explicit request for a human creates a case immediately.
 export function buildEscalationClarifyQuestion(kind: string | null, language: "kk" | "ru") {
   if (language === "ru") {
     if (kind === "courier_request") {
@@ -198,9 +196,80 @@ export async function hasPendingComplaintMedia(instanceId: string, phone: string
   return Boolean(media?.base64);
 }
 
+export function isExplicitHumanOperatorRequest(text = ""): boolean {
+  const value = String(text).toLowerCase().replace(/«[^»]*»|“[^”]*”|"[^"]*"/g, " ").replace(/\s+/g, " ").trim();
+  const human = "(?:оператор\\p{L}*|администратор\\p{L}*|админ\\p{L}*|менеджер\\p{L}*|человек\\p{L}*|адам\\p{L}*)";
+  return value.split(/[.!?;]|\s+но\s+|бірақ/iu).map(part => {
+    const clause = part.trim();
+    const refusal = "(?:хочу|хотел\\p{L}*|нужен|нужна|нужно|надо|зов\\p{L}*|позов\\p{L}*|вызыв\\p{L}*|соедин\\p{L}*|переключ\\p{L}*|свяж\\p{L}*|поговор\\p{L}*)";
+    if (new RegExp("(?:^|[^\\p{L}])не\\s+" + refusal + "(?:\\s+(?:говорить|разговаривать|поговорить|с|со|меня|нас|видеть|живого|живой|настоящего|пожалуйста)){0,6}\\s+" + human + "|" + human + ".{0,20}(?:не\\s+(?:нужен|нужна|нужно|надо)|керек\\s*емес|қажет\\s*емес)", "iu").test(clause)) return false;
+    if (new RegExp("^(?:пожалуйста[, ]*)?(?:живой\\s+|тірі\\s+|жанды\\s+)?" + human + "(?:[, ]*пожалуйста)?$", "iu").test(clause)) return true;
+    // Imperative and first-person speech requests are different from an
+    // operator's own needs or a reported/quoted statement about that person.
+    const action = "(?:позови(?:те)?|соедини(?:те)?|переключи(?:те)?|свяжи(?:те)?|дайте|дай|вызови(?:те)?|хочу|хотел(?:а)?\\s+бы|можно\\s+(?:позвать|поговорить)|шақыр\\p{L}*|шакыр\\p{L}*|байланыстыр\\p{L}*)";
+    if (new RegExp("(?:^|[^\\p{L}])" + action + "(?:\\s+(?:меня|нас|пожалуйста|с|со|к|живого|живой|настоящего|поговорить|говорить|связаться|лично)){0,6}\\s+" + human, "iu").test(clause)) return true;
+    if (new RegExp("^(?:(?:мне|нам)\\s+)?(?:нужен|нужна|нужны)\\s+(?:живой\\s+|настоящий\\s+)?" + human + "$", "iu").test(clause)) return true;
+    if (/^(?:оператор|администратор|админ|менеджер|человек)\s+(?:нужен|нужна|нужны)(?:\s+(?:мне|нам))?$/iu.test(clause)) return true;
+    const kkHuman = "(?:оператор(?:мен|ды|ға|га)?|админ(?:мен|ді|ге)?|менеджер(?:мен|ді|ге)?|адам(?:мен|ды|ға|га)?)";
+    const kkRequest = "(?:керек|қажет|кажет|шақыр\\p{L}*|шакыр\\p{L}*|берші|беріңіз|сөйлескім\\p{L}*|сөйлесейін\\p{L}*|сойлескім\\p{L}*|байланысқым\\p{L}*)";
+    if (new RegExp("^(?:(?:маған|бізге|мен|қазір)\\s+)*(?:тірі\\s+|жанды\\s+)?" + kkHuman + "\\s+" + kkRequest + "(?:\\s+келеді|\\s+пожалуйста|\\s+өтінемін)?$", "iu").test(clause)) return true;
+    return null;
+  }).filter(flag => flag !== null).at(-1) === true;
+}
+
+
+export function hasConfirmedCustomerIncident(ctx: FastFoodContext, guestText = ctx.text || ""): boolean {
+  if (isExplicitHumanOperatorRequest(guestText)) return true;
+  const clauses = String(guestText).split(/[.!?;,]|\s+но\s+|\s+бірақ\s+/iu).map(part => part.trim()).filter(Boolean);
+  const cancellationDenied = /(?:^|[^\p{L}])не\s+(?:надо\s+|нужно\s+|хочу\s+)?(?:отмен\p{L}*|отказ\p{L}*|откаж\p{L}*)|(?:отмен\p{L}*|отказ\p{L}*).{0,20}(?:не\s+(?:нуж|надо|хочу)|керек\s*емес)|жойма|болдырма.{0,20}керек\s*емес/iu;
+  const refundDenied = /(?:возврат|верн\p{L}*.{0,20}деньг).{0,20}не\s+(?:нуж|надо|хочу)|(?:^|[^\p{L}])не\s+(?:надо\s+|нужно\s+|хочу\s+)?(?:возврат|верн\p{L}*)|қайтарма|қайтар.{0,20}керек\s*емес/iu;
+  for (const clause of clauses) {
+    const customerDescribesFailure = !isLikelyMenuQuestion(clause)
+      || /(заказ|тапсырыс|привез|келді|келдi|достав|волос|тырнақ|отрав|улан)/iu.test(clause);
+    if (customerDescribesFailure && isLikelyComplaintText(clause) && complaintHasActionableDetail(clause)) return true;
+    if (!cancellationDenied.test(clause) && detectOperatorCaseKind(clause) === "cancel_request") return true;
+    // Charged/paid facts remain independent of declining a refund in another clause.
+    if (/(уже\s+оплат|деньг\p{L}*\s+спис|спис\p{L}*\s+деньг|ақша.{0,20}алын|төлед|толед)/iu.test(clause)) return true;
+    if (!refundDenied.test(clause) && /(верн\p{L}*.{0,20}деньг|возврат|ақша.{0,20}қайтар)/iu.test(clause)) return true;
+    const emergencyDenied = /(?:^|[^\p{L}])не\s+(?:надо\s+|нужно\s+)?(?:вызыва\p{L}*|зов\p{L}*).{0,20}скорую|скорая.{0,20}не\s+(?:нуж|надо)|(?:задыха|анафилак).{0,15}(?:нет|жоқ)/iu;
+    if (!emergencyDenied.test(clause) && /(задыха|не\s+могу\s+дышать|анафилак|скорую|плохо\s+после\s+еды|тамақтан.{0,25}(?:улан|ауырып)|дем\s+ала\s+алмай|(?:убью|өлтір|угрожа))/iu.test(clause)) return true;
+  }
+  // Allergy context comes only from recent customer statements. A denial in the
+  // latest statement replaces prior context; summaries/assistant text cannot prove it.
+  const customerHistory = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
+    .filter(entry => entry?.role === "user").slice(-6)
+    .map(entry => String(entry.content ?? entry.text ?? ""));
+  const allergyStatements = [...customerHistory, guestText].flatMap(text => String(text)
+    .split(/[.!?;,]|\s+но\s+|\s+бірақ\s+/iu)).filter(clause => /аллерг|анафилак/iu.test(clause));
+  const allergyDenied = /(?:аллерг\p{L}*|анафилак\p{L}*).{0,24}(?:нет|жоқ|жок|не\s+(?:было|бывает))|(?:нет|жоқ|жок|без)\s+(?:у\s+\p{L}+\s+)?(?:аллерг\p{L}*|анафилак\p{L}*)/iu;
+  const allergyContext = allergyStatements.map(clause => !allergyDenied.test(clause)).at(-1) === true;
+  return allergyContext && /қауіп|кепіл|жаңғақ|без\s+орех|гарант|безопас|аллерг|анафилак/iu.test(guestText);
+}
+
 export async function routeComplaintToAdmin(ctx: FastFoodContext, input: ComplaintRoutingInput) {
   const savedMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
   const media = toWhatsProMedia(input.media || (savedMedia as ComplaintMediaPayload | null));
+  const guestText = String(ctx.text || input.customerText || "");
+  const guestKind = detectOperatorCaseKind(guestText);
+  const receiptContext = /receipt|payment|чек/iu.test(String(ctx.mediaContext?.kind || ctx.mediaContext?.type || ""))
+    || /чек|түбіртек|тубиртек/iu.test(guestText);
+  const detailedComplaint = isLikelyComplaintText(guestText) && complaintHasActionableDetail(guestText);
+  const confirmedIncident = hasConfirmedCustomerIncident(ctx, guestText);
+  const realFallbackIncident = input.source === "ai_unavailable"
+    && Boolean(confirmedIncident || (media && receiptContext));
+  // A provider failure is not a customer incident. Only the customer's actual
+  // request/evidence may cross this boundary, even when the failed lane asks to escalate.
+  if (input.source === "ai_unavailable" && !realFallbackIncident) {
+    return {
+      action: "skipped_technical_failure", caseId: null, operatorFlagged: false,
+      queuedForChat: false, escalationAvailable: true, signaledToDle: false,
+      signalId: "", mediaAttached: false, sent: false,
+      customerReply: ctx.language === "ru"
+        ? "Пожалуйста, уточните вопрос одним сообщением — попробую помочь."
+        : "Сұрағыңызды бір хабарламамен нақтылап жазыңызшы — көмектесіп көрейін.",
+    };
+  }
+
 
   // A menu/availability/price question can never become an operator case, no
   // matter which path brought it here - regex lane, webhook gate, or the AI
@@ -216,7 +285,8 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
   // escalationAvailable:true, so the caller skipped its developer alert and still
   // sent the guest an apology promising an operator - no case, no panel SOS, no
   // hub signal, and the photo expiring unseen (found 2026-08-22).
-  const menuSkipApplies = !media
+  const menuSkipApplies = !confirmedIncident && !realFallbackIncident
+    && !media
     && !savedMedia?.base64
     && input.source !== "cancel_request"
     && input.source !== "media_analysis"
@@ -248,32 +318,35 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
       signalId: "",
       mediaAttached: false,
       sent: false,
-      customerReply: input.customerReply || "",
+      customerReply: ctx.language === "ru"
+        ? "Пожалуйста, уточните вопрос одним сообщением — попробую помочь."
+        : "Сұрағыңызды бір хабарламамен нақтылап жазыңызшы — көмектесіп көрейін.",
     };
   }
-  // 2026-08-21 live defect: the AI tool lane opened a case - and fired SOS to
-  // the panel and the site - on the model's first impulse. A bare
-  // "оператормен сөйлесейін" in the middle of smalltalk became a red SOS whose
-  // summary literally read "мақсат=smalltalk" (case oc_1787323244566). The
-  // webhook lane has had the clarify-first gate since 2026-08-20, but the tool
-  // calls this function directly, before that gate runs. The gate now lives at
-  // the choke point too: a bare demand earns ONE clarifying question, and only
-  // the guest's answer, a message that already carries the story, or photo
-  // evidence creates the case. The other lanes (webhook text lane, cancel
-  // flow, media analysis, long voice) keep their own sources and never match
-  // this one, so nobody is gated twice. An already-open case is never
-  // re-questioned: the guest is mid-escalation, not a new bare demand.
+  const customerEvidenceRequired = [
+    "ai_tool_escalate_to_admin", "ai_escalation_signal", "planned_escalation_missed",
+    "human_request", "courier_request", "complaint_text", "complaint", "cancel_request", "long_voice",
+  ].includes(String(input.source || ""));
+  const bareComplaintNeedsClarification = input.source === "ai_tool_escalate_to_admin"
+    && isLikelyComplaintText(guestText) && !detailedComplaint;
+  if (customerEvidenceRequired && !confirmedIncident && !media && !savedMedia?.base64
+    && !bareComplaintNeedsClarification) {
+    return {
+      action: "skipped_unconfirmed_incident", caseId: null, operatorFlagged: false,
+      queuedForChat: false, escalationAvailable: true, signaledToDle: false,
+      signalId: "", mediaAttached: false, sent: false,
+      customerReply: ctx.language === "ru"
+        ? "Пожалуйста, уточните вопрос одним сообщением — попробую помочь."
+        : "Сұрағыңызды бір хабарламамен нақтылап жазыңызшы — көмектесіп көрейін.",
+    };
+  }
+  // Only actual customer intent/evidence may open a case. A model's urgency,
+  // summary, mood, or an unrelated answer to an old clarification is not evidence.
   if (input.source === "ai_tool_escalate_to_admin") {
     const guestText = input.customerText || ctx.text || "";
     const clarifyKind = detectOperatorCaseKind(guestText);
     const hasActionableStory = complaintHasActionableDetail(guestText);
-    // The agent's own judgement counts too: a high-urgency call on a turn the think
-    // layer read as angry or high-risk is a conflict, not smalltalk, so it raises SOS
-    // at once instead of asking «что случилось?» a second time (owner, 2026-10-04).
-    const thinking = (ctx.thinking || {}) as Record<string, any>;
-    const agentSeesConflict = input.urgency === "high"
-      && (thinking.risk === "high" || ["angry", "upset"].includes(String(thinking.mood || "")));
-    if (!hasActionableStory && !media && clarifyKind !== "cancel_request" && !agentSeesConflict) {
+    if (!confirmedIncident && !hasActionableStory && !media && clarifyKind !== "cancel_request") {
       const openCaseId = await getActiveOperatorCaseId(ctx.instanceId, ctx.phone).catch(() => null);
       if (!openCaseId) {
         // An unreadable state maps to "nothing pending" here, deliberately: during a
@@ -297,18 +370,24 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
             customerReply: buildEscalationClarifyQuestion(clarifyKind, ctx.language),
           };
         }
-        // The guest answered the clarifying question (or insists on a human):
-        // fold the original bare demand into the story the operator reads, the
-        // same way the webhook lane does, and open the case now.
-        input = { ...input, summary: [firstDemand, input.summary].filter(Boolean).join(" — ") };
+        // Repeating a bare complaint does not confirm a new incident.
+        return {
+          action: "skipped_unconfirmed_incident", caseId: null, operatorFlagged: false,
+          queuedForChat: false, escalationAvailable: true, signaledToDle: false,
+          signalId: "", mediaAttached: false, sent: false,
+          customerReply: ctx.language === "ru"
+            ? "Чтобы разобраться, нужно знать, что именно произошло."
+            : "Көмектесу үшін нақты не болғанын білу керек.",
+        };
       }
     }
   }
-  const summary = cleanLine(input.summary || input.customerText || ctx.text || "Customer complaint requires review.");
+  const summary = cleanLine(realFallbackIncident ? guestText : input.summary || input.customerText || ctx.text || "Customer complaint requires review.");
   const urgency = input.urgency || "normal";
   const detectedKind = detectOperatorCaseKind(input.customerText || ctx.text);
   const kind = input.source === "long_voice" ? "long_voice"
-    : input.source === "ai_unavailable" || input.source === "composition_check" ? "unresolved"
+    : realFallbackIncident ? (guestKind || (detailedComplaint ? "complaint" : "critical"))
+    : input.source === "composition_check" ? "unresolved"
     : detectedKind || "complaint";
   const signalId = `sos_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
@@ -385,7 +464,7 @@ export async function routeComplaintToAdmin(ctx: FastFoodContext, input: Complai
     // promise is false, so an honest holding line is substituted instead - the
     // long-voice lane already did this by hand at whatsappWebhook.route.ts:832.
     customerReply: operatorCase
-      ? (input.customerReply || buildComplaintAckReply(ctx.language))
+      ? (realFallbackIncident ? buildComplaintAckReply(ctx.language) : input.customerReply || buildComplaintAckReply(ctx.language))
       : buildEscalationUnavailableReply(ctx.language),
   };
 }

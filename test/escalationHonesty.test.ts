@@ -159,12 +159,12 @@ test("the long-voice lane uses the source string complaintRouting actually compa
 // ----------------------------------------------------------- contract regression
 test("the clarify-first gate still holds after the menu skip was narrowed", async () => {
   const { buildEscalationClarifyQuestion } = await import("../src/services/complaintRouting.service.js");
-  const result = await routeComplaintToAdmin(CTX("оператормен сөйлесейінші"), {
-    summary: "Клиент операторга жалгагысы келедi",
+  const result = await routeComplaintToAdmin(CTX("шағым бар"), {
+    summary: "Клиенттің шағымы бар",
     customerReply: "Бiр сатте",
     source: "ai_tool_escalate_to_admin",
   });
   assert.equal(result.action, "clarification_requested");
   assert.equal(result.caseId, null);
-  assert.equal(result.customerReply, buildEscalationClarifyQuestion("human_request", "kk"));
+  assert.equal(result.customerReply, buildEscalationClarifyQuestion("complaint", "kk"));
 });
