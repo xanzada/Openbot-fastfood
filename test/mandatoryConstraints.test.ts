@@ -71,31 +71,31 @@ test("a closed kitchen blocks all orders in the briefing", () => {
 
 test("instructions declare notes as live law with alternatives and no bare refusal", () => {
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("notes are the kitchen's live law"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never leave them with a bare refusal"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("verified alternatives from searchMenu"));
+  assert.ok(/never a bare refusal/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/offer verified alternatives in the same message/.test(FASTFOOD_AGENT_INSTRUCTIONS));
 });
 
 test("instructions define the consent conversation and the no-outcome close", () => {
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("clear yes means continue the order normally"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("clear no means apologize briefly and close the topic politely"));
+  assert.ok(/Clear yes = continue/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/Clear no = apologize briefly and close without pushing/.test(FASTFOOD_AGENT_INSTRUCTIONS));
 });
 
 test("instructions enforce link discipline", () => {
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Send the link only when it is truly needed"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never while the current request is still constrained by an operator note or an unanswered wait consent"));
+  assert.ok(/Send it only when truly needed/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/never while an operator note or unanswered wait consent is unresolved/.test(FASTFOOD_AGENT_INSTRUCTIONS));
 });
 
 // The wait-consent rule is business-critical: a prompt rewrite may reword it,
 // but it may not drop the mandatory ask, the refusal path, the clarify path or
 // the delivery/pickup distinction (restored 2026-08-24).
 test("instructions keep wait consent mandatory, per-channel and clarify-on-unclear", () => {
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("MANDATORY confirmation"), "consent must be stated as mandatory");
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("clear yes means continue the order normally"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("clear no means apologize briefly and close the topic politely"));
-  assert.ok(/never treat silence, a change of subject or an unrelated sentence as agreement/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/WAIT CONSENT IS MANDATORY/.test(FASTFOOD_AGENT_INSTRUCTIONS), "consent must be stated as mandatory");
+  assert.ok(/Clear yes = continue/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/Clear no = apologize briefly and close without pushing/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/Never treat silence, topic change, or an unrelated sentence as agreement/.test(FASTFOOD_AGENT_INSTRUCTIONS));
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Delivery and pickup are separate"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("delivery_wait_consent_required"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("pickup_wait_consent_required"));
+  assert.ok(/only that channel.s delay/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/Unclear = ask again plainly/.test(FASTFOOD_AGENT_INSTRUCTIONS));
 });
 
 test("per-channel consent facts reach the briefing", () => {
@@ -115,24 +115,24 @@ test("per-channel consent facts reach the briefing", () => {
 // are the guardrails a future prompt trim must not quietly remove
 // (owner request, 2026-08-24).
 test("instructions define a warm human voice with an open-door close", () => {
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("warm, competent human on WhatsApp"));
-  assert.ok(/қысылмай жазыңыз/.test(FASTFOOD_AGENT_INSTRUCTIONS), "the Kazakh open-door phrasing is calibrated");
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("composed fresh for THIS person"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never text to copy"), "examples must never become templates");
+  assert.ok(/Help the customer warmly and clearly on WhatsApp/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/қосымша сұрағыңыз болса, жазыңыз/.test(FASTFOOD_AGENT_INSTRUCTIONS), "the Kazakh open-door phrasing is calibrated");
+  assert.ok(/Composed fresh — not a template/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/Never use identical opening words in two consecutive messages/.test(FASTFOOD_AGENT_INSTRUCTIONS), "examples must never become templates");
 });
 
 test("instructions keep replies short, split and never one long paragraph", () => {
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("never one long paragraph"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("separate short sentences or separate short messages"));
+  assert.ok(/Never one long paragraph/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/break them into separate short sentences/.test(FASTFOOD_AGENT_INSTRUCTIONS));
 });
 
 test("instructions cap emoji and keep the URL on its own line", () => {
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("at most one, and only where a real person would use it"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("Never in an apology, a complaint, a payment or a delay message"));
-  assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("A URL always sits alone on its own line"));
+  assert.ok(/Max: 1 emoji per message/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/Skip emojis entirely:[\s\S]*In apologies or complaint handling[\s\S]*When communicating payment details[\s\S]*In delay or wait notifications/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/A URL sits alone on its own line/.test(FASTFOOD_AGENT_INSTRUCTIONS));
 });
 
 test("instructions forbid system-flavoured link wording", () => {
   assert.ok(FASTFOOD_AGENT_INSTRUCTIONS.includes("the menu made for them"));
-  assert.ok(/Never call it a "token"/.test(FASTFOOD_AGENT_INSTRUCTIONS));
+  assert.ok(/Never call it a «token»/.test(FASTFOOD_AGENT_INSTRUCTIONS));
 });

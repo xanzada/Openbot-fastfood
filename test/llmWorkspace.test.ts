@@ -59,8 +59,8 @@ test("runtime identity and sanitized provider health survive the workspace poll"
 });
 
 test("an empty or malformed workspace means 'not configured', never a broken pool", () => {
-  assert.deepEqual(sanitizeWorkspace(null), { text: [], media: [] });
-  assert.deepEqual(sanitizeWorkspace({ text: "oops" }), { text: [], media: [] });
+  assert.deepEqual(sanitizeWorkspace(null), { text: [], media: [], stt: [], ocr: [] });
+  assert.deepEqual(sanitizeWorkspace({ text: "oops" }), { text: [], media: [], stt: [], ocr: [] });
   const pools = sanitizeWorkspace({ text: [{ type: "openai", model: "m", key: "k" }] });
   assert.equal(pools.media.length, 0);
   // A missing base URL falls back to the OpenRouter lane, not to garbage.

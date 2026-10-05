@@ -133,7 +133,7 @@ test("the reported tool calls are the union of both agent passes", async () => {
   // and a second hub signal for one turn.
   assert.match(source, /firstPassToolCalls = extractToolCalls\(result\);/,
     "the first pass's calls must be captured before result is replaced");
-  assert.match(source, /toolCalls: mergeToolCalls\(firstPassToolCalls, extractToolCalls\(result\)\)/);
+  assert.match(source, /toolCalls: mergeToolCalls\(groundedCalls, mergeToolCalls\(firstPassToolCalls, extractToolCalls\(result\)\)\)/);
   assert.match(source, /function mergeToolCalls\(/);
   // De-duplicated, or one memoised tool would look like two calls.
   assert.match(source, /const key = `\$\{call\.name\}\|\$\{JSON\.stringify\(call\.arguments \?\? null\)\}`/);

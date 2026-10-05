@@ -116,6 +116,7 @@ test("menu projection exposes only customer-facing fields", () => {
     ingredients: "Beef, bun",
     price: 2500,
     available: true,
+    match_kind: "exact_name",
   });
 });
 
