@@ -64,3 +64,12 @@ test("when text providers have suspect and unavailable, only suspect entries are
   const result = providersForRequest([down, transient], "text");
   assert.deepEqual(result.map((item) => item.name), ["transient"]);
 });
+
+test("healthy text lanes keep transiently suspect reserves at the tail", () => {
+  const healthy = entry("healthy", "healthy");
+  const slow = entry("slow");
+  const hardDown = entry("hard-down", "unavailable");
+  noteProviderOutcome({ entry: slow, pool: "text", ok: false, latencyMs: 20000, error: new Error("TEXT_MODEL_TIMEOUT:m:20000ms") });
+  const result = providersForRequest([slow, hardDown, healthy], "text");
+  assert.deepEqual(result.map((item) => item.name), ["healthy", "slow"]);
+});

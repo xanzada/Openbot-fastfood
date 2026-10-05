@@ -53,9 +53,9 @@ function localStatus(entry: LlmKeyEntry, pool: LlmPoolName, now: number): LlmHea
 }
 
 /**
- * Effective request order. The operator's saved order is never rewritten: only
- * known-good providers move to the hot path, and known-bad providers are skipped
- * while at least one non-disabled candidate remains.
+ * Effective request order. The operator's saved order is never rewritten: known-good
+ * providers move to the hot path, transiently suspect text lanes remain at the tail as
+ * emergency reserves, and hard-unavailable/disabled entries stay excluded.
  */
 export function providersForRequest(entries: LlmKeyEntry[], pool: LlmPoolName, now = Date.now()) {
   const score: Record<LlmHealthStatus, number> = {
@@ -75,16 +75,17 @@ export function providersForRequest(entries: LlmKeyEntry[], pool: LlmPoolName, n
   const active = ordered
     .filter((item) => item.status === "healthy" || item.status === "unknown")
     .map((item) => item.entry);
-  if (active.length > 0) return active;
-
   if (pool === "text") {
     const suspect = ordered
       .filter((item) => item.status === "suspect")
       .map((item) => item.entry);
-    if (suspect.length > 0) return suspect;
+    // Keep transiently slow lanes behind healthy ones. If the healthy subset also
+    // stalls, at least one degraded reserve remains available instead of turning a
+    // four-model workspace into the two-lane chain seen in the live incident.
+    return [...active, ...suspect];
   }
 
-  return [];
+  return active;
 }
 
 function reportOutcome(

@@ -53,7 +53,7 @@ function isCustomerPhone(
   return guestNumbers.includes(phone);
 }
 
-export const developerAlertInternals = { isDisabledTenant, isCustomerPhone, buildAlertText, sendAlertWithConfig };
+export const developerAlertInternals = { isDisabledTenant, isCustomerPhone, buildAlertText, sendAlertWithConfig, shouldSendDeveloperAlert };
 
 function cleanAlertText(value: unknown, max = 600) {
   const text = String(value ?? "unknown_error")
@@ -67,6 +67,15 @@ function cleanAlertText(value: unknown, max = 600) {
 
 function errorMessage(error: unknown) {
   return cleanAlertText(error instanceof Error ? error.message : error);
+}
+
+const TRANSIENT_AGENT_FAILURE_RE =
+  /(TEXT_MODEL_TIMEOUT|THINK_TIMEOUT|\btimeout\b|aborted|ETIMEDOUT|ECONNRESET|socket hang up|\b408\b|\b429\b|rate.?limit|\b50[0234]\b|temporarily unavailable|service_unavailable)/i;
+
+/** Per-turn provider slowness is operational telemetry, not a WhatsApp page. */
+export function shouldSendDeveloperAlert(error: unknown, meta: Record<string, unknown> = {}) {
+  if (String(meta.scope || "").trim() !== "agent_all_lanes_failed") return true;
+  return !TRANSIENT_AGENT_FAILURE_RE.test(errorMessage(error));
 }
 
 function errorCode(error: unknown) {
@@ -320,6 +329,10 @@ async function sendAlertWithConfig(
   meta: Record<string, unknown>,
   transport: typeof sendWhatsProMessage = sendWhatsProMessage,
 ): Promise<boolean> {
+  if (!shouldSendDeveloperAlert(error, meta)) {
+    console.warn(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=transient_agent_failure`);
+    return false;
+  }
   const developerPhone = resolveDeveloperPhone(config);
   if (!developerPhone) {
     console.error(`[OPENBOT:DEV-ALERT:SKIP] instance=${instanceId} reason=dev_phone_missing`);

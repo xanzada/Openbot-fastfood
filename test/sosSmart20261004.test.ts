@@ -51,12 +51,24 @@ test("prices without a link never promise a link below", async () => {
   assert.doesNotMatch(reply, /төмендегі/);
 });
 
-test("nothing factual to say (closed kitchen, no match) falls back to the old SOS path", async () => {
+test("a harmless turn with no deterministic answer asks for a retry without SOS", async () => {
   routed.length = 0;
   const reply = await answerAgentFailure(ctx("мәзір бар ма?"), new Error("x"), route("operator_case_created"), linkBlocked);
-  assert.equal(routed.length, 1);
-  assert.equal(routed[0].source, "ai_unavailable");
-  assert.match(reply, /Оператор/);
+  assert.equal(routed.length, 0);
+  assert.doesNotMatch(reply, /Оператор/);
+  assert.match(reply, /тағы бір рет/);
+});
+
+test("a short ordinary voice transcript never becomes an SOS just because models timed out", async () => {
+  routed.length = 0;
+  const reply = await answerAgentFailure(
+    ctx("жарайды онда", "kk", { mediaContext: { kind: "audio" } }),
+    new Error("TEXT_MODEL_TIMEOUT:gemini-3.7-flash:20000ms"),
+    route("operator_case_created"),
+    linkBlocked,
+  );
+  assert.equal(routed.length, 0);
+  assert.doesNotMatch(reply, /Оператор/);
 });
 
 test("complaints, late/missing orders, people and money still raise the SOS", async () => {

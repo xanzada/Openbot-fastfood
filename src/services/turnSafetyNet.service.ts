@@ -11,8 +11,9 @@ import { menuItemBlockedByNotes, menuVocabulary } from "./noteProvenance.service
  * 1. No model answered. The A6API proxy rejects angry guests («где мой заказ?? 55 минут»)
  *    with a security-check 400 on every lane, and a lane can time out; the webhook then
  *    threw and the guest got silence on exactly the turn that mattered most. Now the
- *    guest gets a holding line and the operator gets an SOS - unless it was a calm
- *    catalog turn, which is answered from the menu and the ordering link instead.
+ *    guest gets a deterministic fallback. SOS is reserved for text that independently
+ *    proves a complaint, missing order, money issue, cancellation or human request;
+ *    calm catalog turns are answered from the menu and ordering link instead.
  * 2. A composition / allergen question about dishes whose catalog entry has no
  *    ingredients. Any answer would be a guess about a child's allergy, so the bot only
  *    says it is checking with the kitchen - and an SOS makes that sentence true.
@@ -36,6 +37,14 @@ const NEEDS_PERSON_RE =
   /(қайда|где|келмеді|келмей|не\s*привез|не\s*пришл|не\s*приш[её]л|кешік|опазд|долго|ұзақ|күттім|күтіп\s*отыр|жду|жд[её]м|отмен|болдырма|возврат|верн|ақшам|деньг|суық|холодн|жалоб|шағым|оператор|менеджер|админ|адаммен|человек|қате|ошиб|неправильн)/iu;
 const ORDER_WORD_RE = /(заказ|тапсырыс)/iu;
 const NON_TEXT_MEDIA_RE = /(image|photo|document|video|sticker|file)/i;
+
+export function needsHumanRecovery(ctx: FastFoodContext) {
+  const text = String(ctx.text || "").trim();
+  if (!text) return false;
+  if (isLikelyComplaintText(text) || isLikelyOperatorRequestText(text)) return true;
+  if (intentMatches(NEEDS_PERSON_RE, text)) return true;
+  return Boolean(ctx.activeOrder && intentMatches(ORDER_WORD_RE, text));
+}
 
 export function isCalmCatalogTurn(ctx: FastFoodContext) {
   const text = String(ctx.text || "").trim();
@@ -116,6 +125,12 @@ export async function answerAgentFailure(
         "Кешіріңіз, жауап сәл кешікті. Мәзір мен бағалар төмендегі сілтемеде — сол арқылы бірден тапсырыс бере аласыз.",
         "Извините за задержку. Меню с ценами — по ссылке ниже, там же можно сразу оформить заказ.");
     }
+  }
+  if (!needsHumanRecovery(ctx)) {
+    console.warn(`[OPENBOT:SAFETY] transient model failure on a non-critical turn - no SOS reason=${reason}`);
+    return say(ctx,
+      "Кешіріңіз, жауап сәл кешікті. Сұрағыңызды тағы бір рет жаза аласыз ба?",
+      "Извините, ответ задержался. Напишите, пожалуйста, ваш вопрос ещё раз.");
   }
   const routing = await route(ctx, {
     summary: `ИИ жауап бере алмады (${reason}). Клиент жазды: ${String(ctx.text || "").slice(0, 300)}`,
