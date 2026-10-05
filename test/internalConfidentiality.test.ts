@@ -62,3 +62,26 @@ test("a short but complete sentence is kept", () => {
   assert.equal(res.text, "\u0418\u04d9, \u0431\u0430\u0440.");
   assert.ok(!res.warnings.includes("truncated_model_output"));
 });
+
+
+test("raw model tool protocol never reaches the customer", () => {
+  const leaked = 'type: "tool_code"\ncode: "print(default_api.update_crm_lead({lead_id: 7}))"';
+  const result = validateFinalText(leaked, ctx() as any);
+  assert.ok(result.warnings.includes("tool_protocol_removed"), JSON.stringify(result));
+  assert.doesNotMatch(result.text, /tool_code|default_api|update_crm_lead|print\s*\(/iu);
+  assert.ok(result.text.length > 0, "a safe fallback must replace a protocol-only reply");
+});
+
+test("a useful answer before a leaked tool block is preserved", () => {
+  const result = validateFinalText(
+    'Қазір қарап беремін.\ntype: "tool_code"\ncode: "default_api.update_crm_lead({})"',
+    ctx() as any,
+  );
+  assert.equal(result.text, "Қазір қарап беремін.");
+  assert.ok(result.warnings.includes("tool_protocol_removed"), JSON.stringify(result));
+});
+
+test("ordinary wording about tools is not mistaken for protocol", () => {
+  const text = "Ас құралдары тапсырыспен бірге беріледі.";
+  assert.equal(validateFinalText(text, ctx() as any).text, text);
+});

@@ -284,3 +284,24 @@ test("the inbound turn is recorded before any early exit can return", async () =
   // The video refusal goes through the shared sender, so it lands in history too.
   assert.match(source, /sendCustomerReplyAndFinish\(ctx, messageId, reply, "media_rejected:video"\)/);
 });
+
+
+test("broad menu questions search real dishes before offering a link", () => {
+  for (const text of [
+    "Мәзірде не бар?",
+    "Не бар мәзірде?",
+    "Что есть в меню?",
+    "Какие у вас блюда?",
+    "Покажите ассортимент",
+  ]) {
+    const plan = resolveAgentToolPlan({ text, explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text) } as any);
+    assert.equal(plan.requiredTools[0], "searchMenu", `${text}: ${JSON.stringify(plan)}`);
+  }
+});
+
+test("an explicit link or order request still keeps the link action first", () => {
+  for (const text of ["Мәзір сілтемесін жіберіңіз", "меню скинь", "хочу заказать"]) {
+    const plan = resolveAgentToolPlan({ text, explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text) } as any);
+    assert.equal(plan.requiredTools[0], "sendMenuLink", `${text}: ${JSON.stringify(plan)}`);
+  }
+});

@@ -3,6 +3,7 @@ import { Router as createRouter } from "express";
 import { preloadContext } from "../context/preloadContext.js";
 import { refreshCheckoutContextForText } from "../services/checkoutIntent.service.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
+import { validateFinalText } from "../agent/finalValidator.js";
 import { answerAgentFailure, answerCompositionQuestion, needsKitchenCompositionCheck } from "../services/turnSafetyNet.service.js";
 import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemory.service.js";
 import {
@@ -1418,7 +1419,12 @@ async function processWhatsAppWebhook(body: any, started: number) {
               language: ctx.language,
             });
           } else {
-            mediaPreemptiveReply = stripEscalationSignals(mediaAnalysis.analysis);
+            const mediaReplyValidation = validateFinalText(
+              stripEscalationSignals(mediaAnalysis.analysis),
+              ctx,
+              { toolsCalled: [] },
+            );
+            mediaPreemptiveReply = mediaReplyValidation.text;
             mediaPreemptiveSource = mediaContext.kind === "audio" ? "voice_reply" : "media_reply";
           }
         }

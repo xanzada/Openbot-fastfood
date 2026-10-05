@@ -216,6 +216,14 @@ function enforceMaxSentences(text: string, max = 5): string {
   return [body, ...urls].filter(Boolean).join("\n");
 }
 
+const TOOL_PROTOCOL_LEAK_RE = /(?:^|\n)\s*(?:type\s*:\s*["']?tool_code["']?|code\s*:\s*["']?\s*(?:print\s*\(\s*)?default_api\.|(?:print\s*\(\s*)?default_api\.|<\/?tool_(?:call|code)\b)[\s\S]*/iu;
+
+function stripToolProtocolArtifacts(text: string) {
+  const value = String(text || "");
+  if (!TOOL_PROTOCOL_LEAK_RE.test(value)) return { text: value, removed: false };
+  return { text: value.replace(TOOL_PROTOCOL_LEAK_RE, "").trim(), removed: true };
+}
+
 function stripBotTags(text: string) {
   return String(text || "")
     .replace(/\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi, (_match, label, url) =>
@@ -372,10 +380,11 @@ function validateFinalTextCore(
   hasLink: boolean;
   warnings: string[];
 } {
-  let text = stripBotTags(String(rawText || "").trim());
-  const warnings: string[] = [];
+  const protocolSafe = stripToolProtocolArtifacts(String(rawText || "").trim());
+  let text = stripBotTags(protocolSafe.text);
+  const warnings: string[] = protocolSafe.removed ? ["tool_protocol_removed"] : [];
 
-  if (!text) return { text: fallback(ctx), hasLink: false, warnings: ["empty_model_output"] };
+  if (!text) return { text: fallback(ctx), hasLink: false, warnings: [...warnings, "empty_model_output"] };
 
   // Before any other guard: a narrated "Silent Thought: ..." preamble is not part of the
   // answer, and leaving it in front meant every regex below measured the wrong sentence.
