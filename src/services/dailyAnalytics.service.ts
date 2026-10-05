@@ -128,7 +128,9 @@ export async function readDailyMetrics(instanceId: string, reportDate: string): 
     await connectRedis();
     const key = `metrics:${instanceId}:${reportDate.replace(/-/g, "")}`;
     const raw = await redisClient.hGetAll(key).catch(() => ({} as Record<string, string>));
-    return Object.fromEntries(Object.entries(raw || {}).map(([name, value]) => [name, Number(value) || 0]));
+    return Object.fromEntries(Object.entries(raw || {})
+      .filter(([, value]) => String(value).trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0)
+      .map(([name, value]) => [name, Number(value)]));
   } catch {
     return {};
   }

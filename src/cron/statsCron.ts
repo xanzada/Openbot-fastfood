@@ -15,6 +15,8 @@ import {
   type DailyAnalyticsRow,
 } from "../services/dailyAnalytics.service.js";
 import { envNumber } from "../utils/envNumber.js";
+import { processDailyOwnerReports } from "../services/dailyReportDelivery.service.js";
+import { drainOperatorNotifications } from "../services/operatorNotification.service.js";
 
 /**
  * Daily analytics delivery.
@@ -297,6 +299,34 @@ function nextDelayMs() {
   return 24 * 60 * 60 * 1000;
 }
 
+let ownerTickRunning = false;
+let operatorTickRunning = false;
+let notificationConfigs: Record<string, any>[] = [];
+let notificationConfigsExpiresAt = 0;
+let notificationConfigsLoading: Promise<Record<string, any>[]> | null = null;
+async function getNotificationConfigs() {
+  if (notificationConfigsExpiresAt > Date.now()) return notificationConfigs;
+  notificationConfigsLoading ||= getAllRestaurantConfigs().then(configs => {
+    notificationConfigs = configs;
+    notificationConfigsExpiresAt = Date.now() + 60_000;
+    return configs;
+  }).finally(() => { notificationConfigsLoading = null; });
+  return notificationConfigsLoading;
+}
+/** Per-tenant 23:59 and catch-up reports; expensive calls never delay SOS retries. */
+export async function runOwnerNotificationTick() {
+  if (ownerTickRunning || !redisClient.isOpen) return;
+  ownerTickRunning = true;
+  try { await processDailyOwnerReports(await getNotificationConfigs()); }
+  finally { ownerTickRunning = false; }
+}
+export async function runOperatorNotificationTick() {
+  if (operatorTickRunning || !redisClient.isOpen) return;
+  operatorTickRunning = true;
+  try { await drainOperatorNotifications(await getNotificationConfigs()); }
+  finally { operatorTickRunning = false; }
+}
+
 export function startDailyCron() {
   const scheduleNext = () => {
     const delay = nextDelayMs();
@@ -313,6 +343,16 @@ export function startDailyCron() {
   };
 
   scheduleNext();
+
+  const ownerTick = () => {
+    void runOwnerNotificationTick().catch(() => console.error("[DAILY_REPORT] worker_failed"));
+  };
+  const operatorTick = () => {
+    void runOperatorNotificationTick().catch(() => console.error("[SOS_DELIVERY] worker_failed"));
+  };
+  setTimeout(ownerTick, 5_000).unref?.();
+  setInterval(ownerTick, 15_000).unref?.();
+  setInterval(operatorTick, 2_000).unref?.();
 
   const sweep = () => {
     reconcileDailyAnalytics().catch((error: any) => {

@@ -21,6 +21,8 @@ function cronHarness(start: string, crossMidnight: boolean) {
     static now() { return clock; }
   }
   const modules: Record<string, any> = {
+    "../services/dailyReportDelivery.service.js": {processDailyOwnerReports: async () => []},
+    "../services/operatorNotification.service.js": {drainOperatorNotifications: async () => []},
     "../services/redis.service.js": { redisClient: { isOpen: true } },
     "../services/platformConfig.service.js": {
       getAllRestaurantConfigs: async () => configs,
