@@ -15,6 +15,8 @@ import { startRuntimeWatcher } from "./cron/runtimeWatch.js";
 import { startLlmWorkspacePolling } from "./services/llmWorkspace.service.js";
 import { notifyAllDevelopersSystemFailure, notifyDeveloperSystemFailure } from "./services/developerNotify.service.js";
 import { startWhatsProOutboxWorker } from "./transport/whatspro.client.js";
+import { handleKanbanWebhook } from "./controllers/kanban.js";
+import { startSiteWebhookQueueWorker } from "./services/siteWebhookQueue.service.js";
 import { safeCompare } from "./services/tenantAuth.service.js";
 import { envNumber } from "./utils/envNumber.js";
 
@@ -93,6 +95,18 @@ await connectRedis().catch((error) => {
 });
 startDailyCron();
 startWhatsProOutboxWorker();
+startSiteWebhookQueueWorker(async (body) => {
+  let status = 200;
+  let payload: Record<string, unknown> = {};
+  let sent = false;
+  const response = {
+    status(code: number) { status = code; return this; },
+    json(value: Record<string, unknown>) { payload = value; sent = true; return this; },
+    get headersSent() { return sent; },
+  };
+  await handleKanbanWebhook({ body, app } as unknown as express.Request, response as unknown as express.Response);
+  return { status: sent ? status : 500, retryLater: payload.retry_later === true };
+});
 startRuntimeWatcher();
 startLlmWorkspacePolling();
 

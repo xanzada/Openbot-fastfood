@@ -723,19 +723,25 @@ export async function claimInboundEvent(instance: string, rawEventId: unknown) {
   return { eventId, key: claimed ? key : "", claimed };
 }
 
-async function sendAndRemember(instance: string, phone: string, text: string): Promise<void> {
+export async function sendAndRemember(instance: string, phone: string, text: string, dependencies: { send?: typeof sendWhatsProMessage; remember?: typeof saveToHistory; requestScope?: string } = {}): Promise<void> {
   auditOutbound("Triggering WhatsApp customer notification", {
     instance,
     phone,
     text,
   });
-  await sendWhatsProMessage({ instanceId: instance, phone, text });
+  const requestId = crypto.createHash("sha256")
+    .update(JSON.stringify([instance, phone, dependencies.requestScope || text]))
+    .digest("hex");
+  const sent = await (dependencies.send || sendWhatsProMessage)({ instanceId: instance, phone, text, requestId });
+  if (sent?.acknowledged !== true || sent?.queued === true) {
+    throw new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
+  }
   auditDecision("Saving bot notification to Redis history", {
     instance,
     phone,
     textLength: text.length,
   });
-  await saveToHistory(instance, phone, "model", `<bot_notification>\n${text}\n</bot_notification>`);
+  await (dependencies.remember || saveToHistory)(instance, phone, "model", `<bot_notification>\n${text}\n</bot_notification>`);
 }
 
 export async function handleKanbanWebhook(req: Request, res: Response): Promise<void> {
@@ -1234,7 +1240,14 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         phone,
         textLength: textMessage.length,
       });
-      await sendAndRemember(instance, phone, textMessage);
+      await sendAndRemember(instance, phone, textMessage, {
+        requestScope: JSON.stringify([
+          action, orderId,
+          body.event_id || body.request_id || "",
+          body.payment_revision ?? body.revision ?? "",
+          body.event_time || "",
+        ]),
+      });
       if (nextNotifyRank >= 0) {
         await saveOrderNotifyCursor(instance, orderId, nextNotifyRank, effectiveStatus || action).catch(() => false);
       }

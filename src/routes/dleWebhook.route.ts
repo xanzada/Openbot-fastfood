@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
 import { handleKanbanWebhook } from "../controllers/kanban.js";
+import { enqueueVerifiedSiteWebhook, isQueuedSiteOrderAction } from "../services/siteWebhookQueue.service.js";
 import { getRestaurantConfig, getRestaurantConfigByAlemiInstance, refreshRestaurantConfig } from "../services/platformConfig.service.js";
 import { assertTenantSecret } from "../services/tenantAuth.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
@@ -474,6 +475,13 @@ export async function handleDleWebhook(req: Request, res: Response) {
       res.status(200).json({ success: true, ignored: true, event_id: req.body.event_id || undefined });
       return;
     }
+    // Authentication and tenant normalization already succeeded in route middleware.
+    // A 202 is emitted only after durable persistence, never after fire-and-forget work.
+    if (isQueuedSiteOrderAction(req.body)) {
+      const queued = await enqueueVerifiedSiteWebhook(req.body);
+      res.status(202).json({ success: true, accepted: true, queued: true, event_id: req.body.event_id || undefined, job_id: queued.id });
+      return;
+    }
     auditInbound("DLE webhook normalized", {
       action: req.body?.action,
       matchesNewDleLogic: recognisedDleAction(req),
@@ -509,6 +517,10 @@ export async function handleDleWebhook(req: Request, res: Response) {
       instanceId,
       orderId: req.body?.order_id || req.body?.orderId || req.body?.id || "",
     });
+    if (["BAD_INSTANCE", "BAD_SITE_ORDER_EVENT"].includes(String(error?.message))) {
+      if (!res.headersSent) res.status(400).json({ success: false, error: error.message });
+      return;
+    }
     await notifyDeveloperSystemFailure(instanceId, error, {
       scope: "dle-website-webhook",
       action: req.body?.action || "",
