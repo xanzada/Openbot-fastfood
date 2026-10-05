@@ -8,6 +8,8 @@ function normalizeText(value: unknown) {
   return String(value || "")
     .toLowerCase()
     .replace(/[ё]/g, "е")
+    .replace(/(?:coca[-\s]*cola|кока[-\s]*кол[ауы]|(?<!\p{L})кол[ауы](?!\p{L})|(?<!\p{L})cola(?!\p{L}))/gu, "кола")
+    .replace(/(?<!\p{L})sprite(?!\p{L})/gu, "спрайт")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -18,9 +20,21 @@ function normalizeText(value: unknown) {
 // 2026-10-04). A token also matches a catalog word it starts with, plus a few Kazakh
 // food words mapped to the Russian stem the catalog uses.
 const KAZAKH_MENU_WORDS: Array<[string, string]> = [
-  ["сусын", "напит"], ["тауық", "кури"], ["тауык", "кури"], ["сиыр", "говя"],
+  ["ішетін", "напит"], ["ишетин", "напит"], ["напит", "сусын"], ["сусын", "напит"], ["тауық", "кури"], ["тауык", "кури"], ["сиыр", "говя"],
   ["картоп", "картоф"], ["тәтті", "сладост"], ["ірімшік", "сыр"], ["ащы", "остр"],
 ];
+
+const QUERY_FILLERS = new Set([
+  "бар", "ма", "ме", "ба", "бе", "не", "жоқ", "болса", "керек", "маған", "алайын", "аламын", "онда",
+  "мне", "тогда", "есть", "ли", "если", "нет", "что", "какие", "у", "вас", "из", "и", "а", "два",
+  "екі", "бір", "үш", "нужна", "нужен", "нужно", "возьму", "хочу", "сколько", "стоит", "қанша", "тұрады",
+  "меню", "мәзір", "мәзірде", "сыздерде", "сіздерде", "в", "дай", "дайте", "пожалуйста",
+]);
+
+export function menuQueryForTurn(text: string) {
+  return (normalizeText(text).match(/[\p{L}\p{N}]+/gu) || [])
+    .filter((word) => !QUERY_FILLERS.has(word)).join(" ").slice(0, 80);
+}
 
 function tokenForms(token: string, haystack: string): string[] {
   const forms = [token];
@@ -118,6 +132,8 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
           ? { old_price: Number(entry.item.compare_at_price), discounted: true }
           : {}),
         available: typeof entry.item.available === "boolean" ? entry.item.available : undefined,
+        match_kind: !normalizedQuery ? "overview" : name === normalizedQuery ? "exact_name"
+          : ingredientMatch ? "ingredient" : "similar",
         ...(ingredientMatch ? { matched_as_ingredient: true } : {}),
       };
     });
@@ -151,7 +167,7 @@ export function pageMenuMatches(allMatches: Record<string, any>[], limit?: numbe
   };
 }
 
-export function createSearchMenuSkill(ctx: FastFoodContext) {
+export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof getMenuContext = getMenuContext) {
   return createTool({
     name: "searchMenu",
     description: "Read customer-facing menu items, prices, ingredients, categories, and public availability from the live menu. Results are paged: at most 50 items per call. When the result says hasMore, the list is only part of the menu - page on with offset or narrow by category before answering, and never present a page as the full menu. The `categories` field lists every section of the catalog with its item count. An item carrying `old_price` and `discounted: true` is genuinely on sale right now - the storefront shows the same crossed-out price - so those are the ONLY dishes you may present as a discount or promotion, naming the dish, its current price and its old price. `promotions_now` collects them for a bare \"do you have any deals?\"; when it is empty, there is no promotion to announce.",
@@ -166,7 +182,10 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       // without a storefront URL must still see its own menu.
       const domain = ctx.config?.domain || "";
 
-      const menu = await getMenuContext(ctx.instanceId, domain, ctx.language);
+      const menu = ctx.menuGrounding && ctx.menuSnapshot
+        ? ctx.menuSnapshot
+        : await readMenu(ctx.instanceId, domain, ctx.language, { forceFresh: true });
+      ctx.menuSnapshot = menu;
       const items = Array.isArray(menu?.items) ? menu.items : [];
       const vocabulary = menuVocabulary(items);
       // Hub-level availability was carried in the payload (line ~94) but never acted
@@ -247,4 +266,13 @@ export function createSearchMenuSkill(ctx: FastFoodContext) {
       };
     },
   });
+}
+
+/** Mandatory facts read also covers models that ignore tool choice and provider fallback. */
+export async function groundMenuTurn(ctx: FastFoodContext, readMenu: typeof getMenuContext = getMenuContext) {
+  if (ctx.menuGrounding) return ctx.menuGrounding;
+  const query = menuQueryForTurn(ctx.text);
+  const result = await createSearchMenuSkill(ctx, readMenu).execute!({ query, limit: 12 }, {} as any);
+  ctx.menuGrounding = result as Record<string, any>;
+  return ctx.menuGrounding;
 }

@@ -12,6 +12,9 @@ export interface FastFoodContext {
   activeOrder: Record<string, any> | null;
   chatHistory: any[];
   menuSnapshot: Record<string, any> | null;
+  menuGrounding?: Record<string, any>;
+  // Current Redis checkout grace, bound to this exact kitchen policy.
+  kitchenCheckoutFingerprint?: string | null;
   activeShiftNotes: any[];
   activeShiftNotesFingerprint: string;
   mediaContext: Record<string, any> | null;

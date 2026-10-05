@@ -1,8 +1,9 @@
 import type { FastFoodContext } from "../context/types.js";
-import { hasDirectOrderIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
-import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
+import { getKitchenCheckoutFingerprint } from "../services/redis.service.js";
 import { wantsMenuAsText } from "../utils/magicLink.js";
 
 export type AgentToolName =
@@ -38,7 +39,7 @@ export interface AgentToolPlan {
 const MENU_OVERVIEW_RE =
   /(мәзірде|мәзірден|менюде|ассортимент|мәзірде\s*не\s*бар|не\s*бар\s*мәзірде|сіздерде\s*не(?:\s*бар)?\s*[?.!]*$|что\s*(?:у\s*вас\s*)?есть\s*в\s*меню|что\s+у\s+вас(?:\s+есть)?\s*[?.!]*$|какие\s*(?:у\s*вас\s*)?(?:есть\s*)?(?:блюда|позиции)|қандай\s*(?:тағам|ас))/iu;
 const MENU_LOOKUP_RE =
-  /(мәзірде|мәзірден|менюде|ассортимент|мәзірде\s*не\s*бар|не\s*бар\s*мәзірде|сіздерде\s*не(?:\s*бар)?\s*[?.!]*$|что\s*(?:у\s*вас\s*)?есть\s*в\s*меню|что\s+у\s+вас(?:\s+есть)?\s*[?.!]*$|какие\s*(?:у\s*вас\s*)?(?:есть\s*)?(?:блюда|позиции)|қандай\s*(?:тағам|ас)|бар\s*ма|барма|есть\s*ли|что\s+(?:входит|взять|выбрать|посоветуе)|что-нибудь|қанша\s*(?:тұр|тұрады|теңге)|ск(?:олько|ока)\s*(?:стоит|тенге)|баға|цена|құрамы|состав|ингредиент|ащы|остр|вегетари|халал|п[ие]п+ерони|pepperoni|маргарит|пицц|бургер|донер|шаурм|суши|ролл|салат|сусын|напит|десерт|комбо|сет|балалар|дет(?:ям|ское)|реб[её]н|(?<!\p{L})етсіз|без\s*мяс|бюджет|деш[её]в|арзан|лаваш|ұсынас|ұсыныңыз|кеңес\s*бер|советуе|посоветуй|рекоменд|аллерг|глютен|лактоз|жаңғақ|орех|теңіз\s*өнім|морепродукт|(?:жоқ|без)\s*(?:тағам|блюд)|тағам\s*керек|акци|скидк|жеңілдік|женилдик|промо|арзандат|распродаж|выгодн)/iu;
+  /(мәзірде|мәзірден|менюде|ассортимент|мәзірде\s*не\s*бар|не\s*бар\s*мәзірде|сіздерде\s*не(?:\s*бар)?\s*[?.!]*$|что\s*(?:у\s*вас\s*)?есть\s*в\s*меню|что\s+у\s+вас(?:\s+есть)?\s*[?.!]*$|какие\s*(?:у\s*вас\s*)?(?:есть\s*)?(?:блюда|позиции)|қандай\s*(?:тағам|ас)|бар\s*ма|барма|есть\s*ли|что\s+(?:входит|взять|выбрать|посоветуе)|что-нибудь|қанша\s*(?:тұр|тұрады|теңге)|ск(?:олько|ока)\s*(?:стоит|тенге)|баға|цена|құрамы|состав|ингредиент|ащы|остр|вегетари|халал|п[ие]п+ерони|pepperoni|маргарит|пицц|бургер|донер|шаурм|суши|ролл|салат|сусын|напит|ішетін|ишетин|кока|кол[ауы]|cola|спрайт|sprite|фанта|fanta|пепси|pepsi|айран|кофе|лимонад|цезар|(?<!\p{L})(?:сок|вода|чай|шай)(?!\p{L})|десерт|комбо|сет|балалар|дет(?:ям|ское)|реб[её]н|(?<!\p{L})етсіз|без\s*мяс|бюджет|деш[её]в|арзан|лаваш|ұсынас|ұсыныңыз|кеңес\s*бер|советуе|посоветуй|рекоменд|аллерг|глютен|лактоз|жаңғақ|орех|теңіз\s*өнім|морепродукт|(?:жоқ|без)\s*(?:тағам|блюд)|тағам\s*керек|акци|скидк|жеңілдік|женилдик|промо|арзандат|распродаж|выгодн)/iu;
 const DIRECT_MENU_LINK_RE =
   /(сілтеме|ссылка|link|линк|каталог|мәзірді\s*(?:жібер|бер|аш)|меню\s*(?:пришли|скинь|дай|открой|покажи)|тапсырыс\s*(?:бер|жасай|ет)|заказ\s*(?:хочу|сдел|оформ)|заказать|оформить|корзин|себет)/iu;
 // The guest is DOING something, not asking about the assortment: placing an order, asking
@@ -84,7 +85,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   // this was the one place that preferred the partial object (found 2026-08-22).
   const runtime = ctx.runtimeStatus || ctx.hardRealtimeContext;
   const kitchenPolicy = classifyKitchenSalesPolicyForContext(runtime || null, ctx.activeShiftNotes);
-  const checkoutBlocked = (kitchenPolicy.blocksAllSales && kitchenPolicy.mode !== "off_hours") || kitchenPolicy.requiresConsent;
+  const checkoutBlocked = (kitchenPolicy.blocksAllSales && kitchenPolicy.mode !== "off_hours") || (kitchenPolicy.requiresConsent && ctx.kitchenCheckoutFingerprint !== kitchenPolicy.fingerprint);
 
   if (immediateServiceIncident) {
     add(plan, "escalateToAdmin", "actionable_service_incident");
@@ -117,33 +118,27 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   // demanding a refund was handed the menu link and nothing else. Nobody who is
   // complaining is asking to start a new order.
   const directOrderIntent = hasDirectOrderIntent(text);
+  const catalogWords = (Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [])
+    .flatMap((item: any) => String(item?.name || item?.title || "").toLowerCase().match(/\p{L}{3,}/gu) || []);
+  const customerWords = text.toLowerCase().match(/\p{L}{3,}/gu) || [];
+  const namedCatalogItem = catalogWords.some((name: string) => customerWords.some((word) =>
+    word === name || (name.length >= 4 && word.startsWith(name))));
+  const menuLookup = intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident && !wantsMenuAsText(text)
-    && (intentMatches(DIRECT_MENU_LINK_RE, text) || ctx.explicitMenuLinkIntent || directOrderIntent)) {
+    && (hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }
 
-  if (!immediateServiceIncident && (intentMatches(MENU_LOOKUP_RE, text) || wantsMenuAsText(text))) {
+  if (!immediateServiceIncident && menuLookup) {
     add(plan, "searchMenu", "live_menu_lookup");
   }
 
-  // Answering comes before handing over a URL.
-  //
-  // Only the FIRST planned tool is pinned as step 0, and sendMenuLink was added before
-  // searchMenu, so "Не бар мәзірде?" - a question about what the restaurant sells - spent
-  // its pinned step on the link and was answered with nothing but "you can see the menu at
-  // this link" (live QA, 2026-08-24, twice). The word "мәзір" alone is enough for
-  // hasExplicitMenuLinkIntent, which is right for minting the link but wrong for deciding
-  // what the guest asked. instructions.ts already states the rule this enforces: send the
-  // link AFTER answering the question, in the same message. The link is still granted on
-  // the same turn - it just stops replacing the answer.
-  //
-  // A guest who is actually ordering ("екі донер заказ берейін", "сілтеме жіберіңіз") is
-  // NOT asking a question, and for them the link IS the answer - so the swap is limited to
-  // messages that ask something and do not name an ordering action.
+  // Read the named product before checkout, including direct orders. A link cannot
+  // establish whether that product exists, is available, or is blocked by a note.
   const searchIndex = plan.requiredTools.indexOf("searchMenu");
   const linkIndex = plan.requiredTools.indexOf("sendMenuLink");
   if (searchIndex > -1 && linkIndex > -1 && linkIndex < searchIndex
-    && (!(intentMatches(ORDER_ACTION_RE, text) || directOrderIntent) || intentMatches(MENU_OVERVIEW_RE, text))) {
+    && (menuLookup || !(intentMatches(ORDER_ACTION_RE, text) || directOrderIntent) || intentMatches(MENU_OVERVIEW_RE, text))) {
     plan.requiredTools[linkIndex] = "searchMenu";
     plan.requiredTools[searchIndex] = "sendMenuLink";
     const reason = plan.reason[linkIndex];
@@ -151,10 +146,35 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     plan.reason[searchIndex] = reason;
   }
 
+  // Accepted deferred checkout must spend the first autonomous step on its link.
+  if (ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint && detectKitchenConsentAnswer(text) === "yes") {
+    const continuationLink = plan.requiredTools.indexOf("sendMenuLink");
+    if (continuationLink > 0) {
+      plan.requiredTools.unshift(plan.requiredTools.splice(continuationLink, 1)[0]);
+      plan.reason.unshift(plan.reason.splice(continuationLink, 1)[0]);
+    }
+  }
+
   return {
     requiredTools: plan.requiredTools.slice(0, 3),
     reason: plan.reason.slice(0, 3),
   };
+}
+
+// Both webhook and standalone agent entrypoints honor the same persisted consent.
+export async function resolveLiveAgentToolPlan(ctx: FastFoodContext): Promise<AgentToolPlan> {
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext, ctx.activeShiftNotes);
+  if (policy.requiresConsent) {
+    ctx.kitchenCheckoutFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
+    const priorCheckout = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-8)
+      .some((entry: any) => entry.role === "user" && hasCustomerCheckoutIntent(String(entry.text || entry.content || "")));
+    if (ctx.kitchenCheckoutFingerprint === policy.fingerprint && detectKitchenConsentAnswer(ctx.text) === "yes" && priorCheckout) {
+      ctx.explicitMenuLinkIntent = true;
+    }
+  } else {
+    ctx.kitchenCheckoutFingerprint = null;
+  }
+  return resolveAgentToolPlan(ctx);
 }
 
 /**

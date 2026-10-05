@@ -4,8 +4,10 @@ import {
   isCompatibleWorkspaceSttEntry,
   raceHedgedBatch,
 } from "../src/services/mediaAdapter/speechToText.js";
-import { answerVoiceMenuOverview, isVoiceBeverageRequest, isVoiceMenuOverview } from "../src/services/turnSafetyNet.service.js";
+import { answerVoiceMenuOverview as liveVoiceMenuOverview, isVoiceBeverageRequest, isVoiceMenuOverview } from "../src/services/turnSafetyNet.service.js";
 import { validateFinalText } from "../src/agent/finalValidator.js";
+
+const answerVoiceMenuOverview = (ctx: any, grant: any) => liveVoiceMenuOverview(ctx, grant, (async () => ctx.menuSnapshot) as any);
 
 test("an OpenRouter chat model mislabeled as Gemini is never used as STT", () => {
   assert.equal(isCompatibleWorkspaceSttEntry({

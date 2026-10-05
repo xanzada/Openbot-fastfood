@@ -156,11 +156,11 @@ test("an ungrounded allergen assurance never reaches the guest", () => {
   );
   assert.ok(result.warnings.includes("ungrounded_allergen_assurance_removed"), JSON.stringify(result));
   assert.doesNotMatch(result.text, /жаңғақтар жоқ/u);
-  assert.match(result.text, /құрамын/u, result.text);
+  assert.match(result.text, /Құрамы|құрамын/u, result.text);
 });
 
 test("a grounded composition answer is left alone", () => {
-  const base = { language: "ru" as const, instanceId: "prestige", phone: "77476884956" } as any;
+  const base = { language: "ru" as const, instanceId: "prestige", phone: "77000000000", menuSnapshot: { items: [{ name: "Филадельфия", composition: "Нет орехов." }] } } as any;
   const result = validateFinalText(
     "В роллах Филадельфия нет орехов, состав подтвержден.",
     base,
@@ -173,7 +173,7 @@ test("a grounded composition answer is left alone", () => {
 // Cutting the priced sentence used to leave "these dishes..." pointing at a list
 // that no longer existed.
 test("a reference left pointing at a removed list is cut too", () => {
-  const base = { language: "ru" as const, instanceId: "prestige", phone: "77476884956" } as any;
+  const base = { language: "ru" as const, instanceId: "prestige", phone: "77000000000" } as any;
   const result = validateFinalText(
     "Цезарь стоит 3000 тенге. Эти блюда подойдут вам лучше всего.",
     base,

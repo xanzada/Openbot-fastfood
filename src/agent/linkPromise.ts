@@ -1,6 +1,6 @@
-import { hasDirectOrderIntent } from "../skills/menuLink.skill.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
 import type { FastFoodContext } from "../context/types.js";
-import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from "../services/kitchenPolicy.service.js";
 import { getKitchenCheckoutFingerprint, markKitchenCheckoutStarted, markMagicLinkSent } from "../services/redis.service.js";
 import { ensureCustomerAccessLink } from "../services/checkoutIntent.service.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
@@ -74,6 +74,12 @@ export async function honorMenuLinkPromise(ctx: FastFoodContext, finalText: stri
   const guestText = String(ctx.text || "");
   if (guestText && (isLikelyComplaintText(guestText) || isLikelyOperatorRequestText(guestText))) {
     return { action: "stripped", text: stripMenuLinkPromise(finalText), reason: "not_an_order_turn" };
+  }
+  const currentPolicy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
+  const acceptedContinuation = ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(guestText) === "yes"
+    && ctx.kitchenCheckoutFingerprint === currentPolicy.fingerprint;
+  if (!hasCustomerCheckoutIntent(guestText) && !acceptedContinuation) {
+    return { action: "stripped", text: stripMenuLinkPromise(finalText), reason: "link_not_requested" };
   }
   // A generic follow-up must not resend the link the bot JUST sent. "Just" is
   // the previous bot reply, not a 30-day flag: a link from two days ago is long

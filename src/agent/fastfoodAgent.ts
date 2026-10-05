@@ -2,11 +2,12 @@ import { Agent, stepCountIs } from "@voltagent/core";
 import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
 import { analyzeTurnSituation, critiqueDraftReply, type DraftCritique, type TurnAnalysis } from "../services/agentThinking.service.js";
-import { fallbackReply, validateFinalText } from "./finalValidator.js";
+import { fallbackReply, validateFinalText, type ToolGroundingFindings } from "./finalValidator.js";
 import { readGuestGreeting } from "./greeting.js";
 import { buildAgentInstructions } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
-import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
+import { createAgentStepPolicy, resolveLiveAgentToolPlan } from "./toolPolicy.js";
+import { groundMenuTurn, menuQueryForTurn } from "../skills/searchMenu.skill.js";
 import { honorMenuLinkPromise } from "./linkPromise.js";
 import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
 import { envNumber } from "../utils/envNumber.js";
@@ -65,11 +66,15 @@ function extractToolCalls(result: any) {
 // successful order lookup from an empty one: every "your order is on the way" guard was
 // unlocked by the call alone, so the reply the model is most confident about - the one
 // where the lookup found nothing - was the one that shipped (found 2026-08-22).
-function extractToolFindings(result: any): { orderFound?: boolean; escalationCreated?: boolean } {
+function extractToolFindings(result: any): ToolGroundingFindings {
   const steps = Array.isArray(result?.steps) ? result.steps : [];
   let sawLookup = false;
   let found = false;
+  let orderLookup: string | undefined;
+  let orderStatus: string | undefined, orderStage: string | undefined, orderStatusLabel: string | undefined;
+  let orderItems: Array<{ name: string }> | undefined;
   let escalationCreated: boolean | undefined;
+  let escalationNotificationAccepted: boolean | undefined;
   for (const step of steps) {
     const results = Array.isArray(step?.toolResults) ? step.toolResults : [];
     for (const entry of results) {
@@ -77,7 +82,12 @@ function extractToolFindings(result: any): { orderFound?: boolean; escalationCre
       if (name === "checkOrderStatus") {
         sawLookup = true;
         const payload: any = entry?.output ?? entry?.result ?? entry?.response ?? null;
-        if (payload && String(payload.lookup || "") === "found") found = true;
+        orderLookup = String(payload?.lookup || "unavailable");
+        found = orderLookup === "found";
+        orderStatus = found ? String(payload.status || "") : undefined;
+        orderStage = found ? String(payload.stage || "") : undefined;
+        orderStatusLabel = found ? String(payload.statusLabel || "") : undefined;
+        orderItems = found && Array.isArray(payload.items) ? payload.items.map((item: any) => ({ name: String(item.name || "") })).filter((item: any) => item.name) : undefined;
       }
       // What the escalation tool RETURNED decides what the agent may claim. Only
       // action=operator_case_created means a human was actually notified; the clarify-first
@@ -86,16 +96,16 @@ function extractToolFindings(result: any): { orderFound?: boolean; escalationCre
         const payload: any = entry?.output ?? entry?.result ?? entry?.response ?? null;
         if (escalationCreated !== true) {
           escalationCreated = Boolean(payload && String(payload.action || "") === "operator_case_created");
+          escalationNotificationAccepted = escalationCreated && payload?.adminNotificationAccepted === true;
         }
       }
     }
   }
-  // Undefined means "the runtime did not report results", which must stay
-  // indistinguishable from the old behaviour rather than silently tightening a gate.
+  // Undefined means the runtime supplied no positive lookup evidence.
   if (!sawLookup && escalationCreated === undefined) return {};
   return {
-    ...(sawLookup ? { orderFound: found } : {}),
-    ...(escalationCreated !== undefined ? { escalationCreated } : {}),
+    ...(sawLookup ? { orderFound: found, orderLookup, orderStatus, orderStage, orderStatusLabel, orderItems } : {}),
+    ...(escalationCreated !== undefined ? { escalationCreated, escalationNotificationAccepted } : {}),
   };
 }
 
@@ -123,7 +133,20 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   const CRITIC_BUDGET_MS = envNumber(process.env.CRITIC_BUDGET_MS, 20_000, { min: 10_000, max: 60_000 });
   const REGEN_BUDGET_MS = envNumber(process.env.REGEN_BUDGET_MS, 38_000, { min: CRITIC_BUDGET_MS + 5_000, max: 90_000 });
 
-  const toolPlan = resolveAgentToolPlan(ctx);
+  const toolPlan = await resolveLiveAgentToolPlan(ctx);
+  const menuGrounding = toolPlan.requiredTools.includes("searchMenu") ? await groundMenuTurn(ctx) : null;
+  const groundedCalls = menuGrounding ? [{ name: "searchMenu", arguments: { query: menuQueryForTurn(ctx.text), limit: 12 } }] : [];
+  const menuInstruction = menuGrounding
+    ? "searchMenu already executed for THIS turn. Use this verified result, including unavailable flags; do not invent a missing exact match.\n" + JSON.stringify(menuGrounding)
+    : undefined;
+  const kitchenPolicy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
+  const consentInstruction = kitchenPolicy.requiresConsent && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint
+    ? "The customer has ALREADY accepted this exact kitchen wait in persisted checkout state. Do not ask for consent again. Continue actual requested site checkout using sendMenuLink; never collect manual order/address details."
+    : undefined;
+  const groundingInstruction = [menuInstruction, consentInstruction].filter(Boolean).join("\n");
+  const remainingPlan = menuGrounding
+    ? { requiredTools: toolPlan.requiredTools.filter((tool) => tool !== "searchMenu"), reason: toolPlan.reason }
+    : toolPlan;
 
   // Silent pre-pass: on non-trivial turns the think layer reads the situation
   // first (goal, mood, risk) and lands in FACTS_CONTEXT as advisory guidance.
@@ -151,7 +174,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   // A turn that is nothing but a greeting needs no tool: live calibration (2026-10-04) saw
   // «Сәлем» spend an extra model round on updateCrmLead and take 8-22 s instead of 2-4 s.
   const greetingOnly = Boolean(readGuestGreeting(String(ctx.text || ""))?.pure) && !toolPlan.requiredTools.length;
-  const stepPolicy = greetingOnly ? () => ({ toolChoice: "none" as const }) : createAgentStepPolicy(toolPlan);
+  const stepPolicy = greetingOnly ? () => ({ toolChoice: "none" as const }) : createAgentStepPolicy(remainingPlan);
   // Typed as any on purpose: allowSystemInMessages is valid in AI SDK v6 but
   // missing from @voltagent/core types. The old key name was allowSystemMessages,
   // which the SDK ignored, so every single generation logged a security warning
@@ -169,7 +192,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     allowSystemInMessages: true,
   };
 
-  let result = await buildAgent(ctx).generateText(ctx.text, generateOptions);
+  let result = await buildAgent(ctx, groundingInstruction).generateText(ctx.text, generateOptions);
   if (pendingThinking) {
     const joinMs = envNumber(process.env.THINK_JOIN_MS, 300, { min: 0, max: 5_000 });
     const joined = await Promise.race([
@@ -183,7 +206,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   // Kept separately because the critic can replace `result` below.
   let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
   let validation = validateFinalText(result.text, ctx, {
-    toolsCalled: extractToolCalls(result).map((call: { name: string }) => call.name),
+    toolsCalled: mergeToolCalls(groundedCalls, extractToolCalls(result)).map((call: { name: string }) => call.name),
     toolFindings: extractToolFindings(result),
   });
   let finalText = enforceExplicitMagicLink(validation.text, ctx);
@@ -202,27 +225,29 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
         "Rewrite the reply for THIS turn fixing exactly that. Keep every verified fact and every required link.",
       ].filter(Boolean).join("\n");
       try {
-        const regenerated = await buildAgent(ctx, critiqueNote).generateText(ctx.text, generateOptions);
+        const regenerated = await buildAgent(ctx, [groundingInstruction, critiqueNote].filter(Boolean).join("\n")).generateText(ctx.text, generateOptions);
         // The critic rewrite is validated against the UNION of both passes. Validating
         // it against its own calls alone stripped the prices and the allergen statement
         // the first pass had grounded, because the critic note tells the model to keep
         // the facts without re-calling the tools - so the guest got "состав подтвердить
         // не могу" after a correct first draft, on exactly the high-risk turns the
         // critic exists for (found 2026-08-22).
-        const unionCalls = mergeToolCalls(extractToolCalls(result), extractToolCalls(regenerated));
+        const unionCalls = mergeToolCalls(groundedCalls, mergeToolCalls(extractToolCalls(result), extractToolCalls(regenerated)));
         const firstFindings = extractToolFindings(result);
         const regenFindings = extractToolFindings(regenerated);
         const regeneratedValidation = validateFinalText(regenerated.text, ctx, {
           toolsCalled: unionCalls.map((call: { name: string }) => call.name),
-          // An order found in either pass is found. An escalation created in either pass is
-          // created. undefined stays undefined.
+          // The latest status read wins; without another read, keep the first result.
+          // A real escalation created in either pass remains created.
           toolFindings: {
             ...(regenFindings.orderFound !== undefined || firstFindings.orderFound !== undefined
               ? {
-                  orderFound:
-                    regenFindings.orderFound === true || firstFindings.orderFound === true
-                      ? true
-                      : (regenFindings.orderFound ?? firstFindings.orderFound),
+                  orderFound: regenFindings.orderFound ?? firstFindings.orderFound,
+                  orderLookup: regenFindings.orderFound !== undefined ? regenFindings.orderLookup : firstFindings.orderLookup,
+                  orderStatus: regenFindings.orderFound !== undefined ? regenFindings.orderStatus : firstFindings.orderStatus,
+                  orderStage: regenFindings.orderFound !== undefined ? regenFindings.orderStage : firstFindings.orderStage,
+                  orderStatusLabel: regenFindings.orderFound !== undefined ? regenFindings.orderStatusLabel : firstFindings.orderStatusLabel,
+                  orderItems: regenFindings.orderFound !== undefined ? regenFindings.orderItems : firstFindings.orderItems,
                 }
               : {}),
             ...(regenFindings.escalationCreated !== undefined || firstFindings.escalationCreated !== undefined
@@ -231,6 +256,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
                     regenFindings.escalationCreated === true || firstFindings.escalationCreated === true
                       ? true
                       : (regenFindings.escalationCreated ?? firstFindings.escalationCreated),
+                  escalationNotificationAccepted: regenFindings.escalationNotificationAccepted === true || firstFindings.escalationNotificationAccepted === true,
                 }
               : {}),
           },
@@ -300,7 +326,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     // The union of both passes, de-duplicated by name+arguments: the caller uses
     // this to decide whether the escalate tool already handled this episode, and
     // that must not depend on which pass happened to be the last one.
-    toolCalls: mergeToolCalls(firstPassToolCalls, extractToolCalls(result)),
+    toolCalls: mergeToolCalls(groundedCalls, mergeToolCalls(firstPassToolCalls, extractToolCalls(result))),
     validationWarnings: validation.warnings,
     thinking,
     critic,

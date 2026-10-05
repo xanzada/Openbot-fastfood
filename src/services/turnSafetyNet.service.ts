@@ -1,5 +1,13 @@
 import type { FastFoodContext } from "../context/types.js";
-import { isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin } from "./complaintRouting.service.js";
+import { resolveAgentToolPlan, resolveLiveAgentToolPlan } from "../agent/toolPolicy.js";
+import { groundMenuTurn } from "../skills/searchMenu.skill.js";
+import { getCustomerOrder } from "./customerOrder.service.js";
+import { requestedOrderNumber, lastDiscussedOrderNumber } from "../utils/orderIntent.js";
+import { getMenuContext } from "./dle.service.js";
+import { classifyKitchenSalesPolicyForContext } from "./kitchenPolicy.service.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
+import { hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
+import { hasConfirmedCustomerIncident, isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin } from "./complaintRouting.service.js";
 import { honorMenuLinkPromise } from "../agent/linkPromise.js";
 import { foldIntentText, intentMatches } from "../utils/intentText.js";
 import { findBlockedMenuItemMention } from "./operationalPreemption.service.js";
@@ -16,7 +24,7 @@ import { menuItemBlockedByNotes, menuVocabulary } from "./noteProvenance.service
  *    calm catalog turns are answered from the menu and ordering link instead.
  * 2. A composition / allergen question about dishes whose catalog entry has no
  *    ingredients. Any answer would be a guess about a child's allergy, so the bot only
- *    says it is checking with the kitchen - and an SOS makes that sentence true.
+ *    states the missing facts honestly; a known allergy can warrant a recorded handoff.
  */
 
 type Route = typeof routeComplaintToAdmin;
@@ -34,22 +42,25 @@ const say = (ctx: FastFoodContext, kk: string, ru: string) => (ctx.language === 
 const CATALOG_TURN_RE =
   /(қанша|сколько|цен[аы]|поч[её]м|баға|прайс|мәзір|меню|menu|каталог|ассортимент|бар\s*ма|барма|есть\s*ли|заказ|тапсырыс|керек|хочу|алайын|аламын|берейін|жасап|оформ|комбо)/iu;
 const NEEDS_PERSON_RE =
-  /(қайда|где|келмеді|келмей|не\s*привез|не\s*пришл|не\s*приш[её]л|кешік|опазд|долго|ұзақ|күттім|күтіп\s*отыр|жду|жд[её]м|отмен|болдырма|возврат|верн|ақшам|деньг|суық|холодн|жалоб|шағым|оператор|менеджер|админ|адаммен|человек|қате|ошиб|неправильн)/iu;
+  /(келмеді|келмей|не\s*привез|не\s*пришл|не\s*приш[её]л|кешік|опазд|долго|ұзақ|күттім|күтіп\s*отыр|жду|жд[её]м|отмен|болдырма|возврат|верн|ақшам|деньг|суық|холодн|жалоб|шағым|оператор|менеджер|админ|адаммен|человек|қате|ошиб|неправильн)/iu;
 const ORDER_WORD_RE = /(заказ|тапсырыс)/iu;
 const NON_TEXT_MEDIA_RE = /(image|photo|document|video|sticker|file)/i;
 
 export function needsHumanRecovery(ctx: FastFoodContext) {
   const text = String(ctx.text || "").trim();
   if (!text) return false;
+  if (resolveAgentToolPlan(ctx).requiredTools.includes("checkOrderStatus") && !hasConfirmedCustomerIncident(ctx, text)) return false;
   if (isLikelyComplaintText(text) || isLikelyOperatorRequestText(text)) return true;
   if (intentMatches(NEEDS_PERSON_RE, text)) return true;
+  if (intentMatches(ORDER_WORD_RE, text) && /(?:қайда|где)/iu.test(text)) return true;
   return Boolean(ctx.activeOrder && intentMatches(ORDER_WORD_RE, text));
 }
 
 export function isCalmCatalogTurn(ctx: FastFoodContext) {
   const text = String(ctx.text || "").trim();
   if (!text || !intentMatches(CATALOG_TURN_RE, text)) return false;
-  if (intentMatches(NEEDS_PERSON_RE, text)) return false;
+  if (needsHumanRecovery(ctx)) return false;
+  if (resolveAgentToolPlan(ctx).requiredTools.includes("checkOrderStatus")) return false;
   if (isLikelyComplaintText(text) || isLikelyOperatorRequestText(text)) return false;
   // «Тапсырысым қанша?» with a live order is about that order, not the menu.
   if (ctx.activeOrder && intentMatches(ORDER_WORD_RE, text)) return false;
@@ -141,10 +152,14 @@ function voiceMenuExamples(ctx: FastFoodContext, max = 3, beveragesOnly = false)
   return picked;
 }
 
-export async function answerVoiceMenuOverview(ctx: FastFoodContext, grantLink: GrantLink = grantMenuLinkForFallback) {
+export async function answerVoiceMenuOverview(ctx: FastFoodContext, grantLink: GrantLink = grantMenuLinkForFallback, readMenu: typeof getMenuContext = getMenuContext) {
   if (!isVoiceMenuOverview(ctx)) return null;
+  const grounding = await groundMenuTurn(ctx, readMenu);
+  if (grounding.menu_lookup === "unavailable") return say(ctx,
+    "Қазір мәзірді тексере алмай тұрмын. Біраздан кейін қайта сұраңызшы.",
+    "Сейчас не могу проверить меню. Попробуйте, пожалуйста, чуть позже.");
   const beverageRequest = isVoiceBeverageRequest(ctx);
-  const examples = voiceMenuExamples(ctx, beverageRequest ? 5 : 3, beverageRequest);
+  const examples = voiceMenuExamples(ctx, 3, beverageRequest);
   if (beverageRequest) {
     if (!examples.length) {
       return ctx.language === "ru"
@@ -177,8 +192,53 @@ export async function answerAgentFailure(
   error: unknown,
   route: Route = routeComplaintToAdmin,
   grantLink: GrantLink = grantMenuLinkForFallback,
+  readMenu: typeof getMenuContext = getMenuContext,
+  readOrder: typeof getCustomerOrder = getCustomerOrder,
 ) {
   const reason = String((error as any)?.message || error || "unknown").slice(0, 80);
+  const plan = await resolveLiveAgentToolPlan(ctx);
+  if (plan.requiredTools.includes("checkOrderStatus") && !hasConfirmedCustomerIncident(ctx)) {
+    const number = requestedOrderNumber(ctx.text) || lastDiscussedOrderNumber(ctx.chatHistory);
+    const lookup = await readOrder(ctx.instanceId, ctx.config?.domain || "", ctx.phone, ctx.language, number || undefined)
+      .catch(() => ({ state: "unavailable" as const }));
+    if (lookup.state === "found") {
+      const order = lookup.order;
+      return `Тапсырыс #${order.orderNumber}: ${order.statusLabel}. ${order.statusExplanation}.`.replace(/^Тапсырыс/u, ctx.language === "ru" ? "Заказ" : "Тапсырыс");
+    }
+    if (lookup.state === "not_found") return say(ctx, "Тапсырыс қазір табылған жоқ. Тапсырыс нөмірін тексеріңізші.",
+      "Заказ сейчас не найден. Проверьте, пожалуйста, номер заказа.");
+    return say(ctx, "Тапсырыстың қазіргі күйін растай алмаймын. Тапсырыс нөмірін жазыңызшы.",
+      "Не могу сейчас подтвердить состояние заказа. Уточните, пожалуйста, номер заказа.");
+  }
+  const menuLookup = plan.requiredTools.includes("searchMenu");
+  if (menuLookup && !needsHumanRecovery(ctx)) {
+    const grounding = await groundMenuTurn(ctx, readMenu);
+    if (grounding.menu_lookup === "unavailable") return say(ctx,
+      "Қазір мәзірді тексере алмай тұрмын. Біраздан кейін қайта сұраңызшы.",
+      "Сейчас не могу проверить меню. Попробуйте, пожалуйста, чуть позже.");
+    const matches = (grounding.items || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
+    const alternatives = (grounding.safe_alternatives || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
+    const list = (matches.length ? matches : alternatives)
+      .map((item: any) => String(item.name) + " — " + Number(item.price) + " ₸").join(", ");
+    if (!matches.length) return say(ctx,
+      "Бұл сұрағаныңыз қазір қолжетімсіз." + (list ? " Мыналар бар: " + list + "." : ""),
+      "Сейчас этой позиции нет в доступном меню." + (list ? " Есть другие варианты: " + list + "." : ""));
+    const ordering = hasDirectOrderIntent(ctx.text);
+    const kitchen = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext || null, ctx.activeShiftNotes);
+    if (ordering && kitchen.blocksAllSales && kitchen.mode !== "off_hours") return say(ctx,
+      "Қазір тапсырыс қабылдай алмаймыз. Мәзірде: " + list + ".",
+      "Сейчас заказы не принимаем. В меню: " + list + ".");
+    if (ordering && kitchen.requiresConsent && ctx.kitchenCheckoutFingerprint !== kitchen.fingerprint) return say(ctx,
+      "Күту уақыты — " + kitchen.waitLabelKk + ". Күтуге келісесіз бе?",
+      "Ожидание — " + kitchen.waitLabelRu + ". Вы готовы подождать?");
+    const wantsLink = ordering || hasCustomerCheckoutIntent(ctx.text);
+    const linked = wantsLink ? await grantLink(ctx).catch(() => false) : false;
+    const offHours = ordering && kitchen.mode === "off_hours";
+    return say(ctx, "Бар: " + list + "." + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
+      + (linked ? (offHours ? " Мәзірді қарау сілтемесін төменге жібердім." : " Тапсырыс беру сілтемесін төменге жібердім.") : ""),
+      "Есть: " + list + "." + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
+      + (linked ? (offHours ? " Ссылку для просмотра меню отправил ниже." : " Оформить заказ можно по ссылке ниже.") : ""));
+  }
   if (isCalmCatalogTurn(ctx)) {
     const items: Record<string, any>[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
     const blockedMention = findBlockedMenuItemMention(ctx.activeShiftNotes || [], items, ctx.text);
@@ -249,16 +309,23 @@ export function needsKitchenCompositionCheck(ctx: FastFoodContext): boolean {
 }
 
 export async function answerCompositionQuestion(ctx: FastFoodContext, route: Route = routeComplaintToAdmin) {
+  const customerTexts = [ctx.text, ...(Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
+    .filter((entry: any) => entry.role === "user").slice(-8).map((entry: any) => String(entry.text || entry.content || ""))];
+  const latestAllergyStatement = [
+    ...customerTexts.slice(1), ctx.text,
+  ].filter((text) => /аллерг/iu.test(text)).at(-1);
+  const actualAllergy = Boolean(latestAllergyStatement && hasConfirmedCustomerIncident(ctx, latestAllergyStatement));
+  const uncertainty = say(ctx, "Құрамы мен аллергендері туралы расталған дерек жоқ. Қауіпсіздігіне кепілдік бере алмаймын.",
+    "У меня нет подтверждённых данных о составе и аллергенах. Гарантировать безопасность не могу.");
+  if (!actualAllergy) return uncertainty;
   const routing = await route(ctx, {
-    summary: `Құрам / аллерген сұрағы, мәзірде құрамы жоқ: ${String(ctx.text || "").slice(0, 300)}`,
+    summary: `Аллергия: құрамы мен қауіпсіздігін нақтылау қажет. ${String(ctx.text || "").slice(0, 300)}`,
     customerText: ctx.text,
     urgency: "normal",
     source: "composition_check",
   }).catch(() => null);
-  // Without a person behind it the kitchen promise would be false, so the fallback only
-  // says what is true: there is no verified composition to quote.
   return routing?.action === "operator_case_created"
-    ? say(ctx, "Құрамын дәл қазір асүйден нақтылап беремін.", "Уточняю точный состав на кухне.")
-    : say(ctx, "Құрамы бойынша нақты дерек қазір жоқ, сондықтан кепілдік бере алмаймын.",
-      "Точного состава у меня сейчас нет, поэтому гарантировать не могу.");
+    ? say(ctx, "Құрам туралы сұрағыңыз операторға берілді. Қауіпсіздігіне кепілдік бере алмаймын.",
+      "Вопрос о составе передан оператору. Гарантировать безопасность не могу.")
+    : uncertainty;
 }

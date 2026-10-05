@@ -119,7 +119,8 @@ test("an invitation to order through the granted link is not an order-status cla
   assert.notEqual(invite.text, "Сейчас нет активного заказа.");
   assert.match(invite.text, /ссылку/);
   const status = validateFinalText("Ваш заказ уже готовится, курьер скоро выедет.", ruCtx({}), { toolsCalled: [] } as any);
-  assert.equal(status.text, "Сейчас нет активного заказа.");
+  assert.match(status.text, /Не могу сейчас подтвердить состояние заказа/u);
+  assert.doesNotMatch(status.text, /нет активного заказа/u);
 });
 
 test("«жаңғақсыз» is an allergen assurance like «жаңғақ жоқ»", async () => {
@@ -133,10 +134,10 @@ test("a menu read grounds an allergen answer only when the catalog has ingredien
   const { validateFinalText } = await import("../src/agent/finalValidator.js");
   const reply = "Шоколадты пончиктің құрамында жаңғақ жоқ. Пончик Шоколадный — 600 тг.";
   const empty = { items: [{ name: "Пончик Шоколадный", price: 600, composition: "" }] };
-  const filled = { items: [{ name: "Пончик Шоколадный", price: 600, composition: "тесто, шоколад" }] };
+  const filled = { items: [{ name: "Пончик Шоколадный", price: 600, composition: "тесто, шоколад. Жаңғақ жоқ." }] };
   const blind = validateFinalText(reply, kkCtx({ menuSnapshot: empty }), { toolsCalled: ["searchMenu"] } as any);
   assert.doesNotMatch(blind.text, /жаңғақ жоқ/);
-  const known = validateFinalText(reply, kkCtx({ menuSnapshot: filled }), { toolsCalled: ["searchMenu"] } as any);
+  const known = validateFinalText(reply, kkCtx({ menuSnapshot: filled, text: "Пончик Шоколадный" }), { toolsCalled: ["searchMenu"] } as any);
   assert.match(known.text, /жаңғақ жоқ/);
 });
 

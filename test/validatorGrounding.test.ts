@@ -37,7 +37,7 @@ test("a status the checkOrderStatus tool just read is not deleted", () => {
   // number the phone lookup missed. ctx.activeOrder is then empty while the tool
   // has the real order in hand.
   const reply = "Тапсырысыңыз дайындалып жатыр, шамамен 15 минутта жеткіземіз.";
-  const grounded = validateFinalText(reply, BASE(), { toolsCalled: ["checkOrderStatus"] });
+  const grounded = validateFinalText(reply, BASE(), { toolsCalled: ["checkOrderStatus"], toolFindings: { orderFound: true, orderLookup: "found", orderStatus: "cooking", orderStage: "preparing" } });
   assert.match(grounded.text, /дайындалып/, "the verified status must survive");
   assert.ok(!grounded.warnings.includes("unsupported_order_claim_clause_removed"));
 
@@ -111,7 +111,7 @@ test("an allergen assurance is NOT relaxed by the snapshot - it still demands a 
 });
 
 test("an allergen assurance a menu lookup grounded is kept", () => {
-  const ctx = BASE({ menuSnapshot: { count: 1, items: [{ name: "Салат", price: 1500 }] } });
+  const ctx = BASE({ menuSnapshot: { count: 1, items: [{ name: "Салат", price: 1500, composition: "Жаңғақ жоқ." }] }, text: "Салат" });
   const reply = "Сәлеметсіз бе. Бұл тағамның құрамында жаңғақ жоқ.";
   const result = validateFinalText(reply, ctx, { toolsCalled: ["searchMenu"] });
   assert.ok(!result.warnings.includes("ungrounded_allergen_assurance_removed"));
@@ -125,7 +125,7 @@ test("the sentence telling the guest an operator will help is not deleted", () =
   // deleted exactly that sentence - and on a short reply collapsed the whole answer
   // to the generic fallback while a case had just been opened.
   const reply = "Кешіріңіз. Шағымды операторға жібердім, ол тексеріп сізбен байланысады.";
-  const result = validateFinalText(reply, BASE(), { toolsCalled: ["escalateToAdmin"] });
+  const result = validateFinalText(reply, BASE(), { toolsCalled: ["escalateToAdmin"], toolFindings: { escalationCreated: true } });
   assert.match(result.text, /оператор/i, "the customer-safe operator sentence must survive");
   assert.ok(!result.warnings.includes("internal_disclosure_removed"));
 });
@@ -151,7 +151,7 @@ test("a closed kitchen is classified from runtimeStatus, not the partial object"
   const closed = resolveAgentToolPlan(BASE({
     text: "Тапсырыс берейін",
     explicitMenuLinkIntent: true,
-    runtimeStatus: { wait_time: 0, is_accepting_orders: false, within_work_hours: false },
+    runtimeStatus: { wait_time: 0, is_accepting_orders: false, within_work_hours: true },
     hardRealtimeContext: { wait_time: 0 },
   }));
   assert.ok(!closed.requiredTools.includes("sendMenuLink"),

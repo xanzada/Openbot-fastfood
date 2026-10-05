@@ -33,7 +33,7 @@ test("the final validator never lets the AI accept or confirm an order", () => {
     context("kk"),
     { toolsCalled: [] },
   );
-  assert.match(first.text, /тапсырыс.*рәсімделген жоқ|мәзір сілтемесі/iu);
+  assert.match(first.text, /тапсырысты.*рәсімдей алмаймын|сайт арқылы/iu);
   assert.equal(first.warnings.includes("manual_order_claim_blocked"), true);
 
   const second = validateFinalText(
@@ -41,12 +41,12 @@ test("the final validator never lets the AI accept or confirm an order", () => {
     context("kk"),
     { toolsCalled: [] },
   );
-  assert.equal(second.text, "Тапсырыс әлі рәсімделген жоқ. Оны тек жеке мәзір сілтемесі арқылы өзіңіз жасай аласыз.");
+  assert.equal(second.text, "Чатта тапсырысты өзім рәсімдей алмаймын. Жаңа тапсырысты сайт арқылы жасай аласыз.");
 
   const groundedStatus = validateFinalText(
     "№12 тапсырысыңыз қабылданды, қазір дайындалып жатыр.",
     context("kk"),
-    { toolsCalled: ["checkOrderStatus"] },
+    { toolsCalled: ["checkOrderStatus"], toolFindings: { orderFound: true, orderStatus: "paid", orderStage: "preparing" } },
   );
   assert.equal(groundedStatus.warnings.includes("manual_order_claim_blocked"), false);
 });
@@ -119,7 +119,8 @@ test("a voice transcript hydrates the personal checkout link before the agent ru
   assert.equal(ctx.explicitMenuLinkIntent, true);
   assert.equal(ctx.magicLink, "https://menu.alemi.kz/personal");
   const plan = resolveAgentToolPlan({ ...ctx, text: "Екі донер заказ берейін деп едім" });
-  assert.equal(plan.requiredTools[0], "sendMenuLink");
+  assert.equal(plan.requiredTools[0], "searchMenu");
+  assert.ok(plan.requiredTools.includes("sendMenuLink"));
 });
 
 test("dish plus алайын voice orders prewarm and pin the personal checkout link", async () => {
@@ -145,7 +146,8 @@ test("dish plus алайын voice orders prewarm and pin the personal checkout 
     assert.equal(hydrated, true, text);
     assert.equal(issued, 1, text);
     assert.equal(ctx.explicitMenuLinkIntent, true, text);
-    assert.equal(plan.requiredTools[0], "sendMenuLink", text);
+    assert.equal(plan.requiredTools[0], "searchMenu", text);
+    assert.ok(plan.requiredTools.includes("sendMenuLink"), text);
   }
 });
 

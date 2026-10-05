@@ -1,4 +1,4 @@
-import { hasDirectOrderIntent } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
 export { hasDirectOrderIntent } from "../utils/orderIntent.js";
 
 import { createTool } from "@voltagent/core";
@@ -8,7 +8,7 @@ import {
   markKitchenCheckoutStarted,
   markMagicLinkSent,
 } from "../services/redis.service.js";
-import { classifyKitchenSalesPolicyForContext, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
+import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
 import { ensureCustomerAccessLink } from "../services/checkoutIntent.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
@@ -18,21 +18,7 @@ import type { FastFoodContext } from "../context/types.js";
 // prevented structurally: the transport appends the URL at most once per reply
 // and the validator strips any link this skill did not grant this turn.
 
-/**
- * Why the link is being withheld — and the answer is now ALWAYS an operational
- * reason, never "you did not say the magic word".
- *
- * The agent calling this tool IS the intent signal. Requiring a keyword regex
- * (explicitMenuLinkIntent) to have fired first meant the model decided the guest
- * wanted to order, said so out loud, and then the tool refused with reason
- * "link_not_needed" whose message is null - so the reply promised a menu and nothing
- * was ever delivered. "2 донер жасап қойшы" is the plainest possible order and
- * matched no pattern (owner report, 2026-08-28).
- *
- * What remains here are facts about the restaurant, which the model cannot see and
- * must not overrule: a closed kitchen, an unconfirmed long wait, an unreachable hub.
- * Kept pure so it can be tested without booting the agent.
- */
+/** Restaurant gates supplement the customer's actual checkout/link request. */
 export function classifyMenuLinkRefusal(
   ctx: Pick<FastFoodContext, "explicitMenuLinkIntent" | "magicLink" | "magicLinkFailed" | "magicLinkAlreadySent" | "activeOrder" | "hardRealtimeContext">,
   policy?: KitchenSalesPolicy | null,
@@ -60,8 +46,8 @@ function refusalMessage(reason: ReturnType<typeof classifyMenuLinkRefusal>, lang
   }
   if (reason === "kitchen_closed") {
     return kk
-      ? "Қазір тапсырыс қабылдамаймыз, сондықтан сілтемені жіберудің мәні жоқ. Ашылған кезде жазыңыз, бәрін рәсімдеймін."
-      : "Сейчас заказы не принимаем, поэтому ссылку отправлять смысла нет. Напишите, когда откроемся, и я всё оформлю.";
+      ? "Қазір тапсырыс қабылдамаймыз, сондықтан сілтемені жіберудің мәні жоқ. Ашылған кезде сайт арқылы тапсырыс бере аласыз."
+      : "Сейчас заказы не принимаем, поэтому ссылку отправлять смысла нет. Когда откроемся, сможете оформить заказ на сайте.";
   }
   if (reason === "wait_consent_required") {
     const label = kk ? policy?.waitLabelKk : policy?.waitLabelRu;
@@ -80,7 +66,7 @@ function refusalMessage(reason: ReturnType<typeof classifyMenuLinkRefusal>, lang
 export function createSendMenuLinkSkill(ctx: FastFoodContext) {
   return createTool({
     name: "sendMenuLink",
-    description: "Return the guest's personal ordering link. Call it the moment YOU judge the guest is moving to order or wants to browse the catalog - they name dishes or quantities ('2 донер жасап қойшы'), ask to order, ask for the menu/cart/link, report the previous link broken, or the conversation plainly cannot move forward without it. You are the judgment here: there is no keyword list, and the tool no longer second-guesses whether the guest 'really' asked. It only refuses for reasons about the restaurant - kitchen closed, an unconfirmed long wait, or a technical failure issuing the link - and each of those comes back with a message to relay. Plain questions (prices, dishes, hours, delivery) are answered with searchMenu/getBusinessInfo first; the link may follow in the same reply if they are ordering. There is NO daily or per-conversation limit. If the guest says the earlier link does not open or expired, set previousLinkBroken=true. The link is tied to the guest's phone and stays valid for a month; never mention validity unless asked. Never paste the URL into your text yourself - the system delivers it as its own separate message right after your reply. NEVER say you are sending the menu unless this tool returned allowed=true.",
+    description: "Return the guest's personal ordering link. Call it the moment YOU judge the guest is moving to order or wants to browse the catalog - they name dishes or quantities ('2 донер жасап қойшы'), ask to order, ask for the menu/cart/link, report the previous link broken, or the conversation plainly cannot move forward without it. The customer must actually request ordering, menu browsing, a link or resend; your reason or flags alone cannot authorize a link. It only refuses for reasons about the restaurant - kitchen closed, an unconfirmed long wait, or a technical failure issuing the link - and each of those comes back with a message to relay. Plain questions (prices, dishes, hours, delivery) are answered with searchMenu/getBusinessInfo first; the link may follow in the same reply if they are ordering. There is NO daily or per-conversation limit. If the guest says the earlier link does not open or expired, set previousLinkBroken=true. The link is tied to the guest's phone and stays valid for a month; never mention validity unless asked. Never paste the URL into your text yourself - the system delivers it as its own separate message right after your reply. NEVER say you are sending the menu unless this tool returned allowed=true.",
     parameters: z.object({
       reason: z.string().describe("Why the link is being sent"),
       guestAskedToResend: z
@@ -96,38 +82,17 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // previousLinkBroken stays in the schema so the model can flag a broken
       // report; it no longer gates anything, because every genuine request now
       // takes the normal grant path (no calendar rationing, 2026-08-14).
-      const explicitlyRequestedThisTurn = Boolean(ctx.explicitMenuLinkIntent);
       const text = String(ctx.text || "");
-      const directOrder = hasDirectOrderIntent(text);
-      // magicLinkAlreadySent now means "still on screen" (sent minutes ago / in the
-      // last messages). If the guest names dishes to order («екі пицца екі донер»),
-      // asks to order («донер алғым келеді», «тапсырыс берейін»), requests resend,
-      // or reported a broken link, grant the link so the bot never promises a link
-      // without delivering it.
-      if (
-        ctx.magicLinkAlreadySent &&
-        !explicitlyRequestedThisTurn &&
-        !directOrder &&
-        !previousLinkBroken &&
-        !guestAskedToResend
-      ) {
-        ctx.magicLinkGranted = false;
-        return {
-          allowed: false,
-          link: null,
-          reason: "link_already_sent",
-          message: null,
-          note: "Not re-sent: the same link was sent moments ago and the guest did not ask for it again or name dishes - just answer their message, and do NOT write that a link is below/coming. If they DID ask to resend/duplicate/show the link (in any wording), or they are placing an order and need it, call sendMenuLink again with guestAskedToResend=true. Never tell the guest to scroll up or that the link is above/was sent earlier.",
-        };
-      }
-      // Calling this tool IS the decision that the guest is ordering. Recording it
-      // keeps the rest of the turn consistent: finalValidator uses the same flag to
-      // decide whether a URL in the text was authorised, and it used to strip the
-      // link the tool had just granted whenever the keyword regex had not fired.
-      ctx.explicitMenuLinkIntent = true;
       const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
       const acceptedFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
       const consentAccepted = acceptedFingerprint === policy.fingerprint;
+      const consentContinuation = consentAccepted && ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes";
+      if (!hasCustomerCheckoutIntent(text) && !consentContinuation) {
+        ctx.magicLinkGranted = false;
+        return { allowed: false, link: null, reason: "link_not_requested", message: null,
+          note: "Answer the customer's question. No current checkout/link request exists; do not promise or point to a link." };
+      }
+      ctx.explicitMenuLinkIntent = true;
       // Mint on demand. preloadContext only pre-warms the link when the wording is
       // unmistakable, so on every other order the tool used to find null here and
       // report "not needed" - the reply promised a menu that never arrived.

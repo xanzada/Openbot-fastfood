@@ -998,14 +998,14 @@ export function normalizeMenuItem(item: Record<string, any> = {}) {
   };
 }
 
-export async function getMenuContext(instanceId: string, domain: string, userLang: "kk" | "ru" = "kk") {
+export async function getMenuContext(instanceId: string, domain: string, userLang: "kk" | "ru" = "kk", options: { forceFresh?: boolean } = {}) {
   const lang = userLang === "ru" ? "ru" : "kz";
   // v2 because the v1 payloads cached under the old key hold the zeroed prices
   // this mapping fixes, and the backup copy lives for 24h: reusing that key
   // would keep serving price 0 for a day after the fix ships.
   const cacheKey = `menu_context:v2:${instanceId}:${lang}`;
   const backupKey = `menu_context_backup:v2:${instanceId}:${lang}`;
-  const cached = await getJsonCache<Record<string, any>>(cacheKey);
+  const cached = options.forceFresh ? null : await getJsonCache<Record<string, any>>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -1025,6 +1025,7 @@ export async function getMenuContext(instanceId: string, domain: string, userLan
     return menu;
   } catch (error: any) {
     auditError("DLE menu context read failed", error, { instanceId, domain, lang });
+    if (options.forceFresh) return { items: [], source: "menu_unavailable" };
     return (await getJsonCache<Record<string, any>>(backupKey)) || { items: [], source: "menu_unavailable" };
   }
 }

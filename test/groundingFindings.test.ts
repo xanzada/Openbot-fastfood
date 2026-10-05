@@ -95,7 +95,7 @@ test("only a menu read can ground an allergen answer", async () => {
   }
   // And the menu read must still let the real answer through, or the guard would make
   // the bot useless to a guest with an allergy.
-  const grounded = validateFinalText(claim, ctx(), { toolsCalled: ["searchMenu"] });
+  const grounded = validateFinalText(claim, ctx({ text: "Салат", menuSnapshot: { items: [{ name: "Салат", composition: "Без орехов." }] } }), { toolsCalled: ["searchMenu"] });
   assert.equal(grounded.text, claim);
   assert.equal(grounded.warnings.includes("ungrounded_allergen_assurance_removed"), false);
 
@@ -106,7 +106,7 @@ test("only a menu read can ground an allergen answer", async () => {
 // ------------------------------------------------------------------------ A31/A33
 test("a read-only lookup that found nothing does not authorise an order claim", () => {
   for (const claim of [
-    "Ваш заказ принят, напишите адрес доставки.",
+    "Ваш заказ принят.",
     "Ваш заказ уже в пути, курьер выехал.",
   ]) {
     // The tool ran and came back empty. This is the exact turn the model is most
@@ -123,21 +123,21 @@ test("a read-only lookup that found nothing does not authorise an order claim", 
     // gate cannot simply require ctx.activeOrder.
     const found = validateFinalText(claim, ctx(), {
       toolsCalled: ["checkOrderStatus"],
-      toolFindings: { orderFound: true },
+      toolFindings: { orderFound: true, orderStatus: /курьер|пути/iu.test(claim) ? "delivery" : "confirmed", orderStage: /курьер|пути/iu.test(claim) ? "delivery" : "awaiting_receipt" },
     });
     assert.equal(found.text, claim, `a found order must survive: ${claim}`);
 
-    // A caller that reports no findings keeps the old behaviour exactly, so this fix
-    // cannot change any other call site by accident.
+    // A tool name without positive lookup findings is not order evidence.
     const legacy = validateFinalText(claim, ctx(), { toolsCalled: ["checkOrderStatus"] });
-    assert.equal(legacy.text, claim);
+    assert.notEqual(legacy.text, claim);
   }
 });
 
 test("the agent reports what checkOrderStatus returned, not just that it ran", async () => {
   const source = await read("../src/agent/fastfoodAgent.ts");
   assert.match(source, /function extractToolFindings/);
-  assert.match(source, /String\(payload\.lookup \|\| ""\) === "found"/);
+  assert.match(source, /orderLookup = String\(payload\?\.lookup \|\| "unavailable"\)/);
+  assert.match(source, /found = orderLookup === "found"/);
   // Both validation call sites must pass the findings, or the gate is dead on arrival.
   assert.equal((source.match(/toolFindings:/g) || []).length, 2);
   // "no results reported" must stay indistinguishable from the old behaviour rather
@@ -153,10 +153,10 @@ test("the critic rewrite is validated against the tools of both passes", async (
   // allergen statement the first pass had grounded - on exactly the high-risk turns the
   // critic exists for, because the critic note tells the model to keep the facts
   // without re-calling the tools.
-  assert.match(source, /const unionCalls = mergeToolCalls\(extractToolCalls\(result\), extractToolCalls\(regenerated\)\)/);
+  assert.match(source, /const unionCalls = mergeToolCalls\(groundedCalls, mergeToolCalls\(extractToolCalls\(result\), extractToolCalls\(regenerated\)\)\)/);
   assert.match(source, /toolsCalled: unionCalls\.map/);
   // An order found in either pass counts as found.
-  assert.match(source, /regenFindings\.orderFound === true \|\| firstFindings\.orderFound === true/);
+  assert.match(source, /regenFindings\.orderFound \?\? firstFindings\.orderFound/);
 });
 
 // ---------------------------------------------------------------------------- A35
@@ -201,7 +201,7 @@ test("a grounded one-sentence answer is not deleted for starting with a demonstr
     "Вот варианты: пицца и паста.",
     "Осы тағам дайын.",
   ]) {
-    const out = validateFinalText(answer, ctx({ language: "kk" }), { toolsCalled: ["searchMenu"] });
+    const out = validateFinalText(answer, ctx({ language: "kk", text: "Салат", menuSnapshot: { items: [{ name: "Салат", price: 2500, composition: "Жаңғақ жоқ." }] } }), { toolsCalled: ["searchMenu"] });
     assert.equal(out.text, answer, `must survive: ${answer}`);
     assert.equal(out.warnings.includes("dangling_reference_removed"), false);
   }

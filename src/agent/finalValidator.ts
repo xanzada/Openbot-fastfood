@@ -31,7 +31,7 @@ const MENU_LINK_SENT_RE =
 // most damaging lie a food bot can tell, so such claims may only survive when
 // a live tool grounded them this turn. Clause-cut, never reply-replace.
 const PRICE_CLAIM_RE =
-  /[^.!?\n]*\d[\d\s]*(?:тенге|теңге|тг|₸)[^.!?\n]*[.!?]?/iu;
+  /[^.!?\n]*\d[\d\s]*(?:тенге|теңге|тг|₸|kzt)[^.!?\n]*[.!?]?/iu;
 const PROMO_CLAIM_RE =
   /[^.!?\n]*(?:скидк|жеңілді|акци|бонус|промо|подарок|сыйлық|тегін|бесплатн)[^.!?\n]*(?:\d|%|бар|есть|жүріп|идет|действу|береміз|даём)[^.!?\n]*[.!?]?|[^.!?\n]*\d[^.!?\n]{0,12}%[^.!?\n]{0,30}(?:скидк|жеңілді|акци|бонус|промо)[^.!?\n]*[.!?]?/iu;
 // "Бұл тағамдардың құрамында теңіз өнімдері мен жаңғақтар жоқ" was sent to a
@@ -45,8 +45,9 @@ const PROMO_CLAIM_RE =
 // question - passed the gate untouched while "орехов нет" was cut (found 2026-08-22).
 // Also covers the adjective forms ("безглютеновое") and the reassurance form ("безопасно
 // для аллергии"), neither of which pairs a term with a separate negation word at all.
-const ALLERGEN_TERM = "(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|теңіз\\s*өнім|тениз\\s*оним|морепродукт|құрам|курам|состав)";
+const ALLERGEN_TERM = "(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|арахис|яйц|яиц|жұмыртқа|молок|сүт|кунжут|күнжіт|соев|соя|теңіз\\s*өнім|тениз\\s*оним|морепродукт|құрам|курам|состав)";
 const ALLERGEN_NEGATION = "(?:жоқ|жок|болмайды|таза|емес|нет|отсутств|без\\s|бeз\\s|не\\s+содерж|свободн|безопасн|қауіпсіз|кауипсиз)";
+const FOOD_SAFETY_ASSURANCE_RE = /(?:блюд|тағам|аллерг|орех|жаңғақ)[^.!?]*(?:безопасн|қауіпсіз)|(?:безопасн|қауіпсіз)[^.!?]*(?:блюд|тағам|аллерг|орех|жаңғақ)/iu;
 const ALLERGEN_ASSURANCE_RE = new RegExp(
   "[^.!?\\n]*(?:"
     // term ... negation  ("орехов нет", "жаңғақ жоқ", "состав без ...")
@@ -83,7 +84,7 @@ const ALLERGEN_GROUNDING_TOOLS = ["searchMenu"];
 // takes, and it is exactly the form a helpful model reaches for. No tool call can make it
 // true, so it is cut whether or not the menu was read.
 const BLANKET_ALLERGEN_ASSURANCE_RE =
-  /[^.!?\n]*(?:бар(?:лық|лик)\s+тағам|бүкіл\s+мәзір|мәзірдегі\s+бар\p{L}*|кез\s*келген\s+тағам|все\s+блюда|всё\s+меню|все\s+меню|любое\s+блюдо|люб\p{L}*\s+из\s+меню|в\s+нашем\s+меню)[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|теңіз\s*өнім|морепродукт)[^.!?\n]*[.!?]?|[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|теңіз\s*өнім|морепродукт)[^.!?\n]*(?:бар(?:лық|лик)\s+тағам|бүкіл\s+мәзір|кез\s*келген\s+тағам|все\s+блюда|всё\s+меню|все\s+меню|любое\s+блюдо)[^.!?\n]*[.!?]?|[^.!?\n]*(?:смело\s+выбир\p{L}*|смело\s+заказ\p{L}*|батыл\s+таңда\p{L}*|қорықпай\s+таңда\p{L}*|қорықпай\s+ала\p{L}*)[^.!?\n]*[.!?]?/giu;
+  /[^.!?\n]*(?:бар(?:лық|лик)\s+тағам|бүкіл\s+мәзір|мәзірдегі\s+бар\p{L}*|кез\s*келген\s+тағам|все\s+блюда|всё\s+меню|все\s+меню|любое\s+блюдо|люб\p{L}*\s+из\s+меню|в\s+нашем\s+меню)[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|арахис|яйц|яиц|жұмыртқа|молок|сүт|кунжут|күнжіт|соев|соя|теңіз\s*өнім|морепродукт)[^.!?\n]*[.!?]?|[^.!?\n]*(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|арахис|яйц|яиц|жұмыртқа|молок|сүт|кунжут|күнжіт|соев|соя|теңіз\s*өнім|морепродукт)[^.!?\n]*(?:бар(?:лық|лик)\s+тағам|бүкіл\s+мәзір|кез\s*келген\s+тағам|все\s+блюда|всё\s+меню|все\s+меню|любое\s+блюдо)[^.!?\n]*[.!?]?|[^.!?\n]*(?:смело\s+выбир\p{L}*|смело\s+заказ\p{L}*|батыл\s+таңда\p{L}*|қорықпай\s+таңда\p{L}*|қорықпай\s+ала\p{L}*)[^.!?\n]*[.!?]?/giu;
 // A promotion is not in the menu snapshot and not in any tool result either. The only
 // live source for "today there is 20% off" is what the operator wrote in the shift
 // notes, so that is what grounds it. Sharing the price gate meant any tenant with a
@@ -155,6 +156,170 @@ function dropSentencesMatchingUnless(
   return urls.length ? `${rebuilt}\n${urls.join("\n")}` : rebuilt;
 }
 
+const ACCEPTED_ORDER_CLAIM_RE = /(?:заказ[^.!?]{0,50}(?:принят|подтвержд[её]н|оформлен)|тапсырыс[^.!?]{0,50}(?:қабылдан|расталды|рәсімделді))/iu;
+const OPERATOR_NOTIFICATION_CLAIM_RE = /(?:оператор|администратор|әкімш)[^.!?]{0,60}(?:уведомл|извещ[её]н|хабардар|хабарлан|передал|отправил|сообщил)|(?:передал|отправил|сообщил)[^.!?]{0,60}(?:оператор|администратор|әкімш)/iu;
+const CONFIRMED_OPERATOR_NOTIFICATION_RE = /(?:оператор|администратор|әкімш)[^.!?]{0,60}(?:уведомл|извещ[её]н|хабардар|хабарлан)/iu;
+const CONFIRMED_HUMAN_CONTACT_RE = /(?:оператор|администратор|админ|әкімш|экімш)[^.!?]{0,70}(?:хабарластық|хабарластым|хабарладық|хабарладым|хабар бердім|хабар бердік|байланыстық|байланыстым|уведомил|уведомили|сообщил|сообщили|связался|связались)|(?:хабарластық|хабарластым|хабарладық|хабарладым|хабар бердім|хабар бердік|байланыстық|байланыстым|уведомил|уведомили|сообщил|сообщили|связался|связались)[^.!?]{0,70}(?:оператор|администратор|админ|әкімш|экімш)/iu;
+const MANUAL_ORDER_WRITE_CLAIM_RE = /(?:(?:я|мы)\s+(?:уже\s+)?(?:оформил|оформляем|оформлю|принял|приняли|принимаю|подтверждаю|подтвердил)[^.!?]{0,60}заказ|заказ[^.!?]{0,60}(?:оформил|оформлю|принимаю|подтверждаю)|тапсырыс[^.!?]{0,60}(?:рәсімдедім|рәсімдеймін|қабылдадым|қабылдадық|қабылдай\s+аламыз))/iu;
+export interface ToolGroundingFindings {
+  orderFound?: boolean;
+  orderLookup?: string;
+  orderStatus?: string;
+  orderStage?: string;
+  orderStatusLabel?: string;
+  orderItems?: Array<{ name: string }>;
+  escalationCreated?: boolean;
+  escalationNotificationAccepted?: boolean;
+}
+
+function customerProductReadyClaim(sentence: string, ctx: FastFoodContext) {
+  return namedMenuItems(ctx, sentence).length > 0
+    && /(?:ваш[аи]?\s+[^.!?]{1,60}|\p{L}+(?:ңыз|ңіз)\s+)(?:готов[аоы]?|дайын)(?=$|[^\p{L}])/iu.test(sentence);
+}
+
+function orderStateClaimMatches(sentence: string, evidence: any, ctx: FastFoodContext): boolean | null {
+  const productReady = customerProductReadyClaim(sentence, ctx);
+  if (!/(?:заказ|тапсырыс|order)/iu.test(sentence) && !productReady) return null;
+  const status = String(evidence?.orderStatus ?? evidence?.status ?? "").toLowerCase().trim().replace(/[\s-]+/g, "_");
+  const stage = String(evidence?.orderStage ?? evidence?.stage ?? "").toLowerCase().trim();
+  const active = !["cancelled", "canceled", "unknown", ""].includes(status)
+    && !["cancelled"].includes(stage);
+  if (/(?:доставлен|заверш[её]н|аяқтал|жеткізілді)/iu.test(sentence)) return active && (stage === "completed" || status === "completed");
+  if (/(?:готовится|готовим|дайындалып|әзірленіп|дайындалуда)/iu.test(sentence)) return active && (stage === "preparing" || ["paid", "preparing", "cooking"].includes(status));
+  if (/(?:готов[аоы]?(?=$|[^\p{L}])|дайын(?=$|[^\p{L}]))/iu.test(sentence)) {
+    const orderedItems = Array.isArray(evidence?.orderItems || evidence?.items) ? (evidence.orderItems || evidence.items) : [];
+    const productFound = !productReady || namedMenuItems(ctx, sentence).every((item) =>
+      orderedItems.some((ordered: any) => menuClaimKey(ordered.name) === menuClaimKey(item.name)));
+    return active && (["ready", "prepared"].includes(status) || stage === "ready") && productFound;
+  }
+  if (/(?:курьер|едет|жолда|в\s+пути)/iu.test(sentence)) return active && (stage === "delivery" || status === "delivery");
+  if (ACCEPTED_ORDER_CLAIM_RE.test(sentence)) {
+    if (/(?:оформлен|рәсімделді)/iu.test(sentence)) return active;
+    return active && (["confirmed", "accepted", "paid", "preparing", "cooking", "ready", "prepared", "delivery", "completed"].includes(status)
+      || ["awaiting_receipt", "receipt_review", "preparing", "delivery", "completed"].includes(stage));
+  }
+  return null;
+}
+
+const ACTION_NOT_DONE_RE = /(?:не\s+(?:принят|подтвержд|оформлен|оформил|готов|уведомл|извещ|передал|отправил|сообщил)|(?:қабылдан|хабарлан|хабардар|дайын)[^.!?]{0,15}(?:жоқ|емес))/iu;
+
+function isActionAssertion(value: string, pattern: RegExp | ((sentence: string) => boolean)) {
+  const unquoted = value.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  return (unquoted.match(SENTENCE_RE) || [unquoted])
+    .flatMap((sentence) => sentence.split(/[,;]|\s+(?:но|бірақ|однако|зато|а)\s+/iu))
+    .some((clause) => (typeof pattern === "function" ? pattern(clause) : new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")).test(clause))
+      && !ACTION_NOT_DONE_RE.test(clause));
+}
+
+function menuClaimKey(value: unknown) {
+  return String(value || "").toLowerCase()
+    .replace(/(?:coca[-\s]*cola|кока[-\s]*кол[ауые]|(?<!\p{L})кол[ауые](?!\p{L}))/gu, "кола")
+    .replace(/\s+\d+(?:[.,]\d+)?\s*(?:л|l|мл|ml)\s*$/iu, "")
+    .replace(/\s+/g, " ").trim();
+}
+
+function namedMenuItems(ctx: FastFoodContext, value: string): any[] {
+  const lower = menuClaimKey(value);
+  return (Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [])
+    .filter((item: any) => menuClaimKey(item.name) && lower.includes(menuClaimKey(item.name)));
+}
+
+function menuSentencePricesMatch(sentence: string, ctx: FastFoodContext) {
+  const amounts = [...sentence.matchAll(/(\d[\d \u00a0]*(?:[.,]\d+)?)\s*(?:₸|тг|тенге|теңге|kzt)/giu)];
+  return amounts.every((match) => {
+    const prefix = menuClaimKey(sentence.slice(0, match.index));
+    const named = namedMenuItems(ctx, prefix).sort((a, b) =>
+      prefix.lastIndexOf(menuClaimKey(b.name)) - prefix.lastIndexOf(menuClaimKey(a.name)));
+    const requested = namedMenuItems(ctx, ctx.text);
+    const anonymousPrefix = prefix.replace(/[^\p{L}]+/gu, " ").trim();
+    const anonymousPrice = /^(?:(?:цена|стоимость|стоит|он|она|оно|это|этот|эта|данное|блюдо|позиция|за|штуку|бағасы|тұрады|ол|оның|бұл|осы|тағам)\s*)*$/iu.test(anonymousPrefix);
+    const candidates = named.length ? [named[0]] : anonymousPrice && requested.length === 1 ? requested : [];
+    if (!candidates.length) return false;
+    const amount = Number(match[1].replace(/[ \u00a0]/g, "").replace(",", "."));
+    return candidates.some((item) => Number(item.price) === amount
+      || (Number(item.compare_at_price || item.old_price) > Number(item.price)
+        && Number(item.compare_at_price || item.old_price) === amount));
+  });
+}
+
+function ingredientKey(word: string) {
+  const value = word.toLowerCase();
+  const aliases: Array<[RegExp, string]> = [[/^(?:вод|су$)/u, "вода"], [/^(?:сахар|қант|кант)/u, "сахар"],
+    [/^(?:куриц|курин|тауық|тауык)/u, "курица"], [/^(?:говяд|сиыр)/u, "говядина"],
+    [/^(?:помид|томат|қызанақ)/u, "помидор"], [/^(?:огур|қияр)/u, "огурец"],
+    [/^(?:сыр|ірімшік)/u, "сыр"]];
+  return aliases.find(([pattern]) => pattern.test(value))?.[1] || value.slice(0, Math.max(3, value.length - 2));
+}
+
+function menuCompositionCandidates(sentence: string, ctx: FastFoodContext, claimIndex: number): any[] {
+  const prefix = sentence.slice(0, claimIndex);
+  const named = namedMenuItems(ctx, prefix);
+  if (named.length) return named;
+  const words = menuClaimKey(prefix).match(/\p{L}+/gu) || [];
+  const inflected = (ctx.menuSnapshot?.items || []).filter((item: any) => {
+    const nameWords = menuClaimKey(item.name).match(/\p{L}+/gu) || [];
+    return nameWords.length > 1 && nameWords.every((word) => {
+      const stem = word.length > 5 ? word.slice(0, Math.max(4, word.length - 3)) : word;
+      return words.some((candidate) => candidate.startsWith(stem));
+    });
+  });
+  if (inflected.length) return inflected;
+  const requested = namedMenuItems(ctx, ctx.text);
+  const reference = prefix.replace(/(?:безглютен|безлактоз|орех|жаңғақ|жангак|арахис|яйц|яиц|жұмыртқа|молок|сүт|кунжут|күнжіт|соев|соя|глютен|лактоз)\p{L}*/giu, "")
+    .replace(/[^\p{L}]+/gu, " ").trim();
+  const anonymous = /^(?:(?:в|у|этом|этой|этого|блюде|блюда|оно|он|она|его|её|состав|составе|это|данном|оның|онда|бұл|осы|тағам|тағамда|тағамның|құрамында|құрамы|ол)\s*)*$/iu.test(reference);
+  return anonymous && requested.length === 1 ? requested : [];
+}
+
+function menuSupportsIngredientClaim(sentence: string, ctx: FastFoodContext) {
+  if (isCompositionUncertaintyOnly(sentence)) return true;
+  const claim = /(?:содержит|в\s+составе\s*[:—-]?|состав\s*:|құрамында|құрамы\s*[:—-])\s+([^.!?]+)/iu.exec(sentence);
+  if (!claim || /(?:не\s*содержит|нет|жоқ|емес)/iu.test(sentence)) return true;
+  const candidates = menuCompositionCandidates(sentence, ctx, claim.index);
+  const claimed = (claim[1].match(/\p{L}+/gu) || []).filter((word) => !/^(?:и|с|со|в|және|пен|мен|бар|қосылған)$/iu.test(word)).map(ingredientKey);
+  return Boolean(candidates.length && claimed.length && candidates.every((item) => {
+    const known = (String(item.composition || item.ingredients || "").match(/\p{L}+/gu) || []).map(ingredientKey);
+    return claimed.every((word) => known.includes(word));
+  }));
+}
+
+const COMPOSITION_UNKNOWN_RE = /(?:нет\s*(?:данных|информац|сведени)|не\s*(?:могу|можем)\s*(?:подтверд|провер)|состав[^.!?]*(?:неизвест|не\s*указ|уточня)|құрам[^.!?]*(?:белгісіз|көрсетілмеген|нақтыла)|растай\s*алмай)/iu;
+const ALLERGEN_GROUPS = [/орех|жаңғақ|жангак/iu, /арахис/iu, /глютен/iu, /лактоз/iu,
+  /яйц|яиц|жұмыртқа/iu, /молок|сүт/iu, /кунжут|күнжіт/iu, /соев|соя/iu,
+  /морепродукт|теңіз\s*өнім|тениз\s*оним/iu];
+
+function isCompositionUncertaintyOnly(sentence: string) {
+  // A denial talks ABOUT safety; it must not be mistaken for a safety assertion.
+  // Check each adversative/coordinate clause so a later assurance stays prohibited.
+  const clauses = sentence.replace(/((?:гарантировать|подтвердить)),\s*что\s+/giu, "$1 что ").split(/[,;]|\s+(?:но|бірақ|однако|зато|и|және)\s+/iu);
+  const denial = /^(?:(?:кешіріңіз|извините)[,\s]*)?(?:не\s*(?:могу|можем)\s*(?:гарантировать|подтвердить|проверить)[^.!?;]*|(?:гарантировать|подтвердить|проверить)[^.!?;]*не\s*(?:могу|можем)|[^.!?;]*(?:кепілдік\s*бере\s*алмаймын|қауіпсіздігін\s*растай\s*алмаймын))[.!?]?$/iu;
+  let uncertainty = false;
+  for (const clause of clauses) {
+    if (denial.test(clause.trim())) { uncertainty = true; continue; }
+    if (COMPOSITION_UNKNOWN_RE.test(clause)) {
+      uncertainty = true;
+      if (!/содержит|құрамында|безопасн|қауіпсіз|кауипсиз|(?:орех|жаңғақ|арахис|глютен|лактоз)[^.!?]*(?:нет|жоқ|сыз)|нет[^.!?]*(?:орех|жаңғақ|арахис|глютен|лактоз)/iu.test(clause)) continue;
+    }
+    if (ALLERGEN_ASSURANCE_RE.test(clause) || /содержит|құрамында|безопасн|қауіпсіз|кауипсиз/iu.test(clause)) return false;
+  }
+  return uncertainty;
+}
+
+
+function menuSupportsAllergenAbsence(sentence: string, ctx: FastFoodContext) {
+  if (isCompositionUncertaintyOnly(sentence)) return true;
+  if (/безопасн|қауіпсіз|кауипсиз/iu.test(sentence)) return false;
+  const absence = new RegExp(ALLERGEN_NEGATION, "iu").exec(sentence);
+  const candidates = menuCompositionCandidates(sentence, ctx, absence?.index ?? sentence.length);
+  const groups = ALLERGEN_GROUPS.filter((group) => group.test(sentence));
+  return Boolean(candidates.length && groups.length && candidates.every((item) => {
+    const composition = String(item.composition || item.ingredients || "");
+    const sourceStatements = composition.match(new RegExp(ALLERGEN_ASSURANCE_RE.source, "giu")) || [];
+    return groups.every((group) => sourceStatements.some((statement) => group.test(statement)
+      && !/безопасн|қауіпсіз|кауипсиз/iu.test(statement)));
+  }));
+}
+
 /**
  * Dishes this restaurant is genuinely discounting right now: the live menu carries a
  * crossed-out old price above the current one. Read from the preloaded snapshot, which is
@@ -200,6 +365,15 @@ function deliveryZoneUnknownText(language: unknown) {
 // claim is only allowed when a tool result proves it.
 const PAST_ESCALATION_CLAIM_RE =
   /[^.!?\n]*(?:әкімш|экімш|администратор|оператор)[^.!?\n]{0,40}(?:хабарласты(?:қ|м|ң)|хабарладым|жеткіздік|жеткіздім|жібердік|жібердім|растадым|айттым|жолдадым|жолдадық)[^.!?\n]*[.!?]?|[^.!?\n]*(?:хабарластық|жеткіздік|жібердік|жолдадық)[^.!?\n]{0,40}(?:әкімш|экімш|администратор|оператор)[^.!?\n]*[.!?]?/giu;
+
+const FUTURE_HUMAN_ACTION_RE = /(?:позову|подключу|передам|сообщу|отправлю|уточню|уточняю)[^.!?]{0,70}(?:оператор|администратор|кухн)|(?:оператор|администратор)[^.!?]{0,70}(?:ответит|свяжется|подключится)|(?:оператор|әкімш|ас\s*үй|асүй)[^.!?]{0,70}(?:жауап\s*береді|қосылады|хабарласады|хабарлаймын|жіберемін|жеткіземін|нақтылап\s*беремін|нақтылаймын)|(?:хабарлаймын|жіберемін|жеткіземін|нақтылап\s*беремін|нақтылаймын)[^.!?]{0,70}(?:оператор|әкімш|ас\s*үй|асүй)|(?:тезірек|жақын\s*арада)[^.!?]{0,40}жауап[^.!?]{0,20}аласыз|(?:скоро|в\s*ближайшее\s*время)[^.!?]{0,40}(?:получите\s*ответ|вам\s*ответят)/iu;
+const KITCHEN_ACTION_RE = /(?:кухн|ас\s*үй|асүй)[^.!?]{0,70}(?:нақтылап|нақтылай|тексеріп)|(?:уточню|уточняю|спрошу|проверю)[^.!?]{0,70}кухн/iu;
+function promisedHumanAction(sentence: string, pattern: RegExp) {
+  const unquoted = sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  return unquoted.split(/;|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
+    pattern.test(clause) && !/(?:не\s*(?:буду|могу|стану|позову|передам|сообщу|уточню|ответит|свяжется|подключится)|(?:хабарлай|жібер|нақтыла)[^.!?]{0,20}(?:алмай|емес|жоқ))/iu.test(clause)
+      && !/^\s*(?:если|егер|қажет\s*болса|керек\s*болса)/iu.test(clause));
+}
 
 function operatorPromiseBrokenText(language: unknown) {
   return language === "kk"
@@ -285,6 +459,11 @@ export function stripReasoningPreamble(text: string): { text: string; removed: b
 // in the guest's own form, without robotic stamps).
 const fallback = fallbackReply;
 
+function orderStatusUnknownText(ctx: FastFoodContext) {
+  return ctx.language === "kk" ? "Тапсырыстың қазіргі күйін растай алмаймын. Тапсырыс нөмірін жазыңызшы."
+    : "Не могу сейчас подтвердить состояние заказа. Уточните, пожалуйста, номер заказа.";
+}
+
 function noActiveOrderText(ctx: FastFoodContext) {
   return ctx.language === "kk"
     ? "Қазір белсенді тапсырысыңыз жоқ."
@@ -300,14 +479,14 @@ function noActiveOrderText(ctx: FastFoodContext) {
 // to; this one now does too (found 2026-08-22).
 function promoUnverifiedText(ctx: FastFoodContext) {
   return ctx.language === "kk"
-    ? "Қазір қолданыстағы жеңілдік немесе акция туралы нақты айта алмаймын. Тексеріп, оператор нақтылап береді."
-    : "Про действующие скидки и акции точно сказать не могу. Уточню у оператора, чтобы не вводить вас в заблуждение.";
+    ? "Қазір қолданыстағы жеңілдік немесе акция туралы нақты дерек жоқ."
+    : "Сейчас у меня нет подтверждённых данных о действующих скидках и акциях.";
 }
 
 function allergenUnverifiedText(ctx: FastFoodContext) {
   return ctx.language === "kk"
-    ? "Тағамдардың құрамын өзім растай алмаймын. Қандай өнім болмауы керек екенін жазыңыз, асүймен нақтылап, сізге жарайтын тағамдарды айтамын."
-    : "Состав блюд подтвердить без кухни не могу. Напишите, какие продукты исключить, я уточню и назову подходящие блюда.";
+    ? "Құрамы мен аллергендері туралы расталған дерек жоқ. Аллергия кезінде қауіпсіз екеніне кепілдік бере алмаймын."
+    : "У меня нет подтверждённых данных о составе и аллергенах. Гарантировать безопасность при аллергии не могу.";
 }
 
 function runtimeUnavailableText(ctx: FastFoodContext) {  return ctx.language === "kk"
@@ -372,9 +551,8 @@ function validateFinalTextCore(
   // toolFindings carries what the tools actually RETURNED. A gate that only knows a
   // tool was called cannot tell "the order exists" from "the lookup came back empty",
   // and the model is at its most confident precisely when the lookup failed. When the
-  // caller does not report findings the behaviour is unchanged, so older callers and
-  // unit tests keep their exact semantics.
-  grounding?: { toolsCalled?: string[]; toolFindings?: { orderFound?: boolean; escalationCreated?: boolean } }
+  // caller supplies no findings, no positive lookup claim is authorized.
+  grounding?: { toolsCalled?: string[]; toolFindings?: ToolGroundingFindings }
 ): {
   text: string;
   hasLink: boolean;
@@ -385,6 +563,13 @@ function validateFinalTextCore(
   const warnings: string[] = protocolSafe.removed ? ["tool_protocol_removed"] : [];
 
   if (!text) return { text: fallback(ctx), hasLink: false, warnings: [...warnings, "empty_model_output"] };
+
+  const internalError = /TOOL_CHOICE_IGNORED|TEXT_MODEL_TIMEOUT|HEDGE_LOSER_ABORTED|Incident\s+ID|stack\s+trace/iu;
+  if (internalError.test(text)) {
+    text = dropSentencesMatching(text, internalError);
+    warnings.push("internal_error_identifier_removed");
+    if (!text) return { text: fallback(ctx), hasLink: false, warnings };
+  }
 
   // Before any other guard: a narrated "Silent Thought: ..." preamble is not part of the
   // answer, and leaving it in front meant every regex below measured the wrong sentence.
@@ -401,13 +586,35 @@ function validateFinalTextCore(
   // anywhere (found 2026-08-22). The tool now has to have FOUND something.
   const statusCalled = Boolean(grounding?.toolsCalled?.includes("checkOrderStatus"));
   const orderFound = grounding?.toolFindings?.orderFound;
-  const statusGrounded = statusCalled && orderFound !== false;
-  if (!statusGrounded && isManualOrderHandlingClaim(text)) {
+  const orderLookup = grounding?.toolFindings?.orderLookup;
+  const statusGrounded = statusCalled && orderFound === true && (!orderLookup || orderLookup === "found");
+  const orderEvidence = statusCalled ? (statusGrounded ? grounding?.toolFindings : null) : ctx.activeOrder;
+  const manualWrite = isActionAssertion(text, (sentence) => MANUAL_ORDER_WRITE_CLAIM_RE.test(sentence)
+    || isManualOrderHandlingClaim(sentence.replace(ACCEPTED_ORDER_CLAIM_RE, "")));
+  if (manualWrite || (!orderEvidence && isActionAssertion(text, ACCEPTED_ORDER_CLAIM_RE))) {
     return {
-      text: manualOrderBoundaryText(ctx.language),
+      text: ctx.language === "kk" ? "Чатта тапсырысты өзім рәсімдей алмаймын. Жаңа тапсырысты сайт арқылы жасай аласыз."
+        : "Я не оформляю заказы в чате. Новый заказ можно оформить на сайте.",
       hasLink: false,
       warnings: ["manual_order_claim_blocked"],
     };
+  }
+
+  if (!orderEvidence && isActionAssertion(text, (sentence) => customerProductReadyClaim(sentence, ctx))) {
+    text = (textWithoutUrls(text).match(SENTENCE_RE) || [text]).filter((sentence) =>
+      !isActionAssertion(sentence, (claim) => customerProductReadyClaim(claim, ctx))).join(" ").trim();
+    warnings.push("unconfirmed_product_readiness_removed");
+    if (!text) return { text: orderStatusUnknownText(ctx), hasLink: false, warnings };
+  }
+
+  const wrongState = Boolean(orderEvidence) && isActionAssertion(text, (sentence) => orderStateClaimMatches(sentence, orderEvidence, ctx) === false);
+  if (wrongState) {
+    const kept = (textWithoutUrls(text).match(SENTENCE_RE) || [text]).filter((sentence) =>
+      !isActionAssertion(sentence, (claim) => orderStateClaimMatches(claim, orderEvidence, ctx) === false)).join(" ").trim();
+    warnings.push("order_state_mismatch_removed");
+    text = kept;
+    if (!text) return { text: ctx.language === "kk" ? "Тапсырыстың бұл кезеңін растай алмаймын. Тапсырыс нөмірін жазыңызшы."
+      : "Не могу подтвердить этот этап заказа. Уточните, пожалуйста, номер заказа.", hasLink: false, warnings };
   }
 
   // Cancelling is the same boundary in the other direction, and it has no grounding that
@@ -418,7 +625,7 @@ function validateFinalTextCore(
   // honest handoff wording is unaffected.
   if (isManualOrderCancellationClaim(text)) {
     return {
-      text: manualCancellationBoundaryText(ctx.language),
+      text: manualCancellationBoundaryText(ctx.language, grounding?.toolFindings?.escalationCreated === true),
       hasLink: false,
       warnings: [...warnings, "manual_cancellation_claim_blocked"],
     };
@@ -438,21 +645,32 @@ function validateFinalTextCore(
     text = withoutZoneRefusal;
   }
 
-  // A past-tense "the admin has been told" is only allowed when a tool result proves it.
-  // Detected here, acted on by the CALLER: the webhook folds this warning into
-  // needsAdminEscalation so the promise becomes TRUE - a case is created after all -
-  // instead of the validator either lying less loudly or deleting a sentence the routing
-  // layer was about to make honest. Callers that never route (unit tests) still get the
-  // visible warning.
+  // A fabricated notification is removed; it must never become a reason to create SOS.
+  const caseCreated = grounding?.toolFindings?.escalationCreated === true;
+  const notificationAccepted = caseCreated && grounding?.toolFindings?.escalationNotificationAccepted === true;
+  const unverifiedEscalation = (sentence: string) => (!caseCreated
+    && (isActionAssertion(sentence, PAST_ESCALATION_CLAIM_RE) || isActionAssertion(sentence, OPERATOR_NOTIFICATION_CLAIM_RE)))
+    || (!notificationAccepted && (isActionAssertion(sentence, CONFIRMED_OPERATOR_NOTIFICATION_RE)
+      || isActionAssertion(sentence, CONFIRMED_HUMAN_CONTACT_RE)));
   PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
-  const claimsEscalationDone = PAST_ESCALATION_CLAIM_RE.test(text);
-  PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
-  if (
-    claimsEscalationDone &&
-    grounding?.toolFindings?.escalationCreated !== true &&
-    !warnings.includes("manual_cancellation_claim_blocked")
-  ) {
-    warnings.push("escalation_promise_ungrounded");
+  if (unverifiedEscalation(text)) {
+    text = (text.match(SENTENCE_RE) || [text]).filter((sentence) => !unverifiedEscalation(sentence)).join(" ").trim();
+    PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
+    warnings.push("unverified_operator_notification_removed");
+    if (!textWithoutUrls(text)) return { text: ctx.language === "kk"
+      ? "Оператор әзірге қосылған жоқ. Не болғанын айтып беріңізші."
+      : "Оператор пока не подключён. Расскажите, пожалуйста, что случилось.", hasLink: false, warnings };
+  }
+
+  const unverifiedHumanAction = (sentence: string) =>
+    (!caseCreated && promisedHumanAction(sentence, FUTURE_HUMAN_ACTION_RE))
+    || promisedHumanAction(sentence, KITCHEN_ACTION_RE);
+  if (unverifiedHumanAction(text)) {
+    text = (text.match(SENTENCE_RE) || [text]).filter((sentence) => !unverifiedHumanAction(sentence)).join(" ").trim();
+    warnings.push("unverified_human_action_removed");
+    if (!textWithoutUrls(text)) return { text: /құрам|состав|орех|жаңғақ|аллерг/iu.test(ctx.text)
+      ? allergenUnverifiedText(ctx)
+      : (ctx.language === "kk" ? "Оператор әзірге қосылған жоқ. Не болғанын айтып беріңізші." : "Оператор пока не подключён. Расскажите, пожалуйста, что случилось."), hasLink: false, warnings };
   }
 
   // A truncated generation once shipped the single word "Өкі" to a guest. A reply that
@@ -546,7 +764,7 @@ function validateFinalTextCore(
       text = withoutOrderClaims;
       warnings.push("unsupported_order_claim_clause_removed");
     } else {
-      return { text: noActiveOrderText(ctx), hasLink: false, warnings: [...warnings, "unsupported_order_claim"] };
+      return { text: statusCalled && orderLookup === "not_found" ? noActiveOrderText(ctx) : orderStatusUnknownText(ctx), hasLink: false, warnings: [...warnings, "unsupported_order_claim"] };
     }
   }
 
@@ -622,6 +840,15 @@ function validateFinalTextCore(
     const snapshotPrices = Array.isArray(ctx.menuSnapshot?.items) && ctx.menuSnapshot!.items.length > 0;
     const toolGrounded = grounding.toolsCalled.some((tool) => PRICE_GROUNDING_TOOLS.includes(tool));
     const grounded = snapshotPrices || toolGrounded;
+    if (snapshotPrices && PRICE_CLAIM_RE.test(text)
+      && (ctx.menuGrounding || !grounding.toolsCalled.some((tool) => tool === "checkOrderStatus" || tool === "getPaymentDetails"))) {
+      const checked = dropSentencesMatchingUnless(text, PRICE_CLAIM_RE, (sentence) => menuSentencePricesMatch(sentence, ctx));
+      if (checked !== text) {
+        warnings.push("menu_price_mismatch_removed");
+        text = checked;
+        if (!textWithoutUrls(text)) return { text: fallback(ctx), hasLink: false, warnings };
+      }
+    }
     if (!grounded) {
       if (PRICE_CLAIM_RE.test(text)) {
         const withoutPrices = dropSentencesMatching(text, PRICE_CLAIM_RE);
@@ -689,25 +916,35 @@ function validateFinalTextCore(
     // dorumclub catalog has none, so one searchMenu call unlocked «құрамында жаңғақ жоқ»
     // written from general knowledge (audit sim 2026-10-04). Only an explicit empty
     // composition on every item counts; a snapshot that says nothing changes nothing.
-    const snapshotItems: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
-    const catalogHasIngredients = !snapshotItems.length
-      || snapshotItems.some((item) => !("composition" in Object(item)) || String(item.composition || "").trim());
-    const allergenGrounded = catalogHasIngredients
-      && grounding.toolsCalled.some((tool) => ALLERGEN_GROUNDING_TOOLS.includes(tool));
-    if (!allergenGrounded && ALLERGEN_ASSURANCE_RE.test(text)) {
-      const withoutAssurance = dropSentencesMatching(text, ALLERGEN_ASSURANCE_RE);
-      text = withoutAssurance;
-      warnings.push("ungrounded_allergen_assurance_removed");
-      if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
-    }
     // And a blanket claim over the whole menu is cut even WITH the menu read, because no
     // tool result can support it - see BLANKET_ALLERGEN_ASSURANCE_RE.
     BLANKET_ALLERGEN_ASSURANCE_RE.lastIndex = 0;
     if (BLANKET_ALLERGEN_ASSURANCE_RE.test(text)) {
       BLANKET_ALLERGEN_ASSURANCE_RE.lastIndex = 0;
-      text = dropSentencesMatching(text, BLANKET_ALLERGEN_ASSURANCE_RE);
+      text = dropSentencesMatchingUnless(text, BLANKET_ALLERGEN_ASSURANCE_RE, isCompositionUncertaintyOnly);
       warnings.push("blanket_allergen_assurance_removed");
       if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
+    }
+    const menuRead = grounding.toolsCalled.some((tool) => ALLERGEN_GROUNDING_TOOLS.includes(tool));
+    if (ALLERGEN_ASSURANCE_RE.test(text) || FOOD_SAFETY_ASSURANCE_RE.test(text)) {
+      const assurancePattern = new RegExp(`(?:${ALLERGEN_ASSURANCE_RE.source})|(?:${FOOD_SAFETY_ASSURANCE_RE.source})`, "iu");
+      const withoutAssurance = dropSentencesMatchingUnless(text, assurancePattern,
+        (sentence) => isCompositionUncertaintyOnly(sentence) || (menuRead && menuSupportsAllergenAbsence(sentence, ctx)));
+      if (withoutAssurance !== text) {
+        text = withoutAssurance;
+        warnings.push("ungrounded_allergen_assurance_removed");
+        if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
+      }
+    }
+    const compositionClaim = /(?:содержит|в\s+составе|состав\s*:|құрамында|құрамы\s*[:—-])/iu;
+    if (compositionClaim.test(text)) {
+      const withoutInventedIngredients = dropSentencesMatchingUnless(text, compositionClaim,
+        (sentence) => menuSupportsIngredientClaim(sentence, ctx));
+      if (withoutInventedIngredients !== text) {
+        text = withoutInventedIngredients;
+        warnings.push("unsupported_ingredient_claim_removed");
+        if (!textWithoutUrls(text)) return { text: allergenUnverifiedText(ctx), hasLink: false, warnings };
+      }
     }
     // Only when something was actually cut above. DANGLING_REFERENCE_RE is anchored
     // ^...$, so it matches a whole one-sentence reply that merely opens with a
@@ -752,7 +989,6 @@ import {
   isManualOrderCancellationClaim,
   isManualOrderHandlingClaim,
   manualCancellationBoundaryText,
-  manualOrderBoundaryText,
 } from "../services/orderAuthority.service.js";
 
 export { fallbackReply };

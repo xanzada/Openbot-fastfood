@@ -229,8 +229,8 @@ test("a menu question searches the menu before it hands over the link", () => {
   const plan = resolveAgentToolPlan(ctx({ text: "Не бар мәзірде?", explicitMenuLinkIntent: true }));
   assert.ok(plan.requiredTools.includes("searchMenu"), JSON.stringify(plan.requiredTools));
   assert.equal(plan.requiredTools[0], "searchMenu", `searchMenu must be pinned first: ${JSON.stringify(plan.requiredTools)}`);
-  // The link is still granted on the same turn - it just stops replacing the answer.
-  assert.ok(plan.requiredTools.includes("sendMenuLink"));
+  // This is a plain assortment question, even if a broad preload flag fired.
+  assert.ok(!plan.requiredTools.includes("sendMenuLink"));
 });
 
 test("a guest who is placing an order still gets the link pinned", () => {
@@ -246,7 +246,7 @@ test("a guest who is placing an order still gets the link pinned", () => {
     const plan = resolveAgentToolPlan(ctx({ text: ordering, explicitMenuLinkIntent: true }));
     assert.equal(
       plan.requiredTools[0],
-      "sendMenuLink",
+      /донер|пицц/iu.test(ordering) ? "searchMenu" : "sendMenuLink",
       `${ordering} -> ${JSON.stringify(plan.requiredTools)}`
     );
   }
@@ -352,7 +352,7 @@ test("a per-dish allergen answer a menu read grounded still survives", () => {
   // The strict guard must not swallow the answer the guest actually needs: one named dish,
   // read from the catalog this turn.
   const perDish = "«Кальцоне» құрамында теңіз өнімдері жоқ - ол ірімшік пен қамырдан жасалады.";
-  const out = validateFinalText(perDish, ctx({ menuSnapshot: discountedSnapshot }), {
+  const out = validateFinalText(perDish, ctx({ menuSnapshot: { items: [{ name: "Кальцоне", composition: "Ірімшік, қамыр. Теңіз өнімдері жоқ." }] } }), {
     toolsCalled: ["searchMenu"],
   });
   assert.equal(out.warnings.includes("blanket_allergen_assurance_removed"), false, JSON.stringify(out.warnings));
@@ -396,16 +396,16 @@ test("a past-tense operator notification claim without a case is flagged", () =>
   // case existed - escalateToAdmin never ran and the text matched no complaint pattern.
   const claim = "Ақшаңыздың қайтарылуына қатысты мәселені әкімшіге хабарластық. Олар сізбен жақын арада байланысады.";
   const out = validateFinalText(claim, ctx({ language: "ru" }), { toolsCalled: ["searchMenu"] });
-  assert.ok(out.warnings.includes("escalation_promise_ungrounded"), JSON.stringify(out.warnings));
+  assert.ok(out.warnings.includes("unverified_operator_notification_removed"), JSON.stringify(out.warnings));
 });
 
-test("an escalation the tool actually created may be claimed", () => {
+test("past admin contact requires an accepted notification receipt", () => {
   const claim = "Мәселені әкімшіге хабарластық, олар сізбен байланысады.";
   const out = validateFinalText(claim, ctx(), {
     toolsCalled: ["escalateToAdmin"],
-    toolFindings: { escalationCreated: true },
+    toolFindings: { escalationCreated: true, escalationNotificationAccepted: true },
   });
-  assert.equal(out.warnings.includes("escalation_promise_ungrounded"), false, JSON.stringify(out.warnings));
+  assert.equal(out.warnings.includes("unverified_operator_notification_removed"), false, JSON.stringify(out.warnings));
   assert.match(out.text, /хабарластық/);
 });
 
@@ -414,13 +414,13 @@ test("the clarify-first question is not mistaken for a notification claim", () =
   // proof yet.
   const clarify = "Әрене, көмектесейін. Не болғанын қысқаша жазып жіберіңізші - адам керек болса операторға дәл мәселемен жеткіземін.";
   const out = validateFinalText(clarify, ctx(), { toolsCalled: ["escalateToAdmin"] });
-  assert.equal(out.warnings.includes("escalation_promise_ungrounded"), false, JSON.stringify(out.warnings));
+  assert.equal(out.warnings.includes("unverified_operator_notification_removed"), false, JSON.stringify(out.warnings));
 });
 
 test("a portion sentence is not an escalation claim", () => {
   const innocent = "Екі адамға донер жібердік деп ойламаңыз, бұл тек мәзір ақпараты.";
   const out = validateFinalText(innocent, ctx(), { toolsCalled: [] });
-  assert.equal(out.warnings.includes("escalation_promise_ungrounded"), false, JSON.stringify(out.warnings));
+  assert.equal(out.warnings.includes("unverified_operator_notification_removed"), false, JSON.stringify(out.warnings));
 });
 
 test("the bot never refuses delivery to an address", () => {
@@ -438,7 +438,7 @@ test("the bot never refuses delivery to an address", () => {
 
 test("a zone refusal is cut clause by clause, keeping the rest of the answer", () => {
   const mixed = "Донер 1000 теңге тұрады. Абай 10 мекенжайына жеткізу мүмкін емес.";
-  const out = validateFinalText(mixed, ctx({ menuSnapshot: discountedSnapshot }), {
+  const out = validateFinalText(mixed, ctx({ menuSnapshot: { items: [{ name: "Донер", price: 1000 }] } as any }), {
     toolsCalled: ["searchMenu"],
   });
   assert.match(out.text, /1000 теңге/, "the real price survives");

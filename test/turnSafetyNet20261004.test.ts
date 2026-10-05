@@ -62,19 +62,19 @@ const routed: any[] = [];
 const route = (action: string) => (async (_ctx: any, input: any) => { routed.push(input); return { action } as any; }) as any;
 const ctx = (text: string, language: "kk" | "ru", items: any[] = []) => ({ text, language, instanceId: "t", phone: "77000000000", menuSnapshot: { items } }) as any;
 
-test("when every lane failed the guest gets a holding line and the operator gets an SOS", async () => {
+test("a real paid-and-delayed incident still reaches an operator when every model fails", async () => {
   const { answerAgentFailure } = await import("../src/services/turnSafetyNet.service.js");
   routed.length = 0;
-  const kk = await answerAgentFailure(ctx("Тапсырысым қайда?", "kk"), new Error("TEXT_MODEL_TIMEOUT:m:40000ms"), route("operator_case_created"));
+  const kk = await answerAgentFailure(ctx("Ақшамды төледім, екі сағат күттім, оператор керек", "kk"), new Error("TEXT_MODEL_TIMEOUT:m:40000ms"), route("operator_case_created"));
   assert.match(kk, /^Кешіріңіз, қазір ақпаратты нақтылап жатырмыз\./);
   assert.match(kk, /Оператор/);
   assert.equal(routed[0].source, "ai_unavailable");
   assert.equal(routed[0].urgency, "high");
   assert.match(routed[0].summary, /TEXT_MODEL_TIMEOUT/);
-  const ru = await answerAgentFailure(ctx("где мой заказ", "ru"), new Error("400"), route("escalation_failed"));
+  const ru = await answerAgentFailure(ctx("Я уже оплатил заказ, жду два часа, нужен оператор", "ru"), new Error("400"), route("escalation_failed"));
   assert.match(ru, /^Извините, уточняем информацию\./);
   assert.doesNotMatch(ru, /Оператор/, "no operator promise when the SOS could not be raised");
-  const thrown = await answerAgentFailure(ctx("где мой заказ", "ru"), new Error("x"), (async () => { throw new Error("redis down"); }) as any);
+  const thrown = await answerAgentFailure(ctx("Я уже оплатил заказ, жду два часа, нужен оператор", "ru"), new Error("x"), (async () => { throw new Error("redis down"); }) as any);
   assert.match(thrown, /^Извините, уточняем информацию\./, "a failing SOS path still answers");
 });
 
@@ -86,7 +86,7 @@ test("composition checks and planned real incidents bypass the menu guard, but a
   assert.doesNotMatch(skip, /ai_tool_escalate_to_admin/);
 });
 
-test("a composition question about dishes without catalog ingredients gets only the kitchen line, with an SOS", async () => {
+test("missing composition is honest; a known customer allergy can warrant recorded handoff", async () => {
   const { needsKitchenCompositionCheck, answerCompositionQuestion } = await import("../src/services/turnSafetyNet.service.js");
   const blank = [{ name: "Пончик Шоколадный", composition: "" }, { name: "Донер Куриный Стандарт", composition: "" }];
   const mixed = [{ name: "Пончик Шоколадный", composition: "" }, { name: "Донер Куриный Стандарт", composition: "лаваш, курица" }];
@@ -98,17 +98,16 @@ test("a composition question about dishes without catalog ingredients gets only 
   assert.equal(needsKitchenCompositionCheck(ctx("донер канша турады", "kk", blank)), false);
   assert.equal(needsKitchenCompositionCheck(ctx("состав?", "ru", [{ name: "Пицца" }])), false, "a snapshot that says nothing changes nothing");
   routed.length = 0;
-  assert.equal(await answerCompositionQuestion(ctx("орехи есть?", "ru", blank), route("operator_case_created")), "Уточняю точный состав на кухне.");
-  assert.equal(await answerCompositionQuestion(ctx("жаңғақ бар ма?", "kk", blank), route("operator_case_created")), "Құрамын дәл қазір асүйден нақтылап беремін.");
+  assert.match(await answerCompositionQuestion(ctx("У ребенка аллергия на орехи", "ru", blank), route("operator_case_created")), /передан оператору/);
+  assert.match(await answerCompositionQuestion(ctx("Балама жаңғаққа аллергия бар", "kk", blank), route("operator_case_created")), /операторға берілді/);
   assert.equal(routed[0].source, "composition_check");
   const noSos = await answerCompositionQuestion(ctx("орехи есть?", "ru", blank), route("escalation_failed"));
   assert.doesNotMatch(noSos, /кухн/, "no kitchen promise without a person behind it");
 });
 
-test("the agent's own high-urgency call on an angry turn raises SOS without the clarify round", async () => {
-  const source = await (await import("node:fs/promises")).readFile(new URL("../src/services/complaintRouting.service.ts", import.meta.url), "utf8");
-  assert.match(source, /agentSeesConflict = input\.urgency === "high"/);
-  assert.match(source, /!agentSeesConflict\) \{/);
-  const { createEscalateToAdminSkill } = await import("../src/skills/escalation.skill.js");
-  assert.match(String((createEscalateToAdminSkill({} as any) as any).description), /urgency high so a person joins/);
+test("only the actual customer's incident, not a model's uncertainty, establishes a human need", async () => {
+  const { hasConfirmedCustomerIncident } = await import("../src/services/complaintRouting.service.js");
+  assert.equal(hasConfirmedCustomerIncident(ctx("Я оплатил заказ, жду два часа, заказ не привезли", "ru")), true);
+  assert.equal(hasConfirmedCustomerIncident(ctx("Согласен ждать 60 минут", "ru")), false);
+  assert.equal(hasConfirmedCustomerIncident(ctx("Состав неизвестен, оператор не нужен", "ru")), false);
 });

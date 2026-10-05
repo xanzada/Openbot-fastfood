@@ -13,7 +13,10 @@ export function isManualOrderCancellationClaim(text: unknown): boolean {
   return MANUAL_ORDER_CANCELLATION_RE.test(String(text || ""));
 }
 
-export function manualCancellationBoundaryText(language: unknown): string {
+export function manualCancellationBoundaryText(language: unknown, handoffCreated = false): string {
+  if (!handoffCreated) return language === "kk"
+    ? "Тапсырысты чатта өзім тоқтата алмаймын. Оны тоқтату үшін оператор қажет."
+    : "Отменить заказ в чате я не могу. Для отмены нужен оператор.";
   return language === "kk"
     ? "Тапсырысты өзім тоқтата алмаймын - оны оператор ғана жасайды. Өтінішіңізді операторға жеткіздім, ол сізбен байланысады."
     : "Отменить заказ сам я не могу - это делает только оператор. Вашу просьбу я передал оператору, он свяжется с вами.";
