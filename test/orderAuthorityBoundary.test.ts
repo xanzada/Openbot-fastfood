@@ -122,6 +122,49 @@ test("a voice transcript hydrates the personal checkout link before the agent ru
   assert.equal(plan.requiredTools[0], "sendMenuLink");
 });
 
+test("dish plus алайын voice orders prewarm and pin the personal checkout link", async () => {
+  for (const text of ["Онда донер куриный алайын", "Цезарь алайын", "Екі донер аламын"]) {
+    const ctx = {
+      ...context("kk"),
+      instanceId: "khanshaiym",
+      phone: "77000000000",
+      config: {},
+      activeOrder: null,
+      chatHistory: [],
+      explicitMenuLinkIntent: false,
+      magicLink: null,
+      magicLinkFailed: false,
+      magicLinkAlreadySent: false,
+    } as any;
+    let issued = 0;
+    const hydrated = await refreshCheckoutContextForText(ctx, text, {
+      issueAccessLink: async () => { issued += 1; return "https://menu.alemi.kz/personal"; },
+      upsertLead: async () => true,
+    });
+    const plan = resolveAgentToolPlan({ ...ctx, text });
+    assert.equal(hydrated, true, text);
+    assert.equal(issued, 1, text);
+    assert.equal(ctx.explicitMenuLinkIntent, true, text);
+    assert.equal(plan.requiredTools[0], "sendMenuLink", text);
+  }
+});
+
+test("price questions and complaints do not become checkout links", async () => {
+  for (const text of ["Донер қанша тұрады?", "Донер суық келді, ақшамды қайтарыңыз"]) {
+    const ctx = {
+      ...context("kk"), instanceId: "khanshaiym", phone: "77000000000", config: {},
+      activeOrder: null, explicitMenuLinkIntent: false, magicLink: null, magicLinkFailed: false,
+    } as any;
+    let issued = 0;
+    await refreshCheckoutContextForText(ctx, text, {
+      issueAccessLink: async () => { issued += 1; return "https://menu.alemi.kz/personal"; },
+      upsertLead: async () => true,
+    });
+    assert.equal(issued, 0, text);
+    assert.equal(resolveAgentToolPlan({ ...ctx, text }).requiredTools.includes("sendMenuLink"), false, text);
+  }
+});
+
 test("mixed-language requests to accept an order route to checkout, never address collection", () => {
   assert.equal(hasExplicitMenuLinkIntent("Заказ қабылдашы"), true);
   const blocked = validateFinalText("Жеткізу мекенжайын растай аласыз ба?", context("kk"), { toolsCalled: ["searchMenu"] });

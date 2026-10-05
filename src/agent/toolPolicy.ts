@@ -1,5 +1,5 @@
 import type { FastFoodContext } from "../context/types.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
@@ -116,8 +116,9 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   // A complaint suppressed searchMenu but not sendMenuLink, so an angry guest
   // demanding a refund was handed the menu link and nothing else. Nobody who is
   // complaining is asking to start a new order.
+  const directOrderIntent = hasDirectOrderIntent(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident && !wantsMenuAsText(text)
-    && (intentMatches(DIRECT_MENU_LINK_RE, text) || ctx.explicitMenuLinkIntent)) {
+    && (intentMatches(DIRECT_MENU_LINK_RE, text) || ctx.explicitMenuLinkIntent || directOrderIntent)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }
 
@@ -142,7 +143,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const searchIndex = plan.requiredTools.indexOf("searchMenu");
   const linkIndex = plan.requiredTools.indexOf("sendMenuLink");
   if (searchIndex > -1 && linkIndex > -1 && linkIndex < searchIndex
-    && (!intentMatches(ORDER_ACTION_RE, text) || intentMatches(MENU_OVERVIEW_RE, text))) {
+    && (!(intentMatches(ORDER_ACTION_RE, text) || directOrderIntent) || intentMatches(MENU_OVERVIEW_RE, text))) {
     plan.requiredTools[linkIndex] = "searchMenu";
     plan.requiredTools[searchIndex] = "sendMenuLink";
     const reason = plan.reason[linkIndex];

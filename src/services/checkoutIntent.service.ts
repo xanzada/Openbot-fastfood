@@ -2,6 +2,7 @@ import type { FastFoodContext } from "../context/types.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "./alemiApi.service.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "./complaintRouting.service.js";
 import { hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
+import { hasDirectOrderIntent } from "../utils/orderIntent.js";
 
 type CheckoutIntentDeps = {
   issueAccessLink?: typeof issueCustomerAccessLink;
@@ -69,7 +70,7 @@ export async function refreshCheckoutContextForText(
   deps: CheckoutIntentDeps = {},
 ): Promise<boolean> {
   const value = String(text || "").trim();
-  const explicit = hasExplicitMenuLinkIntent(value)
+  const explicit = (hasExplicitMenuLinkIntent(value) || hasDirectOrderIntent(value))
     && !isLikelyComplaintText(value)
     && !isLikelyOperatorRequestText(value);
   if (!explicit) return false;

@@ -25,7 +25,7 @@ import {
 import { getActiveGoal } from "../services/goalTracker.service.js";
 import { orderMentionedByItems, pickConversationOrder } from "../services/customerOrder.service.js";
 import { matchingNoteIds, mergeShiftNoteSources } from "../services/noteProvenance.service.js";
-import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
 import { isMagicLinkRecent } from "../utils/linkRecency.js";
 import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal, unclassifiedTextIsDecisive, instantLanguageDecision } from "../services/languagePolicy.service.js";
@@ -395,7 +395,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     alreadySent: magicLinkEverSent,
     recentHistory: (Array.isArray(chatHistory) ? chatHistory : []).slice(-6).map((entry: any) => String(entry?.text || "")),
   });
-  const explicitMenuLinkIntent = (hasExplicitMenuLinkIntent(text) || brokenLinkReport || contextualLinkResend)
+  const explicitMenuLinkIntent = (hasExplicitMenuLinkIntent(text) || hasDirectOrderIntent(text) || brokenLinkReport || contextualLinkResend)
     && !isLikelyComplaintText(text)
     && !isLikelyOperatorRequestText(text);
   let magicLinkFailed = false;
