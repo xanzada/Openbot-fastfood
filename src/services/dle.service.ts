@@ -16,6 +16,7 @@ import {
 import { auditError } from "./auditLogger.service.js";
 import { callAlemiLegacyAction } from "./alemiApi.service.js";
 import { paymentFieldsFrom } from "../utils/paymentTiming.js";
+import { evaluateWorkHours } from "./workHours.service.js";
 
 const GROUP_OR_STATUS_RE = /(@g\.us$|^status@broadcast$)/i;
 const PHONE_JID_RE = /@(c\.us|s\.whatsapp\.net)$/i;
@@ -535,6 +536,38 @@ function fillPaymentDetailsFromPush(status: Record<string, any>, pushed: any) {
   return status;
 }
 
+async function applyWorkHoursToRuntimeStatus(
+  instanceId: string,
+  status: Record<string, any> | null
+): Promise<Record<string, any> | null> {
+  if (!status || !instanceId) return status;
+  try {
+    const config =
+      (await getJsonCache<Record<string, any>>(`config:${instanceId}`).catch(() => null)) ||
+      (await getJsonCache<Record<string, any>>(`config_backup:${instanceId}`).catch(() => null));
+    if (config?.work_hours) {
+      const evaluation = evaluateWorkHours(config.work_hours, config);
+      if (evaluation.configured && !evaluation.withinWorkHours) {
+        status.within_work_hours = false;
+        status.is_accepting_orders = false;
+        if (!status.closed_reason) {
+          status.closed_reason = "outside_work_hours";
+        }
+        if (status.kitchen_status && typeof status.kitchen_status === "object") {
+          status.kitchen_status.within_work_hours = false;
+          status.kitchen_status.is_accepting_orders = false;
+          if (!status.kitchen_status.closed_reason) {
+            status.kitchen_status.closed_reason = "outside_work_hours";
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-blocking fallback
+  }
+  return status;
+}
+
 export async function getRuntimeStatus(
   instanceId: string,
   domain: string,
@@ -551,14 +584,17 @@ export async function getRuntimeStatus(
     if (entry?.hub && ageMs >= 0 && ageMs < swrWindowMs) {
       if (ageMs > RUNTIME_FRESH_MS) refreshRuntimeInBackground(instanceId, domain);
       const pushed = await getKitchenStatus(instanceId).catch(() => null);
-      const status = fillPaymentDetailsFromPush(overlayPushedKitchenState({ ...entry.hub }, pushed), pushed);
+      const status = await applyWorkHoursToRuntimeStatus(
+        instanceId,
+        fillPaymentDetailsFromPush(overlayPushedKitchenState({ ...entry.hub }, pushed), pushed)
+      );
       return { ...status, runtime_cache_age_ms: ageMs };
     }
   }
 
   if (!options.forceFresh) {
     const cached = await getJsonCache<Record<string, any>>(cacheKey);
-    if (cached) return cached;
+    if (cached) return applyWorkHoursToRuntimeStatus(instanceId, cached);
   }
 
   // While the hub is refusing this tenant's credential, do not spend a hub call and
@@ -575,7 +611,8 @@ export async function getRuntimeStatus(
     const pushed = await getKitchenStatus(instanceId).catch(() => null);
     const hubStatus = normalizeRuntimeStatus(data || {});
     await setJsonCache(swrKey, 120, { at: Date.now(), hub: JSON.parse(JSON.stringify(hubStatus)) }).catch(() => undefined);
-    const status = overlayPushedKitchenState(hubStatus, pushed);
+    const rawStatus = overlayPushedKitchenState(hubStatus, pushed);
+    const status = (await applyWorkHoursToRuntimeStatus(instanceId, rawStatus)) || rawStatus;
     if (Array.isArray(status.shift_notes)) {
       await syncShiftNotesSnapshot(instanceId, status.shift_notes).catch((syncError: any) => {
         auditError("Runtime Redis shift-note sync skipped", syncError, { instanceId });
@@ -630,14 +667,14 @@ export async function getRuntimeStatus(
 async function runtimeStatusFallback(instanceId: string, backupKey: string, cacheKey: string) {
   const redisKitchen = await getKitchenStatus(instanceId).catch(() => null);
   if (redisKitchen) {
-    const redisRuntime = runtimeFromKitchenStatus(instanceId, redisKitchen);
+    const redisRuntime = (await applyWorkHoursToRuntimeStatus(instanceId, runtimeFromKitchenStatus(instanceId, redisKitchen))) || runtimeFromKitchenStatus(instanceId, redisKitchen);
     await setJsonCache(cacheKey, 5, redisRuntime).catch(() => undefined);
     return redisRuntime;
   }
 
   const backup = await getJsonCache<Record<string, any>>(backupKey);
   if (!backup) return null;
-  return {
+  const rawFallback = {
     ...backup,
     source: `${backup.source || "dle_spa_settings"}_stale_backup`,
     stale_runtime_backup: true,
@@ -649,6 +686,7 @@ async function runtimeStatusFallback(instanceId: string, backupKey: string, cach
       reset_at: 0,
     },
   };
+  return (await applyWorkHoursToRuntimeStatus(instanceId, rawFallback)) || rawFallback;
 }
 
 function localizedOrderText(value: unknown): string {

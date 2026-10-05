@@ -2,6 +2,7 @@ import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { getRuntimeStatus } from "../services/dle.service.js";
 import { getActiveShiftNotes } from "../services/redis.service.js";
+import { evaluateWorkHours } from "../services/workHours.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
 export function createGetKitchenStatusSkill(ctx: FastFoodContext) {
@@ -13,6 +14,8 @@ export function createGetKitchenStatusSkill(ctx: FastFoodContext) {
     execute: async () => {
       const runtime = await getRuntimeStatus(ctx.instanceId, ctx.config?.domain || "", { forceFresh: true });
       const status = runtime || ctx.runtimeStatus || ctx.hardRealtimeContext || null;
+      const workHoursEval = evaluateWorkHours(ctx.config?.work_hours, ctx.config);
+      const isOutsideHours = workHoursEval.configured && !workHoursEval.withinWorkHours;
       // A hub outage falls back to the last state pushed into Redis or to a
       // 10-minute backup. That is the right answer to give, but the model used
       // to see `runtime_available: true` and present a remembered "we are open"
@@ -21,6 +24,9 @@ export function createGetKitchenStatusSkill(ctx: FastFoodContext) {
       const fromFallback = Boolean(
         status?.redis_runtime_fallback || status?.stale_runtime_backup || /fallback|stale|backup/.test(source)
       );
+      const isAcceptingOrders = isOutsideHours ? false : (status?.is_accepting_orders ?? null);
+      const withinWorkHours = isOutsideHours ? false : (status?.within_work_hours ?? null);
+      const closedReason = isOutsideHours ? "outside_work_hours" : (status?.closed_reason || "");
       return {
         source,
         // Never invent a read time. This used to fall back to "now" while
@@ -30,16 +36,18 @@ export function createGetKitchenStatusSkill(ctx: FastFoodContext) {
         runtime_available: Boolean(runtime || ctx.runtimeStatus),
         live: Boolean(runtime) && !fromFallback,
         is_last_known: fromFallback,
-        is_accepting_orders: status?.is_accepting_orders ?? null,
-        within_work_hours: status?.within_work_hours ?? null,
-        closed_reason: status?.closed_reason || "",
-        wait_time: Number(status?.wait_time ?? status?.kitchen_status?.wait_time ?? 0) || 0,
+        is_accepting_orders: isAcceptingOrders,
+        within_work_hours: withinWorkHours,
+        closed_reason: closedReason,
+        wait_time: isOutsideHours ? 0 : (Number(status?.wait_time ?? status?.kitchen_status?.wait_time ?? 0) || 0),
         is_emergency: Boolean(status?.is_emergency ?? status?.kitchen_status?.is_emergency),
-        delivery: status?.delivery ?? status?.kitchen_status?.delivery ?? null,
-        pickup: status?.pickup ?? status?.kitchen_status?.pickup ?? null,
+        delivery: isOutsideHours ? false : (status?.delivery ?? status?.kitchen_status?.delivery ?? null),
+        pickup: isOutsideHours ? false : (status?.pickup ?? status?.kitchen_status?.pickup ?? null),
         reset_at: Number(status?.reset_at ?? status?.kitchen_status?.reset_at ?? 0) || 0,
         payment_details: Array.isArray(status?.payment_details) ? status.payment_details : [],
         kitchen_status: status?.kitchen_status || null,
+        work_hours: ctx.config?.work_hours || null,
+        opens_at: workHoursEval.opensAtClock || null,
       };
     },
   });

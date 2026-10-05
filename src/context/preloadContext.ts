@@ -29,6 +29,7 @@ import { lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { isLikelyComplaintText, isLikelyOperatorRequestText } from "../services/complaintRouting.service.js";
 import { isMagicLinkRecent } from "../utils/linkRecency.js";
 import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal, unclassifiedTextIsDecisive, instantLanguageDecision } from "../services/languagePolicy.service.js";
+import { evaluateWorkHours } from "../services/workHours.service.js";
 import type { FastFoodContext } from "./types.js";
 
 /**
@@ -308,13 +309,33 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     ? { ...activeOrder, order: discussedOrderRecord, active_order: discussedOrderRecord, order_id: discussedOrderRecord.id, status: discussedOrderRecord.status, items: discussedOrderRecord.items, total_price: discussedOrderRecord.total_price, address: discussedOrderRecord.address, comment: discussedOrderRecord.comment, is_pickup: discussedOrderRecord.is_pickup, ai_comment: discussedOrderRecord.ai_comment }
     : activeOrder;
 
+  const workHoursEval = evaluateWorkHours(safeConfig.work_hours, safeConfig);
+  const isOutsideHours = workHoursEval.configured && !workHoursEval.withinWorkHours;
+
+  if (isOutsideHours && runtimeStatus) {
+    runtimeStatus.within_work_hours = false;
+    runtimeStatus.is_accepting_orders = false;
+    if (!runtimeStatus.closed_reason) {
+      runtimeStatus.closed_reason = "outside_work_hours";
+    }
+    if (runtimeStatus.kitchen_status && typeof runtimeStatus.kitchen_status === "object") {
+      runtimeStatus.kitchen_status.within_work_hours = false;
+      runtimeStatus.kitchen_status.is_accepting_orders = false;
+      if (!runtimeStatus.kitchen_status.closed_reason) {
+        runtimeStatus.kitchen_status.closed_reason = "outside_work_hours";
+      }
+    }
+  }
+
   const runtimeAvailable = Boolean(runtimeStatus);
-  const runtimeWaitTime = Number(
-    runtimeStatus?.kitchen_status?.wait_time ??
-    runtimeStatus?.wait_time ??
-    runtimeStatus?.fetched_settings?.wait_time ??
-    0
-  ) || 0;
+  const runtimeWaitTime = isOutsideHours
+    ? 0
+    : Number(
+        runtimeStatus?.kitchen_status?.wait_time ??
+        runtimeStatus?.wait_time ??
+        runtimeStatus?.fetched_settings?.wait_time ??
+        0
+      ) || 0;
   const runtimeEmergency = Boolean(
     runtimeStatus?.kitchen_status?.is_emergency ??
     runtimeStatus?.is_emergency ??
@@ -338,11 +359,17 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
           ...runtimeStatus.kitchen_status,
           wait_time: fetchedSettings.wait_time,
           is_emergency: fetchedSettings.is_emergency,
+          within_work_hours: isOutsideHours ? false : (runtimeStatus.kitchen_status.within_work_hours ?? true),
+          is_accepting_orders: isOutsideHours ? false : (runtimeStatus.kitchen_status.is_accepting_orders ?? true),
+          closed_reason: isOutsideHours ? "outside_work_hours" : (runtimeStatus.kitchen_status.closed_reason || ""),
         }
       : null,
     wait_time: fetchedSettings.wait_time,
-    delivery: runtimeStatus?.delivery ?? runtimeStatus?.kitchen_status?.delivery ?? null,
-    pickup: runtimeStatus?.pickup ?? runtimeStatus?.kitchen_status?.pickup ?? null,
+    delivery: isOutsideHours ? false : (runtimeStatus?.delivery ?? runtimeStatus?.kitchen_status?.delivery ?? null),
+    pickup: isOutsideHours ? false : (runtimeStatus?.pickup ?? runtimeStatus?.kitchen_status?.pickup ?? null),
+    within_work_hours: isOutsideHours ? false : (runtimeStatus?.within_work_hours ?? true),
+    is_accepting_orders: isOutsideHours ? false : (runtimeStatus?.is_accepting_orders ?? true),
+    closed_reason: isOutsideHours ? "outside_work_hours" : (runtimeStatus?.closed_reason || ""),
     is_emergency: fetchedSettings.is_emergency,
     reset_at: Number(runtimeStatus?.reset_at || runtimeStatus?.kitchen_status?.reset_at || 0) || 0,
     payment_details: Array.isArray(runtimeStatus?.payment_details) ? runtimeStatus.payment_details : Array.isArray(runtimeStatus?.kitchen_status?.payment_details) ? runtimeStatus.kitchen_status.payment_details : [],

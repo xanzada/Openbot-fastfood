@@ -518,17 +518,19 @@ function ambiguousConsentReply(language: "kk" | "ru") {
     : "Кешіріңіз, сізді толық түсінбедім. Осындай күту уақыты сізге қолайлы ма — иә немесе жоқ?";
 }
 
-function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
+function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru", workHours = "") {
   const reason = String(policy.closedReason || "").toLowerCase();
   const channelsOff = reason.includes("service_channels_disabled") || (!policy.delivery && !policy.pickup);
   const emergency = policy.isEmergency || reason.includes("emergency");
+  const hoursNotice = workHours ? ` (жұмыс уақыты: ${workHours})` : "";
+  const hoursNoticeRu = workHours ? ` (режим работы: ${workHours})` : "";
 
   if (language === "ru") {
     if (policy.mode === "vacation") return `Сейчас временно не принимаем заказы${policy.remainingDays ? ` примерно ${policy.remainingDays} дн.` : ""}. Напишите нам немного позже — мы сообщим актуальную информацию. Спасибо за понимание.`;
     // Closed for the night is not a breakdown: saying "по технической причине"
     // here made a normal closing time sound like a failure and left the guest
     // with nothing to do about it.
-    if (policy.mode === "off_hours") return "Сейчас мы закрыты — заказы принимаем в рабочие часы. Напишите, как только откроемся, и я всё оформлю. Меню можно посмотреть уже сейчас.";
+    if (policy.mode === "off_hours") return `Сейчас мы закрыты${hoursNoticeRu} — заказы принимаем в рабочие часы. Напишите, как только откроемся, и я всё оформлю. Меню можно посмотреть уже сейчас.`;
     // Both fulfillment channels are switched off. Nothing is broken and the guest can
     // still be useful to: the menu is readable and we will write when it reopens.
     if (channelsOff && !emergency) return "Сейчас ни доставка, ни самовывоз не доступны, поэтому заказ пока оформить не получится. Меню можно посмотреть уже сейчас — напишите позже, и я всё оформлю.";
@@ -536,7 +538,7 @@ function closedKitchenReply(policy: KitchenSalesPolicy, language: "kk" | "ru") {
     return "Сейчас заказы временно не принимаем. Пожалуйста, напишите нам немного позже — я сразу всё оформлю. Меню можно посмотреть уже сейчас.";
   }
   if (policy.mode === "vacation") return `Қазір уақытша тапсырыс қабылдамаймыз${policy.remainingDays ? `, шамамен ${policy.remainingDays} күн` : ""}. Біраздан кейін қайта жазып, өзекті жағдайды нақтылап көріңіз. Түсіністік танытқаныңызға рақмет.`;
-  if (policy.mode === "off_hours") return "Қазір жабықпыз — тапсырыстарды жұмыс уақытында қабылдаймыз. Ашылған кезде жазсаңыз, бәрін рәсімдеп беремін. Мәзірді қазірдің өзінде қарап отыруға болады.";
+  if (policy.mode === "off_hours") return `Қазір жабықпыз${hoursNotice} — тапсырыстарды жұмыс уақытында қабылдаймыз. Ашылған кезде жазсаңыз, бәрін рәсімдеп беремін. Мәзірді қазірдің өзінде қарап отыруға болады.`;
   if (channelsOff && !emergency) return "Қазір жеткізу де, алып кету де қолжетімсіз, сондықтан тапсырысты әзірге рәсімдей алмаймын. Мәзірді қазірдің өзінде қарап отыруға болады — кейінірек жазсаңыз, бәрін рәсімдеп беремін.";
   if (emergency) return "Асүй уақытша тоқтатылды, қазір тапсырыс қабылдамаймыз. Біраздан кейін жазыңызшы — қайта іске қосылған бойда бәрін рәсімдеп беремін.";
   return "Қазір тапсырысты уақытша қабылдамаймыз. Біраздан кейін жазсаңыз, бәрін бірден рәсімдеп беремін. Мәзірді қазірдің өзінде қарап отыруға болады.";
@@ -658,7 +660,7 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
       return ambiguousConsentReply(ctx.language);
     }
   }
-  if (policy.blocksAllSales) return closedKitchenReply(policy, ctx.language);
+  if (policy.blocksAllSales) return closedKitchenReply(policy, ctx.language, String(ctx.config?.work_hours || ""));
   if (requestedChannel === "delivery" && !policy.delivery) return unavailableChannelReply(requestedChannel, ctx.language);
   if (requestedChannel === "pickup" && !policy.pickup) return unavailableChannelReply(requestedChannel, ctx.language);
   // A guest who already accepted this same kitchen state is left to finish.
@@ -697,6 +699,7 @@ function prepTimeReply(ctx: FastFoodContext): string | null {
   // fallback reply further down says that honestly.
   if (!ctx.runtimeStatus) return null;
   const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
+  if (policy.blocksAllSales) return closedKitchenReply(policy, ctx.language, String(ctx.config?.work_hours || ""));
   const language = ctx.language === "ru" ? "ru" : "kk";
   if (policy.waitMinutes > 0) {
     const label = formatKitchenWait(policy.waitMinutes, language);
