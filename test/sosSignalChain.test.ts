@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { operatorFixture } from "./helpers/operatorNotificationFixture.js";
+import { operatorNotificationKey } from "../src/services/operatorNotification.service.js";
 
 // The SOS signal chain: guest complaint -> operator case record -> panel marker
 // (chatwoot:sos*) -> hub command operator.sos.raised. Five defects in that chain,
@@ -19,6 +21,9 @@ test.after(() => {
   if (redisClient.isOpen) redisClient.destroy();
 });
 
+import {lifecycleRedisEnabled, operatorLifecycleFixture} from "./helpers/operatorLifecycleFixture.js";
+const lifecycleOptions = {skip: !lifecycleRedisEnabled && "Requires disposable real Redis for lifecycle TTL checks."};
+
 const SOURCE = new URL("../src/services/operatorCase.service.ts", import.meta.url);
 
 // --------------------------------------------------------------------------- B10
@@ -27,20 +32,23 @@ const SOURCE = new URL("../src/services/operatorCase.service.ts", import.meta.ur
 // send" - so one transient blip silently suppressed the site notification for the
 // remaining 7 days of that case. The operator saw the red row; the site never
 // heard. That is the shape of the 2026-08-21 incident.
-test("a Redis error on the dedupe claim does not suppress the site notification", async () => {
-  const source = await readFile(SOURCE, "utf8");
-  const fn = source.slice(source.indexOf("async function notifyHubSos"), source.indexOf("// A case already sitting on the operator board"));
-  assert.match(fn, /\.catch\(\(\) => "CLAIM_UNAVAILABLE" as const\)/, "a failed claim must be distinguishable from a taken one");
-  assert.match(fn, /if \(claimed === null\) return;/, "only a genuinely taken claim stops the send");
-  assert.doesNotMatch(fn, /if \(claimed !== "OK"\) return;/, "the old conflation must be gone");
+test("a Redis claim error leaves a durable plan that retries after recovery", async () => {
+  const h = operatorFixture(); await h.queue();
+  const claim = h.store.claim.bind(h.store);
+  h.store.claim = async () => {throw new Error("REDIS_UNAVAILABLE");};
+  await h.run(); assert.equal(h.hub.length, 0);
+  assert.equal((await h.store.get(operatorNotificationKey("fixture", "case_fixture", "hub")))?.status, "pending");
+  h.store.claim = claim; await h.run(3000);
+  assert.equal(h.hub.length, 1);
 });
 
-test("only a claim we actually took is released on failure", async () => {
-  const source = await readFile(SOURCE, "utf8");
-  const fn = source.slice(source.indexOf("async function notifyHubSos"), source.indexOf("// A case already sitting on the operator board"));
-  assert.match(fn, /const claimHeld = claimed === "OK";/);
-  assert.match(fn, /if \(claimHeld\) await redisClient\.del\(dedupeKey\)/,
-    "deleting a claim we never held would let the next signal double-notify the site");
+test("a worker cannot release another worker's lease", async () => {
+  const h = operatorFixture(); const key = operatorNotificationKey("fixture", "case_fixture", "hub");
+  assert.equal(await h.store.claim(key, "worker-first"), true);
+  await h.store.release(key, "worker-second");
+  assert.equal(await h.store.claim(key, "worker-second"), false);
+  await h.store.release(key, "worker-first");
+  assert.equal(await h.store.claim(key, "worker-second"), true);
 });
 
 // --------------------------------------------------------------------------- B11
@@ -49,13 +57,14 @@ test("only a claim we actually took is released on failure", async () => {
 // assertAlemiResponse runs, so error.code was unset and both logged as the bare
 // axios message - indistinguishable from a dropped connection. That is how the
 // order_number:"not_found" payload regression survived 48 hours.
-test("an SOS hub failure logs the status and the hub error code", async () => {
-  const source = await readFile(SOURCE, "utf8");
-  const fn = source.slice(source.indexOf("async function notifyHubSos"), source.indexOf("// A case already sitting on the operator board"));
-  assert.match(fn, /error\?\.statusCode \?\? error\?\.response\?\.status/, "the HTTP status must be logged");
-  assert.match(fn, /response\?\.data\?\.error\?\.code/, "the hub's own error code must be logged");
-  assert.match(fn, /status=\$\{status\} hubCode=\$\{hubCode\}/, "both must appear in one greppable line");
-  assert.match(fn, /case=\$\{args\.caseId\}/, "and the case id, so a suppressed case can be found");
+test("an SOS failure records safe HTTP status and Hub error code without customer data", async () => {
+  const h = operatorFixture(); await h.queue();
+  h.deps.sendHub = async () => {const error: any = new Error("Bearer forbidden-secret 70000000002");
+    error.response = {status: 400, data: {error: {code: "INTEGRATION_COMMAND_INVALID"}}}; throw error;};
+  await h.run();
+  const failed = h.events.find(e => e.event === "retry_scheduled" && e.row.payload.channel === "hub");
+  assert.equal(failed.row.last_error, "HTTP_400:INTEGRATION_COMMAND_INVALID");
+  assert.doesNotMatch(failed.row.last_error, /forbidden|70000000002/);
 });
 
 // --------------------------------------------------------------------------- B13
@@ -68,7 +77,7 @@ test("the guest never waits for the hub", async () => {
   const create = source.slice(source.indexOf("export async function createOperatorCase"), source.indexOf("// The site gets the same signal"));
   assert.doesNotMatch(create, /await notifyHubSos\(/, "awaiting the hub blocks the reply path");
   const fireAndForget = create.match(/void notifyHubSos\(/g) || [];
-  assert.equal(fireAndForget.length, 2, "both the new-case and the reuse branch must fire and forget");
+  assert.equal(fireAndForget.length, 1, "the shared atomic new/reuse path must fire and forget");
   assert.match(create, /void notifyHubSos\([^;]*\)\.catch\(\(\) => undefined\)/s,
     "an unhandled rejection here would take the process down");
 });
@@ -78,12 +87,12 @@ test("the guest never waits for the hub", async () => {
 // saveToHistory only restores the 7-day TTL when it finds NO ttl at all, so it
 // never repaired this - the conversations of exactly the guests who escalated were
 // deleted six days early.
-test("flagging a case does not shorten the chat history to 24 hours", async () => {
-  const source = await readFile(SOURCE, "utf8");
-  assert.match(source, /\.expire\(`history:\$\{instanceId\}:\$\{customerPhone\}`, CHAT_HISTORY_TTL_SECONDS\)/,
-    "the red-row push must preserve the 7-day history TTL");
-  assert.doesNotMatch(source, /\.expire\(`history:[^`]*`, 24 \* 60 \* 60\)/, "the 24h shortening must be gone");
-  assert.equal(CHAT_HISTORY_TTL_SECONDS, 604800, "7 days, the value saveToHistory uses");
+test("flagging a case does not shorten the chat history to 24 hours", lifecycleOptions, async () => {
+  const h = await operatorLifecycleFixture();
+  try {await h.create(); await h.cases.bumpOperatorCaseSignal(h.instance, h.phone);
+    assert.equal(CHAT_HISTORY_TTL_SECONDS, 604800);
+    assert.ok((await h.client.ttl(h.key("history"))) > CHAT_HISTORY_TTL_SECONDS - 10);
+  } finally {await h.close();}
 });
 
 // --------------------------------------------------------------------------- B20
@@ -91,29 +100,32 @@ test("flagging a case does not shorten the chat history to 24 hours", async () =
 // it grew for the life of the deployment. The SOS index is scored by expiry and
 // nothing pruned members whose score was already in the past, so it could report a
 // guest as flagged an hour after their marker and unread key had expired.
-test("the inbox index cannot grow forever", async () => {
-  const source = await readFile(SOURCE, "utf8");
-  const writes = source.match(/zAdd\(`chatwoot:inbox:\$\{[a-zA-Z.]+\}`/g) || [];
-  const ttls = source.match(/expire\(`chatwoot:inbox:\$\{[a-zA-Z.]+\}`, CASE_TTL_SECONDS\)/g) || [];
-  assert.ok(writes.length >= 4, `expected every inbox write to be found, saw ${writes.length}`);
-  assert.equal(ttls.length, writes.length, "every inbox write must set the TTL alongside it");
+test("the inbox index cannot grow forever", lifecycleOptions, async () => {
+  const h = await operatorLifecycleFixture();
+  try {await h.create(); await h.create({signalId: "second_signal"}); await h.cases.bumpOperatorCaseSignal(h.instance, h.phone);
+    assert.ok((await h.client.ttl(h.key("inbox"))) > 604790);
+    assert.equal(await h.client.zCard(h.key("inbox")), 1);
+  } finally {await h.close();}
 });
 
-test("expired SOS members are pruned out of the index", async () => {
-  const source = await readFile(SOURCE, "utf8");
-  const activate = source.slice(source.indexOf("async function activateSos"), source.indexOf("// The clarify-first gate needs to know"));
-  assert.match(activate, /zRemRangeByScore\(sosIndexKey\(input\.instanceId\), 0, now\)/,
-    "the index is scored by expiry, so anything scored in the past is dead and must go");
+test("expired SOS members are pruned out of the index", lifecycleOptions, async () => {
+  const h = await operatorLifecycleFixture();
+  try {await h.client.zAdd(h.key("sos"), [{score: h.time() - 1, value: "77000000003"}]); await h.create();
+    assert.equal(await h.client.zScore(h.key("sos"), "77000000003"), null);
+    assert.ok((await h.client.zScore(h.key("sos"), h.phone))! > h.time());
+  } finally {await h.close();}
 });
 
 // ------------------------------------------------------- contract regressions
-test("the per-case dedupe key and its release are unchanged", async () => {
-  const source = await readFile(SOURCE, "utf8");
-  // One case = one site notification, for the case's whole life. This is the
-  // 2026-08-21 badge-showed-4 fix and must not regress.
-  assert.match(source, /sos_hub_sent:\$\{args\.instanceId\}:\$\{args\.caseId\}/);
-  assert.match(source, /EX: CASE_TTL_SECONDS, NX: true/);
-  assert.match(source, /redisClient\.del\(dedupeKey\)/);
+test("one case retains a single delivery ledger and retries its stable signal", async () => {
+  const h = operatorFixture(); await h.queue();
+  let failures = 1;
+  h.deps.sendHub = async (payload: any) => {h.hub.push(payload); if (failures-- > 0) throw new Error("ECONNRESET"); return {ok: true};};
+  await h.run(1000); await h.queue(); await h.run(3000); await h.run(9000);
+  assert.equal(h.hub.length, 2);
+  assert.equal(h.hub[0].signalId, h.hub[1].signalId);
+  assert.equal((await h.store.get(operatorNotificationKey("fixture", "case_fixture", "hub")))?.status, "delivered");
+  assert.equal(h.sends.length, 1);
 });
 
 test("the SOS marker, unread key and index carry a shift-long SOS TTL", async () => {
