@@ -123,3 +123,10 @@ test("The gate stays armed while consent is owed - no checkout grace is written"
   assert.match(mintGuard, /policy\.blocksAllSales/);
   assert.match(mintGuard, /policy\.requiresConsent \|\| consentAccepted/);
 });
+
+test("Outside work hours (off_hours), menu link is allowed for catalog browsing", () => {
+  const offHoursPolicy = classifyKitchenSalesPolicy({ within_work_hours: false });
+  assert.equal(offHoursPolicy.mode, "off_hours");
+  assert.equal(offHoursPolicy.blocksAllSales, true);
+  assert.equal(classifyMenuLinkRefusal(ready, offHoursPolicy, true), null);
+});

@@ -47,7 +47,7 @@ export function classifyMenuLinkRefusal(
   // Order of the gates is the order of the guest's reality: is the kitchen even
   // selling, has a promised delay been accepted, and did the link actually mint.
   if (!runtimeAvailable && !hasActiveOrder) return "runtime_unavailable" as const;
-  if (policy?.blocksAllSales) return "kitchen_closed" as const;
+  if (policy?.blocksAllSales && policy.mode !== "off_hours") return "kitchen_closed" as const;
   if (policy?.requiresConsent && !consentAccepted) return "wait_consent_required" as const;
   // Reached only when the restaurant is genuinely ready to sell: no link here means
   // issuing it failed, and the guest is told exactly that instead of silence.
@@ -135,7 +135,7 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // Mint on demand. preloadContext only pre-warms the link when the wording is
       // unmistakable, so on every other order the tool used to find null here and
       // report "not needed" - the reply promised a menu that never arrived.
-      if (!ctx.magicLink && !policy.blocksAllSales && (!policy.requiresConsent || consentAccepted)) {
+      if (!ctx.magicLink && (!policy.blocksAllSales || policy.mode === "off_hours") && (!policy.requiresConsent || consentAccepted)) {
         await ensureCustomerAccessLink(ctx).catch(() => null);
       }
       const refusal = classifyMenuLinkRefusal(ctx, policy, consentAccepted);
@@ -154,7 +154,9 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
         allowed: true,
         link: ctx.magicLink,
         message: null,
-        note: "The link is delivered to the guest as its own separate message right after your reply - never paste the URL into your text, and never say orders cannot be accepted or links are down: the link IS working.",
+        note: policy.mode === "off_hours"
+          ? "The kitchen is currently in off_hours (outside operating hours). The link is granted for catalog and menu browsing. Politely inform the customer that they can view dishes and prices now, and orders will be accepted when the restaurant opens."
+          : "The link is delivered to the guest as its own separate message right after your reply - never paste the URL into your text, and never say orders cannot be accepted or links are down: the link IS working.",
         validity: "1 month",
       };
     },

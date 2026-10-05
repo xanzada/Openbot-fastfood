@@ -24,7 +24,7 @@ claimReceiptFingerprint,
   takeComplaintClarification,
 } from "../services/redis.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
-import { isLikelyMenuQuestion } from "../utils/intentText.js";
+import { intentMatches, isLikelyMenuQuestion } from "../utils/intentText.js";
 import {
   buildComplaintAckReply,
   buildComplaintClarificationReply,
@@ -89,7 +89,10 @@ import { detectLanguageDecision } from "../utils/language.js";
 import { getTextModels } from "../services/llm.service.js";
 import { getRuntimeSettings, runtimeTestModeEnabled, getLlmWorkspacePools } from "../services/llmWorkspace.service.js";
 import { classifyKitchenSalesPolicyForContext, consentRequirement, formatKitchenWait, detectKitchenConsentAnswer, detectRequestedServiceChannel, type KitchenSalesPolicy } from "../services/kitchenPolicy.service.js";
-import { hasMenuBrowsingIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, isUnownedOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
+import { hasMenuBrowsingIntent, hasMenuInquiryIntent, MENU_INQUIRY_RE, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, isOrderTimingQuestion, isProspectiveOrderTimingQuestion, isUnownedOrderTimingQuestion, lastDiscussedOrderNumber, requestedOrderNumber } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent } from "../skills/menuLink.skill.js";
+import { BUSINESS_INFO_RE } from "../agent/toolPolicy.js";
+import { hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
 import type { FastFoodContext } from "../context/types.js";
 import { noteHistoryMeta } from "../services/noteProvenance.service.js";
 import {
@@ -660,7 +663,20 @@ async function kitchenGateReply(ctx: FastFoodContext): Promise<string | null> {
       return ambiguousConsentReply(ctx.language);
     }
   }
-  if (policy.blocksAllSales) return closedKitchenReply(policy, ctx.language, String(ctx.config?.work_hours || ""));
+  if (policy.blocksAllSales) {
+    const isDirectOrder = hasDirectOrderIntent(ctx.text);
+    const isBrowsingOrInquiry =
+      !isDirectOrder &&
+      (intentMatches(BUSINESS_INFO_RE, ctx.text) ||
+       intentMatches(MENU_INQUIRY_RE, ctx.text) ||
+       hasExplicitMenuLinkIntent(ctx.text) ||
+       hasMenuBrowsingIntent(ctx.text));
+
+    if (isBrowsingOrInquiry) {
+      return null;
+    }
+    return closedKitchenReply(policy, ctx.language, String(ctx.config?.work_hours || ""));
+  }
   if (requestedChannel === "delivery" && !policy.delivery) return unavailableChannelReply(requestedChannel, ctx.language);
   if (requestedChannel === "pickup" && !policy.pickup) return unavailableChannelReply(requestedChannel, ctx.language);
   // A guest who already accepted this same kitchen state is left to finish.

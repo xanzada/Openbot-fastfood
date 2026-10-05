@@ -48,8 +48,8 @@ const PAYMENT_DETAILS_RE =
   /(реквизит|kaspi|каспи|halyk|халық|оплат\p{L}*|төлем|аудар\p{L}*|перевод).*(?:қалай|қайда|как|куда|номер|счет|шот|сілтеме|ссылка)?/iu;
 const RECEIPT_EVENT_RE =
   /(чек(?:ті|ті\s+жібер| отправ| скин)|receipt|түбірте[кг]|квитанц|ақшаны\s+аудар|деньги\s+перев[её]л)/iu;
-const BUSINESS_INFO_RE =
-  /(мекенжай|адрес|қайда\s*(?:орналас|тұр)|қай\s*жерде|орналасқан|где\s*(?:находит|вы)|жұмыс\s*уақыт|жұмыс\s*істей|график|режим\s*работ|до\s*скольк|сколько.{0,30}(?:работ|открыт)|сағат\s*нешеге|телефон|номер\s*(?:рестора|заведен)|қалай\s*табам|бүгін\s*ашық|сегодня\s*открыт|түнде\s*жұмыс|работа\p{L}*\s*ночью)/iu;
+export const BUSINESS_INFO_RE =
+  /(мекен-?жай|адрес|қайда\s*(?:орналас|тұр)|қай\s*жерде|орналасқан|где\s*(?:находит|вы)|жұмыс\s*уақыт|жұмыс\s*істей|график|режим\s*работ|до\s*скольк|сколько.{0,30}(?:работ|открыт)|сағат\s*нешеге|телефон|номер\s*(?:рестора|заведен)|қалай\s*табам|бүгін\s*ашық|сегодня\s*открыт|түнде\s*жұмыс|работа\p{L}*\s*ночью)/iu;
 
 // The kitchen's live state is the first thing the operator changes and the last
 // thing a cached snapshot knows. Any question about waiting, closure or whether
@@ -82,7 +82,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   // this was the one place that preferred the partial object (found 2026-08-22).
   const runtime = ctx.runtimeStatus || ctx.hardRealtimeContext;
   const kitchenPolicy = classifyKitchenSalesPolicyForContext(runtime || null, ctx.activeShiftNotes);
-  const checkoutBlocked = kitchenPolicy.blocksAllSales || kitchenPolicy.requiresConsent;
+  const checkoutBlocked = (kitchenPolicy.blocksAllSales && kitchenPolicy.mode !== "off_hours") || kitchenPolicy.requiresConsent;
 
   if (immediateServiceIncident) {
     add(plan, "escalateToAdmin", "actionable_service_incident");

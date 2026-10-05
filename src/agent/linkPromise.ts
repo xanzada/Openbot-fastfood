@@ -95,7 +95,7 @@ export async function honorMenuLinkPromise(ctx: FastFoodContext, finalText: stri
   // never smuggle a link past a closed kitchen or an unanswered wait consent.
   const blocked = (!runtimeAvailable && !hasActiveOrder)
     ? "runtime_unavailable"
-    : policy.blocksAllSales
+    : (policy.blocksAllSales && policy.mode !== "off_hours")
       ? "kitchen_closed"
       : (policy.requiresConsent && !consentAccepted)
         ? "wait_consent_required"

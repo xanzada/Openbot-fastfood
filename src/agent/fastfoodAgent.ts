@@ -8,6 +8,7 @@ import { buildAgentInstructions } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
 import { createAgentStepPolicy, resolveAgentToolPlan } from "./toolPolicy.js";
 import { honorMenuLinkPromise } from "./linkPromise.js";
+import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
 import { envNumber } from "../utils/envNumber.js";
 
 /**
@@ -270,7 +271,8 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     console.warn(`[LINK PROMISE] removed instance=${ctx.instanceId} reason=${promise.reason}`);
   }
 
-  if (ctx.magicLinkGranted && ctx.magicLink && GRANTED_LINK_REFUSAL_RE.test(finalText)) {
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
+  if (policy.mode !== "off_hours" && ctx.magicLinkGranted && ctx.magicLink && GRANTED_LINK_REFUSAL_RE.test(finalText)) {
     // Cut the contradicting sentence, keep the rest. Replacing the WHOLE reply threw
     // away real operational facts that happen to contain the same words: "жеткізу
     // жұмыс істемей тұр, өзіңіз алып кетсеңіз болады" became "тапсырыс беруге

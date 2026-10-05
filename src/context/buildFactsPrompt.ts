@@ -391,6 +391,9 @@ function mandatoryConstraints(ctx: FastFoodContext) {
     kitchen_mode: policy.mode,
     blocks_all_orders: policy.blocksAllSales,
     wait_consent_required: policy.requiresConsent,
+    ...(policy.mode === "off_hours" ? {
+      off_hours_rule: `The restaurant is currently outside operating hours (work hours: ${String(ctx.config?.work_hours || "12:00 - 03:00")}). Orders are not accepted until opening time. However, browsing the menu is FULLY ALLOWED! If the customer asks to see the menu, asks where to look at the menu, or asks about dishes/prices, provide the menu link via sendMenuLink so they can browse the dishes and prices on the storefront, and politely mention that orders will be accepted once the restaurant opens at the scheduled working hours. Do NOT refuse to show the menu!`,
+    } : {}),
     // The model used to be handed kitchen_mode:"normal" when the runtime read had
     // failed, which is a fact we did not have. It is now told the difference, and what
     // to do about it (found 2026-08-23).

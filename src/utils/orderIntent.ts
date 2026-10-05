@@ -54,6 +54,13 @@ export function hasMenuBrowsingIntent(text = "") {
   return MENU_INTENT_RE.test(String(text || ""));
 }
 
+export const MENU_INQUIRY_RE =
+  /(?:қайдан\s*(?:қарай|көр|таб)|қарау|көру|көрейін|көрсем|жіберші|сілтеме|ссылк|сайт|меню|мәзір|мазір|баға|прайс|ассортимент|не\s*бар|что\s*есть|каталог|где\s*(?:посмотреть|глянуть)|скинь\s*(?:меню|ссылк))/iu;
+
+export function hasMenuInquiryIntent(text = ""): boolean {
+  return intentMatches(MENU_INQUIRY_RE, text);
+}
+
 export function isLikelyOrderStatusFollowUp(text = "") {
   const value = String(text || "");
   if (!intentMatches(ACTIVE_ORDER_FOLLOW_UP_RE, value)) return false;
