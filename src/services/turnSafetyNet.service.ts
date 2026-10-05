@@ -87,6 +87,52 @@ export function catalogPriceLines(ctx: FastFoodContext, max = 6) {
 
 type GrantLink = (ctx: FastFoodContext) => Promise<boolean>;
 
+const VOICE_MENU_OVERVIEW_RE =
+  /(мәзірде\s*не\s*бар|не\s*бар\s*мәзірде|сіздерде\s*не(?:\s*бар)?\s*[?.!]*$|что\s*(?:у\s*вас\s*)?есть\s*в\s*меню|что\s+у\s+вас(?:\s+есть)?\s*[?.!]*$|какие\s+(?:у\s+вас\s+)?(?:есть\s+)?(?:блюда|позиции)|ассортимент)/iu;
+
+export function isVoiceMenuOverview(ctx: FastFoodContext) {
+  const media: any = ctx.mediaContext || null;
+  return Boolean(media && /audio|voice|ptt/i.test(String(media.kind || media.type || media.mimeType || ""))
+    && intentMatches(VOICE_MENU_OVERVIEW_RE, String(ctx.text || "")));
+}
+
+function voiceMenuExamples(ctx: FastFoodContext, max = 3) {
+  const items: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  const notes: any[] = Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : [];
+  const vocabulary = notes.length ? menuVocabulary(items) : [];
+  const allowed = items.filter((item) =>
+    item?.available !== false
+    && String(item?.name || "").trim()
+    && Number(item?.price) > 0
+    && (!notes.length || !menuItemBlockedByNotes(notes, item, vocabulary).blocked));
+  const picked: any[] = [];
+  const categories = new Set<string>();
+  for (const item of allowed) {
+    const category = foldIntentText(item?.category_name || item?.category || "");
+    if (category && categories.has(category)) continue;
+    picked.push(item);
+    if (category) categories.add(category);
+    if (picked.length >= max) break;
+  }
+  for (const item of allowed) {
+    if (picked.length >= max) break;
+    if (!picked.includes(item)) picked.push(item);
+  }
+  return picked;
+}
+
+export async function answerVoiceMenuOverview(ctx: FastFoodContext, grantLink: GrantLink = grantMenuLinkForFallback) {
+  if (!isVoiceMenuOverview(ctx)) return null;
+  const examples = voiceMenuExamples(ctx);
+  if (!examples.length) return null;
+  const linked = await grantLink(ctx).catch(() => false);
+  const list = examples.map((item) => `${String(item.name).trim()} — ${Math.round(Number(item.price))} ₸`).join(", ");
+  if (ctx.language === "ru") {
+    return `Есть 😊 Например: ${list}. Что вам больше нравится?${linked ? " Полное меню тоже отправляю ссылкой ниже." : ""}`;
+  }
+  return `Бар 😊 Мысалы: ${list}. Қайсысы көңіліңізден шығады?${linked ? " Толық мәзірді де төмендегі сілтемеден көре аласыз." : ""}`;
+}
+
 /** Same gates as a promised link: closed kitchen / unconfirmed wait / mint failure => false. */
 export const grantMenuLinkForFallback: GrantLink = async (ctx) => {
   if (ctx.magicLinkGranted && ctx.magicLink) return true;

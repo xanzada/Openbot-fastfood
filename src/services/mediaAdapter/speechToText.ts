@@ -29,7 +29,8 @@ async function transcribeWithWhisperApi(
   model: string,
   audioBuffer: Buffer,
   mimeType: string,
-  langHint?: "kk" | "ru"
+  langHint?: "kk" | "ru",
+  externalSignal?: AbortSignal,
 ): Promise<string> {
   const base = String(baseUrl || "").replace(/\/+$/, "") || "https://api.groq.com/openai/v1";
   const ext = getAudioExtension(mimeType);
@@ -51,7 +52,9 @@ async function transcribeWithWhisperApi(
       Authorization: `Bearer ${apiKey.trim()}`,
     },
     body: formData,
-    signal: AbortSignal.timeout(20_000),
+    signal: externalSignal
+      ? AbortSignal.any([externalSignal, AbortSignal.timeout(20_000)])
+      : AbortSignal.timeout(20_000),
   });
 
   if (!response.ok) {
@@ -70,7 +73,8 @@ async function transcribeWithGeminiAudio(
   apiKey: string,
   model: string,
   audioBuffer: Buffer,
-  mimeType: string
+  mimeType: string,
+  externalSignal?: AbortSignal,
 ): Promise<string> {
   const base = String(baseUrl || "").replace(/\/+$/, "") || "https://generativelanguage.googleapis.com/v1beta";
   const normalizedModel = normalizeGeminiMediaModel(model || "gemini-2.5-flash");
@@ -128,7 +132,9 @@ async function transcribeWithGeminiAudio(
         maxOutputTokens: 2048,
       },
     }),
-    signal: AbortSignal.timeout(25_000),
+    signal: externalSignal
+      ? AbortSignal.any([externalSignal, AbortSignal.timeout(25_000)])
+      : AbortSignal.timeout(25_000),
   });
 
   if (!response.ok) {
@@ -143,6 +149,85 @@ async function transcribeWithGeminiAudio(
   return transcript;
 }
 
+export function isCompatibleWorkspaceSttEntry(entry: LlmKeyEntry) {
+  if (!entry?.key || (entry as any).enabled === false) return false;
+  const type = String(entry.type || "").toLowerCase();
+  const model = String(entry.model || "").toLowerCase();
+  const baseUrl = String(entry.baseUrl || "").toLowerCase();
+  if (type === "gemini") {
+    return model.startsWith("gemini-")
+      && (!baseUrl || baseUrl.includes("generativelanguage.googleapis.com"));
+  }
+  return type === "groq" || model.includes("whisper");
+}
+
+export async function raceHedgedBatch<T, R>(
+  items: T[],
+  attempt: (item: T, index: number, signal: AbortSignal) => Promise<R>,
+  signal?: AbortSignal,
+) {
+  const controllers = items.map(() => new AbortController());
+  try {
+    const winner = await Promise.any(items.map(async (item, index) => {
+      const combined = signal
+        ? AbortSignal.any([signal, controllers[index].signal])
+        : controllers[index].signal;
+      return { value: await attempt(item, index, combined), index };
+    }));
+    controllers.forEach((controller, index) => {
+      if (index !== winner.index && !controller.signal.aborted) controller.abort();
+    });
+    return winner;
+  } catch (error) {
+    controllers.forEach((controller) => {
+      if (!controller.signal.aborted) controller.abort();
+    });
+    throw error;
+  }
+}
+
+export async function transcribeWithHedgedGeminiKeys(
+  keys: string[],
+  audioBuffer: Buffer,
+  mimeType: string,
+  signal?: AbortSignal,
+  width = 4,
+): Promise<string> {
+  const usable = keys.filter(Boolean);
+  const batchSize = Math.max(1, Math.min(4, Number(width) || 4));
+  for (let offset = 0; offset < usable.length; offset += batchSize) {
+    if (signal?.aborted) throw signal.reason || new Error("STT_BUDGET_EXHAUSTED");
+    const batch = usable.slice(offset, offset + batchSize);
+    try {
+      const winner = await raceHedgedBatch(batch, async (key, index, attemptSignal) => {
+        const startedAt = Date.now();
+        try {
+          const transcript = await transcribeWithGeminiAudio(
+            "https://generativelanguage.googleapis.com/v1beta",
+            key,
+            "gemini-2.5-flash",
+            audioBuffer,
+            mimeType,
+            attemptSignal,
+          );
+          return { transcript, elapsedMs: Date.now() - startedAt };
+        } catch (error) {
+          if (!attemptSignal.aborted) {
+            console.warn(`[UMA:STT] Gemini free key #${offset + index + 1} failed:`, error instanceof Error ? error.message : error);
+          }
+          throw error;
+        }
+      }, signal);
+      const winnerIndex = offset + winner.index;
+      console.info(`[UMA:STT] transcribed via Gemini free key #${winnerIndex + 1} hedged fallback in ${winner.value.elapsedMs}ms: "${winner.value.transcript.slice(0, 60)}"`);
+      return winner.value.transcript;
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason || error;
+    }
+  }
+  throw new Error("ALL_GEMINI_STT_KEYS_FAILED");
+}
+
 export async function transcribeAudio(
   audioBuffer: Buffer,
   mimeType = "audio/ogg",
@@ -151,7 +236,9 @@ export async function transcribeAudio(
   if (!audioBuffer || audioBuffer.length === 0) return "";
 
   const workspace = getLlmWorkspacePools();
-  const sttEntries: LlmKeyEntry[] = (workspace?.stt || []).filter((e) => e.key && (e as any).enabled !== false);
+  const sttEntries: LlmKeyEntry[] = (workspace?.stt || []).filter(isCompatibleWorkspaceSttEntry);
+  const budgetMs = Math.max(5_000, Math.min(25_000, Number(process.env.STT_TOTAL_BUDGET_MS || 15_000)));
+  const budgetSignal = AbortSignal.timeout(budgetMs);
 
   // Collect candidate STT entries from workspace (stt, groq in media/text, gemini in media/text)
   const candidateEntries: LlmKeyEntry[] = [...sttEntries];
@@ -159,12 +246,8 @@ export async function transcribeAudio(
   // Auto-discover Groq or Gemini keys from media and text pools if stt pool is empty
   const allPools = [...(workspace?.media || []), ...(workspace?.text || [])];
   for (const entry of allPools) {
-    if (!entry.key || (entry as any).enabled === false) continue;
-    if (entry.type === "groq" || String(entry.model || "").toLowerCase().includes("whisper")) {
-      candidateEntries.push(entry);
-    } else if (entry.type === "gemini" && !candidateEntries.some((c) => c.key === entry.key)) {
-      candidateEntries.push(entry);
-    }
+    if (!isCompatibleWorkspaceSttEntry(entry)) continue;
+    if (!candidateEntries.some((candidate) => candidate.key === entry.key)) candidateEntries.push(entry);
   }
 
   // 1. Try workspace candidate entries in priority order
@@ -173,9 +256,9 @@ export async function transcribeAudio(
     try {
       let transcript = "";
       if (entry.type === "gemini") {
-        transcript = await transcribeWithGeminiAudio(entry.baseUrl, entry.key, entry.model, audioBuffer, mimeType);
+        transcript = await transcribeWithGeminiAudio(entry.baseUrl, entry.key, entry.model, audioBuffer, mimeType, budgetSignal);
       } else {
-        transcript = await transcribeWithWhisperApi(entry.baseUrl, entry.key, entry.model, audioBuffer, mimeType, langHint);
+        transcript = await transcribeWithWhisperApi(entry.baseUrl, entry.key, entry.model, audioBuffer, mimeType, langHint, budgetSignal);
       }
       if (transcript) {
         console.info(`[UMA:STT] transcribed via workspace ${entry.name} (${entry.model}) in ${Date.now() - startedAt}ms: "${transcript.slice(0, 60)}"`);
@@ -197,7 +280,8 @@ export async function transcribeAudio(
         "whisper-large-v3-turbo",
         audioBuffer,
         mimeType,
-        langHint
+        langHint,
+        budgetSignal,
       );
       if (transcript) {
         console.info(`[UMA:STT] transcribed via env GROQ_API_KEY in ${Date.now() - startedAt}ms: "${transcript.slice(0, 60)}"`);
@@ -210,25 +294,10 @@ export async function transcribeAudio(
 
   // 3. Fallback to Gemini Primary free keys rotation (0% host CPU / 0% RAM)
   const geminiKeys = getMediaPrimaryKeys();
-  for (let i = 0; i < geminiKeys.length; i++) {
-    const key = geminiKeys[i];
-    if (!key) continue;
-    try {
-      const startedAt = Date.now();
-      const transcript = await transcribeWithGeminiAudio(
-        "https://generativelanguage.googleapis.com/v1beta",
-        key,
-        "gemini-2.5-flash",
-        audioBuffer,
-        mimeType
-      );
-      if (transcript) {
-        console.info(`[UMA:STT] transcribed via Gemini free key #${i + 1} fallback in ${Date.now() - startedAt}ms: "${transcript.slice(0, 60)}"`);
-        return transcript;
-      }
-    } catch (err) {
-      console.warn(`[UMA:STT] Gemini free key #${i + 1} failed:`, err instanceof Error ? err.message : err);
-    }
+  try {
+    return await transcribeWithHedgedGeminiKeys(geminiKeys, audioBuffer, mimeType, budgetSignal);
+  } catch (error) {
+    console.warn("[UMA:STT] hedged Gemini fallback failed:", error instanceof Error ? error.message : error);
   }
 
   throw new Error("ALL_STT_PROVIDERS_FAILED");

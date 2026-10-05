@@ -293,6 +293,7 @@ test("broad menu questions search real dishes before offering a link", () => {
     "Что есть в меню?",
     "Какие у вас блюда?",
     "Покажите ассортимент",
+    "Саламатсыз ба, мен заказ берейін дегем, сіздерде не",
   ]) {
     const plan = resolveAgentToolPlan({ text, explicitMenuLinkIntent: hasExplicitMenuLinkIntent(text) } as any);
     assert.equal(plan.requiredTools[0], "searchMenu", `${text}: ${JSON.stringify(plan)}`);

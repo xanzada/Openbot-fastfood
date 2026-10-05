@@ -4,7 +4,7 @@ import { preloadContext } from "../context/preloadContext.js";
 import { refreshCheckoutContextForText } from "../services/checkoutIntent.service.js";
 import { runFastFoodAgent } from "../agent/fastfoodAgent.js";
 import { validateFinalText } from "../agent/finalValidator.js";
-import { answerAgentFailure, answerCompositionQuestion, needsKitchenCompositionCheck } from "../services/turnSafetyNet.service.js";
+import { answerAgentFailure, answerCompositionQuestion, answerVoiceMenuOverview, needsKitchenCompositionCheck } from "../services/turnSafetyNet.service.js";
 import { recordTurnTrace, refreshCustomerMemory } from "../services/customerMemory.service.js";
 import {
 claimReceiptFingerprint,
@@ -1418,6 +1418,11 @@ async function processWhatsAppWebhook(body: any, started: number) {
               messageId,
               language: ctx.language,
             });
+            const voiceMenuReply = await answerVoiceMenuOverview(ctx);
+            if (voiceMenuReply) {
+              mediaPreemptiveReply = voiceMenuReply;
+              mediaPreemptiveSource = "voice_menu_overview";
+            }
           } else {
             const mediaReplyValidation = validateFinalText(
               stripEscalationSignals(mediaAnalysis.analysis),
