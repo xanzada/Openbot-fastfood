@@ -753,8 +753,13 @@ function validateFinalTextCore(
   // Removing fabricated ingredients cannot leave a health reassurance behind.
   // Current customer allergy context and the claim's own subject bound this gate.
   if (unverifiedAllergyReassurance(text, ctx)) {
-    text = (text.match(SENTENCE_RE) || [text])
-      .filter((sentence) => !unverifiedAllergyReassurance(sentence, ctx)).join(" ").trim();
+    const sentences = text.match(SENTENCE_RE) || [text];
+    const removed = sentences.filter((sentence) => unverifiedAllergyReassurance(sentence, ctx));
+    // Preserve the established diagnostic when this earlier gate also removes
+    // the same unsafe blanket claim. Bare reassurance remains its own category.
+    const blanket = new RegExp(BLANKET_ALLERGEN_ASSURANCE_RE.source, BLANKET_ALLERGEN_ASSURANCE_RE.flags.replace(/[gy]/g, ""));
+    if (removed.some(sentence => blanket.test(sentence))) warnings.push("blanket_allergen_assurance_removed");
+    text = sentences.filter((sentence) => !unverifiedAllergyReassurance(sentence, ctx)).join(" ").trim();
     warnings.push("unverified_allergy_reassurance_removed");
     // A choice prompt with no remaining choices is not an allergy answer.
     if (/^(?:Қайсысын\s+таңдайсыз|Что\s+выберете|Какое\s+выберете)[?!.,\s]*$/iu.test(text)) text = "";
