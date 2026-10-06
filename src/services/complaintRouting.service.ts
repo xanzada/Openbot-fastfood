@@ -8,7 +8,7 @@ import {
   takeComplaintClarification,
   redisClient,
 } from "./redis.service.js";
-import { CASE_FLAG_QUIET_MS, bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind, getActiveOperatorCaseId } from "./operatorCase.service.js";
+import { bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind, getActiveOperatorCaseId, CASE_FLAG_QUIET_MS } from "./operatorCase.service.js";
 import { auditError } from "./auditLogger.service.js";
 import { intentMatches, isLikelyMenuQuestion } from "../utils/intentText.js";
 
