@@ -1,5 +1,7 @@
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import type { FastFoodContext } from "../context/types.js";
+import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
+import { menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
 
 // Only an unverified CONCRETE duration is a factual violation. The old pattern
 // also matched the bare stem "күт", so every polite "күте тұрыңыз" / "бір минут"
@@ -1118,6 +1120,46 @@ function isVoiceContext(ctx: FastFoodContext) {
   return Boolean(media && /audio|voice|ptt/i.test(String(media.kind || media.type || media.mimeType || "")));
 }
 
+function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] = []): string | null {
+  const budget = getMenuBudgetInquiry(ctx.text);
+  if (budget === null) return null;
+  const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  const nearestUser = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-6)
+    .filter((row: any) => row?.role === "user")
+    .map((row: any) => String(row.content ?? row.text ?? "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, ""))
+    .filter((value: string) => value.trim() && value.trim() !== current.trim()).slice(-1)[0] || "";
+  // Price alone cannot satisfy health/diet constraints. Preserve their safety answer.
+  if (ALLERGY_TOPIC_RE.test(current) || ALLERGY_TOPIC_RE.test(nearestUser)
+    || /вегетари|веган|халал|диет|без[^.!?]{0,20}(?:мяса|молока|яиц|глютена)|етсіз|сүтсіз/iu.test(current)) return null;
+  const unknown = ctx.language === "kk"
+    ? `${budget} тг бюджетке сай нұсқалардың бағасын қазір растай алмаймын.`
+    : `Сейчас не могу подтвердить цены вариантов в пределах ${budget} тг.`;
+  const snapshot = ctx.menuSnapshot;
+  const grounding = ctx.menuGrounding;
+  if (!snapshot || !Array.isArray(snapshot.items) || snapshot.source === "menu_unavailable"
+    || grounding?.menu_lookup === "unavailable" || grounding?.error
+    || (!grounding && !toolsCalled.includes("searchMenu"))) return unknown;
+  const vocabulary = menuVocabulary(snapshot.items);
+  const priced = snapshot.items.filter((item: any) => item && item.available !== false
+    && typeof item.name === "string" && item.name.trim()
+    && !menuItemBlockedByNotes(ctx.activeShiftNotes || [], item, vocabulary).blocked)
+    .map((item: any) => ({item, price: typeof item.price === "number" ? item.price
+      : typeof item.price === "string" && /^\d+(?:[.,]\d+)?$/.test(item.price.trim()) ? Number(item.price.trim().replace(",", ".")) : NaN}))
+    .filter(({price}: any) => Number.isFinite(price) && price > 0);
+  if (!priced.length) return unknown;
+  const food = (item: any) => /донер|пицц|бургер|шаурм|фри|ролл|суши|цезар|наггетс|сэндвич|еда|тағам|тамақ/iu.test(`${item.name} ${item.category_name || item.category || ""}`);
+  const choices = priced.filter(({price}: any) => price <= budget)
+    .sort((a: any, b: any) => Number(food(b.item)) - Number(food(a.item)) || b.price - a.price)
+    .slice(0, 3);
+  if (!choices.length) return ctx.language === "kk"
+    ? `Бағасы расталған қолжетімді нұсқалардан ${budget} тг бюджетке сай келетінін таппадым.`
+    : `Среди доступных позиций с подтверждённой ценой не нашёл варианта в пределах ${budget} тг.`;
+  const lines = choices.map(({item,price}: any) => `${item.name.trim()} — ${price} тг`).join("; ");
+  return ctx.language === "kk"
+    ? `${budget} тг шегінде әрқайсысын бөлек таңдауға болады: ${lines}.`
+    : `В пределах ${budget} тг можно выбрать каждый вариант отдельно: ${lines}.`;
+}
+
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
   const result = validateFinalTextCore(...args);
   const warnings = [...result.warnings];
@@ -1133,6 +1175,12 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   const voiceReplacement = replaceGenericVoiceGreeting(aligned.text, args[1]);
   if (voiceReplacement) warnings.push("generic_voice_greeting_blocked");
   let finalText = voiceReplacement || aligned.text;
+  const budgetReply = boundedBudgetAlternatives(args[1], args[2]?.toolsCalled);
+  if (budgetReply !== null) {
+    const links = finalText.match(/https?:\/\/[^\s<>]+/giu) || [];
+    finalText = [budgetReply, ...links].join(" ");
+    warnings.push("budget_alternatives_grounded");
+  }
   if (allergySafetyGuaranteeRequested(args[1]) && !hasHonestSafetyGuaranteeDenial(finalText)) {
     finalText = `${safetyGuaranteeDenialText(args[1])} ${finalText}`.trim();
     warnings.push("missing_allergy_guarantee_denial_added");
