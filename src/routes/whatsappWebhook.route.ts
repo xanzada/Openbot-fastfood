@@ -46,6 +46,7 @@ import {
 import {
   acquireTurnLock,
   bufferInboundText,
+  inboundBufferDelayMs,
   claimMediaAiQuota,
   claimOutboundReply,
   drainInboundBuffer,
@@ -111,6 +112,7 @@ import { recordLearningEvent } from "../services/learningLoop.service.js";
 import { bumpMetric, recordLatency } from "../services/metrics.service.js";
 import { mergeBufferedParts } from "../services/bufferBrain.service.js";
 import { greetingReply, readGuestGreeting } from "../agent/greeting.js";
+import { enqueueVerifiedInboundWebhook, startInboundWebhookQueueWorker } from "../services/inboundWebhookQueue.service.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
 
@@ -787,7 +789,7 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
   logTurnTiming(ctx, source, sendStartedAt);
 }
 
-async function processWhatsAppWebhook(body: any, started: number) {
+async function processWhatsAppWebhook(body: any, started: number, durable?: { fragments: string[]; attempts: number }) {
   const instanceId = getInstanceId(body);
   const phone = getPhone(body);
   // Reassigned once the guard reports the id it deduped on (see below).
@@ -799,7 +801,8 @@ async function processWhatsAppWebhook(body: any, started: number) {
     mediaContext?.caption ||
     mediaContext?.historyLabel ||
     (mediaContext ? "[Media sent]" : "");
-  let customerLanguageText = extractInboundText(body) || mediaContext?.caption || "";
+  if (durable && !mediaContext && durable.fragments.length > 1) text = durable.fragments.join("\n");
+  let customerLanguageText = durable && !mediaContext ? text : extractInboundText(body) || mediaContext?.caption || "";
   let stopTyping: () => void = () => {};
   let turnLockOwner: string | null = null;
 
@@ -891,6 +894,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
     // raw id instead would leave a 180s processing lock nobody releases (found 2026-08-23).
     if (guard.dedupeId) messageId = guard.dedupeId;
     if (guard.blocked) {
+      // A crashed/parallel processor owns this guard temporarily. Completion is
+      // distinct from busy: leave the durable job pending until the lock expires.
+      if (durable && /^duplicate_processing(?:_local)?$/.test(guard.reason || "")) throw new Error("INBOUND_PROCESSING_PENDING");
       if (guard.source === "operator_override") {
         await saveToHistory(String(instanceId || ""), String(phone || ""), "user", text || mediaContext?.historyLabel || "[operator override]", {
           source: "operator_override",
@@ -934,7 +940,14 @@ async function processWhatsAppWebhook(body: any, started: number) {
     };
 
     // Merge fragmented text messages in a small, short-lived Redis buffer.
-    if (!mediaContext && text) {
+    if (durable && !mediaContext && text) {
+      // The accepted fragments are already a frozen Redis bundle. A volatile
+      // follower may never mark itself done before its leader actually replies.
+      turnLockOwner = await waitForTurnLock();
+      if (!turnLockOwner) throw new Error("INBOUND_TURN_PENDING");
+      if (durable.fragments.length > 1) text = await mergeBufferedParts(durable.fragments).catch(() => text);
+      customerLanguageText = text;
+    } else if (!mediaContext && text) {
       const buffered = await bufferInboundText({ instanceId, phone, messageId, text });
       if (!buffered.leader) {
         await markInboundDone(instanceId, messageId);
@@ -979,6 +992,7 @@ async function processWhatsAppWebhook(body: any, started: number) {
     if (!turnLockOwner) {
       turnLockOwner = await waitForTurnLock();
       if (!turnLockOwner) {
+        if (durable) throw new Error("INBOUND_TURN_PENDING");
         // Deliberately NOT requeued as a text part: a photo is not a fragment, and dropping
         // a paid receipt because a text turn was busy would be worse than a rare double.
         // The receipt lane has its own fingerprint claim for that. Proceeding unlocked is
@@ -2029,6 +2043,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
     );
     logTurnTiming(ctx, "agent", sendStartedAt);
   } catch (error) {
+    // Do not clear another processor's lock or issue developer alerts for an
+    // ordinary busy retry. The Redis queue retains ownership and retry state.
+    if (durable && error instanceof Error && error.message === "INBOUND_PROCESSING_PENDING") throw error;
     await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);
     await notifyDeveloperSystemFailure(String(instanceId || ""), error, {
       scope: "whatsapp_webhook",
@@ -2047,6 +2064,9 @@ async function processWhatsAppWebhook(body: any, started: number) {
 
 export function whatsappWebhookRoute(): Router {
   const router = createRouter();
+  // Route creation is part of startup, so old accepted jobs drain even before
+  // the next incoming request. Authentication still precedes every insertion.
+  startInboundWebhookQueueWorker(processWhatsAppWebhook);
 
   router.post("/", resolveTenantInstance, verifySecret, async (req, res) => {
     const started = Date.now();
@@ -2092,6 +2112,9 @@ export function whatsappWebhookRoute(): Router {
     }
 
     const mediaContext = extractInboundMedia(body);
+    // Stickers remain ephemeral: neither AI nor the durable customer queue
+    // needs their binary payload. This intentional skip follows authentication.
+    if (mediaContext?.kind === "sticker") return res.status(202).json({ ok: true, skipped: true, reason: "sticker" });
     const text =
       inboundText ||
       mediaContext?.caption ||
@@ -2104,13 +2127,17 @@ export function whatsappWebhookRoute(): Router {
       return res.status(200).send("ok");
     }
 
-    setImmediate(() => {
-      void processWhatsAppWebhook(body, started).catch((error: any) => {
-        console.error(`[OPENBOT:INBOUND:FAIL] elapsed=${Date.now() - started}ms:`, error?.stack || error?.message || error);
+    try {
+      const job = await enqueueVerifiedInboundWebhook(body, {
+        instance: getInstanceId(body), phone: getPhone(body), messageId: extractMessageId(body),
+        text: String(text), hasMedia: Boolean(mediaContext), bufferMs: inboundBufferDelayMs(String(text)),
       });
-    });
-
-    return res.status(202).json({ ok: true, accepted: true });
+      return res.status(202).json({ ok: true, accepted: true, job_id: job.id, duplicate: !job.inserted });
+    } catch (error) {
+      const badEvent = error instanceof Error && /^(?:BAD_INBOUND_EVENT|INBOUND_EVENT_TOO_LARGE)$/.test(error.message);
+      console.error(`[OPENBOT:INBOUND_QUEUE] event=${badEvent ? "REJECTED" : "PERSISTENCE_UNAVAILABLE"}`);
+      return res.status(badEvent ? 400 : 503).json({ ok: false, error: badEvent ? "invalid_message" : "retry_later" });
+    }
   });
 
   return router;
