@@ -2,6 +2,7 @@ import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpene
 import type { FastFoodContext } from "../context/types.js";
 import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
+import { guardCheckoutSelection } from "./checkoutSelectionGuard.js";
 
 // Only an unverified CONCRETE duration is a factual violation. The old pattern
 // also matched the bare stem "күт", so every polite "күте тұрыңыз" / "бір минут"
@@ -1214,6 +1215,9 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
     finalText = `${safetyGuaranteeDenialText(args[1])} ${finalText}`.trim();
     warnings.push("missing_allergy_guarantee_denial_added");
   }
+  const checkoutSelection = guardCheckoutSelection(finalText, args[1], args[2]?.toolsCalled);
+  if (checkoutSelection.changed) warnings.push(checkoutSelection.changed);
+  finalText = checkoutSelection.text;
   const withoutClosing = dropRepeatedGenericClosing(finalText, args[1]);
   if (withoutClosing !== finalText) {
     finalText = withoutClosing;
