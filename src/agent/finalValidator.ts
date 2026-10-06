@@ -505,9 +505,17 @@ function allergenUnverifiedText(ctx: FastFoodContext) {
 
 function allergySafetyGuaranteeRequested(ctx: FastFoodContext) {
   const text = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
-  if (/(?:не\s+(?:прошу|требую|нужна)|без\s+гаранти|кепілдік\s*(?:керек\s*емес|сұрамай|қажет\s*емес))/iu.test(text)) return false;
-  const allergenQuestion = /аллерг|орех|арахис|жаңғақ|жангак|глютен|лактоз/iu.test(text);
-  return allergenQuestion && /гарантиру(?:ете|ешь|й|йте)|(?:можете|можешь|можно|дай|дайте)[^.!?]{0,70}гарант|гарант[^.!?]{0,60}(?:можете|можешь|даёте|даете)|кепілдік[^.!?]{0,35}(?:бере\s*аласыз|бере\s*аласың|бересіз|бар\s*ма)/iu.test(text);
+  if (!/аллерг|орех|арахис|жаңғақ|жангак|глютен|лактоз/iu.test(text)) return false;
+  const request = /гарантиру(?:ете|ешь|й|йте)|(?:можете|можешь|можно|дай|дайте)[^.!?]{0,70}гарант|гарант[^.!?]{0,60}(?:можете|можешь|даёте|даете)|кепілдік[^.!?]{0,35}(?:бере\s*аласыз|бере\s*аласың|бересіз|бар\s*ма)/iu;
+  const refusal = /не\s+(?:прошу|требую)\s+гарант\p{L}*|гарант(?:ия|ии|ий|ию|ировать)\s+не\s+(?:нужн\p{L}*|требуется)|не\s+(?:нужно|надо|нужна|нужны)\s+гарант|без\s+гаранти|не\s+гарантиру(?:йте|й)|кепілдік(?:ті)?\s*(?:керек\s*емес|қажет\s*емес|сұрамай\p{L}*|талап\s*етпей\p{L}*|бермеңіз)/iu;
+  let requested = false;
+  // A refusal concerns the guarantee in its clause. A later explicit request
+  // reopens it, while a later guarantee refusal withdraws the earlier request.
+  for (const clause of text.split(/[.!?;:,\n]|\s+(?:но|однако|бірақ)\s+/iu)) {
+    if (refusal.test(clause)) requested = false;
+    else if (request.test(clause)) requested = true;
+  }
+  return requested;
 }
 
 function hasHonestSafetyGuaranteeDenial(text: string) {
