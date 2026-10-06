@@ -298,14 +298,26 @@ function isScopedNegatedCompositionClaim(clause: string) {
 }
 
 const ALLERGY_TOPIC_RE = /аллерг|орех|арахис|жаңғақ|жангак|глютен|лактоз/iu;
-const ALLERGY_REASSURANCE_RE = /(?<!\p{L})(?:алаңдама\p{L}*|уайымдама\p{L}*|қорықпа\p{L}*|не\s*(?:беспокой\p{L}*|волнуй\p{L}*|бой\p{L}*)|ничего\s+страшного)(?!\p{L})/iu;
+const ALLERGY_REASSURANCE_RE = /(?<!\p{L})(?:алаңдама\p{L}*|уайымдама\p{L}*|қорықпа\p{L}*|не\s*(?:беспокой\p{L}*|волнуй\p{L}*|переживай\p{L}*|бой\p{L}*)|ничего\s+страшного)(?!\p{L})/iu;
 
 function unverifiedAllergyReassurance(sentence: string, ctx: FastFoodContext) {
   const plain = sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
   const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
-  if (!ALLERGY_TOPIC_RE.test(current) && !ALLERGY_TOPIC_RE.test(plain)) return false;
+  // Only a current food/health continuation carries the nearest customer's
+  // allergy context forward. Assistant claims and unrelated payment turns do not.
+  const foodContinuation = /(?:блюд|ед[ауы]|пищ|донер|тағам|тамақ|тамак|жеуге|жесе|бере\s+ал|беруге)/iu.test(current)
+    || /(?:можно|может|могу|дать|давать)[^.!?]{0,35}(?:ему|ей|реб[её]нку|есть)|(?:ему|ей)[^.!?]{0,35}(?:дать|давать|есть)/iu.test(current);
+  const previousCustomer = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
+    .slice(-6).filter((row: any) => row?.role === "user")
+    .map((row: any) => String(row.content ?? row.text ?? "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, ""))
+    .filter((value: string) => value.trim() && value.trim() !== current.trim()).slice(-1)[0] || "";
+  if (!ALLERGY_TOPIC_RE.test(current) && !ALLERGY_TOPIC_RE.test(plain)
+    && !(foodContinuation && ALLERGY_TOPIC_RE.test(previousCustomer))) return false;
+  // Explicit technical help is empathy about that operation, not health advice.
+  if (/(?:помо[гщ]|разобра|көмектес|тексер)[^.!?]{0,35}(?:оплат|ссылк|доставк|төлем|сілтеме|жеткізу)|(?:оплат|ссылк|доставк|төлем|сілтеме|жеткізу)[^.!?]{0,35}(?:помо[гщ]|разобра|көмектес|тексер)/iu.test(plain)
+    && !/(?:блюд|пищ|аллерг|орех|жаңғақ|тағам|жеуге|безопасн|қауіпсіз|смело\s+давать)/iu.test(plain)) return false;
   return plain.split(/[,;]|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
-    ALLERGY_REASSURANCE_RE.test(clause)
+    (ALLERGY_REASSURANCE_RE.test(clause) || /(?:можно\s+смело\s+(?:дать|давать|есть)|еш\s+қауіп\s+жоқ)/iu.test(clause))
       && !/(?:не\s*(?:говорю|говорил|утверждаю)|айтпай\p{L}*|демей\p{L}*)/iu.test(clause)
       && !/(?:не\s*(?:беспокой\p{L}*|волнуй\p{L}*)\s+о\s+(?:ссылк|доставк|оплат)|(?:сілтеме|жеткізу|төлем)[^.!?]{0,15}(?:туралы|жөнінде)\s+алаңдама)/iu.test(clause));
 }
