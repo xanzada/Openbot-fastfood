@@ -5,7 +5,7 @@ import { getCustomerOrder } from "./customerOrder.service.js";
 import { requestedOrderNumber, lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { getMenuContext } from "./dle.service.js";
 import { classifyKitchenSalesPolicyForContext } from "./kitchenPolicy.service.js";
-import { hasDirectOrderIntent } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent } from "../utils/orderIntent.js";
 import { hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
 import { hasConfirmedCustomerIncident, isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin } from "./complaintRouting.service.js";
 import { honorMenuLinkPromise } from "../agent/linkPromise.js";
@@ -211,10 +211,17 @@ export async function answerAgentFailure(
       "Не могу сейчас подтвердить состояние заказа. Уточните, пожалуйста, номер заказа.");
   }
   const requestedLink = plan.requiredTools.includes("sendMenuLink");
-  const linkReply = (linked: boolean) => linked
-    ? say(ctx, "Мәзірді қарау сілтемесін төменге жібердім.", "Ссылку для просмотра меню отправил ниже.")
-    : say(ctx, "Қазір сілтемені жіберу мүмкін болмады. Біраздан кейін қайта сұраңызшы.",
+  const linkReply = (linked: boolean) => {
+    if (!linked) return say(ctx, "Қазір сілтемені жіберу мүмкін болмады. Біраздан кейін қайта сұраңызшы.",
       "Сейчас не удалось отправить ссылку. Попробуйте, пожалуйста, чуть позже.");
+    const kitchen = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext || null, ctx.activeShiftNotes);
+    // A successful link preserves the customer's purpose, but does not establish
+    // that an unread, closed or waiting kitchen can accept an order right now.
+    const ordering = hasDirectOrderIntent(ctx.text) && kitchen.stateKnown && kitchen.mode === "normal";
+    return ordering
+      ? say(ctx, "Тапсырысты төмендегі сілтеме арқылы рәсімдей аласыз.", "Оформить заказ можно по ссылке ниже.")
+      : say(ctx, "Мәзірді төмендегі сілтемеден қарай аласыз.", "Меню можно посмотреть по ссылке ниже.");
+  };
   const menuLookup = plan.requiredTools.includes("searchMenu");
   if (menuLookup && !needsHumanRecovery(ctx)) {
     const grounding = await groundMenuTurn(ctx, readMenu);
@@ -225,10 +232,10 @@ export async function answerAgentFailure(
     const alternatives = (grounding.safe_alternatives || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
     const list = (matches.length ? matches : alternatives)
       .map((item: any) => String(item.name) + " — " + Number(item.price) + " ₸").join(", ");
-    const ordering = hasDirectOrderIntent(ctx.text);
+    const directOrdering = hasDirectOrderIntent(ctx.text);
     // A broad menu request may have no named item match. Execute its current
     // planned link through the real issuer instead of claiming a missing dish.
-    if (!matches.length && requestedLink && !ordering
+    if (!matches.length && requestedLink && !directOrdering
       && !findBlockedMenuItemMention(ctx.activeShiftNotes || [], ctx.menuSnapshot?.items || [], ctx.text)) {
       return linkReply(await grantLink(ctx).catch(() => false));
     }
@@ -236,18 +243,42 @@ export async function answerAgentFailure(
       "Бұл сұрағаныңыз қазір қолжетімсіз." + (list ? " Мыналар бар: " + list + "." : ""),
       "Сейчас этой позиции нет в доступном меню." + (list ? " Есть другие варианты: " + list + "." : ""));
     const kitchen = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext || null, ctx.activeShiftNotes);
+    // Current ordering-method questions share checkout intent; an explicit menu
+    // link request still asks for browsing rather than current order acceptance.
+    const ordering = directOrdering || (hasCustomerCheckoutIntent(ctx.text) && !hasMenuInquiryIntent(ctx.text));
+    if (ordering && !kitchen.stateKnown) return say(ctx,
+      "Қазір тапсырыс қабылдап жатқанымызды растай алмаймын. Мәзірде: " + list + ".",
+      "Не могу сейчас подтвердить, принимаем ли заказы. В меню: " + list + ".");
     if (ordering && kitchen.blocksAllSales && kitchen.mode !== "off_hours") return say(ctx,
       "Қазір тапсырыс қабылдай алмаймыз. Мәзірде: " + list + ".",
       "Сейчас заказы не принимаем. В меню: " + list + ".");
     if (ordering && kitchen.requiresConsent && ctx.kitchenCheckoutFingerprint !== kitchen.fingerprint) return say(ctx,
-      "Күту уақыты — " + kitchen.waitLabelKk + ". Күтуге келісесіз бе?",
-      "Ожидание — " + kitchen.waitLabelRu + ". Вы готовы подождать?");
+      "Мәзірде: " + list + ". Күту уақыты — " + kitchen.waitLabelKk + ". Күтуге келісесіз бе?",
+      "В меню: " + list + ". Ожидание — " + kitchen.waitLabelRu + ". Вы готовы подождать?");
     const linked = requestedLink ? await grantLink(ctx).catch(() => false) : false;
+    let linkFailure = "";
+    // Keep a denied or failed current link request useful after the fresh price
+    // answer. Kitchen facts explain blocked actions; an allowed issuer failure
+    // supplies no additional backend cause or successful-link evidence.
+    if (!linked && (requestedLink || hasCustomerCheckoutIntent(ctx.text))) {
+      if (!kitchen.stateKnown) linkFailure = say(ctx,
+        "Қазір асүйдің күйін растай алмаймын, сондықтан сілтемені әзірше жібермеймін. Біраздан кейін қайта сұраңызшы.",
+        "Не могу сейчас подтвердить состояние кухни, поэтому ссылку пока не отправляю. Попробуйте, пожалуйста, чуть позже.");
+      else if (kitchen.blocksAllSales && kitchen.mode !== "off_hours") linkFailure = say(ctx,
+        "Қазір тапсырыс қабылдамаймыз, сілтемені әзірше жібермеймін. Мәзірді осында айтып бере аламын.",
+        "Сейчас заказы не принимаем, ссылку пока не отправляю. Могу подсказать меню здесь.");
+      else if (kitchen.requiresConsent && ctx.kitchenCheckoutFingerprint !== kitchen.fingerprint) linkFailure = say(ctx,
+        "Сілтемені әзірше жібермеймін. Күту уақыты — " + kitchen.waitLabelKk + ". Күтуге келісесіз бе?",
+        "Ссылку пока не отправляю. Ожидание — " + kitchen.waitLabelRu + ". Вы готовы подождать?");
+      else linkFailure = linkReply(false);
+    }
     const offHours = ordering && kitchen.mode === "off_hours";
+    const orderLink = ordering && kitchen.stateKnown && !kitchen.blocksAllSales
+      && (!kitchen.requiresConsent || ctx.kitchenCheckoutFingerprint === kitchen.fingerprint);
     return say(ctx, "Бар: " + list + "." + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
-      + (linked ? (offHours ? " Мәзірді қарау сілтемесін төменге жібердім." : " Тапсырыс беру сілтемесін төменге жібердім.") : ""),
+      + (linked ? (orderLink ? " Тапсырыс беру сілтемесін төменге жібердім." : " Мәзірді қарау сілтемесін төменге жібердім.") : (linkFailure ? " " + linkFailure : "")),
       "Есть: " + list + "." + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
-      + (linked ? (offHours ? " Ссылку для просмотра меню отправил ниже." : " Оформить заказ можно по ссылке ниже.") : ""));
+      + (linked ? (orderLink ? " Оформить заказ можно по ссылке ниже." : " Ссылку для просмотра меню отправил ниже.") : (linkFailure ? " " + linkFailure : "")));
   }
   if (requestedLink && !needsHumanRecovery(ctx)) {
     return linkReply(await grantLink(ctx).catch(() => false));
@@ -272,9 +303,7 @@ export async function answerAgentFailure(
           : (kk ? "Тапсырыс бергіңіз келсе, жазыңыз — сілтемені жіберемін." : "Если хотите заказать, напишите — пришлю ссылку.");
         return [head, ...lines, tail].join("\n");
       }
-      return say(ctx,
-        "Кешіріңіз, жауап сәл кешікті. Мәзір мен бағалар төмендегі сілтемеде — сол арқылы бірден тапсырыс бере аласыз.",
-        "Извините за задержку. Меню с ценами — по ссылке ниже, там же можно сразу оформить заказ.");
+      return linkReply(linked);
     }
   }
   if (!needsHumanRecovery(ctx)) {
