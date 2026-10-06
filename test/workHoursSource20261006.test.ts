@@ -95,3 +95,25 @@ for(const reply of ['Открываемся в 03:00.','Закрываемся �
 for(const reply of ['Открываемся в 12:00.','Закрываемся в 03:00.']){
   test(`the correct single opening/closing endpoint remains supported: ${reply}`,()=>assert.equal(validate(reply,ctx('ru',{config:{work_hours:'12:00 - 03:00'}})),reply));
 }
+
+// The innocuous "без" wording still needs authority for its factual closing time.
+// Keep the exact groundingFindings sentence while varying only tenant hours.
+for (const [name, config, supported] of [
+  ['missing tenant hours', {}, false],
+  ['matching tenant hours', { work_hours: '12:00 - 23:00' }, true],
+  ['mismatching tenant hours', { work_hours: '12:00 - 22:00' }, false],
+] as const) {
+  test(`ordinary non-allergen wording respects closing-time authority: ${name}`, () => {
+    const reply = 'Работаем без перерыва до 23:00.';
+    const result = validateFinalText(reply, ctx('ru', { config }), { toolsCalled: [] });
+    if (supported) {
+      assert.equal(result.text, reply);
+      assert.ok(!result.warnings.includes('unsupported_work_hours_claim_removed'));
+    } else {
+      assert.doesNotMatch(result.text, /23:00/u);
+      assert.ok(result.text.trim());
+      assert.ok(result.warnings.includes('unsupported_work_hours_claim_removed'));
+    }
+    assert.ok(!result.warnings.includes('ungrounded_allergen_assurance_removed'));
+  });
+}

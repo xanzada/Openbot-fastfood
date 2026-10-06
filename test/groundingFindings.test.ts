@@ -79,7 +79,10 @@ test("ordinary sentences that merely contain 'без' or 'нет' are left alone
     "Извините, этого блюда нет в наличии.",
     "Скидок нет.",
   ]) {
-    const out = validateFinalText(innocent, ctx(), { toolsCalled: [] });
+    const context = innocent === "Работаем без перерыва до 23:00."
+      ? ctx({ config: { work_hours: "12:00 - 23:00" } })
+      : ctx();
+    const out = validateFinalText(innocent, context, { toolsCalled: [] });
     assert.equal(out.text, innocent, `must not be touched: ${innocent}`);
   }
 });
