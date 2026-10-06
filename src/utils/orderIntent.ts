@@ -1,11 +1,13 @@
 import { intentMatches } from "./intentText.js";
 import { wantsMenuAsText } from "./magicLink.js";
+import { isMenuBudgetInquiry } from "./menuBudget.js";
 
 export const DIRECT_ORDER_INTENT_RE =
   /(?:(?:тапсырыс|заказ)\s*(?:бер|жаса|ет|қыл|хочу|оформ|сдел)|(?:алғым\s*келе|аламын|алайын|хочу\s*заказ|хочу\s*взять)|(?:[1-9]|екі|бір|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он|один|два|три|две)\s*(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]|порц)|(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]).*(?:жасап|әкел|жеткіз|берші|дайында|алғым|аламын|алайын))/iu;
 
 export function hasDirectOrderIntent(text = ""): boolean {
   const value = String(text || "");
+  if (isMenuBudgetInquiry(value)) return false;
   if (DIRECT_ORDER_INTENT_RE.test(value)) return true;
   const food = /(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кока[-\s]*кол|кол[ауы]|cola|спрайт|sprite|фанта|fanta|айран|цезар|комбо)/iu;
   return food.test(value) && /(?:керек|мне|маған|возьму|тогда|дайте|нуж(?:на|ен|ны|но))/iu.test(value)
@@ -28,8 +30,10 @@ export function hasCustomerCheckoutIntent(text = ""): boolean {
     const refusedLinkRu = /(?:не\s+(?:отправ\p{L}*|присыл\p{L}*|пришл\p{L}*|высыла\p{L}*|скидыва\p{L}*|откро\p{L}*|покаж\p{L}*|дай(?:те)?)[^.!?]{0,40}(?:меню|каталог|корзин|ссылк|сілтеме)|(?:меню|каталог|корзин\p{L}*|ссылк\p{L}*|сілтеме\p{L}*)[^.!?]{0,40}не\s+(?:отправ\p{L}*|присыл\p{L}*|пришл\p{L}*|высыла\p{L}*|скидыва\p{L}*|откро\p{L}*|покаж\p{L}*))/iu.test(clause);
     const refusedLinkKk = /(?<!\p{L})(?:жіберме(?:ңіз|ңдер|ші)?|жібермей(?:мін|міз)?|жиберме(?:ніз|ңіз|ндер|ңдер|ші)?|жибермей(?:мін|міз)?|ашпа(?:ңыз|ңдар|шы)?|ашпай(?:мын|мыз)?|көрсетпе(?:ңіз|ңдер|ші)?|көрсетпей(?:мін|міз)?|корсетпе(?:ніз|ңіз|ндер|ңдер|ші)?)(?!\p{L})/iu.test(clause);
     if (refusedOrder || refusedLinkRu || refusedLinkKk) { decision = false; continue; }
-    const explicitOrderAction = explicitOrderActionRe.test(clause);
+    const budgetInquiry = isMenuBudgetInquiry(clause);
+    const explicitOrderAction = !budgetInquiry && explicitOrderActionRe.test(clause);
     const explicitLinkRequest = explicitLinkRequestRe.test(clause);
+    if (budgetInquiry && !explicitLinkRequest) continue;
     // Writing the menu here grants no checkout permission by itself. A separate
     // current URL or order request can still accompany the textual menu.
     const explicitUrlRequest = explicitLinkRequestRe.test(clause.replace(/(?<!\p{L})(?:меню|мәзір\p{L}*|мазір\p{L}*|каталог\p{L}*|корзин\p{L}*|себет\p{L}*)(?!\p{L})/giu, ""))
