@@ -40,4 +40,12 @@ for(const [id,text,history]of [
  ['health-now','Аллергия на орехи. Что взять на 2000 тенге?',[]],
  ['health-continuation','Что взять на 2000 тенге?',[{role:'user',content:'У ребёнка аллергия на орехи'}]],
  ['diet','Без мяса, что взять на 2000 тенге?',[]],
+ ['operator-request','Что взять на 2000 тенге? Хочу живого оператора.',[]],
+ ['status-question','Что взять на 2000 тенге? Где мой заказ?',[]],
+ ['payment-question','Что взять на 2000 тенге? Я уже оплатил.',[]],
+ ['ingredients-question','Что взять на 2000 тенге? Что в составе донера?',[]],
+ ['kitchen-question','Что взять на 2000 тенге? Кухня открыта?',[]],
 ] as const)test(id,()=>{const candidate='Подтвердить подходящий вариант пока не могу.';assert.equal(validateFinalText(candidate,ctx({language:'ru',text,chatHistory:history}),grounding).text,candidate);});
+test('budgeted drinks question does not substitute meals for drinks',()=>{
+ const r=validateFinalText(raw,ctx({language:'ru',text:'Что взять попить на 2000 тенге?'}),grounding);assert.match(r.text,/Спрайт — 650 тг/);assert.doesNotMatch(r.text,/Донер|Фри|Пицца/);
+});

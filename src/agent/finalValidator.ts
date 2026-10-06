@@ -1124,6 +1124,9 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   const budget = getMenuBudgetInquiry(ctx.text);
   if (budget === null) return null;
   const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  // A budget answer must not replace another current requested answer/action.
+  if (/(?:оператор|админ|жалоб|шағым|шагым|отрав|ақша|акша|возврат|вернит|оплат|төлем|толем|чек|заказ|тапсырыс|состав|құрам|курам|ингредиент|кухн|асүй|ас\s?үй)/iu.test(current)) return null;
+  const drinksOnly = /(?:напит|попить|пить|сусын|ішетін|ишетин)/iu.test(current);
   const nearestUser = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-6)
     .filter((row: any) => row?.role === "user")
     .map((row: any) => String(row.content ?? row.text ?? "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, ""))
@@ -1148,7 +1151,8 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     .filter(({price}: any) => Number.isFinite(price) && price > 0);
   if (!priced.length) return unknown;
   const food = (item: any) => /донер|пицц|бургер|шаурм|фри|ролл|суши|цезар|наггетс|сэндвич|еда|тағам|тамақ/iu.test(`${item.name} ${item.category_name || item.category || ""}`);
-  const choices = priced.filter(({price}: any) => price <= budget)
+  const choices = priced.filter(({item,price}: any) => price <= budget
+    && (!drinksOnly || /напит|сусын|сок|шырын|спрайт|кола|фанта|вода|су(?:\s|$)|чай|шай|кофе/iu.test(`${item.name} ${item.category_name || item.category || ""}`)))
     .sort((a: any, b: any) => Number(food(b.item)) - Number(food(a.item)) || b.price - a.price)
     .slice(0, 3);
   if (!choices.length) return ctx.language === "kk"
