@@ -288,6 +288,28 @@ const ALLERGEN_GROUPS = [/орех|жаңғақ|жангак/iu, /арахис/i
   /яйц|яиц|жұмыртқа/iu, /молок|сүт/iu, /кунжут|күнжіт/iu, /соев|соя/iu,
   /морепродукт|теңіз\s*өнім|тениз\s*оним/iu];
 
+function isScopedNegatedCompositionClaim(clause: string) {
+  const value = clause.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "").trim();
+  // The object precedes the negated verification verb in these honest replies.
+  // A positive assertion joined to it must remain subject to the other guards.
+  if (/(?<!\p{L})(?:подтвержден[аоы]?|подтверждён[аоы]?|гарантирую|точно|безопасно|расталған)(?!\p{L})/iu.test(value)) return false;
+  return /^(?:(?:не\s+говорю|не\s+утверждаю)\s*:\s*)?(?:отсутствие|наличие|безопасность)[^.!?;,]{0,70}(?:гарантировать|подтвердить|проверить)\s+не\s*(?:могу|можем)[.!?]?$/iu.test(value)
+    || /^(?:\p{L}+\s+){0,8}(?:жоқ|бар)\s+екен(?:ін|дігін)\s+(?:растай|тексере)\s+алмай\p{L}*[.!?]?$/iu.test(value);
+}
+
+const ALLERGY_TOPIC_RE = /аллерг|орех|арахис|жаңғақ|жангак|глютен|лактоз/iu;
+const ALLERGY_REASSURANCE_RE = /(?<!\p{L})(?:алаңдама\p{L}*|уайымдама\p{L}*|қорықпа\p{L}*|не\s*(?:беспокой\p{L}*|волнуй\p{L}*|бой\p{L}*)|ничего\s+страшного)(?!\p{L})/iu;
+
+function unverifiedAllergyReassurance(sentence: string, ctx: FastFoodContext) {
+  const plain = sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  if (!ALLERGY_TOPIC_RE.test(current) && !ALLERGY_TOPIC_RE.test(plain)) return false;
+  return plain.split(/[,;]|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
+    ALLERGY_REASSURANCE_RE.test(clause)
+      && !/(?:не\s*(?:говорю|говорил|утверждаю)|айтпай\p{L}*|демей\p{L}*)/iu.test(clause)
+      && !/(?:не\s*(?:беспокой\p{L}*|волнуй\p{L}*)\s+о\s+(?:ссылк|доставк|оплат)|(?:сілтеме|жеткізу|төлем)[^.!?]{0,15}(?:туралы|жөнінде)\s+алаңдама)/iu.test(clause));
+}
+
 function isCompositionUncertaintyOnly(sentence: string) {
   // A denial talks ABOUT safety; it must not be mistaken for a safety assertion.
   // Check each adversative/coordinate clause so a later assurance stays prohibited.
@@ -295,7 +317,7 @@ function isCompositionUncertaintyOnly(sentence: string) {
   const denial = /^(?:(?:кешіріңіз|извините)[,\s]*)?(?:не\s*(?:могу|можем)\s*(?:гарантировать|подтвердить|проверить)[^.!?;]*|(?:гарантировать|подтвердить|проверить)[^.!?;]*не\s*(?:могу|можем)|[^.!?;]*(?:кепілдік\s*бере\s*алмаймын|қауіпсіздігін\s*растай\s*алмаймын))[.!?]?$/iu;
   let uncertainty = false;
   for (const clause of clauses) {
-    if (denial.test(clause.trim())) { uncertainty = true; continue; }
+    if (denial.test(clause.trim()) || isScopedNegatedCompositionClaim(clause)) { uncertainty = true; continue; }
     if (COMPOSITION_UNKNOWN_RE.test(clause)) {
       uncertainty = true;
       if (!/содержит|құрамында|безопасн|қауіпсіз|кауипсиз|(?:орех|жаңғақ|арахис|глютен|лактоз)[^.!?]*(?:нет|жоқ|сыз)|нет[^.!?]*(?:орех|жаңғақ|арахис|глютен|лактоз)/iu.test(clause)) continue;
@@ -712,6 +734,17 @@ function validateFinalTextCore(
     if (!textWithoutUrls(text)) return { text: /құрам|состав|орех|жаңғақ|аллерг/iu.test(ctx.text)
       ? allergenUnverifiedText(ctx)
       : unverifiedHumanActionText(ctx, caseCreated, notificationAccepted), hasLink: false, warnings };
+  }
+
+  // Removing fabricated ingredients cannot leave a health reassurance behind.
+  // Current customer allergy context and the claim's own subject bound this gate.
+  if (unverifiedAllergyReassurance(text, ctx)) {
+    text = (text.match(SENTENCE_RE) || [text])
+      .filter((sentence) => !unverifiedAllergyReassurance(sentence, ctx)).join(" ").trim();
+    warnings.push("unverified_allergy_reassurance_removed");
+    // A choice prompt with no remaining choices is not an allergy answer.
+    if (/^(?:Қайсысын\s+таңдайсыз|Что\s+выберете|Какое\s+выберете)[?!.,\s]*$/iu.test(text)) text = "";
+    if (!hasHonestSafetyGuaranteeDenial(text)) text = [safetyGuaranteeDenialText(ctx), text].filter(Boolean).join(" ");
   }
 
   // A truncated generation once shipped the single word "Өкі" to a guest. A reply that
