@@ -135,9 +135,9 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
 
   const toolPlan = await resolveLiveAgentToolPlan(ctx);
   const menuGrounding = toolPlan.requiredTools.includes("searchMenu") ? await groundMenuTurn(ctx) : null;
-  const groundedCalls = menuGrounding ? [{ name: "searchMenu", arguments: { query: menuQueryForTurn(ctx.text), limit: 12 } }] : [];
+  const groundedCalls = menuGrounding ? [{ name: "searchMenu", arguments: { query: typeof menuGrounding.lookup_query === "string" ? menuGrounding.lookup_query : menuQueryForTurn(ctx.text, ctx), limit: 12 } }] : [];
   const menuInstruction = menuGrounding
-    ? "searchMenu already executed for THIS turn. Use this verified result, including unavailable flags; do not invent a missing exact match.\n" + JSON.stringify(menuGrounding)
+    ? "searchMenu already executed for THIS turn. Use this verified result, including unavailable flags; do not invent a missing exact match. When needs_dish_clarification is true, ask which dish the customer means instead of selecting one from previous assistant text.\n" + JSON.stringify(menuGrounding)
     : undefined;
   const kitchenPolicy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   const consentInstruction = kitchenPolicy.requiresConsent && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint

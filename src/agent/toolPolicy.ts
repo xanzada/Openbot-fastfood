@@ -5,6 +5,7 @@ import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from
 import { intentMatches } from "../utils/intentText.js";
 import { getKitchenCheckoutFingerprint } from "../services/redis.service.js";
 import { wantsMenuAsText } from "../utils/magicLink.js";
+import { isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -123,8 +124,8 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const customerWords = text.toLowerCase().match(/\p{L}{3,}/gu) || [];
   const namedCatalogItem = catalogWords.some((name: string) => customerWords.some((word) =>
     word === name || (name.length >= 4 && word.startsWith(name))));
-  const menuLookup = intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text);
-  if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident && !wantsMenuAsText(text)
+  const menuLookup = intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+  if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && (hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }

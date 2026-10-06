@@ -1,4 +1,5 @@
 import { createTool } from "@voltagent/core";
+import { customerCompositionSubject, isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -31,8 +32,9 @@ const QUERY_FILLERS = new Set([
   "меню", "мәзір", "мәзірде", "сыздерде", "сіздерде", "в", "дай", "дайте", "пожалуйста",
 ]);
 
-export function menuQueryForTurn(text: string) {
-  return (normalizeText(text).match(/[\p{L}\p{N}]+/gu) || [])
+export function menuQueryForTurn(text: string, ctx?: FastFoodContext) {
+  const queryText = ctx && isContextualCompositionQuestion(text) ? customerCompositionSubject(ctx) || "" : text;
+  return (normalizeText(queryText).match(/[\p{L}\p{N}]+/gu) || [])
     .filter((word) => !QUERY_FILLERS.has(word)).join(" ").slice(0, 80);
 }
 
@@ -271,8 +273,9 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
 /** Mandatory facts read also covers models that ignore tool choice and provider fallback. */
 export async function groundMenuTurn(ctx: FastFoodContext, readMenu: typeof getMenuContext = getMenuContext) {
   if (ctx.menuGrounding) return ctx.menuGrounding;
-  const query = menuQueryForTurn(ctx.text);
+  const needsDishClarification = isContextualCompositionQuestion(ctx.text) && !customerCompositionSubject(ctx);
+  const query = menuQueryForTurn(ctx.text, ctx);
   const result = await createSearchMenuSkill(ctx, readMenu).execute!({ query, limit: 12 }, {} as any);
-  ctx.menuGrounding = result as Record<string, any>;
+  ctx.menuGrounding = { ...(result as Record<string, any>), lookup_query: query, ...(needsDishClarification ? { needs_dish_clarification: true } : {}) };
   return ctx.menuGrounding;
 }

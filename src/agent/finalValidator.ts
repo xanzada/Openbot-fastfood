@@ -503,6 +503,25 @@ function allergenUnverifiedText(ctx: FastFoodContext) {
     : "У меня нет подтверждённых данных о составе и аллергенах. Гарантировать безопасность при аллергии не могу.";
 }
 
+function allergySafetyGuaranteeRequested(ctx: FastFoodContext) {
+  const text = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  if (/(?:не\s+(?:прошу|требую|нужна)|без\s+гаранти|кепілдік\s*(?:керек\s*емес|сұрамай|қажет\s*емес))/iu.test(text)) return false;
+  const allergenQuestion = /аллерг|орех|арахис|жаңғақ|жангак|глютен|лактоз/iu.test(text);
+  return allergenQuestion && /гарантиру(?:ете|ешь|й|йте)|(?:можете|можешь|можно|дай|дайте)[^.!?]{0,70}гарант|гарант[^.!?]{0,60}(?:можете|можешь|даёте|даете)|кепілдік[^.!?]{0,35}(?:бере\s*аласыз|бере\s*аласың|бересіз|бар\s*ма)/iu.test(text);
+}
+
+function hasHonestSafetyGuaranteeDenial(text: string) {
+  return (text.match(SENTENCE_RE) || [text]).some((sentence) =>
+    isCompositionUncertaintyOnly(sentence)
+    && /не\s*(?:могу|можем)[^.!?]{0,70}гарант|гарант[^.!?]{0,70}не\s*(?:могу|можем)|кепілдік[^.!?]{0,40}алмай|қауіпсіздігін\s*растай\s*алмай/iu.test(sentence));
+}
+
+function safetyGuaranteeDenialText(ctx: FastFoodContext) {
+  return ctx.language === "kk"
+    ? "Аллергия кезінде қауіпсіздігіне кепілдік бере алмаймын."
+    : "Гарантировать безопасность при аллергии не могу.";
+}
+
 function runtimeUnavailableText(ctx: FastFoodContext) {  return ctx.language === "kk"
     ? "Қазір асүй статусын тексере алмаймын. Кейін қайталап жазыңыз."
     : "Не могу проверить статус кухни. Напишите позже.";
@@ -1060,7 +1079,11 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   if (aligned.changed) warnings.push(aligned.changed);
   const voiceReplacement = replaceGenericVoiceGreeting(aligned.text, args[1]);
   if (voiceReplacement) warnings.push("generic_voice_greeting_blocked");
-  const finalText = voiceReplacement || aligned.text;
+  let finalText = voiceReplacement || aligned.text;
+  if (allergySafetyGuaranteeRequested(args[1]) && !hasHonestSafetyGuaranteeDenial(finalText)) {
+    finalText = `${safetyGuaranteeDenialText(args[1])} ${finalText}`.trim();
+    warnings.push("missing_allergy_guarantee_denial_added");
+  }
   return warnings.length === result.warnings.length && finalText === result.text
     ? result
     : { ...result, text: finalText, warnings };
