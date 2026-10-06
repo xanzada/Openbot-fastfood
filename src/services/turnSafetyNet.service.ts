@@ -5,7 +5,7 @@ import { getCustomerOrder } from "./customerOrder.service.js";
 import { requestedOrderNumber, lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { getMenuContext } from "./dle.service.js";
 import { classifyKitchenSalesPolicyForContext } from "./kitchenPolicy.service.js";
-import { hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent } from "../utils/orderIntent.js";
 import { hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
 import { hasConfirmedCustomerIncident, isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin } from "./complaintRouting.service.js";
 import { honorMenuLinkPromise } from "../agent/linkPromise.js";
@@ -210,6 +210,11 @@ export async function answerAgentFailure(
     return say(ctx, "Тапсырыстың қазіргі күйін растай алмаймын. Тапсырыс нөмірін жазыңызшы.",
       "Не могу сейчас подтвердить состояние заказа. Уточните, пожалуйста, номер заказа.");
   }
+  const requestedLink = plan.requiredTools.includes("sendMenuLink");
+  const linkReply = (linked: boolean) => linked
+    ? say(ctx, "Мәзірді қарау сілтемесін төменге жібердім.", "Ссылку для просмотра меню отправил ниже.")
+    : say(ctx, "Қазір сілтемені жіберу мүмкін болмады. Біраздан кейін қайта сұраңызшы.",
+      "Сейчас не удалось отправить ссылку. Попробуйте, пожалуйста, чуть позже.");
   const menuLookup = plan.requiredTools.includes("searchMenu");
   if (menuLookup && !needsHumanRecovery(ctx)) {
     const grounding = await groundMenuTurn(ctx, readMenu);
@@ -220,10 +225,16 @@ export async function answerAgentFailure(
     const alternatives = (grounding.safe_alternatives || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
     const list = (matches.length ? matches : alternatives)
       .map((item: any) => String(item.name) + " — " + Number(item.price) + " ₸").join(", ");
+    const ordering = hasDirectOrderIntent(ctx.text);
+    // A broad menu request may have no named item match. Execute its current
+    // planned link through the real issuer instead of claiming a missing dish.
+    if (!matches.length && requestedLink && !ordering
+      && !findBlockedMenuItemMention(ctx.activeShiftNotes || [], ctx.menuSnapshot?.items || [], ctx.text)) {
+      return linkReply(await grantLink(ctx).catch(() => false));
+    }
     if (!matches.length) return say(ctx,
       "Бұл сұрағаныңыз қазір қолжетімсіз." + (list ? " Мыналар бар: " + list + "." : ""),
       "Сейчас этой позиции нет в доступном меню." + (list ? " Есть другие варианты: " + list + "." : ""));
-    const ordering = hasDirectOrderIntent(ctx.text);
     const kitchen = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext || null, ctx.activeShiftNotes);
     if (ordering && kitchen.blocksAllSales && kitchen.mode !== "off_hours") return say(ctx,
       "Қазір тапсырыс қабылдай алмаймыз. Мәзірде: " + list + ".",
@@ -231,13 +242,15 @@ export async function answerAgentFailure(
     if (ordering && kitchen.requiresConsent && ctx.kitchenCheckoutFingerprint !== kitchen.fingerprint) return say(ctx,
       "Күту уақыты — " + kitchen.waitLabelKk + ". Күтуге келісесіз бе?",
       "Ожидание — " + kitchen.waitLabelRu + ". Вы готовы подождать?");
-    const wantsLink = ordering || hasCustomerCheckoutIntent(ctx.text);
-    const linked = wantsLink ? await grantLink(ctx).catch(() => false) : false;
+    const linked = requestedLink ? await grantLink(ctx).catch(() => false) : false;
     const offHours = ordering && kitchen.mode === "off_hours";
     return say(ctx, "Бар: " + list + "." + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
       + (linked ? (offHours ? " Мәзірді қарау сілтемесін төменге жібердім." : " Тапсырыс беру сілтемесін төменге жібердім.") : ""),
       "Есть: " + list + "." + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
       + (linked ? (offHours ? " Ссылку для просмотра меню отправил ниже." : " Оформить заказ можно по ссылке ниже.") : ""));
+  }
+  if (requestedLink && !needsHumanRecovery(ctx)) {
+    return linkReply(await grantLink(ctx).catch(() => false));
   }
   if (isCalmCatalogTurn(ctx)) {
     const items: Record<string, any>[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];

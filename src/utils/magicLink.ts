@@ -131,8 +131,19 @@ export function wantsMenuAsText(text = ""): boolean {
 const EXPLICIT_MENU_LINK_RE =
   /(сілтеме|ссылк\p{L}*|link|линк|мәзір|мен[юь]|каталог|тапсырыс\s*(бер|берейін|берем|жасай|ет|қыл|қабылда)|заказ\s*(бер|берейін|берем|жасай|ет|қыл|қабылда|хочу|сдел|оформ)|заказать|оформить|хочу\s+заказ|хочу\s+заказать|корзин|себет|меню жібер|мәзір жібер|меню бер|мәзір бер|қалай заказ|қалай тапсырыс|(?:тапсырысты\s+)?жалғастыра\s*(?:мын|йық|берейік|беремін|беремиз|беріңіз)|продолж(?:у|им|ить)(?:\s+(?:заказ|оформлени\p{L}*))?|давайте\s+продолжим|қайдан\s*(?:қарай|көр|таб)|где\s*(?:посмотреть|глянуть|увидеть))/iu;
 
+// Finite observed request spellings, normalized as whole words. Permission and
+// refusals still belong to the current clause; this is not fuzzy intent matching.
+export function normalizeCheckoutRequestSpelling(text: string): string {
+  return String(text || "").split(/(«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*')/gu)
+    .map((part, index) => index % 2 ? part : part
+      .replace(/(?<!\p{L})сылтемени(?!\p{L})/giu, "сілтемені")
+      .replace(/(?<!\p{L})сылку(?!\p{L})/giu, "ссылку")
+      .replace(/(?<!\p{L})жиберш(?!\p{L})/giu, "жібер"))
+    .join("");
+}
+
 export function hasExplicitMenuLinkIntent(text: string): boolean {
-  const value = String(text || "").toLowerCase();
+  const value = normalizeCheckoutRequestSpelling(text).toLowerCase();
   if (wantsMenuAsText(value)) return false;
   return intentMatches(EXPLICIT_MENU_LINK_RE, value) || isMenuLinkResendRequest(value);
 }

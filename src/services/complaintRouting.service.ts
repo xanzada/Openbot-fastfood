@@ -96,9 +96,49 @@ export function stripEscalationSignals(text = "") {
   return String(text || "").replace(ESCALATION_SIGNAL_RE, "").replace(/\s{2,}/g, " ").trim();
 }
 
+// This additional arrival report proves only a current customer incident.
+// Keep punctuation/quote scope until admission; the legacy clause splitter below
+// cannot turn a question or a reported past arrival into this new evidence.
+function hasCurrentMissingArrivalReport(text = ""): boolean {
+  const value = String(text).replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
+  const subject = "(?:(?:сегодня|сейчас|до\\s+сих\\s+пор)\\s+)?(?:(?:мой|наш)\\s+)?заказ\\s+";
+  const missing = new RegExp("^" + subject + "(?:(?:так\\s+и|вс[её]\\s+ещ[её]|до\\s+сих\\s+пор|ещ[её]|уже)\\s+)?не\\s+приш[её]л(?!\\p{L})", "iu");
+  const arrived = new RegExp("^" + subject + "(?:(?:уже|сейчас|теперь)\\s+)?приш[её]л(?!\\p{L})", "iu");
+  let current = false;
+  for (const sentence of value.match(/[^\n.!?;]+[.!?;]?/gu) || []) {
+    let conditional = false;
+    let reported = false;
+    const parts = sentence.split(/(,\s*(?:но\s+)?|\s+но\s+)/iu);
+    for (let index = 0; index < parts.length; index++) {
+      if (index % 2) {
+        // Contrast introduces an independent assertion; a plain comma keeps
+        // the reporting verb's dependent clause attached to its speaker.
+        if (/(?<!\p{L})но(?!\p{L})/iu.test(parts[index])) reported = false;
+        continue;
+      }
+      const clause = parts[index].trim();
+      const ownCurrentReport = /^я\s+(?:говорю|пишу|сообщаю)(?!\p{L})/iu.test(clause);
+      if (!ownCurrentReport
+        && /^(?:[\p{L}-]+\s+){1,4}(?:говор(?:ит|ят|ил|ила|или|ю)|сказа(?:л|ла|ли)|пиш(?:ет|ут|у)|написа(?:л|ла|ли)|сообщ(?:ает|ают|ил|ила|или|аю))(?!\p{L})/iu.test(clause)) reported = true;
+      if (/^(?:если|допустим|представ\p{L}*)(?!\p{L})/iu.test(clause)) conditional = true;
+      if (conditional || reported || /\?/u.test(clause)) continue;
+      // The actual subject must lead this clause. Quoted/reported/historical
+      // prefixes cannot lend their order noun to a current missing-arrival claim.
+      if (missing.test(clause)
+        && !/(?<!\p{L})(?:бы|ли|вчера|позавчера|раньше|прошл\p{L}*)(?!\p{L})/iu.test(clause)) current = true;
+      if (arrived.test(clause)) current = false;
+    }
+  }
+  return current;
+}
+
+function hasExistingComplaintText(text: string): boolean {
+  return intentMatches(COMPLAINT_RE, text) || intentMatches(ACTIONABLE_SERVICE_INCIDENT_RE, text);
+}
+
 export function isLikelyComplaintText(text = "") {
   const value = String(text || "");
-  return intentMatches(COMPLAINT_RE, value) || intentMatches(ACTIONABLE_SERVICE_INCIDENT_RE, value);
+  return hasExistingComplaintText(value) || hasCurrentMissingArrivalReport(value);
 }
 
 export function isLikelyOperatorRequestText(text = "") {
@@ -110,6 +150,7 @@ export function isLikelyOperatorRequestText(text = "") {
 // so the case that reaches the operator is worth reading.
 export function complaintHasActionableDetail(text = "") {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (hasCurrentMissingArrivalReport(text)) return true;
   if (intentMatches(ACTIONABLE_SERVICE_INCIDENT_RE, clean) || intentMatches(CONCRETE_COMPLAINT_DETAIL_RE, clean)) return true;
   if (clean.length >= 60) return true;
   const words = clean.split(" ").filter(word => word.length > 2);
@@ -220,13 +261,14 @@ export function isExplicitHumanOperatorRequest(text = ""): boolean {
 
 export function hasConfirmedCustomerIncident(ctx: FastFoodContext, guestText = ctx.text || ""): boolean {
   if (isExplicitHumanOperatorRequest(guestText)) return true;
+  if (hasCurrentMissingArrivalReport(guestText)) return true;
   const clauses = String(guestText).split(/[.!?;,]|\s+но\s+|\s+бірақ\s+/iu).map(part => part.trim()).filter(Boolean);
   const cancellationDenied = /(?:^|[^\p{L}])не\s+(?:надо\s+|нужно\s+|хочу\s+)?(?:отмен\p{L}*|отказ\p{L}*|откаж\p{L}*)|(?:отмен\p{L}*|отказ\p{L}*).{0,20}(?:не\s+(?:нуж|надо|хочу)|керек\s*емес)|жойма|болдырма.{0,20}керек\s*емес/iu;
   const refundDenied = /(?:возврат|верн\p{L}*.{0,20}деньг).{0,20}не\s+(?:нуж|надо|хочу)|(?:^|[^\p{L}])не\s+(?:надо\s+|нужно\s+|хочу\s+)?(?:возврат|верн\p{L}*)|қайтарма|қайтар.{0,20}керек\s*емес/iu;
   for (const clause of clauses) {
     const customerDescribesFailure = !isLikelyMenuQuestion(clause)
       || /(заказ|тапсырыс|привез|келді|келдi|достав|волос|тырнақ|отрав|улан)/iu.test(clause);
-    if (customerDescribesFailure && isLikelyComplaintText(clause) && complaintHasActionableDetail(clause)) return true;
+    if (customerDescribesFailure && hasExistingComplaintText(clause) && complaintHasActionableDetail(clause)) return true;
     if (!cancellationDenied.test(clause) && detectOperatorCaseKind(clause) === "cancel_request") return true;
     // Charged/paid facts remain independent of declining a refund in another clause.
     if (/(уже\s+оплат|деньг\p{L}*\s+спис|спис\p{L}*\s+деньг|ақша.{0,20}алын|төлед|толед)/iu.test(clause)) return true;
