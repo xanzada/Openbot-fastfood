@@ -2,7 +2,7 @@ import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpene
 import type { FastFoodContext } from "../context/types.js";
 import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
-import { guardCheckoutSelection } from "./checkoutSelectionGuard.js";
+import { guardCheckoutSelection, hasCatalogProductMention, hasCatalogSafetyAssertion } from "./checkoutSelectionGuard.js";
 
 // Only an unverified CONCRETE duration is a factual violation. The old pattern
 // also matched the bare stem "күт", so every polite "күте тұрыңыз" / "бір минут"
@@ -49,8 +49,8 @@ const PROMO_CLAIM_RE =
 // Also covers the adjective forms ("безглютеновое") and the reassurance form ("безопасно
 // для аллергии"), neither of which pairs a term with a separate negation word at all.
 const ALLERGEN_TERM = "(?:аллерг|глютен|лактоз|жаңғақ|жангак|орех|арахис|яйц|яиц|жұмыртқа|молок|сүт|кунжут|күнжіт|соев|соя|теңіз\\s*өнім|тениз\\s*оним|морепродукт|құрам|курам|состав)";
-const ALLERGEN_NEGATION = "(?:жоқ|жок|болмайды|таза|емес|нет|отсутств|без\\s|бeз\\s|не\\s+содерж|свободн|безопасн|қауіпсіз|кауипсиз)";
-const FOOD_SAFETY_ASSURANCE_RE = /(?:блюд|тағам|аллерг|орех|жаңғақ)[^.!?]*(?:безопасн|қауіпсіз)|(?:безопасн|қауіпсіз)[^.!?]*(?:блюд|тағам|аллерг|орех|жаңғақ)/iu;
+const ALLERGEN_NEGATION = "(?:жоқ|жок|болмайды|таза|емес|нет|отсутств|без\\s|бeз\\s|не\\s+содерж|свободн|безопас(?:н|ен)|қауіпсіз|кауипсиз)";
+const FOOD_SAFETY_ASSURANCE_RE = /(?:блюд|тағам|аллерг|орех|жаңғақ)[^.!?]*(?:безопас(?:н|ен)|қауіпсіз)|(?:безопас(?:н|ен)|қауіпсіз)[^.!?]*(?:блюд|тағам|аллерг|орех|жаңғақ)/iu;
 const ALLERGEN_ASSURANCE_RE = new RegExp(
   "[^.!?\\n]*(?:"
     // term ... negation  ("орехов нет", "жаңғақ жоқ", "состав без ...")
@@ -308,7 +308,7 @@ function unverifiedAllergyReassurance(sentence: string, ctx: FastFoodContext) {
   const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
   // Only a current food/health continuation carries the nearest customer's
   // allergy context forward. Assistant claims and unrelated payment turns do not.
-  const foodContinuation = /(?:блюд|ед[ауы]|пищ|донер|тағам|тамақ|тамак|жеуге|жесе|бере\s+ал|беруге)/iu.test(current)
+  const foodContinuation = hasCatalogProductMention(current, ctx) || /(?:блюд|ед[ауы]|пищ|донер|тағам|тамақ|тамак|жеуге|жесе|бере\s+ал|беруге)/iu.test(current)
     || /(?:можно|может|могу|дать|давать)[^.!?]{0,35}(?:ему|ей|реб[её]нку|есть)|(?:ему|ей)[^.!?]{0,35}(?:дать|давать|есть)/iu.test(current);
   const previousCustomer = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
     .slice(-6).filter((row: any) => row?.role === "user")
@@ -318,26 +318,47 @@ function unverifiedAllergyReassurance(sentence: string, ctx: FastFoodContext) {
     && !(foodContinuation && ALLERGY_TOPIC_RE.test(previousCustomer))) return false;
   // Explicit technical help is empathy about that operation, not health advice.
   if (/(?:помо[гщ]|разобра|көмектес|тексер)[^.!?]{0,35}(?:оплат|ссылк|доставк|төлем|сілтеме|жеткізу)|(?:оплат|ссылк|доставк|төлем|сілтеме|жеткізу)[^.!?]{0,35}(?:помо[гщ]|разобра|көмектес|тексер)/iu.test(plain)
-    && !/(?:блюд|пищ|аллерг|орех|жаңғақ|тағам|жеуге|безопасн|қауіпсіз|смело\s+давать)/iu.test(plain)) return false;
-  return plain.split(/[,;]|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
-    (ALLERGY_REASSURANCE_RE.test(clause) || /(?:можно\s+смело\s+(?:дать|давать|есть)|еш\s+қауіп\s+жоқ)/iu.test(clause))
-      && !/(?:не\s*(?:говорю|говорил|утверждаю)|айтпай\p{L}*|демей\p{L}*)/iu.test(clause)
-      && !/(?:не\s*(?:беспокой\p{L}*|волнуй\p{L}*)\s+о\s+(?:ссылк|доставк|оплат)|(?:сілтеме|жеткізу|төлем)[^.!?]{0,15}(?:туралы|жөнінде)\s+алаңдама)/iu.test(clause));
+    && !/(?:блюд|пищ|аллерг|орех|жаңғақ|тағам|жеуге|безопас(?:н|ен)|қауіпсіз|смело\s+давать)/iu.test(plain)) return false;
+  return (plain.match(SENTENCE_RE) || [plain]).some((sentence) => {
+    const honestDenial = isCompositionUncertaintyOnly(sentence);
+    // Inspect the complete subject/predicate too: a parenthetic comma must not
+    // detach a catalog food from its safety claim. Dependency is sentence-local.
+    if (!honestDenial && hasCatalogSafetyAssertion(sentence, ctx)) return true;
+    const separateAdditive = !honestDenial
+      && /^(?:я\s+)?не\s+(?:могу|можем)\s+(?:подтвердить|гарантировать|проверить)(?=$|[^\p{L}])/iu.test(sentence);
+    const independentParts = separateAdditive ? sentence.split(/\s+(?:и|және)\s+/iu) : [sentence];
+    const declaredDependency = /^(?:я\s+)?не\s+(?:могу|можем)\s+(?:подтвердить|гарантировать|проверить)\s*,?\s*что(?=$|[^\p{L}])/iu.test(sentence);
+    return independentParts.some((part, index) => {
+      if (index > 0 && declaredDependency && hasCatalogSafetyAssertion(part, ctx, true)) return false;
+      if (!honestDenial && hasCatalogSafetyAssertion(part, ctx)) return true;
+      return part.split(/[,;]|\s+[—–-]\s+|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
+      (ALLERGY_REASSURANCE_RE.test(clause) || /(?:можно\s+смело\s+(?:дать|давать|есть)|еш\s+қауіп\s+жоқ)/iu.test(clause)
+        || (!honestDenial && hasCatalogSafetyAssertion(clause, ctx) && !isCompositionUncertaintyOnly(clause)))
+        && !/(?:не\s*(?:говорю|говорил|утверждаю)|айтпай\p{L}*|демей\p{L}*)/iu.test(clause)
+        && !/(?:не\s*(?:беспокой\p{L}*|волнуй\p{L}*)\s+о\s+(?:ссылк|доставк|оплат)|(?:сілтеме|жеткізу|төлем)[^.!?]{0,15}(?:туралы|жөнінде)\s+алаңдама)/iu.test(clause));
+    });
+  });
 }
 
 function isCompositionUncertaintyOnly(sentence: string) {
+  // A coordinated Kazakh complement remains under its final negated verification
+  // verb. An independent later or adversative assertion is outside this scope.
+  const dependentSafetyDenial = /^(?:[\p{L}-]+\s+){1,5}қауіпсіз\s+екен(?:ін|дігін)(?:\s+және\s+(?:[\p{L}-]+\s+){1,5}қауіпсіз\s+екен(?:ін|дігін)){0,3}\s+(?:растай|тексере)\s+алмай\p{L}*[.!?]?$/iu;
+  if (dependentSafetyDenial.test(sentence.trim())
+    && !/(?<!\p{L})(?:но|бірақ|однако|зато)(?!\p{L})/iu.test(sentence)) return true;
   // A denial talks ABOUT safety; it must not be mistaken for a safety assertion.
   // Check each adversative/coordinate clause so a later assurance stays prohibited.
-  const clauses = sentence.replace(/((?:гарантировать|подтвердить)),\s*что\s+/giu, "$1 что ").split(/[,;]|\s+(?:но|бірақ|однако|зато|и|және)\s+/iu);
+  const clauses = sentence.replace(/((?:гарантировать|подтвердить)),\s*что\s+/giu, "$1 что ").split(/[,;]|\s+[—–-]\s+|\s+(?=без\s+гаранти|не\s+означа\p{L}*\s+гаранти)|\s+(?:но|бірақ|однако|зато|и|және)\s+/iu);
   const denial = /^(?:(?:кешіріңіз|извините)[,\s]*)?(?:не\s*(?:могу|можем)\s*(?:гарантировать|подтвердить|проверить)[^.!?;]*|(?:гарантировать|подтвердить|проверить)[^.!?;]*не\s*(?:могу|можем)|[^.!?;]*(?:кепілдік\s*бере\s*алмаймын|қауіпсіздігін\s*растай\s*алмаймын))[.!?]?$/iu;
+  const medicalDenial = /^(?:без\s+гаранти(?:и|й)\s+безопасности|не\s+означает\s+гаранти(?:и|й)\s+безопасности)[.!?]?$/iu;
   let uncertainty = false;
   for (const clause of clauses) {
-    if (denial.test(clause.trim()) || isScopedNegatedCompositionClaim(clause)) { uncertainty = true; continue; }
+    if (denial.test(clause.trim()) || medicalDenial.test(clause.trim()) || isScopedNegatedCompositionClaim(clause)) { uncertainty = true; continue; }
     if (COMPOSITION_UNKNOWN_RE.test(clause)) {
       uncertainty = true;
-      if (!/содержит|құрамында|безопасн|қауіпсіз|кауипсиз|(?:орех|жаңғақ|арахис|глютен|лактоз)[^.!?]*(?:нет|жоқ|сыз)|нет[^.!?]*(?:орех|жаңғақ|арахис|глютен|лактоз)/iu.test(clause)) continue;
+      if (!/содержит|құрамында|безопас(?:н|ен)|қауіпсіз|кауипсиз|(?:орех|жаңғақ|арахис|глютен|лактоз)[^.!?]*(?:нет|жоқ|сыз)|нет[^.!?]*(?:орех|жаңғақ|арахис|глютен|лактоз)/iu.test(clause)) continue;
     }
-    if (ALLERGEN_ASSURANCE_RE.test(clause) || /содержит|құрамында|безопасн|қауіпсіз|кауипсиз/iu.test(clause)) return false;
+    if (ALLERGEN_ASSURANCE_RE.test(clause) || /содержит|құрамында|безопас(?:н|ен)|қауіпсіз|кауипсиз/iu.test(clause)) return false;
   }
   return uncertainty;
 }
@@ -345,7 +366,7 @@ function isCompositionUncertaintyOnly(sentence: string) {
 
 function menuSupportsAllergenAbsence(sentence: string, ctx: FastFoodContext) {
   if (isCompositionUncertaintyOnly(sentence)) return true;
-  if (/безопасн|қауіпсіз|кауипсиз/iu.test(sentence)) return false;
+  if (/безопас(?:н|ен)|қауіпсіз|кауипсиз/iu.test(sentence)) return false;
   const absence = new RegExp(ALLERGEN_NEGATION, "iu").exec(sentence);
   const candidates = menuCompositionCandidates(sentence, ctx, absence?.index ?? sentence.length);
   const groups = ALLERGEN_GROUPS.filter((group) => group.test(sentence));
@@ -353,7 +374,7 @@ function menuSupportsAllergenAbsence(sentence: string, ctx: FastFoodContext) {
     const composition = String(item.composition || item.ingredients || "");
     const sourceStatements = composition.match(new RegExp(ALLERGEN_ASSURANCE_RE.source, "giu")) || [];
     return groups.every((group) => sourceStatements.some((statement) => group.test(statement)
-      && !/безопасн|қауіпсіз|кауипсиз/iu.test(statement)));
+      && !/безопас(?:н|ен)|қауіпсіз|кауипсиз/iu.test(statement)));
   }));
 }
 

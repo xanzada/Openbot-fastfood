@@ -10,6 +10,10 @@ const QUANTIFIED_CHOICE_RE = /^(?:[1-9]\d{0,2}|один|одну|два|две|�
 const INQUIRY_RE = /что\s+(?:есть|лучше|посовет)|посовет|порекоменду|сколько|бар\s+ма|не\s+бар|не\s+алайын|не\s+алуға|не\s+ұсын|қанша|канша|(?:^|[^\p{L}])(?:цена|цену|стоимость|бағасы|бағасын)(?=$|[^\p{L}])/iu;
 const DENIAL_RE = /(?:^|[^\p{L}])(?:не|нет)(?=$|[^\p{L}])|қаламай|керек\s+емес|емес(?=$|[^\p{L}])|алмай|жоқ(?=$|[^\p{L}])|жок(?=$|[^\p{L}])|ұсынбай|усынбай/iu;
 const REPORTED_CHOICE_RE = /раньше|прежде|он\s+(?:сказал|написал|хотел)|она\s+(?:сказала|написала|хотела)|бұрын|бурын|деп\s+(?:айт|жаз)/iu;
+const DENIED_REPORT_RE = /(?:^|[^\p{L}])не\s+(?:говорил|говорила|сказал|сказала|писал|писала|утверждал|утверждала)(?=$|[^\p{L}])/iu;
+const NOMINAL_PRODUCT_REFUSAL_RE = /(?:^|[^\p{L}])не\s+нуж\p{L}*(?=$|[^\p{L}])|(?:керек|қажет|кажет)\s+емес/iu;
+const PURCHASE_ACTION_RE = /^(?:покупать|купить|брать|взять|заказывать|заказать|выбирать|выбрать|есть|пить|кушать)(?=$|[^\p{L}])/iu;
+const CHECKOUT_DENIED_RE = /(?:^|[^\p{L}])не\s+(?:предлагаю|предлагаем|даю|даём|отправляю|выдаю)[^.!?;]{0,40}ссылк|ссылк\p{L}*[^.!?;]{0,40}\s+не\s+(?:для|предназнач\p{L}*)(?=$|[^\p{L}])|(?:сілтеме|силтеме)[^.!?;]{0,60}(?:сатып\s+алу|алуға|алу\s+үшін)[^.!?;]{0,20}емес/iu;
 const ALTERNATIVE_RE = /альтернатив|как\s+вариант|вместо|можно\s+также|балама/iu;
 const OPT_IN_PREFIX_RE = /^(?:қаласаңыз|каласаныз|если\s+хотите)[.!?;]?$/iu;
 const ALTERNATIVE_PREFIX_RE = /^(?:как\s+вариант|как\s+альтернатив[ау]|в\s+качестве\s+альтернативы|балама\s+ретінде)[.!?;]?$/iu;
@@ -65,15 +69,100 @@ function mentionedFamilies(value: string, families: string[]): string[] {
   return families.filter((family) => tokens.some((token) => sameCatalogWord(family, token)));
 }
 
+export function hasCatalogProductMention(value: string, ctx: FastFoodContext): boolean {
+  return mentionedFamilies(value, catalogFamilies(ctx)).length > 0;
+}
+
+export function hasCatalogSafetyAssertion(value: string, ctx: FastFoodContext, directSubjectOnly = false): boolean {
+  const plain = unquoted(value).trim();
+  if (plain.includes('?')) return false;
+  // A dependent or hypothetical clause does not independently assert safety.
+  // The caller inspects each complete sentence and each independent clause.
+  if (/^(?:что|если|егер)(?=$|[^\p{L}])|^(?:я\s+)?не\s+(?:могу|можем|утвержда|подтвержда|говор|сказ|гаранти)/iu.test(plain)) return false;
+  const tokens = words(plain.slice(0, 2000));
+  const families = catalogFamilies(ctx);
+  const foodPositions = tokens.flatMap((token, index) => families.some(family => sameCatalogWord(family, token)) ? [index] : []);
+  for (let index = 0; index < tokens.length; index++) {
+    if (!/^(?:безопас(?:ен|н(?:а|о|ы|ый|ая|ое|ые|ую|ого|ой|ым|ыми|ому|ых))|қауіпсіз)$/u.test(tokens[index])) continue;
+    if (tokens[index - 1] === 'не' || /^(?:емес|бе|ли)$/u.test(tokens[index + 1] || '')) continue;
+    for (const food of foodPositions) {
+      if (Math.abs(index - food) > 8) continue;
+      const subject = tokens.slice(food < index ? 0 : index + 1, food < index ? index : food + 1);
+      // Technical subjects can mention the dish without promising food safety.
+      // Coordinated catalog foods, child qualifiers, copulas and adjectives are
+      // still medical assertions under the caller's current allergy context.
+      if (subject.some(token => /^(?:ссылк|оплат|доставк|сілтеме|силтеме|төлем|жеткізу)/u.test(token))) continue;
+      if (subject.some(token => /^(?:если|егер)$/u.test(token))) continue;
+      // A coordinated complement inherits a declared verification denial only
+      // for an actual noun predicate, not a fresh speaker's asserting action.
+      if (directSubjectOnly && !subject.every(token => families.some(family => sameCatalogWord(family, token))
+        || /^(?:это|этот|эта|эти|бұл|осы|де|да|для|ребенка|ребенку|будет|будут|полностью|совершенно|точно|безусловно)$/u.test(token)
+        || /(?:ый|ий|ая|ое|ые|ого|ую)$/u.test(token))) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+function refusedFamilies(value: string, families: string[]): string[] {
+  if (NOMINAL_PRODUCT_REFUSAL_RE.test(value)) return mentionedFamilies(value, families);
+  for (const match of value.matchAll(/(?:^|[^\p{L}])(\p{L}+)\s+(?:қаламай(?:мын|мыз)?|алмай(?:мын|мыз))(?=$|[^\p{L}])/giu)) {
+    const direct = families.filter((family) => sameCatalogWord(family, words(match[1])[0] || ''));
+    if (direct.length) return direct;
+  }
+  // A negated desire/future binds to a product noun or a real purchase/food
+  // action. Refusing to read, compare or give up a product is not withdrawal.
+  const predicate = /(?:^|[^\p{L}])не\s+(?:хочу|надо|буду|беру|возьму|закажу)(?=$|[^\p{L}])/giu;
+  for (const match of value.matchAll(predicate)) {
+    const before = value.slice(0, match.index);
+    const after = value.slice((match.index || 0) + match[0].length).trim();
+    const object = after.replace(PURCHASE_ACTION_RE, '').trim();
+    const tokens = words(object);
+    if (!tokens.length || tokens.every((token) => /^(?:больше|вообще|совсем|уже|теперь)$/u.test(token)))
+      return mentionedFamilies(before, families);
+    let index = 0;
+    while (index < 2 && /^(?:\d{1,3}|один|одну|два|две|три|четыре|больше|вообще|совсем|уже|теперь)$/u.test(tokens[index] || '')) index++;
+    if (families.some((family) => sameCatalogWord(family, tokens[index] || '')))
+      return mentionedFamilies(object, families);
+    if (/(?:ого|ую|ий|ый|ая|ое|ые|их|ому|ых)$/u.test(tokens[index] || '')
+      && families.some((family) => sameCatalogWord(family, tokens[index + 1] || '')))
+      return mentionedFamilies(object, families);
+  }
+  return [];
+}
+
 function currentSelection(ctx: FastFoodContext, families: string[]): Set<string> {
   const text = unquoted(String(ctx.text || '').slice(0, 4000));
   const selected = new Set<string>();
-  for (const clause of text.split(/[.!?;,\n]+|\s+(?:но|бірақ|однако)\s+/iu)) {
+  const visit = (clause: string, maySplit: boolean) => {
     const clean = clause.trim();
-    if (!clean || isMenuBudgetInquiry(clean) || INQUIRY_RE.test(clean)
-      || DENIAL_RE.test(clean) || REPORTED_CHOICE_RE.test(clean)) continue;
-    if (!CHOICE_RE.test(clean) && !ELLIPTIC_CHOICE_RE.test(clean) && !QUANTIFIED_CHOICE_RE.test(clean)) continue;
-    for (const family of mentionedFamilies(clean, families)) selected.add(family);
+    if (!clean) return;
+    const inquiry = isMenuBudgetInquiry(clean) || INQUIRY_RE.test(clean);
+    const denial = DENIAL_RE.test(clean);
+    const reported = REPORTED_CHOICE_RE.test(clean) || DENIED_REPORT_RE.test(clean);
+    // A simple affirmative coordinated selection shares its verb/quantity
+    // (including «колу и донер хочу»). Mixed inquiry/refusal clauses instead
+    // have separate intent and must be evaluated in their original order.
+    if (maySplit && (inquiry || denial || reported)) {
+      const parts = clean.split(/\s+(?:и|және|а)\s+/iu);
+      if (parts.length > 1) {
+        for (const part of parts) visit(part, false);
+        return;
+      }
+    }
+    if (inquiry || reported) return;
+    const mentioned = mentionedFamilies(clean, families);
+    const refused = refusedFamilies(clean, families);
+    if (refused.length) {
+      for (const family of refused) selected.delete(family);
+      return;
+    }
+    if (denial) return;
+    if (!CHOICE_RE.test(clean) && !ELLIPTIC_CHOICE_RE.test(clean) && !QUANTIFIED_CHOICE_RE.test(clean)) return;
+    for (const family of mentioned) selected.add(family);
+  };
+  for (const clause of text.split(/[.!?;,\n]+|\s+(?:но|бірақ|однако)\s+/iu)) {
+    visit(clause, true);
   }
   return selected;
 }
@@ -105,7 +194,7 @@ export function guardCheckoutSelection(
     ? 'Сілтеме арқылы таңдауыңызды жасай аласыз'
     : 'Выбрать нужное можно по ссылке';
   const corrected = protectedText.replace(/[^.!?;\n]+[.!?;]?/gu, (sentence) => {
-    const parts = sentence.split(/(,|\s+(?=(?:но|однако|бірақ)\s)|\s+(?=(?:и|және)\s+(?:не\s+могу|не\s+подтверж|не\s+гарант|безопас|отсутств|состав|соответств|құрам|қауіп|диет|аллерг|жаңғақ)))/iu);
+    const parts = sentence.split(/(,|\s+[—–-]\s+|\s+(?=(?:но|однако|бірақ)\s)|\s+(?=(?:и|және)\s+(?:не\s+могу|не\s+подтверж|не\s+гарант|безопас|отсутств|состав|соответств|құрам|қауіп|диет|аллерг|жаңғақ))|\s+(?=без\s+гаранти|не\s+означа\p{L}*\s+гаранти))/iu);
     let conditionalFamilies: Set<string> | 'any' | null = null;
     let sentenceChanged = false;
     const result = parts.map((part) => {
@@ -125,7 +214,7 @@ export function guardCheckoutSelection(
         ? mentionedFamilies(condition, families) : [];
       if (conditionProducts.length) conditionalFamilies = new Set(conditionProducts);
       if ((!LINK_RE.test(clean) && !clean.includes('\u0000CHECKOUT_URL_'))
-        || !CHECKOUT_RE.test(clean) || DENIAL_RE.test(clean)) return part;
+        || !CHECKOUT_RE.test(clean) || CHECKOUT_DENIED_RE.test(clean)) return part;
       const mentioned = mentionedFamilies(clean, families);
       if (!mentioned.length || mentioned.every((family) => selected.has(family))) return part;
       const alternativeIndex = clean.search(ALTERNATIVE_RE);
