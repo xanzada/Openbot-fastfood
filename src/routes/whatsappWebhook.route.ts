@@ -940,14 +940,7 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
     };
 
     // Merge fragmented text messages in a small, short-lived Redis buffer.
-    if (durable && !mediaContext && text) {
-      // The accepted fragments are already a frozen Redis bundle. A volatile
-      // follower may never mark itself done before its leader actually replies.
-      turnLockOwner = await waitForTurnLock();
-      if (!turnLockOwner) throw new Error("INBOUND_TURN_PENDING");
-      if (durable.fragments.length > 1) text = await mergeBufferedParts(durable.fragments).catch(() => text);
-      customerLanguageText = text;
-    } else if (!mediaContext && text) {
+    if (!durable && !mediaContext && text) {
       const buffered = await bufferInboundText({ instanceId, phone, messageId, text });
       if (!buffered.leader) {
         await markInboundDone(instanceId, messageId);
@@ -1001,6 +994,14 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
           `[OPENBOT:TURN] media turn proceeding without the lock instance=${instanceId} phone=${maskPhone(phone)} kind=${mediaContext?.kind || "-"}`
         );
       }
+    }
+
+    // Durable text uses the same acquisition site as media before any shared
+    // work. Its accepted fragments already belong to a frozen Redis bundle;
+    // never hand a follower to the volatile buffer or mark it done early.
+    if (durable && !mediaContext && text) {
+      if (durable.fragments.length > 1) text = await mergeBufferedParts(durable.fragments).catch(() => text);
+      customerLanguageText = text;
     }
 
     const bufferedAt = Date.now();
