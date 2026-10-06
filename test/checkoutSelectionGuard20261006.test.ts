@@ -166,3 +166,46 @@ test('a condition about cola does not excuse a primary checkout purpose for done
   const result = check('Если нужна кола, вот ссылка для покупки донера.', { language: 'ru', text: 'Мне нужна кола' });
   assert.doesNotMatch(result.text, /донер/iu);
 });
+
+test('a separate RU price question does not erase the current explicit cola choice', () => {
+  const result = check('Вот ссылка для покупки донера.', { language: 'ru', text: 'Мне нужна кола, сколько стоит донер?' });
+  assert.doesNotMatch(result.text, /донер/iu);
+  assert.ok(result.warnings.includes('checkout_selection_mismatch_removed'));
+});
+
+test('a separate KK availability question does not erase the current explicit cola choice', () => {
+  const result = check('Донерді сатып алуға сілтеме.', { text: 'Кола алайын, донер бар ма?' });
+  assert.doesNotMatch(result.text, /донер/iu);
+  assert.ok(result.warnings.includes('checkout_selection_mismatch_removed'));
+});
+
+test('an exact immediately preceding alternative prefix remains a legitimate product option', () => {
+  const raw = 'Как вариант, вот ссылка для покупки донера.';
+  const result = check(raw, { language: 'ru', text: 'Мне нужна кола' });
+  assert.equal(result.text, raw);
+  assert.ok(!result.warnings.includes('checkout_selection_mismatch_removed'));
+});
+
+test('a mixed choice and inquiry still preserves a correct catalog price answer', () => {
+  const raw = 'Донер куриный стоит 1800 тг.';
+  const result = check(raw, { language: 'ru', text: 'Мне нужна кола, сколько стоит донер?' });
+  assert.equal(result.text, raw);
+  assert.ok(!result.warnings.includes('checkout_selection_mismatch_removed'));
+});
+
+test('a mixed choice and inquiry still preserves a correct availability answer without checkout', () => {
+  const raw = 'Донер куриный бар.';
+  const result = check(raw, { text: 'Кола алайын, донер бар ма?' });
+  assert.equal(result.text, raw);
+  assert.ok(!result.warnings.includes('checkout_selection_mismatch_removed'));
+});
+
+test('a pure comparison inquiry does not become a selected-product restriction', () => {
+  const raw = 'Донер можно выбрать по ссылке.';
+  assert.equal(check(raw, { language: 'ru', text: 'Что лучше, кола или донер?' }).text, raw);
+});
+
+test('an informational price request is not an explicit cola purchase choice', () => {
+  const raw = 'Донер можно выбрать по ссылке.';
+  assert.equal(check(raw, { language: 'ru', text: 'Мне нужна цена колы, покажите меню' }).text, raw);
+});

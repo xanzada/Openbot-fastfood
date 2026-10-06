@@ -7,11 +7,12 @@ const CHECKOUT_RE = /покуп|купить|купит|заказ|оформ|в
 const CHOICE_RE = /керек|қажет|кажет|алайын|аламын|аламыз|алғым|алгым|беріңіз|бериниз|берші|бершi|таңдадым|возьм|беру|хочу|нуж(?:на|ен|но|ны)|закаж/iu;
 const ELLIPTIC_CHOICE_RE = /^(?:маған|маган|мне|онда|тогда|теперь)\s+/iu;
 const QUANTIFIED_CHOICE_RE = /^(?:[1-9]\d{0,2}|один|одну|два|две|три|четыре|бір|екі|екi|үш)\s+/iu;
-const INQUIRY_RE = /что\s+(?:есть|лучше|посовет)|посовет|порекоменду|сколько|бар\s+ма|не\s+бар|не\s+алайын|не\s+алуға|не\s+ұсын|қанша|канша/iu;
+const INQUIRY_RE = /что\s+(?:есть|лучше|посовет)|посовет|порекоменду|сколько|бар\s+ма|не\s+бар|не\s+алайын|не\s+алуға|не\s+ұсын|қанша|канша|(?:^|[^\p{L}])(?:цена|цену|стоимость|бағасы|бағасын)(?=$|[^\p{L}])/iu;
 const DENIAL_RE = /(?:^|[^\p{L}])(?:не|нет)(?=$|[^\p{L}])|қаламай|керек\s+емес|емес(?=$|[^\p{L}])|алмай|жоқ(?=$|[^\p{L}])|жок(?=$|[^\p{L}])|ұсынбай|усынбай/iu;
 const REPORTED_CHOICE_RE = /раньше|прежде|он\s+(?:сказал|написал|хотел)|она\s+(?:сказала|написала|хотела)|бұрын|бурын|деп\s+(?:айт|жаз)/iu;
 const ALTERNATIVE_RE = /альтернатив|как\s+вариант|вместо|можно\s+также|балама/iu;
 const OPT_IN_PREFIX_RE = /^(?:қаласаңыз|каласаныз|если\s+хотите)[.!?;]?$/iu;
+const ALTERNATIVE_PREFIX_RE = /^(?:как\s+вариант|как\s+альтернатив[ау]|в\s+качестве\s+альтернативы|балама\s+ретінде)[.!?;]?$/iu;
 const PRODUCT_CONDITION_RE = /^(?:егер|если\s+(?:хотите|нужен|нужна)|қаласаңыз|каласаныз)(?=$|[^\p{L}])/iu;
 const PRODUCT_DESIRE_RE = /керек|қажет|кажет|хотите|нужен|нужна|қаласаңыз|каласаныз/iu;
 
@@ -66,11 +67,11 @@ function mentionedFamilies(value: string, families: string[]): string[] {
 
 function currentSelection(ctx: FastFoodContext, families: string[]): Set<string> {
   const text = unquoted(String(ctx.text || '').slice(0, 4000));
-  if (isMenuBudgetInquiry(text) || INQUIRY_RE.test(text)) return new Set();
   const selected = new Set<string>();
   for (const clause of text.split(/[.!?;,\n]+|\s+(?:но|бірақ|однако)\s+/iu)) {
     const clean = clause.trim();
-    if (!clean || DENIAL_RE.test(clean) || REPORTED_CHOICE_RE.test(clean)) continue;
+    if (!clean || isMenuBudgetInquiry(clean) || INQUIRY_RE.test(clean)
+      || DENIAL_RE.test(clean) || REPORTED_CHOICE_RE.test(clean)) continue;
     if (!CHOICE_RE.test(clean) && !ELLIPTIC_CHOICE_RE.test(clean) && !QUANTIFIED_CHOICE_RE.test(clean)) continue;
     for (const family of mentionedFamilies(clean, families)) selected.add(family);
   }
@@ -115,7 +116,7 @@ export function guardCheckoutSelection(
       // excuse an unrelated wrong checkout object earlier in the sentence.
       const conditionalForPart = conditionalFamilies;
       conditionalFamilies = null;
-      if (OPT_IN_PREFIX_RE.test(clean.trim())) {
+      if (OPT_IN_PREFIX_RE.test(clean.trim()) || ALTERNATIVE_PREFIX_RE.test(clean.trim())) {
         conditionalFamilies = 'any';
         return part;
       }
