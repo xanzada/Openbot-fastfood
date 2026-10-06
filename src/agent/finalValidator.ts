@@ -1133,7 +1133,7 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     .filter((value: string) => value.trim() && value.trim() !== current.trim()).slice(-1)[0] || "";
   // Price alone cannot satisfy health/diet constraints. Preserve their safety answer.
   if (ALLERGY_TOPIC_RE.test(current) || ALLERGY_TOPIC_RE.test(nearestUser)
-    || /вегетари|веган|халал|диет|без[^.!?]{0,20}(?:мяса|молока|яиц|глютена)|етсіз|сүтсіз/iu.test(current)) return null;
+    || [current, nearestUser].some(value => /вегетари|веган|халал|диет|без[^.!?]{0,20}(?:мяса|молока|яиц|глютена)|етсіз|сүтсіз/iu.test(value))) return null;
   const unknown = ctx.language === "kk"
     ? `${budget} тг бюджетке сай нұсқалардың бағасын қазір растай алмаймын.`
     : `Сейчас не могу подтвердить цены вариантов в пределах ${budget} тг.`;
