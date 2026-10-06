@@ -1164,6 +1164,26 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     : `В пределах ${budget} тг можно выбрать каждый вариант отдельно: ${lines}.`;
 }
 
+const GENERIC_CLOSING_RE = /(?:^|[.!?]\s+)(?:(?:Егер\s+)?(?:қосымша\s+)?сұра[қғ](?:тар)?ыңыз\s+болса[,\s]+(?:жазыңыз|жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын)|мен\s+көмектесуге\s+дайынмын|если\s+(?:у\s+вас\s+)?(?:(?:будут|возникнут|есть)\s+)?(?:ещ[её]\s+|дополнительные\s+)?вопросы[,\s]+(?:напишите|пишите|обращайтесь)|обращайтесь[,\s]+если\s+(?:возникнут|будут)\s+вопросы)[.!\s😊🙂]*$/iu;
+
+function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string {
+  const recentAssistant = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
+    .slice(-6).filter((row: any) => row?.role === "assistant")
+    .map((row: any) => String(row.content ?? row.text ?? "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, ""));
+  if (!recentAssistant.some(value => GENERIC_CLOSING_RE.test(value))) return text;
+  let result = text;
+  for (let i = 0; i < 2; i++) {
+    const match = GENERIC_CLOSING_RE.exec(result);
+    if (!match) break;
+    const prefix = result.slice(0, match.index).trim();
+    // Never turn an all-closing reply into an empty response or remove quotations.
+    if (!prefix || /[«“"]/.test(result.slice(match.index))) break;
+    const punctuation = /^[.!?]/.test(match[0]) ? match[0][0] : "";
+    result = prefix + punctuation;
+  }
+  return result;
+}
+
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
   const result = validateFinalTextCore(...args);
   const warnings = [...result.warnings];
@@ -1188,6 +1208,11 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   if (allergySafetyGuaranteeRequested(args[1]) && !hasHonestSafetyGuaranteeDenial(finalText)) {
     finalText = `${safetyGuaranteeDenialText(args[1])} ${finalText}`.trim();
     warnings.push("missing_allergy_guarantee_denial_added");
+  }
+  const withoutClosing = dropRepeatedGenericClosing(finalText, args[1]);
+  if (withoutClosing !== finalText) {
+    finalText = withoutClosing;
+    warnings.push("repeated_generic_closing_removed");
   }
   return warnings.length === result.warnings.length && finalText === result.text
     ? result
