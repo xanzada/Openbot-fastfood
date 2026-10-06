@@ -6,8 +6,9 @@ import {
   markComplaintClarificationPending,
   saveCaseMedia,
   takeComplaintClarification,
+  redisClient,
 } from "./redis.service.js";
-import { bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind, getActiveOperatorCaseId } from "./operatorCase.service.js";
+import { CASE_FLAG_QUIET_MS, bumpOperatorCaseSignal, createOperatorCase, detectOperatorCaseKind, getActiveOperatorCaseId } from "./operatorCase.service.js";
 import { auditError } from "./auditLogger.service.js";
 import { intentMatches, isLikelyMenuQuestion } from "../utils/intentText.js";
 
@@ -288,7 +289,57 @@ export function hasConfirmedCustomerIncident(ctx: FastFoodContext, guestText = c
   return allergyContext && /қауіп|кепіл|жаңғақ|без\s+орех|гарант|безопас|аллерг|анафилак/iu.test(guestText);
 }
 
+// A current bare complaint may continue an already admitted incident. Quoted,
+// withdrawn or unrelated turns cannot borrow authority from an active pointer.
+export async function resolveComplaintContinuation(ctx: FastFoodContext) {
+  if (ctx.mediaContext) return null;
+  const text = String(ctx.text || "").trim();
+  const currentBareComplaint = /^(?:(?:я\s+)?хочу\s+пожаловаться|(?:у\s+меня\s+)?жалоба|шағым\s+(?:айтқым\s+келеді|бар))[.!]?$/iu.test(text);
+  if (!currentBareComplaint) return null;
+  const clarification = {
+    action: "complaint_clarification" as const, caseId: null as string | null,
+    customerReply: ctx.language === "ru"
+      ? "Коротко опишите, что произошло, пожалуйста."
+      : "Қысқаша не болғанын жазыңызшы.",
+  };
+  const instanceId = cleanLine(ctx.instanceId, 64);
+  const customerPhone = normalizePhone(ctx.phone);
+  if (!instanceId || !customerPhone) return clarification;
+  try {
+    const caseId = await getActiveOperatorCaseId(instanceId, customerPhone);
+    if (!caseId) return clarification;
+    // This is the unchanged canonical operatorCase record, not a history entry
+    // or a model assertion. Redis expiry/null and read failures stay fail-closed.
+    const raw = await redisClient.get(`operator_case:${instanceId}:${caseId}`);
+    const record = raw ? JSON.parse(raw) : null;
+    const lastTouch = Number(record?.updatedAt || record?.createdAt || 0);
+    const now = Date.now();
+    const age = now - lastTouch;
+    if (!record || record.id !== caseId || record.instanceId !== instanceId
+      || normalizePhone(record.phone) !== customerPhone || record.status !== "open"
+      || record.kind !== "complaint" || !Number.isFinite(lastTouch) || lastTouch <= 0
+      || age < 0 || age > CASE_FLAG_QUIET_MS
+      || !isLikelyComplaintText(String(record.summary || ""))
+      || !complaintHasActionableDetail(String(record.summary || ""))) return clarification;
+    return {
+      action: "complaint_continued" as const, caseId: String(caseId),
+      customerReply: ctx.language === "ru"
+        ? "Что хотите дополнить или уточнить по вашей жалобе?"
+        : "Шағымыңыз бойынша не қосқыңыз немесе нақтылағыңыз келеді?",
+    };
+  } catch {
+    return clarification;
+  }
+}
+
 export async function routeComplaintToAdmin(ctx: FastFoodContext, input: ComplaintRoutingInput) {
+  const continuation = input.source === "ai_unavailable" && !input.media
+    ? await resolveComplaintContinuation(ctx) : null;
+  if (continuation) return {
+    ...continuation, operatorFlagged: false, queuedForChat: false,
+    escalationAvailable: false, signaledToDle: false, signalId: "",
+    mediaAttached: false, sent: false,
+  };
   const savedMedia = await getComplaintMedia(ctx.instanceId, ctx.phone).catch(() => null);
   const media = toWhatsProMedia(input.media || (savedMedia as ComplaintMediaPayload | null));
   const guestText = String(ctx.text || input.customerText || "");

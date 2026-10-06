@@ -7,7 +7,7 @@ import { getMenuContext } from "./dle.service.js";
 import { classifyKitchenSalesPolicyForContext } from "./kitchenPolicy.service.js";
 import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent } from "../utils/orderIntent.js";
 import { hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
-import { hasConfirmedCustomerIncident, isLikelyComplaintText, isLikelyOperatorRequestText, routeComplaintToAdmin } from "./complaintRouting.service.js";
+import { hasConfirmedCustomerIncident, isLikelyComplaintText, isLikelyOperatorRequestText, resolveComplaintContinuation, routeComplaintToAdmin } from "./complaintRouting.service.js";
 import { honorMenuLinkPromise } from "../agent/linkPromise.js";
 import { foldIntentText, intentMatches } from "../utils/intentText.js";
 import { findBlockedMenuItemMention } from "./operationalPreemption.service.js";
@@ -196,6 +196,8 @@ export async function answerAgentFailure(
   readOrder: typeof getCustomerOrder = getCustomerOrder,
 ) {
   const reason = String((error as any)?.message || error || "unknown").slice(0, 80);
+  const continuation = await resolveComplaintContinuation(ctx);
+  if (continuation) return continuation.customerReply;
   const plan = await resolveLiveAgentToolPlan(ctx);
   if (plan.requiredTools.includes("checkOrderStatus") && !hasConfirmedCustomerIncident(ctx)) {
     const number = requestedOrderNumber(ctx.text) || lastDiscussedOrderNumber(ctx.chatHistory);
