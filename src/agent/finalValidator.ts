@@ -428,11 +428,16 @@ const FUTURE_HUMAN_ACTION_RE = /(?:позову|подключу|передам|
 const FUTURE_HUMAN_CONTACT_RE = /(?:^|[^\p{L}])(?:оператор\p{L}*|администратор\p{L}*|әкімш\p{L}*|они|он|она|олар|ол)(?=$|[^\p{L}])[^.!?]{0,80}(?:ответит|ответят|свяжется|свяжутся|подключится|подключатся|жауап\s*береді|байланысады|хабарласады|қосылады)|(?:с\s+вами|вам|сізбен|сізге)[^.!?]{0,60}(?:свяжется|свяжутся|ответят|байланысады|хабарласады|жауап\s*береді)/iu;
 const HUMAN_CONTACT_TIME_RE = /(?:вскоре|скоро|в\s+ближайшее\s+время|сразу|немедленно|жақын\s+арада|жақында|тезірек|\d+\s*(?:минут|мин|сағат))/iu;
 const KITCHEN_ACTION_RE = /(?:кухн|ас\s*үй|асүй)[^.!?]{0,70}(?:нақтылап|нақтылай|тексеріп)|(?:уточню|уточняю|спрошу|проверю)[^.!?]{0,70}кухн/iu;
+// A conditional offer still asserts the bot can physically check with kitchen
+// staff. Catalog lookup and runtime status tools provide no such capability.
+const KITCHEN_CHECK_CAPABILITY_RE = /(?:асханадан|ас\s*үйден|асүйден)[^.!?]{0,70}(?:тексеру\s+жасай\s+аламын|тексеру\s+жасауға\s+дайынмын|тексере\s+аламын)|могу\s+(?:уточнить|проверить|спросить)[^.!?]{0,70}(?:на\s+кухне|у\s+повара)/iu;
 function promisedHumanAction(sentence: string, pattern: RegExp) {
-  const unquoted = sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  const unquoted = pattern === KITCHEN_CHECK_CAPABILITY_RE
+    ? sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "")
+    : sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
   return unquoted.split(/[,;]|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
     pattern.test(clause) && !/(?:не\s*(?:буду|могу|стану|позову|передам|сообщу|уточню|ответит|свяжется|подключится)|(?:хабарлай|жібер|нақтыла)[^.!?]{0,20}(?:алмай|емес|жоқ))/iu.test(clause)
-      && !/^\s*(?:если|егер|қажет\s*болса|керек\s*болса)/iu.test(clause));
+      && !(pattern !== KITCHEN_CHECK_CAPABILITY_RE && /^\s*(?:если|егер|қажет\s*болса|керек\s*болса)/iu.test(clause)));
 }
 
 function unverifiedHumanActionText(ctx: FastFoodContext, caseCreated: boolean, notificationAccepted: boolean) {
@@ -622,6 +627,45 @@ function enforceExactMagicLink(text: string, ctx: FastFoodContext): string {
   });
 }
 
+// sendMenuLink grants the exact URL and its one-month validity. Its result
+// contains no country-wide scope; delivery facts and a customer's address do
+// not extend that link contract. Remove only the unsupported geographic
+// modifier from an asserted link-validity clause, keeping duration and content.
+function stripUnsupportedLinkGeography(text: string, ctx: FastFoodContext): string {
+  if (ctx.magicLinkGranted !== true || !ctx.magicLink) return text;
+  const countryScope = /(?:Қазақстан\s+бойынша|по\s+всему\s+Казахстану|на\s+всей\s+территории\s+Казахстана)/giu;
+  const linkSubject = /(?:сілтеме\p{L}*|ссылк\p{L}*|link|https?:\/\/)/iu;
+  const validity = /(?:жарамды|жарамдылық|действител\p{L}*|действует|работает)/iu;
+  let linkMentioned = false;
+  // A comma or semicolon can introduce a separate delivery/safety predicate.
+  // Keep explicit Russian dependent «не могу подтвердить, что …» together.
+  const parts = text.split(/((?<=[.!?\u2026;])\s+|\n+|,(?!\s*что(?!\p{L}))\s*)/iu);
+  for (let i = 0; i < parts.length; i += 2) {
+    const part = parts[i];
+    const visible = part.replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, quote => ' '.repeat(quote.length));
+    if (linkSubject.test(visible)) linkMentioned = true;
+    if (!linkMentioned || !validity.test(visible) || /\?\s*$/u.test(visible)) continue;
+    // Scope denial must actually govern the validity statement, never a later
+    // unrelated medical or follow-up denial in the same answer.
+    const asserted = visible.split(/(?<!\p{L})(?:но|бірақ)(?!\p{L})/iu);
+    let offset = 0;
+    for (const clause of asserted) {
+      const start = visible.indexOf(clause, offset); offset = start + clause.length;
+      if (/(?:растай\s+алмай|расталған\s+жоқ|жарамды\s+емес|не\s+(?:могу|можем)\s+(?:подтвердить|гарантировать)[^.!?]{0,70}(?:жарамд|действ|работ)|не\s+(?:действител\p{L}*|действует|работает)|деп\s+айтпаймын)/iu.test(clause)) continue;
+      if (!linkSubject.test(clause) && /(?:доставка|жеткізу)/iu.test(clause)) continue;
+      countryScope.lastIndex = 0;
+      for (const match of clause.matchAll(countryScope)) {
+        // Blank the modifier at its original offsets; quoted text was masked
+        // above and cannot create either a claim or a removal candidate.
+        const position = start + (match.index || 0);
+        parts[i] = parts[i].slice(0, position) + ' '.repeat(match[0].length) + parts[i].slice(position + match[0].length);
+      }
+    }
+  }
+  const changed = parts.join('');
+  return changed === text ? text : changed.replace(/[ \t]{2,}/g, ' ').replace(/^[ \t]+|[ \t]+$/gm, '').trim();
+}
+
 // Words that only exist inside the system: operator notes, kitchen status,
 // context and tooling. A guest must never see any of them.
 // "оператор" alone is NOT internal: the escalate tool's customerReply deliberately
@@ -763,7 +807,8 @@ function validateFinalTextCore(
     (!caseCreated && promisedHumanAction(sentence, FUTURE_HUMAN_ACTION_RE))
     || (!notificationAccepted && promisedHumanAction(sentence, FUTURE_HUMAN_CONTACT_RE))
     || (HUMAN_CONTACT_TIME_RE.test(sentence) && promisedHumanAction(sentence, FUTURE_HUMAN_CONTACT_RE))
-    || promisedHumanAction(sentence, KITCHEN_ACTION_RE);
+    || promisedHumanAction(sentence, KITCHEN_ACTION_RE)
+    || promisedHumanAction(sentence, KITCHEN_CHECK_CAPABILITY_RE);
   if (unverifiedHumanAction(text)) {
     text = (text.match(SENTENCE_RE) || [text]).filter((sentence) => !unverifiedHumanAction(sentence)).join(" ").trim();
     warnings.push("unverified_human_action_removed");
@@ -942,6 +987,12 @@ function validateFinalTextCore(
   }
 
   text = enforceExactMagicLink(text, ctx);
+  const supportedLinkText = stripUnsupportedLinkGeography(text, ctx);
+  if (supportedLinkText !== text) {
+    text = supportedLinkText;
+    warnings.push("unsupported_link_geography_removed");
+  }
+
 
   // Ungrounded factual claims: only enforced when the caller reports which
   // tools actually ran this turn. When the report is absent (older callers,
@@ -1191,7 +1242,135 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     : `В пределах ${budget} тг можно выбрать каждый вариант отдельно: ${lines}.`;
 }
 
-const GENERIC_CLOSING_RE = /(?:^|[.!?]\s+)(?:(?:Егер\s+)?(?:қосымша\s+)?сұра[қғ](?:тар)?ыңыз\s+болса[,\s]+(?:жазыңыз|жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын)|не\s+көмек\s+керек[,\s]+жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын|если\s+(?:у\s+вас\s+)?(?:(?:будут|возникнут|есть)\s+)?(?:ещ[её]\s+|дополнительные\s+)?вопросы[,\s]+(?:напишите|пишите|обращайтесь)|обращайтесь[,\s]+если\s+(?:возникнут|будут)\s+вопросы)[.!\s😊🙂]*$/iu;
+
+// These public claims must follow this turn's tenant configuration and catalog,
+// rather than a default schedule or an old business-side message.
+function rewriteCurrentFactClauses(text: string, rewrite: (clause: string) => string | null) {
+  const protectedParts: string[] = [];
+  const masked = text.replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'|https?:\/\/[^\s<>]+/gu,
+    (value) => { protectedParts.push(value); return `\uE000${protectedParts.length - 1}\uE001`; });
+  const clauses = masked.split(/(?<=[.!?\n;])\s*|(?<=,)(?!\s*(?:что|будто)(?=$|[^\p{L}]))\s*|\s+(?=(?:но|бірақ|однако|дегенмен|а)\s+)/iu);
+  let changed = false;
+  const rebuilt = clauses.map((clause) => {
+    const unquoted = clause.replace(/\uE000\d+\uE001/gu, '');
+    const next = rewrite(unquoted);
+    if (next === null) return clause;
+    changed = true;
+    // Preserve a URL or quotation adjacent to the corrected assertion.
+    const protectedSuffix = clause.match(/\uE000\d+\uE001/gu) || [];
+    return [next, ...protectedSuffix].filter(Boolean).join(' ');
+  }).filter((clause) => clause.trim()).join(' ').trim();
+  return {text:changed ? rebuilt.replace(/\uE000(\d+)\uE001/gu, (_, index) => protectedParts[Number(index)]) : text, changed};
+}
+
+function nonCurrentFactAssertion(clause: string) {
+  return /\?/u.test(clause)
+    || /(?<!\p{L})(?:раньше|ранее|вчера|бұрын|кеше)(?!\p{L})/iu.test(clause)
+    || /(?:не\s+(?:могу|можем)\s+(?:подтвердить|утверждать|сказать)|не\s+(?:говорю|утверждаю))\s*,?\s*что/iu.test(clause)
+    || /(?:подтвердить\s+не\s+могу|растай\s+алмай\p{L}*|айта\s+алмай\p{L}*|нақты\s+айтпай\p{L}*)[.!;,\s]*$/iu.test(clause);
+}
+
+function currentWorkHoursClaims(text: string, ctx: FastFoodContext) {
+  const hours = String(ctx.config?.work_hours ?? '').trim();
+  const range = /(\d{1,2})(?::(\d{2}))?\s*[-–—]\s*(\d{1,2})(?::(\d{2}))?/u.exec(hours);
+  const configuredPoints = range ? [Number(range[1]) * 60 + Number(range[2] || 0), Number(range[3]) * 60 + Number(range[4] || 0)] : [];
+  const continuous = /24\s*[/:]\s*7|тәулік|круглосут/iu.test(hours)
+    || Boolean(range && (configuredPoints[0] === configuredPoints[1] || (configuredPoints[0] === 0 && configuredPoints[1] === 1440)));
+  const overnight = continuous || Boolean(range && configuredPoints[1] < configuredPoints[0]);
+  const result = rewriteCurrentFactClauses(text, (clause) => {
+    if (nonCurrentFactAssertion(clause)) return null;
+    const generalNightDenial = /(?:түнде\s+жұмыс\s+істемейміз|ночью\s+не\s+работаем|тек\s+күндізгі\s+уақытта)/iu.test(clause);
+    const currentOnly = /(?<!\p{L})(?:қазір|қазіргі\s+уақытта|сейчас|в\s+данный\s+момент)(?!\p{L})/iu.test(clause);
+    const scheduledClock = /(?<!\d)\d{1,2}:\d{2}(?!\d)|(?<!\d)\d{1,2}\s*[-–]\s*\d{1,2}(?!\d)|(?:сағат\s+|(?<!\p{L})(?:с|в)\s+)\d{1,2}(?!\d)/u.test(clause)
+      && /жұмыс|істейміз|қызмет\s+көрсет|ашыл|жабыл|работ|открыва|откро|закрыва/iu.test(clause);
+    const openingForecast = /ашыл|открыва|откро/iu.test(clause)
+      && /бүгін|ертең|таңертең|завтра|сегодня|утром/iu.test(clause);
+    // Compare minutes, rather than spelling: 03:00, 3:00 and hour-only
+    // ranges can express the same configured day or overnight schedule.
+    let claimedPoints = [...clause.matchAll(/(?<!\d)(\d{1,2}):(\d{2})(?!\d)/gu)]
+      .map((match) => Number(match[1]) * 60 + Number(match[2]));
+    if (!claimedPoints.length) {
+      const pair = /(?<!\d)(\d{1,2})\s*(?:[-–—]|до|-(?:ден|тен|дан|тан))\s*(\d{1,2})(?!\d)/iu.exec(clause);
+      claimedPoints = pair ? [Number(pair[1]) * 60, Number(pair[2]) * 60]
+        : [...clause.matchAll(/(?:сағат\s+|(?<!\p{L})(?:с|в|до)\s+)(\d{1,2})(?!\d)/giu)].map((match) => Number(match[1]) * 60);
+    }
+    const claimedContinuous = claimedPoints.length === 2
+      && (claimedPoints[0] === claimedPoints[1] || (claimedPoints[0] === 0 && claimedPoints[1] === 1440));
+    const matchingPoints = continuous ? claimedContinuous
+      : claimedPoints.length === 2 ? claimedPoints.every((point, index) => point === configuredPoints[index])
+        : claimedPoints.length === 1 && (/ашыл|открыва|откро/iu.test(clause) ? claimedPoints[0] === configuredPoints[0]
+          : /жабыл|закрыва/iu.test(clause) ? claimedPoints[0] === configuredPoints[1] : configuredPoints.includes(claimedPoints[0]));
+    const contradictorySchedule = scheduledClock && Boolean(range || continuous) && claimedPoints.length > 0 && !matchingPoints;
+    return ((!hours && (scheduledClock || openingForecast)) || contradictorySchedule
+      || (generalNightDenial && !(currentOnly && (ctx.runtimeStatus?.within_work_hours === false || ctx.runtimeStatus?.is_accepting_orders === false)) && (!hours || overnight))) ? '' : null;
+  });
+  if (result.changed && !result.text) result.text = ctx.language === 'kk'
+    ? 'Нақты жұмыс кестесін растай алмаймын.' : 'Не могу подтвердить точные рабочие часы.';
+  return result;
+}
+
+function currentCatalogAvailabilityClaims(text: string, ctx: FastFoodContext) {
+  // Absence of available:false is not proof of available:true. Failed/stale
+  // reads likewise cannot turn an old refusal into a positive inventory claim.
+  if (!ctx.menuGrounding || ctx.menuGrounding.menu_lookup === 'unavailable'
+    || ctx.menuSnapshot?.source === 'menu_unavailable' || ctx.hardRealtimeContext?.stale
+    || ctx.runtimeStatus?.stale || !Array.isArray(ctx.activeShiftNotes)) return {text, changed:false};
+  const items = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  const vocabulary = menuVocabulary(items);
+  const blocked = [...(ctx.menuGrounding.unavailable_now || []), ...(ctx.menuGrounding.sold_out_now || [])];
+  return rewriteCurrentFactClauses(text, (clause) => {
+    if (nonCurrentFactAssertion(clause)) return null;
+    const refusal = /қол\s*жетімсіз|қол\s*жетімді\s+емес|недоступ\p{L}*|нет\s+в\s+наличии|жоқ/iu.exec(clause);
+    if (!refusal || /^\s*емес/iu.test(clause.slice(refusal.index + refusal[0].length))) return null;
+    const prefix = menuClaimKey(clause.slice(0, refusal.index));
+    const named = namedMenuItems(ctx, prefix).filter((item) => {
+      const name = menuClaimKey(item.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?<!\\p{L})${name}(?!\\p{L})`, 'iu').test(prefix);
+    }).sort((a, b) => prefix.lastIndexOf(menuClaimKey(b.name)) - prefix.lastIndexOf(menuClaimKey(a.name))
+      || menuClaimKey(b.name).length - menuClaimKey(a.name).length);
+    const item = named[0];
+    const afterName = item ? prefix.slice(prefix.lastIndexOf(menuClaimKey(item.name)) + menuClaimKey(item.name).length).trim() : '';
+    // A shorter name is not authority for a distinct variant (e.g. a longer SKU).
+    const directSubject = /^(?:(?:қазір|уақытша|қазіргі\s+уақытта|сейчас|временно|в\s+данный\s+момент)\s*)*$/iu.test(afterName);
+    if (!item || !directSubject || item.available !== true || menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked
+      || blocked.some((entry: any) => menuClaimKey(entry?.name ?? entry) === menuClaimKey(item.name))) return null;
+    const end = /[.!;,]\s*$/u.exec(clause)?.[0].trim() || '.';
+    return ctx.language === 'kk' ? `${item.name} мәзірде қолжетімді${end}` : `${item.name} доступна в меню${end}`;
+  });
+}
+
+
+function currentStaffEffortClaims(text: string, ctx: FastFoodContext) {
+  const result = rewriteCurrentFactClauses(text, (clause) => {
+    const past = /(?<!\p{L})(?:раньше|ранее|вчера|бұрын|кеше)(?!\p{L})/iu.test(clause);
+    const current = /(?:қазір|сейчас|в\s+данный\s+момент)/iu;
+    const addition = /\s+(?:және|и)\s+(?=(?:(?:қазір|сейчас)\s+)?(?:мейрамхана(?:ның)?\s+)?(?:қызметкерлер\p{L}*|сотрудник\p{L}*|персонал|повар\p{L}*|аспаз\p{L}*))/iu.exec(clause);
+    const currentAddition = past && addition;
+    let claim = clause;
+    if (currentAddition && addition) {
+      // Keep an honest governor or question over the entire coordinated claim.
+      if (nonCurrentFactAssertion(clause.replace(/(?<!\p{L})(?:раньше|ранее|вчера|бұрын|кеше)(?!\p{L})/giu, ''))) return null;
+      claim = clause.slice(addition.index + addition[0].length);
+      if (nonCurrentFactAssertion(claim)) return null;
+    } else if (nonCurrentFactAssertion(clause)) return null;
+    // A general policy or aspiration is not an observation of today's staff.
+    if (/(?:әдетте|әрдайым|обычно|как\s+правило)/iu.test(claim) && !current.test(claim)) return null;
+    const staff = /қызметкерлер\p{L}*|персонал|сотрудник\p{L}*|повар\p{L}*|аспаз\p{L}*/iu.test(claim);
+    const effort = /тырысуда|тырысып\s+(?:жатыр|отыр)|стара(?:ется|ются)|ускоря(?:ет|ют)/iu.exec(claim);
+    // A progressive verb followed by a past auxiliary or a past reporting
+    // verb describes a previous claim, rather than staff effort right now.
+    const pastEffort = effort && /^\s+(?:еді|болған|деп\s+(?:айтылды|хабарланды|айтқан|айтты|жазылған))(?=$|[^\p{L}])/iu.test(claim.slice(effort.index + effort[0].length));
+    const presentEffort = Boolean(effort && !pastEffort);
+    const urgency = /тез\s*(?:арада)?|жедел|быстр(?:о|ее)|как\s+можно\s+скорее|ускор/iu.test(claim);
+    if (!(staff && presentEffort && urgency)) return null;
+    return currentAddition && addition ? clause.slice(0, addition.index).trim() + '.' : '';
+  });
+  if (result.changed && !result.text) result.text = ctx.language === 'kk'
+    ? 'Нақты дайын болу уақытын растай алмаймын.' : 'Не могу подтвердить точное время готовности.';
+  return result;
+}
+
+const GENERIC_CLOSING_RE = /(?:^|(?<=\s))(?:(?:Егер\s+)?(?:қосымша\s+)?сұра[қғ](?:тар)?ыңыз\s+болса[,\s]+(?:жазыңыз|жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын)|не\s+көмек\s+керек[,\s]+жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын|если\s+(?:у\s+вас\s+)?(?:(?:будут|возникнут|есть)\s+)?(?:ещ[её]\s+|дополнительные\s+)?вопросы[,\s]+(?:напишите|пишите|обращайтесь)|обращайтесь[,\s]+если\s+(?:возникнут|будут)\s+вопросы)[.!\s😊🙂]*(?=(?:\s+https?:\/\/[^\s<>]+)*$)/iu;
 
 function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string {
   const recentAssistant = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
@@ -1206,7 +1385,8 @@ function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string 
     // Never turn an all-closing reply into an empty response or remove quotations.
     if (!prefix || /[«“"]/.test(result.slice(match.index))) break;
     const punctuation = /^[.!?]/.test(match[0]) ? match[0][0] : "";
-    result = prefix + punctuation;
+    const trailingUrls = result.slice(match.index + match[0].length).trim();
+    result = prefix + punctuation + (trailingUrls ? `\n${trailingUrls}` : "");
   }
   return result;
 }
@@ -1239,6 +1419,15 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   const checkoutSelection = guardCheckoutSelection(finalText, args[1], args[2]?.toolsCalled);
   if (checkoutSelection.changed) warnings.push(checkoutSelection.changed);
   finalText = checkoutSelection.text;
+  const hoursClaims = currentWorkHoursClaims(finalText, args[1]);
+  if (hoursClaims.changed) warnings.push("unsupported_work_hours_claim_removed");
+  finalText = hoursClaims.text;
+  const availabilityClaims = currentCatalogAvailabilityClaims(finalText, args[1]);
+  if (availabilityClaims.changed) warnings.push("stale_catalog_unavailability_corrected");
+  finalText = availabilityClaims.text;
+  const staffEffort = currentStaffEffortClaims(finalText, args[1]);
+  if (staffEffort.changed) warnings.push("unsupported_current_staff_effort_removed");
+  finalText = staffEffort.text;
   const withoutClosing = dropRepeatedGenericClosing(finalText, args[1]);
   if (withoutClosing !== finalText) {
     finalText = withoutClosing;

@@ -1,5 +1,5 @@
 import type { FastFoodContext } from "../context/types.js";
-import { hasDirectOrderIntent, hasCustomerCheckoutIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
@@ -61,6 +61,26 @@ export const BUSINESS_INFO_RE =
 // an order can be taken right now must re-read it instead of trusting context.
 const KITCHEN_STATUS_RE =
   /(қанша\s*(?:уақыт|минут)|неше\s*минут|күтем|күту\s*уақыт|дайын\s*бол|сколько\s*(?:ждать|минут|по\s*времени)|ждать|ожидан|как\s*(?:долго|быстро)|быстро\s*ли|жеткіз\p{L}*\s*(?:бар|қанша|уақыт)|доставка\s*(?:работает|есть|сколько)|өзім\s*алып|самовывоз|навынос|қабылдай\s*(?:ма|сыз\s*ба)|принима\p{L}*\s*заказ|ашық\s*па|жабық\s*па|закрыт\p{L}*\s*ли|открыт\p{L}*\s*ли|жұмыс\s*(?:істеп\s*)?(?:тұр\s*ма|жасай\s*ма))/iu;
+
+// Browsing needs catalog facts even when checkout is unavailable. Keep the
+// shared broad inquiry detector behind a current, unquoted menu + viewing ask;
+// a link request, past report or refusal alone must not pin a catalog lookup.
+function hasCurrentMenuBrowseInquiry(text: string): boolean {
+  const current = text.replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
+  if (!hasMenuInquiryIntent(current)) return false;
+  let browse = false;
+  for (const clause of current.split(/[.!?;,\n]+|(?<!\p{L})(?:но|бірақ|и|және)(?!\p{L})/iu)) {
+    if (!intentMatches(/(?<!\p{L})(?:мәзір\p{L}*|меню)(?!\p{L})/iu, clause)) continue;
+    if (intentMatches(/(?:кеше|вчера|раньше|оператор[^,;.!?]{0,30}(?:сказал|айтты)|клиент[^,;.!?]{0,30}(?:написал|жазды))/iu, clause)) continue;
+    if (intentMatches(/(?:қарама|қарамай|көрме|көрмей|қарағым\s+келмейді|(?:мәзір\p{L}*|меню)[^,;.!?]{0,20}(?:керек\s+емес|қажет\s+емес|не\s+(?:нуж\p{L}*|надо))|не\s+(?:(?:хочу|буду)\s+)?(?:смотр\p{L}*|посмотр\p{L}*|нуж\p{L}*)|(?:смотр\p{L}*|посмотр\p{L}*)\s+не\s+(?:буду|хочу))/iu, clause)) {
+      browse = false;
+      continue;
+    }
+    if (intentMatches(/(?:қарай|қарап|қарағым|көрейін|көру|көрсем|посмотр\p{L}*|смотр\p{L}*|(?:қайдан|қайда|қандай|что|где|как)[^,;.!?]{0,35}(?:мәзір|меню)|(?:мәзір|меню)[^,;.!?]{0,35}(?:қайдан|қайда|қандай|что|где|как))/iu, clause)
+      || /^(?:мәзір|мазір|меню)\s*$/iu.test(clause.trim())) browse = true;
+  }
+  return browse;
+}
 
 function add(plan: AgentToolPlan, tool: AgentToolName, reason: string) {
   if (plan.requiredTools.includes(tool)) return;
@@ -125,7 +145,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const customerWords = text.toLowerCase().match(/\p{L}{3,}/gu) || [];
   const namedCatalogItem = catalogWords.some((name: string) => customerWords.some((word) =>
     word === name || (name.length >= 4 && word.startsWith(name))));
-  const menuLookup = isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+  const menuLookup = hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && (hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");
