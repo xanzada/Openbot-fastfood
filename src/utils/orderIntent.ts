@@ -1,4 +1,5 @@
 import { intentMatches } from "./intentText.js";
+import { wantsMenuAsText } from "./magicLink.js";
 
 export const DIRECT_ORDER_INTENT_RE =
   /(?:(?:тапсырыс|заказ)\s*(?:бер|жаса|ет|қыл|хочу|оформ|сдел)|(?:алғым\s*келе|аламын|алайын|хочу\s*заказ|хочу\s*взять)|(?:[1-9]|екі|бір|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он|один|два|три|две)\s*(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]|порц)|(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]).*(?:жасап|әкел|жеткіз|берші|дайында|алғым|аламын|алайын))/iu;
@@ -29,6 +30,15 @@ export function hasCustomerCheckoutIntent(text = ""): boolean {
     if (refusedOrder || refusedLinkRu || refusedLinkKk) { decision = false; continue; }
     const explicitOrderAction = explicitOrderActionRe.test(clause);
     const explicitLinkRequest = explicitLinkRequestRe.test(clause);
+    // Writing the menu here grants no checkout permission by itself. A separate
+    // current URL or order request can still accompany the textual menu.
+    const explicitUrlRequest = explicitLinkRequestRe.test(clause.replace(/(?<!\p{L})(?:меню|мәзір\p{L}*|мазір\p{L}*|каталог\p{L}*|корзин\p{L}*|себет\p{L}*)(?!\p{L})/giu, ""))
+      || /(?<!\p{L})(?:скинь|скиньте|скин|скинте)(?!\p{L})\s*(?:мне\s*|нам\s*|пожалуйста\s*){0,2}(?:ссылк\p{L}*|сілтеме\p{L}*|линк|link)(?!\p{L})/iu.test(clause);
+    if (wantsMenuAsText(clause) && !explicitUrlRequest
+      && !explicitOrderAction && !hasDirectOrderIntent(clause)) {
+      decision = false;
+      continue;
+    }
     const quantityOrPriceQuestion = quantityOrPriceQuestionRe.test(clause);
     const pastLinkStatement = /(?:отправ(?:ил|ила|или|ляли)|присл(?:ал|ала|али)|высл(?:ал|ала|али)|показа(?:л|ла|ли|ывали)|откр(?:ыл|ыла|ыли)|жібер(?:ді|ген|іпті|дім|дің)|жибер(?:ди|ген)|аш(?:тым|тың|ты|қан|ылды)|көрсет(?:ті|тім|тің|кен))/iu.test(clause);
     if ((quantityOrPriceQuestion && !explicitOrderAction && !explicitLinkRequest)
