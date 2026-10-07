@@ -57,3 +57,33 @@ test('a later unsafe clause is removed even when an earlier honest denial exists
   assert.equal(reassurance.test(result.text), false, result.text);
   assert.match(result.text, /Гарантировать безопасность при аллергии не могу/);
 });
+
+// Additive known-composition/unknown-allergen recovery tests; original prefix is retained.
+for (const language of ['ru','kk'] as const) {
+ const input=language==='ru' ? 'У ребёнка аллергия на орехи' : 'Баламда жаңғаққа аллергия бар';
+ const unsafe=language==='ru' ? 'Не переживайте.' : 'Уайымдамаңыз.';
+ const knownContext={...ctx(language,input),menuSnapshot:{items:[{id:'fixture-salad',name:'Салат',price:700,composition:'Огурец, помидор.',available:true}]}};
+ test(`known composition does not become a claim that all composition data are absent: ${language}`,()=>{
+  const raw=language==='ru' ? 'Состав: Огурец, помидор, арахис.' : 'Салат құрамы: Огурец, помидор, арахис.';
+  const result=validateFinalText(raw,knownContext,{toolsCalled:['searchMenu'],toolFindings:{}});
+  assert.equal(reassurance.test(result.text),false);
+  assert.equal(denial.test(result.text),true);
+  assert.doesNotMatch(result.text,/нет[^.!?]*подтвержд[^.!?]*о\s+составе|құрамы[^.!?]*расталған\s+дерек\s+жоқ/iu);
+  assert.doesNotMatch(result.text,/нет орехов|жаңғақсыз|(?:блюдо|салат|тағам)\s+(?:безопас[её]н|қауіпсіз)[.!]|уточню|нақтылап|оператор/iu);
+ });
+ test(`unknown composition still cannot grant an allergy assurance: ${language}`,()=>{
+  const c={...knownContext,menuSnapshot:{items:[{id:'fixture-salad',name:'Салат',price:700,composition:'',available:true}]}};
+  const result=validateFinalText(unsafe,c,{toolsCalled:['searchMenu'],toolFindings:{}});
+  assert.equal(reassurance.test(result.text),false);assert.equal(denial.test(result.text),true);
+  assert.doesNotMatch(result.text,/огурец|помидор|нет орехов|жаңғақсыз|уточню|нақтылап|оператор/iu);
+ });
+ test(`honest guarantee denial remains byte-exact with known composition: ${language}`,()=>{
+  const raw=language==='ru' ? 'Гарантировать безопасность при аллергии не могу.' : 'Аллергия кезінде қауіпсіз екеніне кепілдік бере алмаймын.';
+  assert.equal(validateFinalText(raw,knownContext,{toolsCalled:['searchMenu'],toolFindings:{}}).text,raw);
+ });
+ test(`ordinary grounded composition remains available: ${language}`,()=>{
+  const raw=language==='ru' ? 'Состав: Огурец, помидор.' : 'Құрамы: Огурец, помидор.';
+  const c={...knownContext,text:language==='ru' ? 'Что входит в салат?' : 'Салаттың құрамы қандай?'};
+  assert.equal(validateFinalText(raw,c,{toolsCalled:['searchMenu'],toolFindings:{}}).text,raw);
+ });
+}
