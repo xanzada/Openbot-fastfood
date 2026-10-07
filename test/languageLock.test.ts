@@ -234,7 +234,7 @@ test("a language used long ago stops deciding", () => {
 });
 
 // Actual mixed-history failures: use the same instant/shared-policy contract as preloadContext.
-const { instantLanguageDecision: instantForExplicitSwitch } = await import("../src/services/languagePolicy.service.js");
+const { instantLanguageDecision: instantForExplicitSwitch, unclassifiedTextIsDecisive: timeoutTextIsDecisive } = await import("../src/services/languagePolicy.service.js");
 const clearRussianCustomerTurns = [
   "Что посоветуете?", "Скиньте меню", "Согласен ждать 60 минут", "Бонус списали повторно?",
   "Что есть из напитков?", "Какой состав у донера?", "Что входит в Цезарь?", "В донере есть орехи?",
@@ -260,18 +260,21 @@ for (const text of clearRussianCustomerTurns) {
     assert.equal(decision.detector, "instant", text);
     const resolved = resolveOrganicLanguage({
       detected: decision.lockable ? decision.language : null,
-      detectedIsDecisive: decision.lockable && textCarriesDecisiveLanguageSignal(text, decision.language),
+      detectedIsDecisive: decision.lockable && (textCarriesDecisiveLanguageSignal(text, decision.language) || timeoutTextIsDecisive(text, decision.language)),
       priorLanguage: "kk", contactName: "Айгүл", siteLanguageHint: "kk",
     });
     assert.deepEqual(resolved, { language: "ru", source: "message" });
   });
-  test(`clear RU switches an existing KK lock immediately: ${text}`, () => {
+  test(`clear RU respects the separate locked/organic signal contract: ${text}`, () => {
     const decision = instantForExplicitSwitch(text, { hasPrior: true, organic: false });
     assert.ok(decision, text);
     assert.equal(decision.language, "ru");
-    assert.equal(decision.lockable, true);
+    const organicOnly = ["Где посмотреть меню?", "Когда заказ будет готов?", "Почему задержка?", "Мне нужен стакан", "Добрый день"].includes(text);
+    assert.equal(decision.lockable, !organicOnly);
+    assert.equal(textCarriesDecisiveLanguageSignal(text, "ru"), !organicOnly);
     assert.equal(shouldSwitchLockedLanguage("kk", "kk", decision.language,
-      textCarriesDecisiveLanguageSignal(text, decision.language)), true);
+      textCarriesDecisiveLanguageSignal(text, decision.language)), !organicOnly);
+    assert.equal(timeoutTextIsDecisive(text, "ru"), true);
   });
 }
 
@@ -320,3 +323,42 @@ test("new grammatical evidence preserves explicit site-order precedence and weak
   assert.equal(resolveSiteOutboundLanguage("ru", "kk", "ru"), "kk");
   assert.equal(instantForExplicitSwitch("Цезарь", { hasPrior: false, organic: true }), null);
 });
+
+// FULL original mixed-timeout boundary: a borrowed marker does not establish a new language.
+for (const text of ["мен уже кеттим", "мен уже келдим", "уже", "уже 2"]) {
+  for (const organic of [true, false]) {
+    test("weak borrowed RU marker preserves prior language (" + organic + "): " + text, () => {
+      assert.equal(timeoutTextIsDecisive(text, "ru"), false);
+      assert.equal(textCarriesDecisiveLanguageSignal(text, "ru"), false);
+      const decision = instantForExplicitSwitch(text, { hasPrior: true, organic });
+      assert.notEqual(decision?.lockable, true);
+      assert.deepEqual(resolveOrganicLanguage({ detected: decision?.lockable ? decision.language : null,
+        detectedIsDecisive: Boolean(decision?.lockable), priorLanguage: "kk" }), { language: "kk", source: "history" });
+      assert.equal(shouldSwitchLockedLanguage("kk", "kk", decision?.language || "ru", false), false);
+    });
+  }
+}
+for (const text of ["где мой заказ", "Когда будет готово?", "Почему задержка?", "Мне нужен стакан"]) {
+  test("existing timeout lane answers clear RU without establishing locked-switch evidence: " + text, () => {
+    assert.equal(timeoutTextIsDecisive(text, "ru"), true);
+    assert.equal(textCarriesDecisiveLanguageSignal(text, "ru"), false);
+    const organic = instantForExplicitSwitch(text, { hasPrior: true, organic: true });
+    assert.equal(organic?.language, "ru");
+    assert.equal(organic?.lockable, true);
+    assert.deepEqual(resolveOrganicLanguage({ detected: organic?.language || null,
+      detectedIsDecisive: timeoutTextIsDecisive(text, "ru"), priorLanguage: "kk" }), { language: "ru", source: "message" });
+    const locked = instantForExplicitSwitch(text, { hasPrior: true, organic: false });
+    assert.notEqual(locked?.lockable, true);
+    assert.equal(shouldSwitchLockedLanguage("kk", "kk", "ru", textCarriesDecisiveLanguageSignal(text, "ru")), false);
+  });
+}
+for (const text of ["Уже оплатил", "Уже отправил чек"]) {
+  for (const organic of [true, false]) {
+    test("clear RU payment verb stays decisive without the borrowed marker (" + organic + "): " + text, () => {
+      const decision = instantForExplicitSwitch(text, { hasPrior: true, organic });
+      assert.equal(decision?.language, "ru");
+      assert.equal(decision?.lockable, true);
+      assert.equal(textCarriesDecisiveLanguageSignal(text, "ru"), true);
+    });
+  }
+}

@@ -10,9 +10,9 @@ const DECISIVE_RUSSIAN = /(?:здравствуй|привет|пожалуйс�
 // Whole grammatical words, not menu/product names or arbitrary Cyrillic tokens.
 // Plain keyboard KK request words also carry a clear signal without special letters.
 const DECISIVE_PLAIN_KAZAKH = /(?<![\p{L}])(?:керек|алайын)(?![\p{L}])/iu;
-const RUSSIAN_GRAMMATICAL_WORD = /(?<![\p{L}])(?:что|как|какой|какая|какое|какие|какую|какого|если|где|когда|почему|мне|я|уже|снова|посовет(?:уйте|уешь|уете)|порекоменду(?:й|йте|ете)|скинь(?:те)?|дайте|соглас(?:ен|на|ны)|(?:подо)?ждать|списа(?:ли|лось|л[ао]?)|повторно|открыт(?:а|о|ы)|работа(?:ете|ет|ют)|оплат(?:ил[аи]?|ить)|отправ(?:ил[аи]?|лю)|подтверд(?:ить|ите)|приш(?:ел|ёл|ла|ли|ло)|обеща(?:ли|л[аои]?)|позов(?:и|ите)|игнорируй(?:те)?|придумай(?:те)?|скажи(?:те)?)(?![\p{L}])/iu;
+const RUSSIAN_GRAMMATICAL_WORD = /(?<![\p{L}])(?:что|как|какой|какая|какое|какие|какую|какого|если|я|снова|посовет(?:уйте|уешь|уете)|порекоменду(?:й|йте|ете)|скинь(?:те)?|дайте|соглас(?:ен|на|ны)|(?:подо)?ждать|списа(?:ли|лось|л[ао]?)|повторно|открыт(?:а|о|ы)|работа(?:ете|ет|ют)|оплат(?:ил[аи]?|ить)|отправ(?:ил[аи]?|лю)|подтверд(?:ить|ите)|приш(?:ел|ёл|ла|ли|ло)|обеща(?:ли|л[аои]?)|позов(?:и|ите)|игнорируй(?:те)?|придумай(?:те)?|скажи(?:те)?)(?![\p{L}])/iu;
 // "Кола есть?" is weak; a locative ingredient question carries Russian grammar.
-const RUSSIAN_GRAMMATICAL_PHRASE = /(?<![\p{L}])(?:(?:в|во)\s+[\p{L}]+(?:е|ах|ях)\s+есть|добр(?:ый|ое|ого)\s+(?:день|дня|вечер|утро))(?![\p{L}])/iu;
+const RUSSIAN_GRAMMATICAL_PHRASE = /(?<![\p{L}])(?:(?:в|во)\s+[\p{L}]+(?:е|ах|ях)\s+есть)(?![\p{L}])/iu;
 // Only for a message the classifier could not read (timeout/invalid JSON): words a Kazakh
 // guest typing without special letters does not use. Kept out of DECISIVE_RUSSIAN on
 // purpose - that one also flips a locked language, where code-switching must not count.
