@@ -252,7 +252,7 @@ function dietaryCompositionRecovery(ctx: FastFoodContext, matches: any[]) {
   const facts = selected.map((item: any) => {
     const composition = typeof item.composition === "string" ? item.composition.trim() : "";
     return composition
-      ? say(ctx, `${String(item.name)} құрамы: ${composition}.`, `В составе ${String(item.name)} указано: ${composition}.`)
+      ? say(ctx, `${String(item.name)} құрамы: ${composition}.`, `${String(item.name)}: в составе ${composition}.`)
       : say(ctx, `${String(item.name)} нақты құрамын растай алмаймын.`, `Точный состав ${String(item.name)} подтвердить не могу.`);
   }).join(" ");
   return say(ctx, `${facts} Еттің мүлде жоқтығын растай алмаймын. Етсіз тағам қалауыңыз әлі сақтала ма?`,
@@ -311,7 +311,7 @@ export async function answerAgentFailure(
       ? say(ctx, " Құрамы мен аллергендері туралы мәліметтің толықтығын және аллергендердің жоқтығын растай алмаймын. Аллергия кезінде қауіпсіз екеніне кепілдік бере алмаймын.",
         " Полноту сведений о составе и аллергенах, а также отсутствие аллергенов подтвердить не могу. Гарантировать безопасность при аллергии не могу.") : "";
     const dietaryReply = dietaryCompositionRecovery(ctx, matches);
-    if (dietaryReply) return dietaryReply + allergenUncertainty;
+    if (dietaryReply && !requestedLink) return dietaryReply + allergenUncertainty;
     const alternatives = (grounding.safe_alternatives || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
     const list = (matches.length ? matches : alternatives)
       .map((item: any) => String(item.name) + " — " + Number(item.price) + " ₸").join(", ");
@@ -356,7 +356,7 @@ export async function answerAgentFailure(
       else linkFailure = linkReply(false);
     }
     const offHours = ordering && kitchen.mode === "off_hours";
-    const orderLink = ordering && kitchen.stateKnown && !kitchen.blocksAllSales
+    const orderLink = !dietaryReply && ordering && kitchen.stateKnown && !kitchen.blocksAllSales
       && (!kitchen.requiresConsent || ctx.kitchenCheckoutFingerprint === kitchen.fingerprint);
     const compositionHead = compositionQuestion ? matches.map((item: any) => {
       const composition = typeof item.composition === "string" ? item.composition.trim() : "";
@@ -364,9 +364,9 @@ export async function answerAgentFailure(
         ? say(ctx, String(item.name) + " құрамы: " + composition + ".", "Состав " + String(item.name) + ": " + composition + ".")
         : say(ctx, String(item.name) + " нақты құрамын растай алмаймын.", "Точный состав " + String(item.name) + " подтвердить не могу.");
     }).join(" ") : "";
-    return say(ctx, (compositionHead || "Бар: " + list + ".") + allergenUncertainty + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
+    return say(ctx, (dietaryReply || compositionHead || "Бар: " + list + ".") + allergenUncertainty + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
       + (linked ? (orderLink ? " Тапсырыс беру сілтемесін төменге жібердім." : " Мәзірді қарау сілтемесін төменге жібердім.") : (linkFailure ? " " + linkFailure : "")),
-      (compositionHead || "Есть: " + list + ".") + allergenUncertainty + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
+      (dietaryReply || compositionHead || "Есть: " + list + ".") + allergenUncertainty + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
       + (linked ? (orderLink ? " Оформить заказ можно по ссылке ниже." : " Ссылку для просмотра меню отправил ниже.") : (linkFailure ? " " + linkFailure : "")));
   }
   if (requestedLink && !needsHumanRecovery(ctx)) {

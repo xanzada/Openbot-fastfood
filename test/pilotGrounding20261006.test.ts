@@ -1556,7 +1556,7 @@ const dietaryActualRows = [
 ];
 for (const vector of dietaryActualRows) test(`dietary actual ${vector.id} LF${vector.LFrow} ${vector.LFrowSHA256}`, async () => {
   const r = await compositionRecovery(vector.input, vector.language, { chatHistory: vector.history }, { items: vector.items });
-  assert.equal(r.reads, 1); assert.equal(r.links, 0); assert.equal(r.routes, 0);
+  assert.equal(r.reads, 1); assert.equal(r.links, vector.id.endsWith("t4") ? 1 : 0); assert.equal(r.routes, 0);
   assert.match(r.reply, /Курица, салат|Курица, лаваш, томат/u);
   assert.match(r.reply, /без мяса|етсіз/iu);
   assert.match(r.reply, /пожелание|предпочтение|таңдайсыз|қалауыңыз/iu);
@@ -1571,19 +1571,19 @@ for (const language of ["ru", "kk"]) {
     const menu = compositionMenu(); menu.items[3].composition = "Индейка, огурец";
     const r = await compositionRecovery(selection, language, { chatHistory: [{ role: "user", text: preference }] }, menu);
     assert.ok(r.reply.includes("Индейка, огурец")); assert.doesNotMatch(r.reply, /Курица, салат/u);
-    assert.match(r.reply, /пожелание|қалауыңыз/iu); assert.equal(r.links, 0); assert.equal(r.routes, 0);
+    assert.match(r.reply, /пожелание|қалауыңыз/iu); assert.equal(r.links, 1); assert.equal(r.routes, 0);
   });
   test(`dietary missing composition stays honestly unconfirmed ${language}`, async () => {
     const menu = compositionMenu(); menu.items[3].composition = "";
     const r = await compositionRecovery(selection, language, { chatHistory: [{ role: "user", text: preference }] }, menu);
     assert.match(r.reply, /состав.*подтвердить не могу|құрамын растай алмаймын/iu);
-    assert.doesNotMatch(r.reply, /Курица|без мяса гарант|етсіз екеніне кепіл/iu); assert.equal(r.links, 0);
+    assert.doesNotMatch(r.reply, /Курица|без мяса гарант|етсіз екеніне кепіл/iu); assert.equal(r.links, 1);
   });
   test(`dietary fresh non-meat listed ingredients do not guarantee absence ${language}`, async () => {
     const menu = compositionMenu(); menu.items[3].composition = "Огурец, помидор";
     const r = await compositionRecovery(selection, language, { chatHistory: [{ role: "user", text: preference }] }, menu);
     assert.ok(r.reply.includes("Огурец, помидор")); assert.doesNotMatch(r.reply, /Курица|точно без мяса|етсіз екеніне кепіл/iu);
-    assert.equal(r.links, 0);
+    assert.equal(r.links, 1);
   });
   test(`dietary current explicit withdrawal does not create a permanent preference lock ${language}`, async () => {
     const text = language === "ru" ? "Теперь можно с мясом, хочу Цезарь" : "Етпен болады, Цезарь алайын";
@@ -1636,5 +1636,328 @@ for (const example of [
     assert.equal(r.reads, 1);
     assert.equal(r.links, 0);
     assert.equal(r.routes, 0);
+  });
+}
+
+// Original900 three link regressions: exact current LF facts and prior full history.
+const dietaryLinkActualContexts = [
+  {
+    "id": "K13t4",
+    "LF": 76,
+    "LF_SHA256": "49ab8fe94238217f4cdf4e2da34c832ae3b464a6aec4660c55a94b5caba07519",
+    "text": "Цезарь керек онда",
+    "language": "kk",
+    "history": [
+      {
+        "role": "user",
+        "text": "Сәлем"
+      },
+      {
+        "role": "assistant",
+        "text": "Кешіріңіз, жауап сәл кешікті. Сұрағыңызды тағы бір рет жаза аласыз ба?"
+      },
+      {
+        "role": "user",
+        "text": "Не ұсынасыз?"
+      },
+      {
+        "role": "assistant",
+        "text": "Бұл сұрағаныңыз қазір қолжетімсіз. Мыналар бар: Спрайт — 650 ₸, Кола — 700 ₸, Донер куриный — 1800 ₸."
+      },
+      {
+        "role": "user",
+        "text": "Етсіз тағам бар ма?"
+      },
+      {
+        "role": "assistant",
+        "text": "Донер куриный құрамы: Курица, лаваш, томат. Цезарь құрамы: Курица, салат. Еттің мүлде жоқтығын растай алмаймын. Етсіз тағам қалауыңыз әлі сақтала ма?"
+      }
+    ],
+    "facts": {
+      "fixtureVersion": "v4",
+      "menu": [
+        {
+          "id": "fixture-cola",
+          "name": "Кола",
+          "category_name": "Напитки",
+          "price": 800,
+          "composition": "Вода, сахар",
+          "available": true
+        },
+        {
+          "id": "fixture-sprite",
+          "name": "Спрайт",
+          "category_name": "Напитки",
+          "price": 650,
+          "composition": "Вода, сахар",
+          "available": true
+        },
+        {
+          "id": "fixture-doner",
+          "name": "Донер куриный",
+          "category_name": "Донеры",
+          "price": 1800,
+          "composition": "Курица, лаваш, томат",
+          "available": true
+        },
+        {
+          "id": "fixture-caesar",
+          "name": "Цезарь",
+          "category_name": "Салаты",
+          "price": 2200,
+          "composition": "Курица, салат",
+          "available": true
+        }
+      ],
+      "notes": [],
+      "blocked": [],
+      "runtime": {
+        "runtime_available": true,
+        "is_accepting_orders": true,
+        "within_work_hours": true,
+        "is_emergency": false,
+        "wait_time": 0
+      },
+      "order": null,
+      "waitConsentAccepted": false,
+      "providerFailure": false,
+      "sourceId": "K13-v4"
+    }
+  },
+  {
+    "id": "R13t4",
+    "LF": 376,
+    "LF_SHA256": "c6b346a1eacb6b27ada2b23dda5fc90d0c2927ea398d6751d7a713b9f7fb08e9",
+    "text": "Тогда Цезарь",
+    "language": "ru",
+    "history": [
+      {
+        "role": "user",
+        "text": "Привет"
+      },
+      {
+        "role": "assistant",
+        "text": "Извините, ответ задержался. Напишите, пожалуйста, ваш вопрос ещё раз."
+      },
+      {
+        "role": "user",
+        "text": "Что посоветуете?"
+      },
+      {
+        "role": "assistant",
+        "text": "Сейчас этой позиции нет в доступном меню. Есть другие варианты: Спрайт — 650 ₸, Кола — 700 ₸, Донер куриный — 1800 ₸."
+      },
+      {
+        "role": "user",
+        "text": "Что есть без мяса?"
+      },
+      {
+        "role": "assistant",
+        "text": "Полное отсутствие мяса подтвердить не могу. Сохраняется ли ваше пожелание выбрать вариант без мяса?"
+      }
+    ],
+    "facts": {
+      "fixtureVersion": "v4",
+      "menu": [
+        {
+          "id": "fixture-cola",
+          "name": "Кола",
+          "category_name": "Напитки",
+          "price": 800,
+          "composition": "Вода, сахар",
+          "available": true
+        },
+        {
+          "id": "fixture-sprite",
+          "name": "Спрайт",
+          "category_name": "Напитки",
+          "price": 650,
+          "composition": "Вода, сахар",
+          "available": true
+        },
+        {
+          "id": "fixture-doner",
+          "name": "Донер куриный",
+          "category_name": "Донеры",
+          "price": 1800,
+          "composition": "Курица, лаваш, томат",
+          "available": true
+        },
+        {
+          "id": "fixture-caesar",
+          "name": "Цезарь",
+          "category_name": "Салаты",
+          "price": 2200,
+          "composition": "Курица, салат",
+          "available": true
+        }
+      ],
+      "notes": [],
+      "blocked": [],
+      "runtime": {
+        "runtime_available": true,
+        "is_accepting_orders": true,
+        "within_work_hours": true,
+        "is_emergency": false,
+        "wait_time": 0
+      },
+      "order": null,
+      "waitConsentAccepted": false,
+      "providerFailure": false,
+      "sourceId": "R13-v4"
+    }
+  },
+  {
+    "id": "M07t4",
+    "LF": 640,
+    "LF_SHA256": "0e2c95b6414dddae5dd178239f8265e213312340f97e657cb7a7723c91417616",
+    "text": "Тогда Цезарь",
+    "language": "kk",
+    "history": [
+      {
+        "role": "user",
+        "text": "Сәлем"
+      },
+      {
+        "role": "assistant",
+        "text": "Кешіріңіз, жауап сәл кешікті. Сұрағыңызды тағы бір рет жаза аласыз ба?"
+      },
+      {
+        "role": "user",
+        "text": "Что посоветуете?"
+      },
+      {
+        "role": "assistant",
+        "text": "Сейчас этой позиции нет в доступном меню. Есть другие варианты: Спрайт — 650 ₸, Кола — 700 ₸, Донер куриный — 1800 ₸."
+      },
+      {
+        "role": "user",
+        "text": "Етсіз тағам бар ма?"
+      },
+      {
+        "role": "assistant",
+        "text": "Донер куриный құрамы: Курица, лаваш, томат. Цезарь құрамы: Курица, салат. Еттің мүлде жоқтығын растай алмаймын. Етсіз тағам қалауыңыз әлі сақтала ма?"
+      }
+    ],
+    "facts": {
+      "fixtureVersion": "v4",
+      "menu": [
+        {
+          "id": "fixture-cola",
+          "name": "Кола",
+          "category_name": "Напитки",
+          "price": 800,
+          "composition": "Вода, сахар",
+          "available": true
+        },
+        {
+          "id": "fixture-sprite",
+          "name": "Спрайт",
+          "category_name": "Напитки",
+          "price": 650,
+          "composition": "Вода, сахар",
+          "available": true
+        },
+        {
+          "id": "fixture-doner",
+          "name": "Донер куриный",
+          "category_name": "Донеры",
+          "price": 1800,
+          "composition": "Курица, лаваш, томат",
+          "available": true
+        },
+        {
+          "id": "fixture-caesar",
+          "name": "Цезарь",
+          "category_name": "Салаты",
+          "price": 2200,
+          "composition": "Курица, салат",
+          "available": true
+        }
+      ],
+      "notes": [],
+      "blocked": [],
+      "runtime": {
+        "runtime_available": true,
+        "is_accepting_orders": true,
+        "within_work_hours": true,
+        "is_emergency": false,
+        "wait_time": 0
+      },
+      "order": null,
+      "waitConsentAccepted": false,
+      "providerFailure": false,
+      "sourceId": "M07-v4"
+    }
+  }
+];
+
+let dietaryLinkFixtureId = 0;
+async function dietaryLinkRecovery(text: string, language = "ru", extra: any = {}, menu: any = compositionMenu(), issuer = "granted") {
+  const c = ctx(text, { language, instanceId: "dietary-link-fixture-" + (++dietaryLinkFixtureId), ...extra });
+  c.magicLink = issuer === "failed" ? null : "https://fixture.invalid/personal/dietary-" + dietaryLinkFixtureId;
+  c.magicLinkFailed = issuer === "failed"; c.magicLinkGranted = false;
+  let reads = 0, routes = 0, links = 0;
+  const reply = await answerAgentFailure(c, new Error("fixture-model-unavailable"),
+    async () => { routes++; return { action: "skipped" } as any; },
+    async () => {
+      links++;
+      if (issuer === "throw") throw new Error("synthetic-issuer-unavailable");
+      const outcome = await honorMenuLinkPromise(c, c.language === "kk" ? "Мәзірді жіберемін." : "Отправлю меню.");
+      return outcome.action === "granted" || Boolean(c.magicLinkGranted && c.magicLink);
+    },
+    async (_i: any, _d: any, _l: any, options: any) => { reads++; assert.equal(options.forceFresh, true); return menu; });
+  const final = validateFinalText(reply, c, { toolsCalled: [...(c.menuGrounding ? ["searchMenu"] : []), ...(c.magicLinkGranted ? ["sendMenuLink"] : [])] });
+  return { c, reply, final, reads, routes, links };
+}
+for (const v of dietaryLinkActualContexts) {
+  test("dietary planned browsing link survives fallback and validator: " + v.id + " LF" + v.LF + " " + v.LF_SHA256, async () => {
+    const r = await dietaryLinkRecovery(v.text, v.language, { chatHistory: v.history, runtimeStatus: v.facts.runtime,
+      hardRealtimeContext: v.facts.runtime, activeOrder: v.facts.order, activeShiftNotes: v.facts.notes }, { items: v.facts.menu });
+    assert.equal(r.reads, 1); assert.equal(r.routes, 0); assert.equal(r.links, 1);
+    assert.equal(r.c.magicLinkGranted, true); assert.match(r.c.magicLink, /^https:\/\/fixture\.invalid\/personal\/dietary-/u);
+    assert.ok(r.final.text.includes("Курица, салат"), r.final.text);
+    assert.match(r.final.text, /пожелание|қалауыңыз/iu); assert.match(r.final.text, /без мяса|етсіз/iu);
+    assert.match(r.final.text, /просмотр.*меню|Мәзірді қарау/iu);
+    assert.ok(!r.final.warnings.includes("unsupported_ingredient_claim_removed"), JSON.stringify(r.final));
+    assert.doesNotMatch(r.final.text, /заказ принят|тапсырыс қабылданды|оформить заказ|тапсырыс беру|безопасен|қауіпсіз|точно без мяса/iu);
+    assert.ok(!r.c.sosTriggered);
+  });
+  for (const issuer of ["failed", "throw"]) test("dietary planned link issuer failure remains truthful: " + v.id + "/" + issuer, async () => {
+    const r = await dietaryLinkRecovery(v.text, v.language, { chatHistory: v.history, runtimeStatus: v.facts.runtime,
+      hardRealtimeContext: v.facts.runtime }, { items: v.facts.menu }, issuer);
+    assert.equal(r.links, 1); assert.equal(r.c.magicLinkGranted, false); assert.equal(r.routes, 0);
+    assert.ok(r.final.text.includes("Курица, салат"), r.final.text); assert.match(r.final.text, /пожелание|қалауыңыз/iu);
+    assert.match(r.final.text, /не удалось отправить ссылку|сілтемені жіберу мүмкін болмады/iu);
+    assert.doesNotMatch(r.final.text, /отправил ниже|жібердім|заказ принят|қабылданды/iu);
+  });
+}
+for (const language of ["ru", "kk"]) {
+  const preference = language === "ru" ? "Что есть без мяса?" : "Етсіз тағам бар ма?";
+  const selection = language === "ru" ? "Тогда Цезарь" : "Цезарь керек онда";
+  test("dietary ordinary composition question does not request or grant link: " + language, async () => {
+    const r = await dietaryLinkRecovery(language === "ru" ? "Какой состав Цезаря?" : "Цезарь құрамы қандай?", language,
+      { chatHistory: [{ role: "user", text: preference }] });
+    assert.equal(r.links, 0); assert.equal(r.c.magicLinkGranted, false); assert.equal(r.routes, 0);
+    assert.ok(r.final.text.includes("Курица, салат"), r.final.text);
+    assert.doesNotMatch(r.final.text, /просмотр.*меню|Мәзірді қарау.*сілтеме/iu);
+  });
+  for (const [kind, runtime] of [
+    ["unknown", null],
+    ["closed", { is_accepting_orders: false, within_work_hours: true, wait_time: 0 }],
+    ["wait", { is_accepting_orders: true, within_work_hours: true, wait_time: 60 }],
+  ] as const) test("dietary planned selection preserves operational link denial: " + language + "/" + kind, async () => {
+    const r = await dietaryLinkRecovery(selection, language, { chatHistory: [{ role: "user", text: preference }], runtimeStatus: runtime,
+      hardRealtimeContext: { runtime_available: kind !== "unknown" } });
+    assert.equal(r.c.magicLinkGranted, false); assert.equal(r.links, 0); assert.equal(r.routes, 0);
+    assert.doesNotMatch(r.final.text, /отправил ниже|жібердім|заказ принят|қабылданды/iu);
+  });
+  for (const kind of ["unavailable", "staff-note", "lookup-failed"]) test("dietary planned selection preserves fresh availability denial: " + language + "/" + kind, async () => {
+    const menu = compositionMenu(); menu.items[3].available = kind !== "unavailable";
+    const r = await dietaryLinkRecovery(selection, language, { chatHistory: [{ role: "user", text: preference }],
+      activeShiftNotes: kind === "staff-note" ? [{ text: "Цезарь закончился", source: "staff" }] : [] },
+      kind === "lookup-failed" ? { source: "menu_unavailable", items: [] } : menu);
+    assert.equal(r.links, 0); assert.equal(r.c.magicLinkGranted, false); assert.equal(r.routes, 0);
+    assert.doesNotMatch(r.final.text, /просмотр.*меню|Мәзірді қарау.*сілтеме|заказ принят|қабылданды/iu);
   });
 }
