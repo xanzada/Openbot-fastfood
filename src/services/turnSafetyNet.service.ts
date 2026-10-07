@@ -1,6 +1,7 @@
 import type { FastFoodContext } from "../context/types.js";
 import { resolveAgentToolPlan, resolveLiveAgentToolPlan } from "../agent/toolPolicy.js";
 import { groundMenuTurn } from "../skills/searchMenu.skill.js";
+import { customerCompositionSubject, isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
 import { getCustomerOrder } from "./customerOrder.service.js";
 import { requestedOrderNumber, lastDiscussedOrderNumber } from "../utils/orderIntent.js";
 import { getMenuContext } from "./dle.service.js";
@@ -187,6 +188,32 @@ export const grantMenuLinkForFallback: GrantLink = async (ctx) => {
   return outcome?.action === "granted" || Boolean(ctx.magicLinkGranted && ctx.magicLink);
 };
 
+/** A composition answer uses a named fresh catalog entry, never its description. */
+function compositionRecoverySubject(ctx: FastFoodContext) {
+  const contextual = isContextualCompositionQuestion(ctx.text);
+  const items: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  // Only attested RU singular-genitive words are canonicalized; no short prefix guessing.
+  const canonicalShortWord = (word: string) => word === "супа" ? "суп" : word === "чая" ? "чай" : word;
+  // Catalog stems only help resolve the same customer-only contextual question;
+  // ingredients and the returned dish name still come from the original fresh item.
+  const subject = contextual ? customerCompositionSubject(ctx) || customerCompositionSubject({ ...ctx,
+    chatHistory: (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).map((entry: any) => entry.role === "user"
+      ? { ...entry, text: fold(entry.text || entry.content).replace(/\p{L}+/gu, canonicalShortWord) } : entry),
+    menuSnapshot: { ...ctx.menuSnapshot, items: items.map((item) => ({ ...item,
+      name: fold(item.name || item.title).replace(/ь(?=\s|$)/gu, "") })) } })
+    : String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+  const words = (fold(subject).match(/\p{L}+/gu) || []);
+  const ranked = items.map((item) => ({ item, score: (fold(item.name || item.title).match(/\p{L}+/gu) || [])
+    .map((word) => word.replace(/ь$/u, "")).filter((word) => word.length >= 3)
+    .filter((word) => words.some((query) => word.length === 3 ? canonicalShortWord(query) === word : query.startsWith(word))).length }));
+  const highest = Math.max(0, ...ranked.map(({ score }) => score));
+  const named = ranked.filter(({ score }) => score > 0 && score === highest).map(({ item }) => item);
+  if (named.length !== 1) return { clarification: say(ctx, "Қай тағамның құрамын білгіңіз келеді?", "Состав какого блюда вас интересует?"), items: [] };
+  const vocabulary = menuVocabulary(items);
+  return { clarification: "", items: named.filter((item) => item.available !== false
+    && !menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked) };
+}
+
 export async function answerAgentFailure(
   ctx: FastFoodContext,
   error: unknown,
@@ -230,7 +257,11 @@ export async function answerAgentFailure(
     if (grounding.menu_lookup === "unavailable") return say(ctx,
       "Қазір мәзірді тексере алмай тұрмын. Біраздан кейін қайта сұраңызшы.",
       "Сейчас не могу проверить меню. Попробуйте, пожалуйста, чуть позже.");
-    const matches = (grounding.items || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
+    const compositionQuestion = intentMatches(COMPOSITION_QUESTION_RE, ctx.text);
+    const compositionSubject = compositionQuestion ? compositionRecoverySubject(ctx) : null;
+    if (compositionSubject?.clarification) return compositionSubject.clarification;
+    const matches = (compositionSubject ? compositionSubject.items : grounding.items || [])
+      .filter((item: any) => compositionQuestion || Number(item.price) > 0).slice(0, 3);
     const alternatives = (grounding.safe_alternatives || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
     const list = (matches.length ? matches : alternatives)
       .map((item: any) => String(item.name) + " — " + Number(item.price) + " ₸").join(", ");
@@ -277,9 +308,18 @@ export async function answerAgentFailure(
     const offHours = ordering && kitchen.mode === "off_hours";
     const orderLink = ordering && kitchen.stateKnown && !kitchen.blocksAllSales
       && (!kitchen.requiresConsent || ctx.kitchenCheckoutFingerprint === kitchen.fingerprint);
-    return say(ctx, "Бар: " + list + "." + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
+    const compositionHead = compositionQuestion ? matches.map((item: any) => {
+      const composition = typeof item.composition === "string" ? item.composition.trim() : "";
+      return composition
+        ? say(ctx, String(item.name) + " құрамы: " + composition + ".", "Состав " + String(item.name) + ": " + composition + ".")
+        : say(ctx, String(item.name) + " нақты құрамын растай алмаймын.", "Точный состав " + String(item.name) + " подтвердить не могу.");
+    }).join(" ") : "";
+    const allergenUncertainty = compositionQuestion && /аллерг|жаңғақ|жангак|орех|глютен|лактоз/iu.test(ctx.text)
+      ? say(ctx, " Құрамы мен аллергендері туралы мәліметтің толықтығын және аллергендердің жоқтығын растай алмаймын. Аллергия кезінде қауіпсіз екеніне кепілдік бере алмаймын.",
+        " Полноту сведений о составе и аллергенах, а также отсутствие аллергенов подтвердить не могу. Гарантировать безопасность при аллергии не могу.") : "";
+    return say(ctx, (compositionHead || "Бар: " + list + ".") + allergenUncertainty + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
       + (linked ? (orderLink ? " Тапсырыс беру сілтемесін төменге жібердім." : " Мәзірді қарау сілтемесін төменге жібердім.") : (linkFailure ? " " + linkFailure : "")),
-      "Есть: " + list + "." + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
+      (compositionHead || "Есть: " + list + ".") + allergenUncertainty + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
       + (linked ? (orderLink ? " Оформить заказ можно по ссылке ниже." : " Ссылку для просмотра меню отправил ниже.") : (linkFailure ? " " + linkFailure : "")));
   }
   if (requestedLink && !needsHumanRecovery(ctx)) {
@@ -329,7 +369,7 @@ export async function answerAgentFailure(
 
 // «составить заказ» is not a composition question, «составе» is.
 const COMPOSITION_QUESTION_RE =
-  /(құрам|курам|состав(?![иял])|ингредиент|аллерг|жаңғақ|жангак|орех|глютен|лактоз|ішінде не|ишинде не|что внутри|из чего)/iu;
+  /(құрам|курам|состав(?![иял])|ингредиент|аллерг|жаңғақ|жангак|орех|глютен|лактоз|ішінде не|ишинде не|что внутри|что\s+входит|из чего)/iu;
 const fold = (value: unknown) => String(value || "").toLowerCase().replace(/ё/g, "е");
 
 /**
