@@ -7,6 +7,12 @@ export type CustomerLanguage = "kk" | "ru";
 // answered in their own language would be rude.
 const DECISIVE_KAZAKH = /[әғқңөұүһі]/u;
 const DECISIVE_RUSSIAN = /(?:здравствуй|привет|пожалуйста|спасибо|хочу|можно|сколько|доставка|заказыва|давайте|ещё|еще раз)/iu;
+// Whole grammatical words, not menu/product names or arbitrary Cyrillic tokens.
+// Plain keyboard KK request words also carry a clear signal without special letters.
+const DECISIVE_PLAIN_KAZAKH = /(?<![\p{L}])(?:керек|алайын)(?![\p{L}])/iu;
+const RUSSIAN_GRAMMATICAL_WORD = /(?<![\p{L}])(?:что|как|какой|какая|какое|какие|какую|какого|если|где|когда|почему|мне|я|уже|снова|посовет(?:уйте|уешь|уете)|порекоменду(?:й|йте|ете)|скинь(?:те)?|дайте|соглас(?:ен|на|ны)|(?:подо)?ждать|списа(?:ли|лось|л[ао]?)|повторно|открыт(?:а|о|ы)|работа(?:ете|ет|ют)|оплат(?:ил[аи]?|ить)|отправ(?:ил[аи]?|лю)|подтверд(?:ить|ите)|приш(?:ел|ёл|ла|ли|ло)|обеща(?:ли|л[аои]?)|позов(?:и|ите)|игнорируй(?:те)?|придумай(?:те)?|скажи(?:те)?)(?![\p{L}])/iu;
+// "Кола есть?" is weak; a locative ingredient question carries Russian grammar.
+const RUSSIAN_GRAMMATICAL_PHRASE = /(?<![\p{L}])(?:(?:в|во)\s+[\p{L}]+(?:е|ах|ях)\s+есть|добр(?:ый|ое|ого)\s+(?:день|дня|вечер|утро))(?![\p{L}])/iu;
 // Only for a message the classifier could not read (timeout/invalid JSON): words a Kazakh
 // guest typing without special letters does not use. Kept out of DECISIVE_RUSSIAN on
 // purpose - that one also flips a locked language, where code-switching must not count.
@@ -16,8 +22,10 @@ const UNCLASSIFIED_RUSSIAN =
 export function textCarriesDecisiveLanguageSignal(text: unknown, language: CustomerLanguage) {
   const value = String(text || "").toLowerCase();
   if (!value.trim()) return false;
-  if (language === "kk") return DECISIVE_KAZAKH.test(value);
-  return !DECISIVE_KAZAKH.test(value) && DECISIVE_RUSSIAN.test(value);
+  if (language === "kk") return DECISIVE_KAZAKH.test(value) || DECISIVE_PLAIN_KAZAKH.test(value);
+  return !DECISIVE_KAZAKH.test(value) && !DECISIVE_PLAIN_KAZAKH.test(value)
+    && (DECISIVE_RUSSIAN.test(value) || (detectLang(value) === "ru"
+      && (RUSSIAN_GRAMMATICAL_WORD.test(value) || RUSSIAN_GRAMMATICAL_PHRASE.test(value))));
 }
 
 /** Decisiveness for the regex guess when the classifier failed this turn. */
@@ -147,7 +155,7 @@ export function instantLanguageDecision(
   options: { hasPrior: boolean; organic: boolean },
 ): LanguageDetectionDecision | null {
   if (!isLanguageBearingCustomerText(text)) return null;
-  const guess = detectLang(text);
+  const guess = DECISIVE_PLAIN_KAZAKH.test(text) ? "kk" : detectLang(text);
   if (textCarriesDecisiveLanguageSignal(text, guess) || (options.organic && unclassifiedTextIsDecisive(text, guess))) {
     return { language: guess, detector: "instant", confidence: 1, lockable: true };
   }

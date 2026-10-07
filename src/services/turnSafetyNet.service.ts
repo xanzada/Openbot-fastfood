@@ -214,6 +214,51 @@ function compositionRecoverySubject(ctx: FastFoodContext) {
     && !menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked) };
 }
 
+/** A recent customer preference asks for disclosure/clarification, never a permanent diet lock. */
+function dietaryCompositionRecovery(ctx: FastFoodContext, matches: any[]) {
+  const customerText = (text: unknown) => foldIntentText(String(text || "")
+    .replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, ""));
+  const requested = (text: string) => /без\s+мяса|етсіз|етсиз|вегетариан/iu.test(text);
+  const withdrawn = (text: string) => /(?:можно|хочу|буду|беру|возьму)\s+(?:с\s+мясом|мясо)|(?:с\s+мясом|мясо)\s+(?:можно|подойдет)|не\s+обязательно\s+без\s+мяса|не\s+(?:хочу|нужно|надо)\s+(?:блюдо\s+)?без\s+мяса|етпен\s+(?:болады|алайын)/iu.test(text);
+  const current = customerText(ctx.text);
+  if (withdrawn(current)) return null;
+  const explicitCurrent = requested(current);
+  let activePreference = explicitCurrent;
+  if (!activePreference) {
+    const recent = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])
+      .filter((entry: any) => entry.role === "user").slice(-6);
+    for (let i = recent.length - 1; i >= 0; i -= 1) {
+      const text = customerText(recent[i].text || recent[i].content);
+      if (withdrawn(text)) return null;
+      if (requested(text)) { activePreference = true; break; }
+    }
+  }
+  if (!activePreference) return null;
+  const items: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  const vocabulary = menuVocabulary(items);
+  // Public search matches expose ingredients/description; source composition comes only
+  // from the unique identity in the fresh raw catalog, never those condensed fields.
+  const named = matches.flatMap((match: any) => {
+    const exact = items.filter((item) => match.id
+      ? String(item.id) === String(match.id)
+      : foldIntentText(item.name || item.title) === foldIntentText(match.name || match.title));
+    return exact.length === 1 ? exact : [];
+  });
+  const selected = (named.length ? named : explicitCurrent && !matches.length ? items : [])
+    .filter((item: any) => item.available !== false && !itemIsBeverage(item)
+      && !menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked).slice(0, 3);
+  // A blocked/missing named item keeps the existing availability/notes response.
+  if (!selected.length) return null;
+  const facts = selected.map((item: any) => {
+    const composition = typeof item.composition === "string" ? item.composition.trim() : "";
+    return composition
+      ? say(ctx, `${String(item.name)} құрамы: ${composition}.`, `В составе ${String(item.name)} указано: ${composition}.`)
+      : say(ctx, `${String(item.name)} нақты құрамын растай алмаймын.`, `Точный состав ${String(item.name)} подтвердить не могу.`);
+  }).join(" ");
+  return say(ctx, `${facts} Еттің мүлде жоқтығын растай алмаймын. Етсіз тағам қалауыңыз әлі сақтала ма?`,
+    `${facts} Полное отсутствие мяса подтвердить не могу. Сохраняется ли ваше пожелание выбрать вариант без мяса?`);
+}
+
 export async function answerAgentFailure(
   ctx: FastFoodContext,
   error: unknown,
@@ -262,6 +307,11 @@ export async function answerAgentFailure(
     if (compositionSubject?.clarification) return compositionSubject.clarification;
     const matches = (compositionSubject ? compositionSubject.items : grounding.items || [])
       .filter((item: any) => compositionQuestion || Number(item.price) > 0).slice(0, 3);
+    const allergenUncertainty = compositionQuestion && /аллерг|жаңғақ|жангак|орех|глютен|лактоз/iu.test(ctx.text)
+      ? say(ctx, " Құрамы мен аллергендері туралы мәліметтің толықтығын және аллергендердің жоқтығын растай алмаймын. Аллергия кезінде қауіпсіз екеніне кепілдік бере алмаймын.",
+        " Полноту сведений о составе и аллергенах, а также отсутствие аллергенов подтвердить не могу. Гарантировать безопасность при аллергии не могу.") : "";
+    const dietaryReply = dietaryCompositionRecovery(ctx, matches);
+    if (dietaryReply) return dietaryReply + allergenUncertainty;
     const alternatives = (grounding.safe_alternatives || []).filter((item: any) => Number(item.price) > 0).slice(0, 3);
     const list = (matches.length ? matches : alternatives)
       .map((item: any) => String(item.name) + " — " + Number(item.price) + " ₸").join(", ");
@@ -314,9 +364,6 @@ export async function answerAgentFailure(
         ? say(ctx, String(item.name) + " құрамы: " + composition + ".", "Состав " + String(item.name) + ": " + composition + ".")
         : say(ctx, String(item.name) + " нақты құрамын растай алмаймын.", "Точный состав " + String(item.name) + " подтвердить не могу.");
     }).join(" ") : "";
-    const allergenUncertainty = compositionQuestion && /аллерг|жаңғақ|жангак|орех|глютен|лактоз/iu.test(ctx.text)
-      ? say(ctx, " Құрамы мен аллергендері туралы мәліметтің толықтығын және аллергендердің жоқтығын растай алмаймын. Аллергия кезінде қауіпсіз екеніне кепілдік бере алмаймын.",
-        " Полноту сведений о составе и аллергенах, а также отсутствие аллергенов подтвердить не могу. Гарантировать безопасность при аллергии не могу.") : "";
     return say(ctx, (compositionHead || "Бар: " + list + ".") + allergenUncertainty + (offHours ? " Қазір жұмыс уақытынан тыс, тапсырыс ашылғанда қабылданады." : "")
       + (linked ? (orderLink ? " Тапсырыс беру сілтемесін төменге жібердім." : " Мәзірді қарау сілтемесін төменге жібердім.") : (linkFailure ? " " + linkFailure : "")),
       (compositionHead || "Есть: " + list + ".") + allergenUncertainty + (offHours ? " Сейчас вне рабочего времени, заказ можно оформить после открытия." : "")
