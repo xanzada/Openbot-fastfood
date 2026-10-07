@@ -19,6 +19,11 @@ const RUSSIAN_GRAMMATICAL_PHRASE = /(?<![\p{L}])(?:(?:в|во)\s+[\p{L}]+(?:е|�
 const UNCLASSIFIED_RUSSIAN =
   /(?:добр(?:ый|ое|ого)\s+(?:день|дня|вечер|утр)|(?<![а-яёәғқңөұүһі])(?:где|почему|когда|мой|моя|мою|мне|меня|пришл[аио]?|холодн[а-я]*|ребенк[а-я]*|ребёнк[а-я]*)(?![а-яё]))/iu;
 
+// An ordinary availability question and a topic construction are grammatical
+// evidence in an organic dialogue. Keep them out of the locked-language lane.
+const ORGANIC_KAZAKH_AVAILABILITY_QUESTION = /(?<![\p{L}])бар\s*ма(?![\p{L}])/iu;
+const ORGANIC_RUSSIAN_TOPIC_QUESTION = /(?<![\p{L}])(?:вопрос(?:ы)?|уточнени[ея]|информаци[яи])\s+(?:по|о|об|про)\s+[\p{L}]+(?![\p{L}])/iu;
+
 export function textCarriesDecisiveLanguageSignal(text: unknown, language: CustomerLanguage) {
   const value = String(text || "").toLowerCase();
   if (!value.trim()) return false;
@@ -32,7 +37,9 @@ export function textCarriesDecisiveLanguageSignal(text: unknown, language: Custo
 export function unclassifiedTextIsDecisive(text: unknown, language: CustomerLanguage) {
   if (textCarriesDecisiveLanguageSignal(text, language)) return true;
   const value = String(text || "").toLowerCase();
-  return language === "ru" && !DECISIVE_KAZAKH.test(value) && UNCLASSIFIED_RUSSIAN.test(value);
+  if (language === "kk") return ORGANIC_KAZAKH_AVAILABILITY_QUESTION.test(value);
+  return language === "ru" && !DECISIVE_KAZAKH.test(value)
+    && (UNCLASSIFIED_RUSSIAN.test(value) || ORGANIC_RUSSIAN_TOPIC_QUESTION.test(value));
 }
 
 export function shouldSwitchLockedLanguage(

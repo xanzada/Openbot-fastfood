@@ -322,6 +322,32 @@ export async function answerAgentFailure(
       && !findBlockedMenuItemMention(ctx.activeShiftNotes || [], ctx.menuSnapshot?.items || [], ctx.text)) {
       return linkReply(await grantLink(ctx).catch(() => false));
     }
+    // An unnamed overview has no lexical dish match; that does not prove absence.
+    // Match a complete current question clause, never a named missing dish suffix.
+    const questionClause = String(ctx.text || "").split(/[.!?;]/u).map((part) => part.trim()).filter(Boolean).pop() || "";
+    const broadMenuQuery = intentMatches(/^(?:(?:покаж(?:и|ите)|пришл(?:и|ите)|скин(?:ь|ьте)|отправ(?:ь|ьте)|да(?:й|йте))\s+)?(?:меню|каталог|ассортимент|мәзір(?:ді)?)(?:\s+(?:текстом|здесь|мәтінмен)(?:\s+(?:берші|беріңіз))?)?(?:\s+пожалуйста)?$/iu, questionClause)
+      || intentMatches(/^(?:мәзір(?:ді)?|меню)(?:\s+ғана)?\s+(?:қараймын|көрейін|жібер(?:ші|іңіз))$/iu, questionClause)
+      || intentMatches(/^(?:что\s+(?:(?:у\s+вас\s+)?есть(?:\s+в\s+меню|\s+из\s+напитков)?|попить|посоветуете|рекомендуете)|какие\s+(?:(?:у\s+вас\s+)?(?:есть\s+)?)?(?:блюда|позиции|напитки)|(?:мәзірде\s+)?не\s+бар|(?:ішетін|ишетин)\s*(?:не|нәрсе)?\s*бар|сусын(?:дар)?\s*(?:қандай|не)?\s*бар|(?:не|қандай\s+тағам)\s+(?:ұсынасыз|ұсынасыздар))$/iu, questionClause)
+      || intentMatches(/^(?:мәзірді|мәзір|меню)\s+(?:осында|мұнда|осы\s+жерде)\s+жазып\s+жібер(?:іңіз|ші)$/iu, questionClause)
+      || intentMatches(/^(?:напишите|покажите)\s+меню\s+(?:здесь|тут)(?:\s+без\s+ссылки)?$/iu, questionClause)
+      || intentMatches(/^(?:(?:только|просто)\s+)?посмотрю\s+меню$/iu, questionClause);
+    if (!matches.length && !compositionQuestion && !directOrdering && !requestedLink && broadMenuQuery
+      && !findBlockedMenuItemMention(ctx.activeShiftNotes || [], ctx.menuSnapshot?.items || [], ctx.text)) {
+      const knownItems = (Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [])
+        .filter((item: any) => item.available === true);
+      const browsingKitchen = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext || null, ctx.activeShiftNotes);
+      const stopped = browsingKitchen.blocksAllSales && browsingKitchen.mode !== "off_hours";
+      const dietaryOverview = dietaryCompositionRecovery(ctx, knownItems);
+      if (dietaryOverview) return say(ctx, stopped ? "Қазір тапсырыс қабылдамаймыз. " : "",
+        stopped ? "Сейчас заказы не принимаем. " : "") + dietaryOverview;
+      const beveragesOnly = intentMatches(VOICE_BEVERAGE_RE, questionClause) || intentMatches(/напитк|попить|ішетін|ишетин|сусын/iu, questionClause);
+      const overview = voiceMenuExamples({ ...ctx, menuSnapshot: { ...ctx.menuSnapshot, items: knownItems } }, 3, beveragesOnly)
+        .map((item: any) => String(item.name).trim() + " — " + Math.round(Number(item.price)) + " ₸").join(", ");
+      return say(ctx, (stopped ? "Қазір тапсырыс қабылдамаймыз. " : "")
+        + (overview ? "Мәзірден мысалдар: " + overview + ". Не қызықтырады?" : "Қазір қолжетімді мәзір позицияларын растай алмаймын. Қай тағам не сусын қызықтырады?"),
+        (stopped ? "Сейчас заказы не принимаем. " : "")
+        + (overview ? "В меню, например: " + overview + ". Что вас интересует?" : "Не могу сейчас подтвердить доступные позиции меню. Какое блюдо или напиток вас интересует?"));
+    }
     if (!matches.length) return say(ctx,
       "Бұл сұрағаныңыз қазір қолжетімсіз." + (list ? " Мыналар бар: " + list + "." : ""),
       "Сейчас этой позиции нет в доступном меню." + (list ? " Есть другие варианты: " + list + "." : ""));
@@ -408,10 +434,10 @@ export async function answerAgentFailure(
     source: "ai_unavailable",
   }).catch(() => null);
   return routing?.action === "operator_case_created"
-    ? say(ctx, "Кешіріңіз, қазір ақпаратты нақтылап жатырмыз. Оператор осы чатта жақын арада жауап береді.",
-      "Извините, уточняем информацию. Оператор ответит вам в этом чате в ближайшее время.")
-    : say(ctx, "Кешіріңіз, қазір ақпаратты нақтылап жатырмыз. Бір-екі минуттан кейін қайта жазыңызшы.",
-      "Извините, уточняем информацию. Напишите, пожалуйста, ещё раз через пару минут.");
+    ? say(ctx, "Операторға арналған сұрауыңыз осы чатта тіркелді.",
+      "Ваш запрос зарегистрирован для оператора в этом чате.")
+    : say(ctx, "Кешіріңіз, сұрағыңызға қазір жауап бере алмаймын. Біраздан кейін қайта жазыңызшы.",
+      "Извините, сейчас не могу ответить на ваш вопрос. Напишите, пожалуйста, чуть позже.");
 }
 
 // «составить заказ» is not a composition question, «составе» is.

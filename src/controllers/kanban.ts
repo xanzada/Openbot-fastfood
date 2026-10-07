@@ -24,6 +24,16 @@ import {
   saveShiftNote,
   saveToHistory,
   hasReceiptSeen,
+  claimSiteNotification,
+  fenceLegacyMinuteNotification,
+  renewSiteNotification,
+  releaseSiteNotification,
+  prepareSiteNotification,
+  attemptSiteNotification,
+  acknowledgeSiteNotification,
+  resetSiteNotificationCursor,
+  finishSiteNotification,
+  type SiteNotificationClaim,
 } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
 import { humanizeCancellationReason } from "../services/operatorVoice.service.js";
@@ -744,6 +754,31 @@ export async function sendAndRemember(instance: string, phone: string, text: str
   await (dependencies.remember || saveToHistory)(instance, phone, "model", `<bot_notification>\n${text}\n</bot_notification>`);
 }
 
+const DURABLE_NOTIFICATION_ACTIONS = new Set(["new_order", "request_payment", "status_changed", "payment_timing_changed", "order_rejected"]);
+
+export function siteNotificationRequestId(instance: string, phone: string, action: string, orderId: string, body: Record<string, unknown>, status: string, lockScope = "") {
+  // Version only new journal records. Recovery always uses the frozen ID; an
+  // unknown/legacy claim is never rewritten into this namespace.
+  const scope = JSON.stringify(["site-notification-v2", action, orderId, lockScope, body.event_id || body.eventId || body.request_id || body.requestId || "", status, body.payment_revision ?? body.revision ?? "", body.event_time || ""]);
+  return crypto.createHash("sha256").update(JSON.stringify([instance, phone, scope])).digest("hex");
+}
+
+async function deliverSiteNotification(claim: SiteNotificationClaim) {
+  const payload = claim.state.payload;
+  if (!payload) throw new Error("NOTIFICATION_PAYLOAD_MISSING");
+  if (claim.state.phase !== "acknowledged") {
+    // Persist the first attempt BEFORE the external side effect. After the
+    // gateway retention horizon, only reconciliation can establish its result.
+    await attemptSiteNotification(claim);
+    const sent = await sendWhatsProMessage({ instanceId: payload.instance, phone: payload.phone, text: payload.text, requestId: payload.requestId });
+    if (sent?.acknowledged !== true || sent?.queued === true) throw new Error("WHATSPRO_DELIVERY_NOT_ACKNOWLEDGED");
+    await acknowledgeSiteNotification(claim, (sent as any).messageId);
+  }
+  // This throws unless one atomic, token-fenced history/cursor/COMPLETE commit
+  // succeeds. safeRedis(undefined) is deliberately not completion evidence.
+  await finishSiteNotification(claim);
+}
+
 export async function handleKanbanWebhook(req: Request, res: Response): Promise<void> {
   const body = (req.body || {}) as Record<string, unknown>;
   const instance = cleanInline(body.instance, 80);
@@ -753,6 +788,10 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
   let lockAcquired = false;
   let eventLockKey = "";
   let eventLockAcquired = false;
+  let notificationClaim: SiteNotificationClaim | null = null;
+  let notificationHeartbeat: ReturnType<typeof setInterval> | null = null;
+  let notificationRenewal = Promise.resolve();
+  let notificationLeaseLost = false;
 
   auditProcessing("Kanban webhook processing started", {
     orderId: rawOrderId,
@@ -788,6 +827,15 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       res.status(400).json({ ok: false, error: "BAD_ACTION" });
       return;
     }
+
+    // The durable queue retries this exact JSON event. Hash it before this
+    // handler adds a recovered phone or any current receipt/payment fact.
+    const persistedBodyIdentity = DURABLE_NOTIFICATION_ACTIONS.has(action)
+      ? crypto.createHash("sha256").update(JSON.stringify(body, (_key, value) =>
+        value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))
+          : value)).digest("hex")
+      : "";
 
     if (action === "update_kitchen_status") {
       auditDecision("Updating kitchen status in Redis", {
@@ -899,14 +947,17 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
 
     auditDecision("Connecting Redis for lock and memory operations", { orderId, action, instance });
     await connectRedis();
-    const eventClaim = await claimInboundEvent(instance, body.event_id || body.eventId);
-    if (!eventClaim.claimed) {
-      auditDecision("Found existing event_id lock; ignoring duplicate", { orderId: rawOrderId, action, instance, eventId: eventClaim.eventId });
-      res.status(200).json({ success: true, message: "Ignored duplicate signal", event_id: eventClaim.eventId });
-      return;
+    const isDurableNotification = DURABLE_NOTIFICATION_ACTIONS.has(action);
+    if (!isDurableNotification) {
+      const eventClaim = await claimInboundEvent(instance, body.event_id || body.eventId);
+      if (!eventClaim.claimed) {
+        auditDecision("Found existing event_id lock; ignoring duplicate", { orderId: rawOrderId, action, instance, eventId: eventClaim.eventId });
+        res.status(200).json({ success: true, message: "Ignored duplicate signal", event_id: eventClaim.eventId });
+        return;
+      }
+      eventLockKey = eventClaim.key;
+      eventLockAcquired = Boolean(eventClaim.key);
     }
-    eventLockKey = eventClaim.key;
-    eventLockAcquired = Boolean(eventClaim.key);
     const shiftNotePayload = isShiftNoteAction ? extractShiftNotePayload(body) : null;
     const lockId = shiftNotePayload?.stableLockId || orderId;
     // Hub sends order.external_document_requested for two opposite presses: the
@@ -915,16 +966,46 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
     // second press was dropped here as a duplicate and the guest heard nothing.
     // The receipt marker is the only thing that separates them, and it has to be
     // read before the lock, not after it.
+    const notificationEventId = cleanInline(String(body.event_id || body.eventId || ""), 80);
+    const notificationRequestId = String(body.request_id || body.requestId || "").trim();
+    const notificationFallbackIdentity = crypto.createHash("sha256")
+      .update(JSON.stringify([instance, orderId, action, notificationRequestId ? ["request", notificationRequestId] : ["body", persistedBodyIdentity]]))
+      .digest("hex");
+    // Existing explicit event aliases retain their exact legacy namespace.
+    // Request/body aliases are scoped to instance, order AND action; identical
+    // no-ID presses are indistinguishable retries, never a new clock identity.
+    const notificationEventKey = !isDurableNotification ? "" : notificationEventId
+      ? `kanban_event_lock:${instance}:${notificationEventId}`
+      : `kanban_event_lock:${instance}:notification:${notificationFallbackIdentity}`;
+    let persistedNotificationKey = "";
+    if (notificationEventKey) {
+      const alias = await redisClient.get(notificationEventKey).catch(() => null);
+      if (alias) {
+        try {
+          const pointer = JSON.parse(alias);
+          if (pointer && pointer.schema === "SITE_NOTIFICATION_EVENT_V1" && typeof pointer.journalKey === "string"
+            && pointer.journalKey.startsWith(`kanban_lock:${instance}:${orderId}:`)) persistedNotificationKey = pointer.journalKey;
+        } catch { /* Unchanged claim Lua records unknown/malformed provenance. */ }
+      }
+    }
     const isReceiptResendRequest = action === "request_payment"
       && Boolean(orderId)
       && (await hasReceiptSeen(instance, orderId).catch(() => false));
-    // Every press deserves its own lock, but hub retries of the SAME press must
-    // not: event_id is already claimed above, so it is the right discriminator.
-    const resendScopeId = String(body.event_id || body.eventId || "").trim() || `t${Math.floor(Date.now() / 60000)}`;
+    // Explicit press IDs remain distinct; retries use the first persisted
+    // alias/journal. A missing ID cannot justify inventing another press.
+    const resendScopeId = String(body.event_id || body.eventId || "").trim() || `persisted-${notificationFallbackIdentity}`;
     // A new payment cycle (prepay -> on_receipt -> prepay) asks for a receipt
     // again under a NEW revision; the 24 h lock of the first cycle must not
     // swallow it. Revision 1 / no revision keeps the historical key.
     const eventPayment = paymentFieldsFrom(body);
+    if (isDurableNotification && !notificationEventId
+      && (action === "request_payment" || (action === "payment_timing_changed" && !eventPayment.revision))) {
+      const legacyScope = action === "request_payment" ? "receipt_resend" : "timing_change";
+      if (!await fenceLegacyMinuteNotification(instance, orderId, legacyScope)) {
+        res.status(200).json({ success: false, retry_later: true, reason: "legacy_notification_reconciliation_required" });
+        return;
+      }
+    }
     const revisionScope = eventPayment.revision && eventPayment.revision > 1 ? `:rev${eventPayment.revision}` : "";
     const lockScope = action === "status_changed"
       ? `${action}:${newStatus || "unknown"}`
@@ -933,16 +1014,41 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         : isReceiptResendRequest
           ? `${action}:receipt_resend:${resendScopeId}`
           : `${action}${action === "request_payment" ? revisionScope : ""}`;
-    lockKey = `kanban_lock:${instance}:${lockId}:${lockScope}`;
+    lockKey = persistedNotificationKey || `kanban_lock:${instance}:${lockId}:${lockScope}`;
     auditDecision("Attempting idempotency lock", { orderId, action, instance, lockKey, lockScope });
-    const locked = await redisClient.set(lockKey, "1", { NX: true, EX: isShiftNoteAction ? 5 : 86400 });
-    if (!locked) {
-      auditDecision("Found existing order/signal lock; ignoring duplicate", { orderId, action, instance, lockKey });
-      res.status(200).json({ success: true, message: "Ignored duplicate signal" });
-      return;
+    if (isDurableNotification) {
+      const claimed = await claimSiteNotification(instance, orderId, lockKey, notificationEventKey);
+      if (claimed.status === "complete") {
+        res.status(200).json({ success: true, message: "Notification already completed" });
+        return;
+      }
+      if (claimed.status !== "acquired") {
+        res.status(200).json({ success: false, retry_later: true, reason: claimed.status === "busy" ? "notification_processing" : "notification_reconciliation_required" });
+        return;
+      }
+      notificationClaim = claimed.claim;
+      notificationHeartbeat = setInterval(() => {
+        notificationRenewal = notificationRenewal.then(async () => {
+          if (notificationClaim) await renewSiteNotification(notificationClaim);
+        }).catch(() => { notificationLeaseLost = true; });
+      }, 5_000);
+      notificationHeartbeat.unref?.();
+      if (notificationClaim.state.payload) {
+        await deliverSiteNotification(notificationClaim);
+        res.status(200).json({ success: true, message: "Notification recovery completed" });
+        return;
+      }
+    } else {
+      const locked = await redisClient.set(lockKey, "1", { NX: true, EX: isShiftNoteAction ? 5 : 86400 });
+      if (!locked) {
+        auditDecision("Found existing order/signal lock; ignoring duplicate", { orderId, action, instance, lockKey });
+        res.status(200).json({ success: true, message: "Ignored duplicate signal" });
+        return;
+      }
+      lockAcquired = true;
+      auditDecision("Creating new processing record via Redis lock", { orderId, action, instance, lockKey });
+
     }
-    lockAcquired = true;
-    auditDecision("Creating new processing record via Redis lock", { orderId, action, instance, lockKey });
 
     if (action === "shift_note_created" && shiftNotePayload) {
       if (!shiftNotePayload.text.trim()) {
@@ -1074,6 +1180,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       if (decision.action === "skip") {
         // Finished on purpose: acknowledged with 2xx and no guest message. The
         // lock stays, so a replay of this very request stays silent too.
+        if (notificationClaim) await finishSiteNotification(notificationClaim, "payment request skipped");
         res.status(200).json({ success: true, message: "Payment request skipped", reason: decision.reason });
         return;
       }
@@ -1152,6 +1259,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
           lockAcquired = false;
         }
         auditDecision("Status ignored: no client template configured", { orderId, action, instance, lang, newStatus, effectiveStatus, lockReleased: true });
+        if (notificationClaim) await finishSiteNotification(notificationClaim, "status not intended for client", true);
         res.status(200).json({ success: true, message: "Ignored status not intended for client" });
         return;
       }
@@ -1194,6 +1302,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         notifyCursor: cursor?.rank ?? null,
       });
       if (decision.action === "skip" || (cursor && cursor.rank >= ORDER_NOTIFY_RANK.completed)) {
+        if (notificationClaim) await finishSiteNotification(notificationClaim, "payment timing change skipped");
         res.status(200).json({ success: true, message: "Payment timing change acknowledged", reason: decision.action === "skip" ? decision.reason : "order_finished" });
         return;
       }
@@ -1201,7 +1310,8 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       // already requested" cursor must not shape the next request.
       await clearReceiptSeenForOrder(instance, orderId);
       if (cursor && cursor.rank < ORDER_NOTIFY_RANK.ready_delivery) {
-        await saveOrderNotifyCursor(instance, orderId, 0, "payment_timing_changed").catch(() => false);
+        if (notificationClaim) await resetSiteNotificationCursor(notificationClaim, ORDER_NOTIFY_RANK.ready_delivery);
+        else await saveOrderNotifyCursor(instance, orderId, 0, "payment_timing_changed").catch(() => false);
       }
       const timing = decision.view.timing === "on_receipt" ? "on_receipt" : "prepay";
       textMessage = buildPaymentTimingChangedMessage(timing, {
@@ -1228,6 +1338,7 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
           newStatus,
           previousStatus: previousCursor.status,
         });
+        if (notificationClaim) await finishSiteNotification(notificationClaim, "stale order signal");
         res.status(200).json({ success: true, message: "Suppressed stale order signal" });
         return;
       }
@@ -1240,35 +1351,30 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         phone,
         textLength: textMessage.length,
       });
-      await sendAndRemember(instance, phone, textMessage, {
-        requestScope: JSON.stringify([
-          action, orderId,
-          body.event_id || body.request_id || "",
-          body.payment_revision ?? body.revision ?? "",
-          body.event_time || "",
-        ]),
+      if (!notificationClaim || notificationLeaseLost) throw new Error("NOTIFICATION_LEASE_LOST");
+      await prepareSiteNotification(notificationClaim, {
+        instance, orderId, phone, text: textMessage,
+        requestId: siteNotificationRequestId(instance, phone, action, orderId, body, effectiveStatus || newStatus || action, lockScope),
+        rank: nextNotifyRank, status: (effectiveStatus || action).slice(0, 60),
+        clearOrderPointer: newStatus === "completed" || newStatus === "cancelled" || action === "order_rejected",
+        createdAt: Date.now(),
       });
-      if (nextNotifyRank >= 0) {
-        await saveOrderNotifyCursor(instance, orderId, nextNotifyRank, effectiveStatus || action).catch(() => false);
-      }
-      if (newStatus === "completed" || newStatus === "cancelled" || action === "order_rejected") {
-        // Only the order pointer is cleared. history:{instance}:{phone} is the SHARED
-        // conversation key - it is whatspro's legacyHistory, the store for
-        // openbot_operator_case red-row markers, and what lastCustomerLanguage and
-        // lastDiscussedOrderNumber read. Deleting it on completion meant a guest who wrote
-        // "суық әкелді" a minute later was greeted as a stranger, the operator panel thread
-        // was empty, and the case marker was gone (found 2026-08-23). A finished order does
-        // not end the relationship.
-        auditDecision("Clearing completed/cancelled order pointer", { orderId, action, instance, phone, newStatus });
-        await redisClient.del([`last_order:${instance}:${phone}`]).catch(() => undefined);
-      }
+      await deliverSiteNotification(notificationClaim);
     } else {
       auditDecision("No outbound WhatsApp template produced", { orderId, action, instance, newStatus });
+      if (notificationClaim) await finishSiteNotification(notificationClaim, "no outbound template");
     }
 
     auditDecision("Kanban webhook processed successfully", { orderId, action, instance });
     res.status(200).json({ success: true, message: "Processed" });
   } catch (error) {
+    if (notificationClaim) {
+      // Never erase an attempted/ACKed journal. The durable queue keeps the
+      // job pending; neither an expired lease nor a caught error proves send.
+      auditDecision("Notification retained for retry or reconciliation", { instance, action, orderId: rawOrderId, phase: notificationClaim.state.phase });
+      if (!res.headersSent) res.status(503).json({ success: false, retry_later: true, error: "NOTIFICATION_PENDING" });
+      return;
+    }
     auditError("Kanban webhook failed", error, {
       orderId: body.order_id || rawOrderId,
       action,
@@ -1298,5 +1404,9 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
         error: error instanceof Error ? error.message : String(error || "kanban webhook failed"),
       });
     }
+  } finally {
+    if (notificationHeartbeat) clearInterval(notificationHeartbeat);
+    await notificationRenewal;
+    if (notificationClaim) await releaseSiteNotification(notificationClaim).catch(() => undefined);
   }
 }

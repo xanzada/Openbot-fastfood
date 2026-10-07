@@ -242,3 +242,31 @@ test("zero-lag 2026-10-04: short buffer for greetings and finished messages, ins
   assert.deepEqual(out, { success: true, queued: true });
   assert.ok(Date.now() - t0 < 50, "the CRM write never holds the reply");
 });
+
+test("complete unpunctuated menu and status requests use the existing short buffer window", async () => {
+  const { inboundBufferDelayMs } = await import("../src/services/inboundGuard.service.js");
+  const completedQuestion = inboundBufferDelayMs("Сколько стоит?");
+  for (const text of ["Меню", "Мәзір", "мәзірді", "menu", "Прайс", "Каталог", "Ассортимент",
+    "Покажите меню", "Пришлите меню", "меню пожалуйста", "мәзірді жіберіңіз",
+    "Где заказ", "Где мой заказ", "Статус заказа", "Тапсырысым қайда", "Тапсырыс дайын ба"]) {
+    assert.equal(inboundBufferDelayMs(text), completedQuestion, text);
+  }
+});
+
+test("partial product, quantity and unfinished requests keep the original fragment merge window", async () => {
+  const { inboundBufferDelayMs } = await import("../src/services/inboundGuard.service.js");
+  const fragment = inboundBufferDelayMs("донер");
+  for (const text of ["2", "2 донера", "донер куриный", "меню без", "пришли", "покажи",
+    "мәзірді және", "заказ", "мой заказ", "тапсырысым", "готов"]) {
+    assert.equal(inboundBufferDelayMs(text), fragment, text);
+  }
+  assert.ok(inboundBufferDelayMs("Меню") < fragment);
+});
+
+test("the completed-request fast lane preserves greeting priority and punctuation behavior", async () => {
+  const { inboundBufferDelayMs } = await import("../src/services/inboundGuard.service.js");
+  assert.ok(inboundBufferDelayMs("Сәлем") <= inboundBufferDelayMs("Мәзір"));
+  assert.ok(inboundBufferDelayMs("Здравствуйте") <= inboundBufferDelayMs("Меню"));
+  assert.equal(inboundBufferDelayMs("Меню?"), inboundBufferDelayMs("Сколько стоит?"));
+  assert.equal(inboundBufferDelayMs("донер бар ма"), inboundBufferDelayMs("донер"));
+});

@@ -66,16 +66,19 @@ test("a real paid-and-delayed incident still reaches an operator when every mode
   const { answerAgentFailure } = await import("../src/services/turnSafetyNet.service.js");
   routed.length = 0;
   const kk = await answerAgentFailure(ctx("Ақшамды төледім, екі сағат күттім, оператор керек", "kk"), new Error("TEXT_MODEL_TIMEOUT:m:40000ms"), route("operator_case_created"));
-  assert.match(kk, /^Кешіріңіз, қазір ақпаратты нақтылап жатырмыз\./);
+  assert.match(kk, /^Операторға арналған сұрауыңыз осы чатта тіркелді\./);
   assert.match(kk, /Оператор/);
   assert.equal(routed[0].source, "ai_unavailable");
   assert.equal(routed[0].urgency, "high");
   assert.match(routed[0].summary, /TEXT_MODEL_TIMEOUT/);
   const ru = await answerAgentFailure(ctx("Я уже оплатил заказ, жду два часа, нужен оператор", "ru"), new Error("400"), route("escalation_failed"));
-  assert.match(ru, /^Извините, уточняем информацию\./);
+  assert.match(ru, /^Извините, сейчас не могу ответить на ваш вопрос\./);
   assert.doesNotMatch(ru, /Оператор/, "no operator promise when the SOS could not be raised");
   const thrown = await answerAgentFailure(ctx("Я уже оплатил заказ, жду два часа, нужен оператор", "ru"), new Error("x"), (async () => { throw new Error("redis down"); }) as any);
-  assert.match(thrown, /^Извините, уточняем информацию\./, "a failing SOS path still answers");
+  assert.match(thrown, /^Извините, сейчас не могу ответить на ваш вопрос\./, "a failing SOS path still answers honestly");
+  for (const reply of [kk, ru, thrown]) {
+    assert.doesNotMatch(reply, /уточняем|нақтылап|в ближайшее время|жақын арада|через пару минут|бір-екі минут/iu);
+  }
 });
 
 test("composition checks and planned real incidents bypass the menu guard, but ai outages do not", async () => {

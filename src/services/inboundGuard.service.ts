@@ -4,6 +4,7 @@ import { getRestaurantConfig } from "./platformConfig.service.js";
 import { getRuntimeSettings, runtimeTestModeEnabled } from "./llmWorkspace.service.js";
 import { envNumber } from "../utils/envNumber.js";
 import { readGuestGreeting } from "../agent/greeting.js";
+import { intentMatches } from "../utils/intentText.js";
 
 const INSTANCE_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const PHONE_RE = /^(\d{10,15}|\d+@lid)$/;
@@ -22,11 +23,20 @@ const INBOUND_BUFFER_DELAY_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_MS,
 const INBOUND_BUFFER_GREETING_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_GREETING_MS, 500, { min: 200, max: 5_000 });
 const INBOUND_BUFFER_COMPLETE_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_COMPLETE_MS, 1000, { min: 200, max: 5_000 });
 
+// These whole requests are finished even without punctuation. This only
+// selects the existing short merge window; routing and link permission stay
+// with the normal agent policy.
+const COMPLETE_CATALOG_REQUEST = /^(?:(?:покаж(?:и|ите)|пришл(?:и|ите)|скин(?:ь|ьте)|отправ(?:ь|ьте)|да(?:й|йте))\s+)?(?:меню|мәзір(?:ді)?|menu|каталог|прайс|ассортимент)(?:\s+(?:пожалуйста|берші|беріңіз|жібер(?:ші|іңіз)))?$/iu;
+const COMPLETE_ORDER_STATUS_REQUEST = /^(?:где\s+(?:мой\s+)?заказ|статус\s+(?:моего\s+)?заказа|тапсырыс(?:ым|тың)?\s+(?:қайда|дайын\s+ба|күйі\s+қандай))$/iu;
+
 export function inboundBufferDelayMs(text: string): number {
   const value = String(text || "").trim();
   if (readGuestGreeting(value)?.pure) return Math.min(INBOUND_BUFFER_GREETING_MS, INBOUND_BUFFER_DELAY_MS);
   const words = value.split(/\s+/).filter(Boolean).length;
-  if (/[?!.…)]\s*$/u.test(value) || words >= 4) return Math.min(INBOUND_BUFFER_COMPLETE_MS, INBOUND_BUFFER_DELAY_MS);
+  if (/[?!.…)]\s*$/u.test(value) || words >= 4
+    || intentMatches(COMPLETE_CATALOG_REQUEST, value) || intentMatches(COMPLETE_ORDER_STATUS_REQUEST, value)) {
+    return Math.min(INBOUND_BUFFER_COMPLETE_MS, INBOUND_BUFFER_DELAY_MS);
+  }
   return INBOUND_BUFFER_DELAY_MS;
 }
 const INBOUND_BUFFER_MAX_ITEMS = 8;

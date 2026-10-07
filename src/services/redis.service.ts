@@ -578,6 +578,286 @@ export async function saveToHistory(
   });
 }
 
+// Pending notification records deliberately have no TTL. Expiry is not proof
+// that WhatsPro did not accept a request, and its accepted WAL lasts only 24 h.
+const SITE_NOTIFICATION_SCHEMA = "SITE_NOTIFICATION_JOURNAL_V1";
+const SITE_NOTIFICATION_EVENT_SCHEMA = "SITE_NOTIFICATION_EVENT_V1";
+export const SITE_NOTIFICATION_REPLAY_WINDOW_MS = 24 * 60 * 60_000 - 60_000;
+const SITE_NOTIFICATION_LEASE_MS = 20_000;
+
+export interface SiteNotificationPayload {
+  instance: string;
+  orderId: string;
+  phone: string;
+  text: string;
+  requestId: string;
+  rank: number;
+  status: string;
+  clearOrderPointer: boolean;
+  createdAt: number;
+}
+
+export interface SiteNotificationClaim {
+  key: string;
+  leaseKey: string;
+  token: string;
+  state: {
+    schema: typeof SITE_NOTIFICATION_SCHEMA;
+    instance: string;
+    orderId: string;
+    phase: "pending" | "acknowledged" | "complete" | "no_send";
+    eventKeys: Record<string, true>;
+    payload?: SiteNotificationPayload;
+    attemptedAt?: number;
+    acknowledgedAt?: number;
+    messageId?: string;
+    reason?: string;
+  };
+}
+
+const siteNotificationClaimLua = `-- SITE_NOTIFICATION_CLAIM_V1
+local function stringKey(k)
+  local t=redis.call('TYPE',k).ok
+  return t=='none' or t=='string'
+end
+local function reconcile(reason,source,value)
+  local marker=cjson.encode({schema='SITE_NOTIFICATION_RECONCILIATION_V1',sourceKey=source,sourceSHA1=type(value)=='string' and redis.sha1hex(value) or '',reason=reason,observedAt=tonumber(ARGV[7])})
+  -- Separate persistent markers do not erase, relabel, renew or shorten the
+  -- original legacy/unknown key. Its TTL expiry never proves a fresh send.
+  redis.call('SET',KEYS[4],marker,'NX')
+  if ARGV[4]~='' then redis.call('SET',KEYS[5],marker,'NX') end
+  return {'reconcile',''}
+end
+if redis.call('EXISTS',KEYS[4])==1 or (ARGV[4]~='' and redis.call('EXISTS',KEYS[5])==1) then return {'reconcile',''} end
+if not stringKey(KEYS[1]) or not stringKey(KEYS[2]) or not stringKey(KEYS[3]) then return reconcile('unproven_type',KEYS[1],'') end
+local raw=redis.call('GET',KEYS[1])
+local alias=ARGV[4]~='' and redis.call('GET',KEYS[3]) or false
+if alias then
+  local ok,a=pcall(cjson.decode,alias)
+  if not ok or type(a)~='table' or a.schema~=ARGV[6] or type(a.journalKey)~='string' then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+  if a.journalKey~=KEYS[1] then
+    if string.sub(a.journalKey,1,#KEYS[1]+9)~=KEYS[1]..':no_send:' then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+    if not stringKey(a.journalKey) then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+    local decision=redis.call('GET',a.journalKey);if not decision then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+    local valid,d=pcall(cjson.decode,decision);local expected=cjson.decode(ARGV[3])
+    if not valid or type(d)~='table' or d.schema~=ARGV[5] or d.phase~='no_send' or d.instance~=expected.instance or d.orderId~=expected.orderId or d.payload or type(d.reason)~='string' or d.reason=='' then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+    return {'complete',decision}
+  end
+  if not raw then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+end
+local s
+if raw then
+  local ok,decoded=pcall(cjson.decode,raw)
+  if not ok or type(decoded)~='table' or decoded.schema~=ARGV[5] then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+  s=decoded
+  local expected=cjson.decode(ARGV[3])
+  if s.instance~=expected.instance or s.orderId~=expected.orderId or type(s.eventKeys)~='table' then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+  if s.phase~='pending' and s.phase~='acknowledged' and s.phase~='complete' and s.phase~='no_send' then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+else s=cjson.decode(ARGV[3]) end
+if s.phase=='complete' and (not s.payload or not s.attemptedAt or not s.acknowledgedAt) then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+if s.phase=='no_send' and (s.payload or type(s.reason)~='string' or s.reason=='') then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+if s.phase=='complete' or s.phase=='no_send' then
+  if ARGV[4]~='' and not alias then redis.call('SET',KEYS[3],cjson.encode({schema=ARGV[6],journalKey=KEYS[1]})) end
+  return {'complete',cjson.encode(s)}
+end
+if redis.call('EXISTS',KEYS[2])==1 then return {'busy',''} end
+if ARGV[4]~='' and not alias then
+  local count=0;for _ in pairs(s.eventKeys) do count=count+1 end
+  if count>=64 then return reconcile('unproven_scope',alias and KEYS[3] or KEYS[1],alias or raw) end
+  s.eventKeys[KEYS[3]]=true
+end
+redis.call('SET',KEYS[2],ARGV[1],'PX',ARGV[2])
+redis.call('SET',KEYS[1],cjson.encode(s))
+if ARGV[4]~='' then redis.call('SET',KEYS[3],cjson.encode({schema=ARGV[6],journalKey=KEYS[1]})) end
+return {'acquired',cjson.encode(s)}
+`;
+
+const siteNotificationUpdateLua = `-- SITE_NOTIFICATION_UPDATE_V1
+if redis.call('GET',KEYS[2])~=ARGV[1] then return {'lease_lost',''} end
+local raw=redis.call('GET',KEYS[1])
+if not raw then return {'reconcile',''} end
+local ok,s=pcall(cjson.decode,raw)
+if not ok or type(s)~='table' or s.schema~=ARGV[5] then return {'reconcile',''} end
+local op=ARGV[2]
+if op=='renew' then redis.call('PEXPIRE',KEYS[2],ARGV[3]); return {'ok',raw} end
+if op=='release' then redis.call('DEL',KEYS[2]); return {'ok',raw} end
+if op=='prepare' then
+  if s.phase~='pending' then return {'reconcile',''} end
+  if not s.payload then s.payload=cjson.decode(ARGV[4]) end
+elseif op=='attempt' then
+  if s.phase~='pending' or not s.payload then return {'reconcile',''} end
+  if s.attemptedAt and (type(s.attemptedAt)~='number' or tonumber(ARGV[3])<s.attemptedAt or tonumber(ARGV[3])-s.attemptedAt>=tonumber(ARGV[4])) then return {'reconcile',''} end
+  if not s.attemptedAt then s.attemptedAt=tonumber(ARGV[3]) end
+elseif op=='ack' then
+  if s.phase~='pending' or not s.payload or not s.attemptedAt then return {'reconcile',''} end
+  s.phase='acknowledged';s.acknowledgedAt=tonumber(ARGV[3]);s.messageId=ARGV[4]
+elseif op=='reset_cursor' then
+  local kind=redis.call('TYPE',KEYS[3]).ok
+  if kind~='none' and kind~='string' then return {'reconcile',''} end
+  local previous=redis.call('GET',KEYS[3])
+  if previous then
+    local parsed,c=pcall(cjson.decode,previous)
+    if not parsed or type(c)~='table' or type(c.rank)~='number' then return {'reconcile',''} end
+    if c.rank<tonumber(ARGV[4]) then redis.call('SET',KEYS[3],cjson.encode({rank=0,status='payment_timing_changed'}),'EX',ARGV[3]) end
+  end
+  return {'ok',raw}
+else return {'reconcile',''} end
+redis.call('SET',KEYS[1],cjson.encode(s))
+return {'ok',cjson.encode(s)}
+`;
+
+const siteNotificationFinishLua = `-- SITE_NOTIFICATION_FINISH_V1
+if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end
+local raw=redis.call('GET',KEYS[1]);if not raw then return 0 end
+local ok,s=pcall(cjson.decode,raw)
+if not ok or type(s)~='table' or s.schema~=ARGV[2] or type(s.eventKeys)~='table' then return 0 end
+for k,v in pairs(s.eventKeys) do
+  local t=redis.call('TYPE',k).ok;if t~='string' then return 0 end
+  local valid,a=pcall(cjson.decode,redis.call('GET',k))
+  if v~=true or not valid or type(a)~='table' or a.schema~=ARGV[3] or a.journalKey~=KEYS[1] then return 0 end
+end
+if ARGV[4]=='no_send' then
+  if s.phase~='pending' or s.payload or ARGV[5]=='' then return 0 end
+  s.phase='no_send';s.reason=ARGV[5]
+else
+  if s.phase~='acknowledged' or not s.payload or not s.acknowledgedAt then return 0 end
+  local ht=redis.call('TYPE',KEYS[3]).ok
+  local ct=redis.call('TYPE',KEYS[4]).ok
+  if (ht~='none' and ht~='list') or (ct~='none' and ct~='string') then return 0 end
+  local previous=redis.call('GET',KEYS[4]);local rank=-1
+  if previous then
+    local parsed,c=pcall(cjson.decode,previous)
+    if not parsed or type(c)~='table' or type(c.rank)~='number' then return 0 end
+    rank=c.rank
+  end
+  local entry=cjson.encode({role='model',text='<bot_notification>\\n'..s.payload.text..'\\n</bot_notification>',createdAt=s.payload.createdAt})
+  local ttl=redis.call('TTL',KEYS[3])
+  redis.call('RPUSH',KEYS[3],entry);redis.call('LTRIM',KEYS[3],-tonumber(ARGV[6]),-1)
+  if ttl<tonumber(ARGV[7]) then redis.call('EXPIRE',KEYS[3],ARGV[7]) end
+  if s.payload.rank>=0 and s.payload.rank>rank then
+    redis.call('SET',KEYS[4],cjson.encode({rank=s.payload.rank,status=s.payload.status}),'EX',ARGV[8])
+  end
+  if s.payload.clearOrderPointer then redis.call('DEL',KEYS[5]) end
+  s.phase='complete'
+end
+local destination=KEYS[1]
+if ARGV[4]=='no_send' and ARGV[9]=='1' then destination=KEYS[1]..':no_send:'..ARGV[1] end
+redis.call('SET',destination,cjson.encode(s))
+for k in pairs(s.eventKeys) do
+  redis.call('SET',k,cjson.encode({schema=ARGV[3],journalKey=destination}))
+end
+if destination~=KEYS[1] then redis.call('DEL',KEYS[1]) end
+redis.call('DEL',KEYS[2]);return 1
+`;
+
+function validSiteNotificationPayload(payload: SiteNotificationPayload, instance: string, orderId: string) {
+  return payload && typeof payload === "object" && payload.instance === instance && payload.orderId === orderId
+    && typeof payload.phone === "string" && /^\d{7,15}$/.test(payload.phone)
+    && typeof payload.text === "string" && payload.text.length > 0 && Buffer.byteLength(payload.text) <= 64 * 1024
+    && typeof payload.requestId === "string" && /^[a-f0-9]{64}$/.test(payload.requestId)
+    && Number.isInteger(payload.rank) && payload.rank >= -1 && typeof payload.status === "string" && payload.status.length <= 60
+    && typeof payload.clearOrderPointer === "boolean" && Number.isSafeInteger(payload.createdAt) && payload.createdAt > 0;
+}
+
+export async function fenceLegacyMinuteNotification(instance: string, orderId: string, scope: "receipt_resend" | "timing_change") {
+  await connectRedis();
+  if (!/^[a-zA-Z0-9_-]{2,64}$/.test(instance) || !/^[a-zA-Z0-9-]{1,40}$/.test(orderId)) throw new Error("NOTIFICATION_SCOPE_INVALID");
+  const suffix = scope === "receipt_resend" ? "request_payment:receipt_resend:t"
+    : scope === "timing_change" ? "payment_timing_changed:revt" : "";
+  if (!suffix) throw new Error("NOTIFICATION_SCOPE_INVALID");
+  const prefix = `kanban_lock:${instance}:${orderId}:${suffix}`;
+  const markerKey = `${prefix}:reconcile`;
+  if (await redisClient.exists(markerKey)) return false;
+  // Only the two changed legacy minute namespaces are queried. No raw record
+  // or TTL is altered. An incomplete/failed lookup is never absence evidence.
+  let cursor = "0", reason = "", sourceKey = "";
+  const startedAt = Date.now();
+  try {
+    for (let page = 0; page < 128; page += 1) {
+      const reply: unknown = await redisClient.sendCommand(["SCAN", cursor, "MATCH", `${prefix}*`, "COUNT", "256"]);
+      if (!Array.isArray(reply) || reply.length !== 2 || typeof reply[0] !== "string" || !/^\d+$/.test(reply[0])
+        || !Array.isArray(reply[1]) || reply[1].length > 64
+        || reply[1].some((key: unknown) => typeof key !== "string" || !key.startsWith(prefix))) {
+        reason = "legacy_lookup_unproven"; break;
+      }
+      if (reply[1].length) {
+        sourceKey = reply[1][0];
+        reason = /^\d+$/.test(sourceKey.slice(prefix.length)) ? "legacy_record_present" : "legacy_namespace_unproven";
+        break;
+      }
+      if (Date.now() < startedAt || Date.now() - startedAt >= 2_000) { reason = "legacy_lookup_deadline"; break; }
+      cursor = reply[0];
+      if (cursor === "0") return true;
+    }
+    if (!reason) reason = "legacy_lookup_bounded_out";
+  } catch { reason = "legacy_lookup_unproven"; }
+  // Persistent separate uncertainty survives the old 24h literal1 TTL. No
+  // automatic clear/migration/resend exists. A failed marker write throws.
+  await redisClient.set(markerKey, JSON.stringify({ schema: "SITE_NOTIFICATION_RECONCILIATION_V1", reason, sourceKey, observedAt: Date.now() }), { NX: true });
+  return false;
+}
+
+export async function claimSiteNotification(instance: string, orderId: string, key: string, eventKey: string) {
+  await connectRedis();
+  if (!key.startsWith(`kanban_lock:${instance}:${orderId}:`) || (eventKey && !eventKey.startsWith(`kanban_event_lock:${instance}:`))) throw new Error("NOTIFICATION_SCOPE_INVALID");
+  const token = crypto.randomUUID();
+  const leaseKey = `${key}:processing`;
+  const initial = { schema: SITE_NOTIFICATION_SCHEMA, instance, orderId, phase: "pending", eventKeys: {} };
+  const result = await redisClient.eval(siteNotificationClaimLua, { keys: [key, leaseKey, eventKey || `${key}:no_event`, `${key}:reconcile`, eventKey ? `${eventKey}:reconcile` : `${key}:no_event:reconcile`], arguments: [token, String(SITE_NOTIFICATION_LEASE_MS), JSON.stringify(initial), eventKey, SITE_NOTIFICATION_SCHEMA, SITE_NOTIFICATION_EVENT_SCHEMA, String(Date.now())] }) as string[];
+  if (result?.[0] !== "acquired" && result?.[0] !== "complete") return { status: result?.[0] === "busy" ? "busy" as const : "reconcile" as const };
+  const state = JSON.parse(result[1]) as SiteNotificationClaim["state"];
+  if (state.instance !== instance || state.orderId !== orderId || !state.eventKeys || typeof state.eventKeys !== "object" || Array.isArray(state.eventKeys) || Object.keys(state.eventKeys).length > 64 || Object.entries(state.eventKeys).some(([k, v]) => v !== true || !k.startsWith(`kanban_event_lock:${instance}:`)) || (state.payload && !validSiteNotificationPayload(state.payload, instance, orderId)) || (state.attemptedAt !== undefined && (!state.payload || !Number.isSafeInteger(state.attemptedAt) || state.attemptedAt <= 0)) || ((state.phase === "acknowledged" || state.phase === "complete") && (!state.payload || !state.attemptedAt || !Number.isSafeInteger(state.acknowledgedAt) || Number(state.acknowledgedAt) <= 0))) {
+    const marker = JSON.stringify({ schema: "SITE_NOTIFICATION_RECONCILIATION_V1", sourceKey: key, returnedStateSHA256: crypto.createHash("sha256").update(result[1]).digest("hex"), reason: "malformed_returned_state", observedAt: Date.now() });
+    await redisClient.set(`${key}:reconcile`, marker, { NX: true });
+    if (eventKey) await redisClient.set(`${eventKey}:reconcile`, marker, { NX: true });
+    await redisClient.eval("if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0", { keys: [leaseKey], arguments: [token] });
+    return { status: "reconcile" as const };
+  }
+  if (result[0] === "complete") return { status: "complete" as const };
+  return { status: "acquired" as const, claim: { key, leaseKey, token, state } };
+}
+
+async function updateSiteNotification(claim: SiteNotificationClaim, op: string, value: string, data = "", cursorKey = `${claim.key}:unused`) {
+  await connectRedis();
+  const result = await redisClient.eval(siteNotificationUpdateLua, { keys: [claim.key, claim.leaseKey, cursorKey], arguments: [claim.token, op, value, data, SITE_NOTIFICATION_SCHEMA] }) as string[];
+  if (result?.[0] !== "ok") throw new Error(result?.[0] === "lease_lost" ? "NOTIFICATION_LEASE_LOST" : "NOTIFICATION_RECONCILIATION_REQUIRED");
+  claim.state = JSON.parse(result[1]) as SiteNotificationClaim["state"];
+}
+
+export async function renewSiteNotification(claim: SiteNotificationClaim) {
+  await updateSiteNotification(claim, "renew", String(SITE_NOTIFICATION_LEASE_MS));
+}
+
+export async function releaseSiteNotification(claim: SiteNotificationClaim) {
+  // A completed claim already removed its lease; a stale owner must not delete
+  // the replacement token. Release is cleanup, never delivery evidence.
+  await redisClient.eval("if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0", { keys: [claim.leaseKey], arguments: [claim.token] });
+}
+
+export async function prepareSiteNotification(claim: SiteNotificationClaim, payload: SiteNotificationPayload) {
+  if (!validSiteNotificationPayload(payload, claim.state.instance, claim.state.orderId)) throw new Error("NOTIFICATION_PAYLOAD_INVALID");
+  await updateSiteNotification(claim, "prepare", "", JSON.stringify(payload));
+}
+
+export async function attemptSiteNotification(claim: SiteNotificationClaim) {
+  await updateSiteNotification(claim, "attempt", String(Date.now()), String(SITE_NOTIFICATION_REPLAY_WINDOW_MS));
+}
+
+export async function acknowledgeSiteNotification(claim: SiteNotificationClaim, messageId: unknown) {
+  await updateSiteNotification(claim, "ack", String(Date.now()), String(messageId ?? "").slice(0, 120));
+}
+
+export async function resetSiteNotificationCursor(claim: SiteNotificationClaim, maximumRank: number) {
+  await updateSiteNotification(claim, "reset_cursor", String(ORDER_NOTIFY_CURSOR_TTL_SECONDS), String(maximumRank), orderNotifyCursorKey(claim.state.instance, claim.state.orderId));
+}
+
+export async function finishSiteNotification(claim: SiteNotificationClaim, noSendReason = "", releaseScope = false) {
+  await connectRedis();
+  const s = claim.state;
+  const result = await redisClient.eval(siteNotificationFinishLua, { keys: [claim.key, claim.leaseKey, historyKey(s.instance, s.payload?.phone || "no_send"), orderNotifyCursorKey(s.instance, s.orderId), `last_order:${s.instance}:${s.payload?.phone || "no_send"}`], arguments: [claim.token, SITE_NOTIFICATION_SCHEMA, SITE_NOTIFICATION_EVENT_SCHEMA, noSendReason ? "no_send" : "delivered", noSendReason, String(CHAT_HISTORY_MAX_ITEMS), String(CHAT_HISTORY_TTL_SECONDS), String(ORDER_NOTIFY_CURSOR_TTL_SECONDS), releaseScope ? "1" : "0"] });
+  if (result !== 1) throw new Error("NOTIFICATION_EFFECTS_NOT_COMMITTED");
+}
+
 export function languageKey(instanceId: string, phone: string) {
   return `lang:${instanceId}:${phone}`;
 }
