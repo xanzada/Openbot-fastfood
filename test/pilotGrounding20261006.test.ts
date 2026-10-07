@@ -107,3 +107,37 @@ test("Kazakh past contact needs accepted admin notification; case registration a
  const denial="Әкімшіге хабарласқан жоқпыз.";assert.equal(validateFinalText(denial,c,{toolsCalled:[],toolFindings:{}}).text,denial);
  const mixed="Әкімшіге хабарласқан жоқпыз, бірақ операторға хабар бердім.";assert.notEqual(validateFinalText(mixed,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}}).text,mixed);
 });
+
+// Additive status-recovery regressions; original assertions and fixture prefix remain unchanged.
+for (const language of ["ru", "kk"] as const) {
+ const statusInput = language === "ru" ? "Где мой заказ42?" : "42 тапсырысым қайда?";
+ const manualClaim = language === "ru" ? "Я оформил ваш заказ." : "Тапсырысыңызды өзім рәсімдедім.";
+ const acceptedClaim = language === "ru" ? "Ваш заказ принят." : "Тапсырысыңыз қабылданды.";
+ const noNewOrderRedirect = /новый заказ|нового заказа|новую заявку|жаңа тапсырыс|сайт арқылы|на сайте/iu;
+ const recoveries = [
+  ["active-order-manual", statusInput, manualClaim, {activeOrder:{id:42,status:"cooking"}}, {toolsCalled:[],toolFindings:{}}],
+  ["lookup-unavailable", statusInput, acceptedClaim, {}, {toolsCalled:["checkOrderStatus"],toolFindings:{orderFound:false,orderLookup:"unavailable"}}],
+  ["lookup-not-found-overrides-stale-order", statusInput, acceptedClaim, {activeOrder:{id:42,status:"cooking"}}, {toolsCalled:["checkOrderStatus"],toolFindings:{orderFound:false,orderLookup:"not_found"}}],
+  ["active-order-followup", language === "ru" ? "Почему еще не пришел?" : "Неге әлі келмеді?", manualClaim, {activeOrder:{id:42,status:"cooking"}}, {toolsCalled:[],toolFindings:{}}],
+ ] as const;
+ for (const [id,input,raw,extra,grounding] of recoveries) test(`status recovery keeps existing-order purpose: ${language}/${id}`,()=>{
+  const result=validateFinalText(raw,ctx(input,{language,...extra}),grounding);
+  assert.ok(result.warnings.includes("manual_order_claim_blocked"));
+  assert.equal(result.hasLink,false);
+  assert.doesNotMatch(result.text,noNewOrderRedirect);
+  assert.doesNotMatch(result.text,/я оформил|рәсімдедім|принят|қабылданды|оператор|https?:\/\/|минут/iu);
+  if(id==="lookup-not-found-overrides-stale-order") assert.match(result.text,language === "ru" ? /нет активного заказа/iu : /белсенді тапсырысыңыз жоқ/iu);
+  else {assert.match(result.text,language === "ru" ? /состояни[ея] заказа/iu : /тапсырыстың қазіргі күйін/iu);assert.doesNotMatch(result.text,/нет активного|белсенді тапсырысыңыз жоқ/iu);}
+ });
+ test(`manual boundary still serves a current new-order request with an older active order: ${language}`,()=>{
+  const result=validateFinalText(manualClaim,ctx(language === "ru" ? "Хочу заказать колу" : "Кола алайын",{language,activeOrder:{id:42,status:"cooking"}}),{toolsCalled:[]});
+  assert.equal(result.text,language === "ru" ? "Я не оформляю заказы в чате. Новый заказ можно оформить на сайте." : "Чатта тапсырысты өзім рәсімдей алмаймын. Жаңа тапсырысты сайт арқылы жасай аласыз.");
+  assert.ok(result.warnings.includes("manual_order_claim_blocked"));
+ });
+ test(`verified cooking and honest manual denial remain unchanged: ${language}`,()=>{
+  const preparing=language === "ru" ? "Ваш заказ готовится." : "Тапсырысыңыз дайындалып жатыр.";
+  assert.equal(validateFinalText(preparing,ctx(statusInput,{language}),{toolsCalled:["checkOrderStatus"],toolFindings:{orderFound:true,orderLookup:"found",orderStatus:"cooking",orderStage:"preparing"}}).text,preparing);
+  const denied=language === "ru" ? "Я не оформляю заказы в чате." : "Чатта тапсырысты өзім рәсімдей алмаймын.";
+  assert.equal(validateFinalText(denied,ctx(statusInput,{language}),{toolsCalled:[]}).text,denied);
+ });
+}

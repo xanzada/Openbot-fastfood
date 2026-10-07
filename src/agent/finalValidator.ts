@@ -1,6 +1,7 @@
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import type { FastFoodContext } from "../context/types.js";
 import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
+import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
 import { guardCheckoutSelection, hasCatalogProductMention, hasCatalogSafetyAssertion } from "./checkoutSelectionGuard.js";
 
@@ -735,9 +736,14 @@ function validateFinalTextCore(
   const manualWrite = isActionAssertion(text, (sentence) => MANUAL_ORDER_WRITE_CLAIM_RE.test(sentence)
     || isManualOrderHandlingClaim(sentence.replace(ACCEPTED_ORDER_CLAIM_RE, "")));
   if (manualWrite || (!orderEvidence && isActionAssertion(text, ACCEPTED_ORDER_CLAIM_RE))) {
+    const statusIntent = isCustomerOrderStatusQuestion(ctx.text || "")
+      || (Boolean(ctx.activeOrder) && isLikelyOrderStatusFollowUp(ctx.text || ""));
+    const recoveryText = statusIntent
+      ? (statusCalled && orderLookup === "not_found" ? noActiveOrderText(ctx) : orderStatusUnknownText(ctx))
+      : (ctx.language === "kk" ? "Чатта тапсырысты өзім рәсімдей алмаймын. Жаңа тапсырысты сайт арқылы жасай аласыз."
+        : "Я не оформляю заказы в чате. Новый заказ можно оформить на сайте.");
     return {
-      text: ctx.language === "kk" ? "Чатта тапсырысты өзім рәсімдей алмаймын. Жаңа тапсырысты сайт арқылы жасай аласыз."
-        : "Я не оформляю заказы в чате. Новый заказ можно оформить на сайте.",
+      text: recoveryText,
       hasLink: false,
       warnings: ["manual_order_claim_blocked"],
     };
