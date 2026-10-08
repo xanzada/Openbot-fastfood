@@ -160,8 +160,8 @@ function paymentDetailsText(details: PaymentDetail[], lang: Language): string {
     // Honest and actionable: the old wording promised an operator was waiting, while this
     // branch fires precisely because nobody has been told anything (found 2026-08-23).
     return lang === "ru"
-      ? "Реквизиты для оплаты сейчас уточняются — ресторан свяжется с вами и всё подтвердит."
-      : "Төлем реквизиттері қазір нақтылануда — ресторан сізбен байланысып, растайды.";
+      ? "Реквизиты для оплаты сейчас недоступны. Перед оплатой уточните их у ресторана."
+      : "Төлем реквизиттері қазір қолжетімді емес. Төлем жасамас бұрын оларды рестораннан сұрап алыңыз.";
   }
   return details.map((item) => `${item.label}: ${item.value}`).join("\n");
 }

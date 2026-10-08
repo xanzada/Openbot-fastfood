@@ -737,7 +737,29 @@ else
   if s.payload.rank>=0 and s.payload.rank>rank then
     redis.call('SET',KEYS[4],cjson.encode({rank=s.payload.rank,status=s.payload.status}),'EX',ARGV[8])
   end
-  if s.payload.clearOrderPointer then redis.call('DEL',KEYS[5]) end
+  if s.payload.clearOrderPointer then
+    local cacheType=redis.pcall('TYPE',KEYS[5])
+    local cacheRaw=cacheType.ok=='string' and redis.pcall('GET',KEYS[5]) or false
+    local decoded,c=false,nil
+    if type(cacheRaw)=='string' then decoded,c=pcall(cjson.decode,cacheRaw) end
+    if decoded and type(c)=='table' then
+      local matching=false;local proven=true
+      local function checkId(id)
+        if type(id)=='string' then id=id:match('^%s*(.-)%s*$')
+        elseif type(id)=='number' and id>0 and id<=9007199254740991 and id==math.floor(id) then id=tostring(id)
+        else proven=false;return end
+        if id=='' or id~=s.orderId then proven=false else matching=true end
+      end
+      if c.order_id~=nil then checkId(c.order_id) end
+      for _,field in ipairs({'active_order','order'}) do
+        if c[field]~=nil then
+          if type(c[field])~='table' or c[field].id==nil then proven=false
+          else checkId(c[field].id) end
+        end
+      end
+      if matching and proven then redis.call('DEL',KEYS[5]) end
+    end
+  end
   s.phase='complete'
 end
 local destination=KEYS[1]

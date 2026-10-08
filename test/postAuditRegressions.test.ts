@@ -112,8 +112,38 @@ test("finishing an order does not erase the conversation", async () => {
   // openbot_operator_case red-row markers, and what lastCustomerLanguage and
   // lastDiscussedOrderNumber read. Deleting it on completion meant a guest who complained a
   // minute later was greeted as a stranger with an empty operator thread.
-  assert.match(kanban, /await redisClient\.del\(\[`last_order:\$\{instance\}:\$\{phone\}`\]\)/);
+  // Terminal pointer clearing now commits atomically with preserved history and cursor.
+  assert.match(kanban, /clearOrderPointer: newStatus === "completed" \|\| newStatus === "cancelled" \|\| action === "order_rejected"/);
   assert.doesNotMatch(kanban, /del\(\[`history:\$\{instance\}:\$\{phone\}`/);
-  // The audit line must describe what it now does.
-  assert.match(kanban, /Clearing completed\/cancelled order pointer/);
+  const redis = await read("../src/services/redis.service.ts");
+  const finishStart = redis.indexOf("export async function finishSiteNotification(");
+  const finishEnd = redis.indexOf("function languageKey(", finishStart);
+  assert.ok(finishStart >= 0 && finishEnd > finishStart);
+  const finish = redis.slice(finishStart, finishEnd);
+  assert.ok(finish.includes('keys: [claim.key, claim.leaseKey, historyKey(s.instance, s.payload?.phone || "no_send"), orderNotifyCursorKey(s.instance, s.orderId), `last_order:${s.instance}:${s.payload?.phone || "no_send"}`]'));
+  assert.match(finish, /result !== 1[\s\S]*?NOTIFICATION_EFFECTS_NOT_COMMITTED/);
+  const luaStart = redis.indexOf("const siteNotificationFinishLua =");
+  const luaEnd = redis.indexOf("function validSiteNotificationPayload(", luaStart);
+  assert.ok(luaStart >= 0 && luaEnd > luaStart);
+  const lua = redis.slice(luaStart, luaEnd);
+  assert.ok(lua.includes("redis.call('RPUSH',KEYS[3],entry);redis.call('LTRIM',KEYS[3],-tonumber(ARGV[6]),-1)"));
+  assert.ok(lua.includes("if ttl<tonumber(ARGV[7]) then redis.call('EXPIRE',KEYS[3],ARGV[7]) end"));
+  // The same terminal effect is now guarded by the currently cached order identity.
+  const pointerStart = lua.indexOf("  if s.payload.clearOrderPointer then\n");
+  const pointerEnd = lua.indexOf("\n  s.phase='complete'", pointerStart);
+  assert.ok(pointerStart >= 0 && pointerEnd > pointerStart);
+  const pointer = lua.slice(pointerStart, pointerEnd);
+  assert.ok(lua.includes("if s.phase~='acknowledged' or not s.payload or not s.acknowledgedAt then return 0 end"));
+  assert.ok(pointer.includes("local cacheType=redis.pcall('TYPE',KEYS[5])"));
+  assert.ok(pointer.includes("local cacheRaw=cacheType.ok=='string' and redis.pcall('GET',KEYS[5]) or false"));
+  assert.ok(pointer.includes("if type(cacheRaw)=='string' then decoded,c=pcall(cjson.decode,cacheRaw) end"));
+  assert.match(pointer, /if decoded and type\(c\)=='table' then[\s\S]*?local matching=false;local proven=true/);
+  assert.ok(pointer.includes("if id=='' or id~=s.orderId then proven=false else matching=true end"));
+  assert.ok(pointer.includes("if c.order_id~=nil then checkId(c.order_id) end"));
+  assert.ok(pointer.includes("for _,field in ipairs({'active_order','order'}) do"));
+  assert.ok(pointer.includes("if type(c[field])~='table' or c[field].id==nil then proven=false"));
+  assert.ok(pointer.includes("else checkId(c[field].id) end"));
+  assert.ok(pointer.includes("if matching and proven then redis.call('DEL',KEYS[5]) end"));
+  assert.equal((pointer.match(/redis\.call\('DEL',KEYS\[5\]\)/g) || []).length, 1);
+  assert.doesNotMatch(lua, /redis\.call\('DEL',KEYS\[3\]\)/);
 });

@@ -90,7 +90,30 @@ test("a status event without a phone is recovered through the stored order phone
   const source = await readFile(new URL("../src/controllers/kanban.ts", import.meta.url), "utf8");
   assert.match(source, /getOrderPhone\(instance, orderId\)/);
   assert.match(source, /await saveOrderPhone\(instance, orderId, phone\)/);
-  assert.match(source, /await saveOrderNotifyCursor\(instance, orderId, nextNotifyRank,/);
+  const redis = await readFile(new URL("../src/services/redis.service.ts", import.meta.url), "utf8");
+  // Cursor changes are part of the token-fenced completion after strict transport ACK.
+  assert.match(source, /await prepareSiteNotification\(notificationClaim, \{[\s\S]*?rank: nextNotifyRank,[\s\S]*?await deliverSiteNotification\(notificationClaim\)/);
+  const deliveryStart = source.indexOf("async function deliverSiteNotification(");
+  const deliveryEnd = source.indexOf("export async function handleKanbanWebhook(", deliveryStart);
+  assert.ok(deliveryStart >= 0 && deliveryEnd > deliveryStart);
+  const delivery = source.slice(deliveryStart, deliveryEnd);
+  assert.match(delivery, /sent\?\.acknowledged !== true \|\| sent\?\.queued === true/);
+  assert.match(delivery, /await acknowledgeSiteNotification\(claim,[\s\S]*?await finishSiteNotification\(claim\)/);
+  const finishStart = redis.indexOf("export async function finishSiteNotification(");
+  const finishEnd = redis.indexOf("function languageKey(", finishStart);
+  assert.ok(finishStart >= 0 && finishEnd > finishStart);
+  const finish = redis.slice(finishStart, finishEnd);
+  assert.match(finish, /redisClient\.eval\(siteNotificationFinishLua,[\s\S]*?orderNotifyCursorKey\(s\.instance, s\.orderId\)/);
+  assert.match(finish, /result !== 1[\s\S]*?NOTIFICATION_EFFECTS_NOT_COMMITTED/);
+  const luaStart = redis.indexOf("const siteNotificationFinishLua =");
+  const luaEnd = redis.indexOf("function validSiteNotificationPayload(", luaStart);
+  assert.ok(luaStart >= 0 && luaEnd > luaStart);
+  const lua = redis.slice(luaStart, luaEnd);
+  assert.ok(lua.includes("if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end"));
+  assert.ok(lua.includes("if s.phase~='acknowledged' or not s.payload or not s.acknowledgedAt then return 0 end"));
+  assert.ok(lua.includes("if s.payload.rank>=0 and s.payload.rank>rank then"));
+  assert.ok(lua.includes("redis.call('SET',KEYS[4],cjson.encode({rank=s.payload.rank,status=s.payload.status}),'EX',ARGV[8])"));
+  assert.ok(lua.includes("s.phase='complete'"));
 });
 
 test("unknown actions pass through untouched", () => {

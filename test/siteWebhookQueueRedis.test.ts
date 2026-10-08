@@ -676,3 +676,190 @@ test("intermediate ready_delivery remains an explicit no-send decision while cli
   assert.equal(decision.phase, "no_send"); assert.equal(decision.reason, "status not intended for client");
   assert.equal(decision.payload, undefined); assert.equal(await redisClient.ttl(pointer.journalKey), -1);
 });
+
+// Real-handler terminal effects: no-phone events recover only this synthetic mapping.
+// ACK and unknown outcomes share the original registered transport/cleanup fixture.
+for (const terminal of [
+  { label: "completed", action: "status_changed", status: "completed", rank: 7 },
+  { label: "cancelled", action: "status_changed", status: "cancelled", rank: 99 },
+  { label: "order_rejected", action: "order_rejected", status: "", rank: 99 },
+] as const) {
+  for (const transport of ["accepted", "unknown"] as const) {
+    test(`actual terminal ${terminal.label} missing phone: ${transport} preserves ACK-gated effects`, siteCrashIntegration, async () => {
+      const f = await notificationFixture();
+      const api = await import("../src/services/redis.service.js");
+      // Empty rejection reason returns before the optional model humanizer.
+      const body: Record<string, unknown> = { ...f.body, action: terminal.action, phone: "", reason: "" };
+      if (terminal.status) body.status = terminal.status;
+      f.key = `kanban_lock:${f.instance}:142:${terminal.action === "status_changed" ? "status_changed:" + terminal.status : terminal.action}`;
+      assert.equal(await api.saveOrderPhone(f.instance, "142", f.phone), true);
+      assert.equal(await api.getOrderPhone(f.instance, "142"), f.phone);
+      const pointerKey = `last_order:${f.instance}:${f.phone}`;
+      const pointer = JSON.stringify({ order_id: "142", synthetic: true });
+      await redisClient.set(pointerKey, pointer, { EX: 600 });
+      const previousCursor = { rank: 4, status: "preparing" };
+      assert.equal(await api.saveOrderNotifyCursor(f.instance, "142", previousCursor.rank, previousCursor.status), true);
+      const priorEntry = JSON.stringify({ role: "user", text: "Synthetic retained conversation", createdAt: 12345 });
+      await redisClient.rPush(f.history, priorEntry);
+      await redisClient.expire(f.history, 900_000);
+      const historyBefore = await redisClient.lRange(f.history, 0, -1);
+      assert.deepEqual(historyBefore, [priorEntry]);
+
+      await withNotificationTransport(f, async () => {
+        const actual = await invokeActualNotification(body);
+        assert.equal(await api.getOrderPhone(f.instance, "142"), f.phone);
+        assert.equal(await redisClient.get(f.calls), "1", "exactly one synthetic transport attempt");
+        const rawJournal = await redisClient.get(f.key);
+        assert.notEqual(rawJournal, null);
+        const journal = JSON.parse(rawJournal!);
+        assert.equal(journal.payload.phone, f.phone);
+        assert.equal(journal.payload.rank, terminal.rank);
+        assert.equal(journal.payload.status, terminal.status || terminal.action);
+        assert.equal(journal.payload.clearOrderPointer, true);
+        assert.ok(typeof journal.payload.text === "string" && journal.payload.text.length > 0);
+        assert.ok(Number.isSafeInteger(journal.attemptedAt) && journal.attemptedAt > 0);
+        if (transport === "accepted") {
+          assert.equal(actual.status, 200);
+          assert.equal(actual.retryLater, false);
+          assert.equal(journal.phase, "complete");
+          assert.ok(Number.isSafeInteger(journal.acknowledgedAt) && journal.acknowledgedAt >= journal.attemptedAt);
+          assert.equal(journal.messageId, "SYNTHETIC-ACK");
+          assert.equal(await redisClient.get(pointerKey), null);
+          assert.deepEqual(await api.getOrderNotifyCursor(f.instance, "142"), { rank: terminal.rank, status: terminal.status || terminal.action });
+          const history = await redisClient.lRange(f.history, 0, -1);
+          assert.deepEqual(history.slice(0, historyBefore.length), historyBefore);
+          assert.equal(history.length, historyBefore.length + 1);
+          assert.deepEqual(JSON.parse(history[history.length - 1]), {
+            role: "model",
+            text: `<bot_notification>\n${journal.payload.text}\n</bot_notification>`,
+            createdAt: journal.payload.createdAt,
+          });
+          assert.ok((await redisClient.ttl(f.history)) > 604_800, "longer existing history TTL is preserved");
+          const replay = await invokeActualNotification(body);
+          assert.equal(replay.status, 200);
+          assert.equal(replay.retryLater, false);
+          assert.equal(await redisClient.get(f.calls), "1");
+          assert.deepEqual(await redisClient.lRange(f.history, 0, -1), history, "completed retry adds no duplicate history");
+        } else {
+          assert.equal(actual.status, 503);
+          assert.equal(actual.retryLater, true);
+          assert.equal(journal.phase, "pending");
+          assert.equal(journal.acknowledgedAt, undefined);
+          assert.equal(journal.messageId, undefined);
+          assert.equal(await redisClient.get(pointerKey), pointer);
+          assert.deepEqual(await api.getOrderNotifyCursor(f.instance, "142"), previousCursor);
+          assert.deepEqual(await redisClient.lRange(f.history, 0, -1), historyBefore);
+          assert.ok((await redisClient.ttl(f.history)) > 604_800);
+        }
+      }, transport);
+    });
+  }
+}
+
+// Terminal A may ACK after a fresh read has replaced the phone-wide cache with B.
+// Exercise the actual handler/Lua effects against this fixture's private Redis.
+const terminalCacheCases: Array<{ label: string; raw?: string; list?: string[]; clears: boolean }> = [
+  { label: "matching top A", raw: JSON.stringify({ order_id: "142", synthetic: true }), clears: true },
+  { label: "matching active A", raw: JSON.stringify({ active_order: { id: "142" }, synthetic: true }), clears: true },
+  { label: "matching order A", raw: JSON.stringify({ order: { id: "142" }, synthetic: true }), clears: true },
+  { label: "matching numeric A", raw: JSON.stringify({ order_id: 142 }), clears: true },
+  { label: "newer top B", raw: JSON.stringify({ order_id: "143", active_order: { id: "143" }, synthetic: true }), clears: false },
+  { label: "newer active B", raw: JSON.stringify({ active_order: { id: "143" }, synthetic: true }), clears: false },
+  { label: "newer order B", raw: JSON.stringify({ order: { id: "143" }, synthetic: true }), clears: false },
+  { label: "conflicting A and B", raw: JSON.stringify({ order_id: "142", active_order: { id: "143" } }), clears: false },
+  { label: "malformed identity", raw: JSON.stringify({ order_id: "142", order: { id: {} } }), clears: false },
+  { label: "malformed JSON", raw: "{broken", clears: false },
+  { label: "null JSON", raw: "null", clears: false },
+  { label: "unproven identity", raw: JSON.stringify({ synthetic: true }), clears: false },
+  { label: "absent cache", clears: false },
+  { label: "wrong Redis type", list: ["synthetic-unproven"], clears: false },
+];
+for (const terminal of [
+  { label: "completed", action: "status_changed", status: "completed", rank: 7 },
+  { label: "cancelled", action: "status_changed", status: "cancelled", rank: 99 },
+  { label: "order_rejected", action: "order_rejected", status: "", rank: 99 },
+] as const) {
+  for (const cache of terminalCacheCases) {
+    for (const transport of ["accepted", "unknown"] as const) {
+      test(`terminal phone cache identity: ${terminal.label} ${cache.label} ${transport}`, siteCrashIntegration, async () => {
+        const f = await notificationFixture();
+        const api = await import("../src/services/redis.service.js");
+        const axios = (await import("axios")).default;
+        const body: Record<string, unknown> = { ...f.body, action: terminal.action, reason: "" };
+        if (terminal.status) body.status = terminal.status;
+        f.key = `kanban_lock:${f.instance}:142:${terminal.action === "status_changed" ? "status_changed:" + terminal.status : terminal.action}`;
+        const pointerKey = `last_order:${f.instance}:${f.phone}`;
+        await redisClient.set(pointerKey, JSON.stringify({ order_id: "142" }), { EX: 600 });
+        const previousCursor = { rank: 4, status: "preparing" };
+        assert.equal(await api.saveOrderNotifyCursor(f.instance, "142", previousCursor.rank, previousCursor.status), true);
+        const retainedEntry = JSON.stringify({ role: "user", text: "Synthetic retained conversation", createdAt: 12345 });
+        await redisClient.rPush(f.history, retainedEntry);
+        await redisClient.expire(f.history, 900_000);
+        let frozenPayload: any;
+        let cacheTTLBefore = -2;
+        const readPointer = async () => cache.list
+          ? { type: await redisClient.type(pointerKey), body: await redisClient.lRange(pointerKey, 0, -1) }
+          : { type: await redisClient.type(pointerKey), body: await redisClient.get(pointerKey) };
+        await withNotificationTransport(f, async () => {
+          const registeredTransport = axios.post;
+          axios.post = (async (url: any, payload: any, ...rest: any[]) => {
+            assert.equal(url, "https://synthetic.invalid/api/send");
+            const beforeACK = JSON.parse((await redisClient.get(f.key))!);
+            assert.equal(beforeACK.phase, "pending");
+            assert.ok(Number.isSafeInteger(beforeACK.attemptedAt) && beforeACK.attemptedAt > 0);
+            assert.equal(beforeACK.payload.orderId, "142");
+            assert.equal(beforeACK.payload.clearOrderPointer, true);
+            frozenPayload = beforeACK.payload;
+            // This write is after A's payload/attempt is frozen, before its ACK.
+            await redisClient.del(pointerKey);
+            if (cache.raw !== undefined) await redisClient.set(pointerKey, cache.raw, { EX: 900_000 });
+            if (cache.list) { await redisClient.rPush(pointerKey, cache.list); await redisClient.expire(pointerKey, 900_000); }
+            cacheTTLBefore = await redisClient.pTTL(pointerKey);
+            return (registeredTransport as any)(url, payload, ...rest);
+          }) as any;
+          const actual = await invokeActualNotification(body);
+          assert.equal(await redisClient.get(f.calls), "1");
+          assert.equal(await redisClient.hLen(f.wal), 1);
+          const journal = JSON.parse((await redisClient.get(f.key))!);
+          assert.deepEqual(journal.payload, frozenPayload, "cache writes do not alter A's frozen delivery payload");
+          const retainedPointer = { type: cache.list ? "list" : cache.raw === undefined ? "none" : "string", body: cache.list ?? cache.raw ?? null };
+          if (transport === "accepted") {
+            assert.equal(actual.status, 200); assert.equal(actual.retryLater, false);
+            assert.equal(journal.phase, "complete"); assert.equal(journal.messageId, "SYNTHETIC-ACK");
+            assert.ok(Number.isSafeInteger(journal.acknowledgedAt) && journal.acknowledgedAt >= journal.attemptedAt);
+            assert.deepEqual(await readPointer(), cache.clears ? { type: "none", body: null } : retainedPointer);
+            assert.deepEqual(await api.getOrderNotifyCursor(f.instance, "142"), { rank: terminal.rank, status: terminal.status || terminal.action });
+            const history = await redisClient.lRange(f.history, 0, -1);
+            assert.equal(history.length, 2); assert.equal(history[0], retainedEntry);
+            assert.deepEqual(JSON.parse(history[1]), { role: "model", text: `<bot_notification>\n${journal.payload.text}\n</bot_notification>`, createdAt: journal.payload.createdAt });
+            assert.ok((await redisClient.ttl(f.history)) > 604_800);
+            if (cache.clears) await redisClient.set(pointerKey, JSON.stringify({ order_id: "143", synthetic: true }), { EX: 900_000 });
+            const replayPointer = await readPointer();
+            const replay = await invokeActualNotification(body);
+            assert.equal(replay.status, 200); assert.equal(replay.retryLater, false);
+            assert.deepEqual(await readPointer(), replayPointer, "completed A replay never clears a subsequent cache generation");
+            assert.deepEqual(await redisClient.lRange(f.history, 0, -1), history);
+          } else {
+            assert.equal(actual.status, 503); assert.equal(actual.retryLater, true);
+            assert.equal(journal.phase, "pending"); assert.equal(journal.acknowledgedAt, undefined);
+            assert.equal(journal.messageId, undefined);
+            assert.deepEqual(await readPointer(), retainedPointer, "unknown outcome keeps every cache shape");
+            assert.deepEqual(await api.getOrderNotifyCursor(f.instance, "142"), previousCursor);
+            assert.deepEqual(await redisClient.lRange(f.history, 0, -1), [retainedEntry]);
+            const retry = await invokeActualNotification(body);
+            assert.equal(retry.status, 503); assert.equal(retry.retryLater, true);
+            assert.deepEqual(await readPointer(), retainedPointer);
+            assert.deepEqual(await redisClient.lRange(f.history, 0, -1), [retainedEntry]);
+          }
+          assert.equal(await redisClient.get(f.calls), "1", "replay or unknown retry never makes a second synthetic attempt");
+          assert.equal(await redisClient.hLen(f.wal), 1);
+          if (!cache.clears || transport === "unknown") {
+            const ttlAfter = await redisClient.pTTL(pointerKey);
+            if (cacheTTLBefore === -2) assert.equal(ttlAfter, -2);
+            else assert.ok(ttlAfter > cacheTTLBefore - 2_000 && ttlAfter <= cacheTTLBefore, "preserved cache retains its existing TTL");
+          }
+        }, transport);
+      });
+    }
+  }
+}
