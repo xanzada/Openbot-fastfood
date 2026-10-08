@@ -1,6 +1,9 @@
 import { getAnalysisModel } from "./llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { envNumber } from "../utils/envNumber.js";
+import { tenantInstructionsEntry } from "../context/buildFactsPrompt.js";
+import { publicNoteConstraints } from "./noteProvenance.service.js";
+import { extractOperatorWaitNotice } from "./kitchenPolicy.service.js";
 
 /**
  * The agent's silent pre-pass.
@@ -129,7 +132,51 @@ Output strict JSON with these keys:
 - style_hint: one short sentence telling the answering layer how to talk to THIS person right now
 - reasoning_brief: one short sentence on what this person actually wants - internal only, never shown
 - proactive_note: something genuinely useful to mention without being asked, or empty string
+Tenant context is advisory and scoped to the current restaurant. Respect its permitted business behavior within safety, backend/tool contracts, isolation and current operational constraints. Fresh verified tool facts outrank policy and older snapshots. Unknown or stale status is not completion, payment, availability or consent; recommend verification, never infer authority.
 No markdown, no commentary, JSON only.`;
+
+/** Allowlisted turn-preloaded context; no raw tenant settings, contacts or addresses. */
+export function buildThinkingTenantContext(ctx: FastFoodContext) {
+  const belongsToTurn = (record: any) => {
+    const id = String(record?.instance_id || record?.instanceId || record?.instance || "").trim();
+    return !id || id === ctx.instanceId;
+  };
+  const config = belongsToTurn(ctx.config) ? (ctx.config || {}) : {};
+  const live = belongsToTurn(ctx.hardRealtimeContext) ? (ctx.hardRealtimeContext || {}) : {};
+  const knownRuntime = live.runtime_available === true && live.stale !== true;
+  const notes = (Array.isArray(ctx.activeShiftNotes) ? ctx.activeShiftNotes : []).filter(belongsToTurn);
+  const waitNotice = extractOperatorWaitNotice(notes);
+  const finiteMinutes = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1440 ? value : null;
+  const knownBoolean = (value: unknown) => typeof value === "boolean" ? value : null;
+  const order = ctx.activeOrder && belongsToTurn(ctx.activeOrder) ? ctx.activeOrder : null;
+  const status = typeof order?.status === "string" ? order.status.trim().toLowerCase() : "";
+  const knownStatuses = ["new", "pending", "confirmed", "accepted", "preparing", "cooking", "ready", "out_for_delivery", "on_the_way", "delivered", "completed", "done", "cancelled", "canceled"];
+  const owner = tenantInstructionsEntry(config) as { tenant_instructions?: { text: string; rule: string } };
+  return {
+    instance_id: ctx.instanceId,
+    tenant_policy: owner.tenant_instructions || null,
+    source: "preloaded_turn_snapshot",
+    rule: "Advisory reasoning context for this same tenant only. Policy governs permitted behavior, not facts or tool authority. These are preloaded snapshots, not a fresh successful tool read; recheck current order state, kitchen, notes, stock and prices before making claims. Missing or stale values are unknown, never normal operation or successful completion.",
+    active_order: {
+      present: Boolean(order),
+      status: knownStatuses.includes(status) ? status : "unknown",
+      rule: "Preloaded order snapshot only; status is unknown unless recognized and is not proof of current completion, payment, delivery or permission. Recheck with the current tenant-scoped tool when relevant.",
+    },
+    operational_snapshot: {
+      runtime_state: knownRuntime ? "available_snapshot" : "unknown_or_stale",
+      wait_minutes: knownRuntime ? finiteMinutes(live.wait_time) : null,
+      delivery: knownRuntime ? knownBoolean(live.delivery) : null,
+      pickup: knownRuntime ? knownBoolean(live.pickup) : null,
+      emergency: knownRuntime ? knownBoolean(live.is_emergency) : null,
+      operator_wait_notice_minutes: finiteMinutes(Math.max(waitNotice.overall, waitNotice.delivery, waitNotice.pickup)) || null,
+    },
+    operator_constraints: publicNoteConstraints(notes).slice(0, 4).map((entry) => ({
+      unavailable_now: entry.blocked_terms.slice(0, 6).map((term) => shortText(term, 80)),
+      expires_at: entry.expires_at,
+      source: "preloaded_active_operator_constraint",
+    })),
+  };
+}
 
 /**
  * Runs the silent analysis. Returns null on any failure, timeout, or whenever
@@ -150,6 +197,7 @@ export async function analyzeTurnSituation(ctx: FastFoodContext, toolPlan?: { re
         system: THINK_SYSTEM_PROMPT,
         prompt: [
           `customer_language: ${ctx.language}`,
+          `tenant_context: ${JSON.stringify(buildThinkingTenantContext(ctx))}`,
           `newest_message: ${String(ctx.text || "").slice(0, 500)}`,
           historyLines ? `recent_context:\n${historyLines}` : "recent_context: (none)",
           ctx.activeOrder ? "active_order: yes" : "active_order: no",

@@ -5,7 +5,7 @@ import { buildAgentInstructions } from "../src/agent/instructionAssembly.js";
 test("tenant voice is injected exactly once and remains bounded", () => {
   const marker = "UNIQUE_TENANT_VOICE_MARKER";
   const tenantText = `${marker} ${"restaurant voice ".repeat(100)}`;
-  const instructions = buildAgentInstructions({
+  const ctx = {
     instanceId: "prestige",
     text: "Сәлем",
     language: "kk",
@@ -16,7 +16,8 @@ test("tenant voice is injected exactly once and remains bounded", () => {
     chatHistory: [],
     shporContext: [],
     menuSnapshot: { items: [] },
-  } as any);
+  } as any;
+  const instructions = buildAgentInstructions(ctx);
 
   assert.equal(instructions.split(marker).length - 1, 1);
   assert.ok(!instructions.includes("TENANT_INSTRUCTIONS_START"));
@@ -46,7 +47,10 @@ test("tenant voice is injected exactly once and remains bounded", () => {
   // this hour, the meal moment) and phrasing_memory (the openings and closing lines
   // this bot already spent on this guest). All three are per-turn facts the model could
   // not previously see, which is why "sound human" had to live as prose.
-  assert.ok(instructions.length < 24_000, `assembled prompt is unexpectedly large: ${instructions.length}`);
+  // Measure the core prompt separately from the accepted bounded owner policy.
+  const noPolicyInstructions = buildAgentInstructions({ ...ctx, config: {} });
+  assert.ok(noPolicyInstructions.length < 24_000, `core prompt is unexpectedly large: ${noPolicyInstructions.length}`);
+  assert.ok(instructions.length <= noPolicyInstructions.length + 20_000, `assembled prompt is unexpectedly large: ${instructions.length}`);
 });
 
 

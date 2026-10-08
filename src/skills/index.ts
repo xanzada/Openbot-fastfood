@@ -64,9 +64,12 @@ function memoizePerTurn(ctx: FastFoodContext, tool: any) {
   if (typeof execute !== "function") return tool;
   tool.execute = async (...args: unknown[]) => {
     if (memo.has(name)) return memo.get(name);
-    const result = await execute(...args);
-    memo.set(name, result);
-    return result;
+    // Publish before execution starts, so concurrent calls and critic passes share
+    // this exact outcome. A rejection may follow an unknown external side effect:
+    // retain it for this turn; only a new ctx may try again.
+    const execution = Promise.resolve().then(() => execute(...args));
+    memo.set(name, execution);
+    return execution;
   };
   return tool;
 }

@@ -189,3 +189,30 @@ test("the model chain has exactly one source of truth", async () => {
   assert.deepEqual(getTextModelId(), getTextModels(),
     "what the agent calls and what the logs report must be the same chain");
 });
+
+
+for(const name of ["updateCrmLead","sendMenuLink","escalateToAdmin"]){
+ test("tenant-decision actual20261009 concurrent "+name+" shares one in-flight result",async()=>{
+  const c=CTX();let calls=0,release:any;const result={owned:true,name};
+  const inner=new Promise(resolve=>{release=resolve;});const tool:any={name,execute:async()=>{calls++;return inner;}};
+  skills.__test.memoizePerTurn(c,tool);const both=Promise.all([tool.execute({first:1}),tool.execute({second:2})]);
+  await Promise.resolve();release(result);const [a,b]=await both;
+  assert.equal(calls,1);assert.equal(a,result);assert.equal(b,result);assert.equal(await tool.execute({critic:true}),result);assert.equal(calls,1);
+ });
+}
+test("tenant-decision actual20261009 rejected outcome is shared without same-turn replay; new turn may retry",async()=>{
+ let calls=0;const error=new Error("unknown external outcome");const make=(c:any)=>{const tool:any={name:"escalateToAdmin",execute:async()=>{calls++;throw error;}};skills.__test.memoizePerTurn(c,tool);return tool;};
+ const a=make(CTX());const failures=await Promise.allSettled([a.execute({}),a.execute({different:1})]);
+ assert.equal(calls,1);assert.ok(failures.every(f=>f.status==="rejected"&&f.reason===error));
+ await assert.rejects(a.execute({retry:true}),e=>e===error);assert.equal(calls,1);
+ const b=make(CTX());await assert.rejects(b.execute({}),e=>e===error);assert.equal(calls,2);
+});
+test("tenant-decision actual20261009 synchronous throws remain one unknown outcome per turn",async()=>{
+ let calls=0;const error=new Error("sync unknown outcome");const tool:any={name:"updateCrmLead",execute:()=>{calls++;throw error;}};
+ skills.__test.memoizePerTurn(CTX(),tool);await assert.rejects(tool.execute({}),e=>e===error);await assert.rejects(tool.execute({}),e=>e===error);assert.equal(calls,1);
+});
+test("tenant-decision actual20261009 read-only concurrent calls and distinct contexts remain independent",async()=>{
+ let reads=0;const read:any={name:"getKitchenStatus",execute:async()=>++reads};skills.__test.memoizePerTurn(CTX(),read);await Promise.all([read.execute({}),read.execute({})]);assert.equal(reads,2);
+ let writes=0;const make=(c:any)=>{const t:any={name:"sendMenuLink",execute:async()=>({write:++writes})};skills.__test.memoizePerTurn(c,t);return t;};
+ const a=make(CTX({instanceId:"owned-a"})),b=make(CTX({instanceId:"owned-b"}));await Promise.all([a.execute({}),b.execute({})]);assert.equal(writes,2);
+});
