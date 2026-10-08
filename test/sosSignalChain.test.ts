@@ -128,16 +128,11 @@ test("one case retains a single delivery ledger and retries its stable signal", 
   assert.equal(h.sends.length, 1);
 });
 
-test("the SOS marker, unread key and index carry a shift-long SOS TTL", async () => {
+test("the SOS marker, unread key and index carry the requested one-hour SOS TTL", async () => {
   const { SOS_TTL_SECONDS, CASE_TTL_SECONDS, sosMarkerKey, sosUnreadKey, sosIndexKey } =
     await import("../src/services/operatorCase.service.js");
-  // 24h, not the original 1h: a complaint raised at night was gone from the SOS column
-  // before the morning shift read it, and the site's badge had no count to show
-  // (owner report, 2026-08-27). whatspro-gateway/services/sosStore.js prunes the index
-  // on the same number, so the two must be changed together.
-  assert.equal(SOS_TTL_SECONDS, 86400);
-  // Still comfortably inside the case's own life, so the red row and the SOS flag can
-  // never disagree about an episode that is still live.
+  // Current explicit retention is one hour for signals, with canonical cases kept seven days.
+  assert.equal(SOS_TTL_SECONDS, 3600);
   assert.ok(SOS_TTL_SECONDS < CASE_TTL_SECONDS);
   assert.equal(CASE_TTL_SECONDS, 604800);
   assert.equal(sosMarkerKey("prestige", "77769156184"), "chatwoot:sos:prestige:77769156184");

@@ -113,3 +113,22 @@ test("new case refuses an invalid due-index type before any canonical or plan wr
   assert.equal(await h.redis.get(h.active), null); assert.equal(await h.redis.get(h.marker), null);
   for await (const keys of h.redis.scanIterator({MATCH: "operator_notification:" + h.instance + ":*"})) assert.equal(keys.length, 0);
 }));
+
+test("SOS producer retention: pending plans survive one-hour signal expiry and restart once", options, () => run(async h => {
+  const id = await crashedCreate(h); assert.ok((await h.redis.ttl(h.marker)) <= 3600);
+  const canonical = await h.redis.get(h.canonical(id)), plans = new Map<string, string>();
+  for (const channel of ["hub", "admin"]) {
+    const key = h.key(channel, id); plans.set(channel, (await h.redis.get(key))!); assert.equal(await h.redis.ttl(key), -1);
+  }
+  assert.equal(await h.redis.ttl(h.index), -1);
+  await h.redis.pExpireAt(h.marker, Date.now() - 1);
+  await h.redis.pExpireAt("chatwoot:sos-unread:" + h.instance + ":" + h.phone, Date.now() - 1);
+  h.advance(3600000);
+  assert.equal(await h.redis.get(h.marker), null); assert.equal(await h.redis.get(h.canonical(id)), canonical);
+  assert.equal(await h.redis.get(h.active), id); assert.ok((await h.redis.ttl(h.canonical(id))) > 604790);
+  for (const channel of ["hub", "admin"]) assert.equal(await h.redis.get(h.key(channel, id)), plans.get(channel));
+  await h.workerTick(); assert.equal(h.calls.admin.length, 1); assert.equal(h.calls.hub.length, 1);
+  const requestId = h.calls.admin[0].requestId;
+  await h.restartDrain(); assert.equal(h.calls.admin.length, 1); assert.equal(h.calls.admin[0].requestId, requestId); assert.equal(h.calls.hub.length, 1);
+  assert.equal(await h.redis.zCard(h.index), 0);
+}));
