@@ -22,9 +22,14 @@ test("missing payment requisites no longer promise an operator who was never tol
   // The old wording ("подождите ответ оператора") fired precisely when nobody had been
   // told anything: payment_details empty is the normal state before kitchen settings are
   // filled in, and the only record was an audit line.
-  assert.match(kanban, /Төлем реквизиттері қазір нақтылануда/);
-  assert.match(kanban, /Реквизиты для оплаты сейчас уточняются/);
+  assert.match(kanban, /Төлем реквизиттері қазір қолжетімді емес\. Төлем жасамас бұрын оларды рестораннан сұрап алыңыз\./u);
+  assert.match(kanban, /Реквизиты для оплаты сейчас недоступны\. Перед оплатой уточните их у ресторана\./u);
   assert.doesNotMatch(kanban, /Реквизиты пока не настроены\. Пожалуйста, подождите ответ оператора/);
+  const paymentStart = kanban.indexOf("function paymentDetailsText(");
+  const paymentEnd = kanban.indexOf("function paymentDetailsFromRuntime(", paymentStart);
+  assert.ok(paymentStart >= 0 && paymentEnd > paymentStart, "inspect the complete payment fallback function");
+  const paymentFallback = kanban.slice(paymentStart, paymentEnd);
+  assert.doesNotMatch(paymentFallback, /уточняются|свяжется|всё подтвердит|нақтылануда|байланысып|растайды/u);
 });
 
 // ---------------------------------------------------------------------------- D27
