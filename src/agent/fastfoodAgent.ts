@@ -4,7 +4,7 @@ import { createFastFoodSkills } from "../skills/index.js";
 import { analyzeTurnSituation, critiqueDraftReply, type DraftCritique, type TurnAnalysis } from "../services/agentThinking.service.js";
 import { fallbackReply, validateFinalText, type ToolGroundingFindings } from "./finalValidator.js";
 import { readGuestGreeting } from "./greeting.js";
-import { buildAgentInstructions } from "./instructionAssembly.js";
+import { buildAgentInstructions, composeReadyAnalysisStepPolicy, createTurnThinkingState } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
 import { createAgentStepPolicy, resolveLiveAgentToolPlan } from "./toolPolicy.js";
 import { groundMenuTurn, menuQueryForTurn } from "../skills/searchMenu.skill.js";
@@ -41,10 +41,12 @@ function enforceExplicitMagicLink(text: string, ctx: FastFoodContext) {
   return text.split(link).join(" ").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function buildAgent(ctx: FastFoodContext, extraInstruction?: string) {
+function buildAgent(ctx: FastFoodContext, extraInstruction?: string, capture?: (instructions: string) => void) {
+  const instructions = buildAgentInstructions(ctx, extraInstruction);
+  capture?.(instructions);
   return new Agent({
     name: "FastFood OpenBot",
-    instructions: buildAgentInstructions(ctx, extraInstruction),
+    instructions,
     model: resolveModel(ctx),
     tools: createFastFoodSkills(ctx),
     maxSteps: 6,
@@ -160,175 +162,193 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   // THINK_JOIN_MS) for the critic, metrics and routing. THINK_MODE=blocking restores
   // the old order, THINK_MODE=off skips it.
   const thinkMode = String(process.env.THINK_MODE || "parallel").trim().toLowerCase();
+  const thinkingState = createTurnThinkingState(ctx.thinking);
   let pendingThinking: Promise<TurnAnalysis | null> | null = null;
   if (ctx.thinking === undefined || ctx.thinking === null) {
     if (thinkMode === "blocking") {
       ctx.thinking = await analyzeTurnSituation(ctx, toolPlan).catch(() => null);
+      thinkingState.settle(ctx.thinking);
     } else if (thinkMode !== "off") {
       ctx.thinking = null;
-      pendingThinking = analyzeTurnSituation(ctx, toolPlan).catch(() => null);
+      pendingThinking = analyzeTurnSituation(ctx, toolPlan).then(
+        analysis => { thinkingState.settle(analysis); return analysis; },
+        () => { thinkingState.settle(null); return null; },
+      );
     }
   }
-  let thinking = (ctx.thinking || null) as TurnAnalysis | null;
+  let thinking = thinkingState.read() as TurnAnalysis | null;
 
-  // A turn that is nothing but a greeting needs no tool: live calibration (2026-10-04) saw
-  // «Сәлем» spend an extra model round on updateCrmLead and take 8-22 s instead of 2-4 s.
-  const greetingOnly = Boolean(readGuestGreeting(String(ctx.text || ""))?.pure) && !toolPlan.requiredTools.length;
-  const stepPolicy = greetingOnly ? () => ({ toolChoice: "none" as const }) : createAgentStepPolicy(remainingPlan);
-  // Typed as any on purpose: allowSystemInMessages is valid in AI SDK v6 but
-  // missing from @voltagent/core types. The old key name was allowSystemMessages,
-  // which the SDK ignored, so every single generation logged a security warning
-  // in production. The model router owns retry/failover, hence maxRetries: 0.
-  // STEP_LOOP_FIX: per-call `maxSteps` is stripped from VoltAgent v2 generate
-  // options (Omit<..., "maxSteps", ...>), so a turn that called a tool stopped
-  // right after the tool step and shipped the partial pre-tool text (e.g. a
-  // 3-char reply). `stopWhen` is the supported per-call stop condition, so the
-  // agent now finishes its answer after reading the tool result.
-  const generateOptions: any = {
-    maxSteps: 6,
-    stopWhen: stepCountIs(6),
-    maxRetries: 0,
-    prepareStep: stepPolicy,
-    allowSystemInMessages: true,
-  };
+  try {
+    // A turn that is nothing but a greeting needs no tool: live calibration (2026-10-04) saw
+    // «Сәлем» spend an extra model round on updateCrmLead and take 8-22 s instead of 2-4 s.
+    const greetingOnly = Boolean(readGuestGreeting(String(ctx.text || ""))?.pure) && !toolPlan.requiredTools.length;
+    const stepPolicy = greetingOnly ? () => ({ toolChoice: "none" as const }) : createAgentStepPolicy(remainingPlan);
+    // Typed as any on purpose: allowSystemInMessages is valid in AI SDK v6 but
+    // missing from @voltagent/core types. The old key name was allowSystemMessages,
+    // which the SDK ignored, so every single generation logged a security warning
+    // in production. The model router owns retry/failover, hence maxRetries: 0.
+    // STEP_LOOP_FIX: per-call `maxSteps` is stripped from VoltAgent v2 generate
+    // options (Omit<..., "maxSteps", ...>), so a turn that called a tool stopped
+    // right after the tool step and shipped the partial pre-tool text (e.g. a
+    // 3-char reply). `stopWhen` is the supported per-call stop condition, so the
+    // agent now finishes its answer after reading the tool result.
+    const generateOptions: any = {
+      maxSteps: 6,
+      stopWhen: stepCountIs(6),
+      maxRetries: 0,
+      prepareStep: stepPolicy,
+      allowSystemInMessages: true,
+    };
 
-  let result = await buildAgent(ctx, groundingInstruction).generateText(ctx.text, generateOptions);
-  if (pendingThinking) {
-    const joinMs = envNumber(process.env.THINK_JOIN_MS, 300, { min: 0, max: 5_000 });
-    const joined = await Promise.race([
-      pendingThinking,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), joinMs)),
-    ]);
-    thinking = joined || null;
-    ctx.thinking = thinking;
-    console.info(`[THINK] parallel instance=${ctx.instanceId} joined=${thinking ? "yes" : "no"}`);
-  }
-  // Kept separately because the critic can replace `result` below.
-  let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
-  let validation = validateFinalText(result.text, ctx, {
-    toolsCalled: mergeToolCalls(groundedCalls, extractToolCalls(result)).map((call: { name: string }) => call.name),
-    toolFindings: extractToolFindings(result),
-  });
-  let finalText = enforceExplicitMagicLink(validation.text, ctx);
-  let critic: DraftCritique | null = null;
+    const generatePass = (extraInstruction: string) => {
+      let actualInstructions = "";
+      const agent = buildAgent(ctx, extraInstruction, instructions => { actualInstructions = instructions; });
+      return agent.generateText(ctx.text, {
+        ...generateOptions,
+        prepareStep: composeReadyAnalysisStepPolicy(stepPolicy, actualInstructions, thinkingState.read,
+          reason => console.info("[THINK] ready_guidance_skipped=" + reason)),
+      });
+    };
+    let result = await generatePass(groundingInstruction);
+    if (pendingThinking) {
+      const joinMs = envNumber(process.env.THINK_JOIN_MS, 300, { min: 0, max: 5_000 });
+      const joined = await Promise.race([
+        pendingThinking,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), joinMs)),
+      ]);
+      thinking = joined || thinkingState.read() || null;
+      ctx.thinking = thinking;
+      console.info(`[THINK] parallel instance=${ctx.instanceId} joined=${thinking ? "yes" : "no"}`);
+    }
+    // Kept separately because the critic can replace `result` below.
+    let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
+    let validation = validateFinalText(result.text, ctx, {
+      toolsCalled: mergeToolCalls(groundedCalls, extractToolCalls(result)).map((call: { name: string }) => call.name),
+      toolFindings: extractToolFindings(result),
+    });
+    let finalText = enforceExplicitMagicLink(validation.text, ctx);
+    let critic: DraftCritique | null = null;
 
-  // Bounded self-check: only high-risk turns (money, order state, strong
-  // emotion) pay for a critic read, and only a genuinely broken draft is
-  // rewritten - exactly once, so latency and cost stay capped.
-  if (thinking?.risk === "high" && finalText && Date.now() - turnStartedAt < CRITIC_BUDGET_MS) {
-    critic = await critiqueDraftReply({ ctx, analysis: thinking, draft: finalText }).catch(() => null);
-    if (critic && !critic.ok && Date.now() - turnStartedAt < REGEN_BUDGET_MS) {
-      const critiqueNote = [
-        "CRITIC_NOTE (internal, never quote or mention):",
-        `issues: ${critic.issues.join(", ")}`,
-        critic.fix_hint ? `fix: ${critic.fix_hint}` : "",
-        "Rewrite the reply for THIS turn fixing exactly that. Keep every verified fact and every required link.",
-      ].filter(Boolean).join("\n");
-      try {
-        const regenerated = await buildAgent(ctx, [groundingInstruction, critiqueNote].filter(Boolean).join("\n")).generateText(ctx.text, generateOptions);
-        // The critic rewrite is validated against the UNION of both passes. Validating
-        // it against its own calls alone stripped the prices and the allergen statement
-        // the first pass had grounded, because the critic note tells the model to keep
-        // the facts without re-calling the tools - so the guest got "состав подтвердить
-        // не могу" after a correct first draft, on exactly the high-risk turns the
-        // critic exists for (found 2026-08-22).
-        const unionCalls = mergeToolCalls(groundedCalls, mergeToolCalls(extractToolCalls(result), extractToolCalls(regenerated)));
-        const firstFindings = extractToolFindings(result);
-        const regenFindings = extractToolFindings(regenerated);
-        const regeneratedValidation = validateFinalText(regenerated.text, ctx, {
-          toolsCalled: unionCalls.map((call: { name: string }) => call.name),
-          // The latest status read wins; without another read, keep the first result.
-          // A real escalation created in either pass remains created.
-          toolFindings: {
-            ...(regenFindings.orderFound !== undefined || firstFindings.orderFound !== undefined
-              ? {
-                  orderFound: regenFindings.orderFound ?? firstFindings.orderFound,
-                  orderLookup: regenFindings.orderFound !== undefined ? regenFindings.orderLookup : firstFindings.orderLookup,
-                  orderStatus: regenFindings.orderFound !== undefined ? regenFindings.orderStatus : firstFindings.orderStatus,
-                  orderStage: regenFindings.orderFound !== undefined ? regenFindings.orderStage : firstFindings.orderStage,
-                  orderStatusLabel: regenFindings.orderFound !== undefined ? regenFindings.orderStatusLabel : firstFindings.orderStatusLabel,
-                  orderItems: regenFindings.orderFound !== undefined ? regenFindings.orderItems : firstFindings.orderItems,
-                }
-              : {}),
-            ...(regenFindings.escalationCreated !== undefined || firstFindings.escalationCreated !== undefined
-              ? {
-                  escalationCreated:
-                    regenFindings.escalationCreated === true || firstFindings.escalationCreated === true
-                      ? true
-                      : (regenFindings.escalationCreated ?? firstFindings.escalationCreated),
-                  escalationNotificationAccepted: regenFindings.escalationNotificationAccepted === true || firstFindings.escalationNotificationAccepted === true,
-                }
-              : {}),
-          },
-        });
-        const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
-        if (regeneratedText && regeneratedText !== finalText) {
-          // The first pass's tool calls must survive the swap. `result` used to be
-          // replaced outright, so toolCalls reported only the second pass: if the
-          // first pass escalated and the regenerated one did not,
-          // toolHandledEscalation went false and the webhook text lane routed the
-          // SAME episode again - a second case and a second hub signal for one turn
-          // (found 2026-08-22).
-          firstPassToolCalls = extractToolCalls(result);
-          result = regenerated;
-          validation = {
-            ...regeneratedValidation,
-            warnings: [...regeneratedValidation.warnings, "critic_regenerated", ...critic.issues.map((issue) => `critic_${issue}`)],
-          };
-          finalText = regeneratedText;
-          console.info(`[CRITIC] regenerated instance=${ctx.instanceId} issues=${critic.issues.join(",")}`);
+    // Bounded self-check: only high-risk turns (money, order state, strong
+    // emotion) pay for a critic read, and only a genuinely broken draft is
+    // rewritten - exactly once, so latency and cost stay capped.
+    if (thinking?.risk === "high" && finalText && Date.now() - turnStartedAt < CRITIC_BUDGET_MS) {
+      critic = await critiqueDraftReply({ ctx, analysis: thinking, draft: finalText }).catch(() => null);
+      if (critic && !critic.ok && Date.now() - turnStartedAt < REGEN_BUDGET_MS) {
+        const critiqueNote = [
+          "CRITIC_NOTE (internal, never quote or mention):",
+          `issues: ${critic.issues.join(", ")}`,
+          critic.fix_hint ? `fix: ${critic.fix_hint}` : "",
+          "Rewrite the reply for THIS turn fixing exactly that. Keep every verified fact and every required link.",
+        ].filter(Boolean).join("\n");
+        try {
+          const regenerated = await generatePass([groundingInstruction, critiqueNote].filter(Boolean).join("\n"));
+          // The critic rewrite is validated against the UNION of both passes. Validating
+          // it against its own calls alone stripped the prices and the allergen statement
+          // the first pass had grounded, because the critic note tells the model to keep
+          // the facts without re-calling the tools - so the guest got "состав подтвердить
+          // не могу" after a correct first draft, on exactly the high-risk turns the
+          // critic exists for (found 2026-08-22).
+          const unionCalls = mergeToolCalls(groundedCalls, mergeToolCalls(extractToolCalls(result), extractToolCalls(regenerated)));
+          const firstFindings = extractToolFindings(result);
+          const regenFindings = extractToolFindings(regenerated);
+          const regeneratedValidation = validateFinalText(regenerated.text, ctx, {
+            toolsCalled: unionCalls.map((call: { name: string }) => call.name),
+            // The latest status read wins; without another read, keep the first result.
+            // A real escalation created in either pass remains created.
+            toolFindings: {
+              ...(regenFindings.orderFound !== undefined || firstFindings.orderFound !== undefined
+                ? {
+                    orderFound: regenFindings.orderFound ?? firstFindings.orderFound,
+                    orderLookup: regenFindings.orderFound !== undefined ? regenFindings.orderLookup : firstFindings.orderLookup,
+                    orderStatus: regenFindings.orderFound !== undefined ? regenFindings.orderStatus : firstFindings.orderStatus,
+                    orderStage: regenFindings.orderFound !== undefined ? regenFindings.orderStage : firstFindings.orderStage,
+                    orderStatusLabel: regenFindings.orderFound !== undefined ? regenFindings.orderStatusLabel : firstFindings.orderStatusLabel,
+                    orderItems: regenFindings.orderFound !== undefined ? regenFindings.orderItems : firstFindings.orderItems,
+                  }
+                : {}),
+              ...(regenFindings.escalationCreated !== undefined || firstFindings.escalationCreated !== undefined
+                ? {
+                    escalationCreated:
+                      regenFindings.escalationCreated === true || firstFindings.escalationCreated === true
+                        ? true
+                        : (regenFindings.escalationCreated ?? firstFindings.escalationCreated),
+                    escalationNotificationAccepted: regenFindings.escalationNotificationAccepted === true || firstFindings.escalationNotificationAccepted === true,
+                  }
+                : {}),
+            },
+          });
+          const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
+          if (regeneratedText && regeneratedText !== finalText) {
+            // The first pass's tool calls must survive the swap. `result` used to be
+            // replaced outright, so toolCalls reported only the second pass: if the
+            // first pass escalated and the regenerated one did not,
+            // toolHandledEscalation went false and the webhook text lane routed the
+            // SAME episode again - a second case and a second hub signal for one turn
+            // (found 2026-08-22).
+            firstPassToolCalls = extractToolCalls(result);
+            result = regenerated;
+            validation = {
+              ...regeneratedValidation,
+              warnings: [...regeneratedValidation.warnings, "critic_regenerated", ...critic.issues.map((issue) => `critic_${issue}`)],
+            };
+            finalText = regeneratedText;
+            console.info(`[CRITIC] regenerated instance=${ctx.instanceId} issues=${critic.issues.join(",")}`);
+          }
+        } catch (error: any) {
+          console.warn(`[CRITIC] regen_failed instance=${ctx.instanceId} reason=${error?.message || error}`);
+          validation = { ...validation, warnings: [...validation.warnings, "critic_regen_failed"] };
         }
-      } catch (error: any) {
-        console.warn(`[CRITIC] regen_failed instance=${ctx.instanceId} reason=${error?.message || error}`);
-        validation = { ...validation, warnings: [...validation.warnings, "critic_regen_failed"] };
       }
     }
-  }
 
-  // A promise the guest can see must be a promise the guest receives. Runs after every
-  // rewrite, so it judges the text that will actually be sent.
-  const promise = await honorMenuLinkPromise(ctx, finalText).catch(() => ({ action: "none" as const }));
-  if (promise.action === "granted") {
-    validation = { ...validation, warnings: [...validation.warnings, "link_promise_honored"] };
-    console.info(`[LINK PROMISE] honored instance=${ctx.instanceId}`);
-  } else if (promise.action === "stripped") {
-    finalText = promise.text || fallbackReply(ctx);
-    validation = { ...validation, warnings: [...validation.warnings, `link_promise_removed_${promise.reason}`] };
-    console.warn(`[LINK PROMISE] removed instance=${ctx.instanceId} reason=${promise.reason}`);
-  }
+    // A promise the guest can see must be a promise the guest receives. Runs after every
+    // rewrite, so it judges the text that will actually be sent.
+    const promise = await honorMenuLinkPromise(ctx, finalText).catch(() => ({ action: "none" as const }));
+    if (promise.action === "granted") {
+      validation = { ...validation, warnings: [...validation.warnings, "link_promise_honored"] };
+      console.info(`[LINK PROMISE] honored instance=${ctx.instanceId}`);
+    } else if (promise.action === "stripped") {
+      finalText = promise.text || fallbackReply(ctx);
+      validation = { ...validation, warnings: [...validation.warnings, `link_promise_removed_${promise.reason}`] };
+      console.warn(`[LINK PROMISE] removed instance=${ctx.instanceId} reason=${promise.reason}`);
+    }
 
-  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
-  if (policy.mode !== "off_hours" && ctx.magicLinkGranted && ctx.magicLink && GRANTED_LINK_REFUSAL_RE.test(finalText)) {
-    // Cut the contradicting sentence, keep the rest. Replacing the WHOLE reply threw
-    // away real operational facts that happen to contain the same words: "жеткізу
-    // жұмыс істемей тұр, өзіңіз алып кетсеңіз болады" became "тапсырыс беруге
-    // болады", telling the guest they could order delivery (found 2026-08-22).
-    const kept = finalText
-      .split(/(?<=[.!?\u2026])\s+|\n+/)
-      .filter((sentence) => sentence.trim() && !GRANTED_LINK_REFUSAL_RE.test(sentence))
-      .join(" ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-    finalText = kept || (ctx.language === "kk"
-      ? "Тапсырыс беруге болады - мәзірді бөлек хатпен жібердім, осы арқылы кіріп қойсаңыз болғаны."
-      : "Можно оформить заказ - отправил меню отдельным сообщением, зайдите и выберите.");
-    validation = { ...validation, warnings: [...validation.warnings, "granted_link_refusal_clause_removed"] };
-  }
+    const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
+    if (policy.mode !== "off_hours" && ctx.magicLinkGranted && ctx.magicLink && GRANTED_LINK_REFUSAL_RE.test(finalText)) {
+      // Cut the contradicting sentence, keep the rest. Replacing the WHOLE reply threw
+      // away real operational facts that happen to contain the same words: "жеткізу
+      // жұмыс істемей тұр, өзіңіз алып кетсеңіз болады" became "тапсырыс беруге
+      // болады", telling the guest they could order delivery (found 2026-08-22).
+      const kept = finalText
+        .split(/(?<=[.!?\u2026])\s+|\n+/)
+        .filter((sentence) => sentence.trim() && !GRANTED_LINK_REFUSAL_RE.test(sentence))
+        .join(" ")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      finalText = kept || (ctx.language === "kk"
+        ? "Тапсырыс беруге болады - мәзірді бөлек хатпен жібердім, осы арқылы кіріп қойсаңыз болғаны."
+        : "Можно оформить заказ - отправил меню отдельным сообщением, зайдите и выберите.");
+      validation = { ...validation, warnings: [...validation.warnings, "granted_link_refusal_clause_removed"] };
+    }
 
-  return {
-    text: finalText,
-    hasLink: Boolean(ctx.magicLinkGranted && ctx.magicLink),
-    link: ctx.magicLink,
-    rawText: result.text,
-    usage: result.usage,
-    finishReason: result.finishReason,
-    toolPlan,
-    // The union of both passes, de-duplicated by name+arguments: the caller uses
-    // this to decide whether the escalate tool already handled this episode, and
-    // that must not depend on which pass happened to be the last one.
-    toolCalls: mergeToolCalls(groundedCalls, mergeToolCalls(firstPassToolCalls, extractToolCalls(result))),
-    validationWarnings: validation.warnings,
-    thinking,
-    critic,
-  };
+    return {
+      text: finalText,
+      hasLink: Boolean(ctx.magicLinkGranted && ctx.magicLink),
+      link: ctx.magicLink,
+      rawText: result.text,
+      usage: result.usage,
+      finishReason: result.finishReason,
+      toolPlan,
+      // The union of both passes, de-duplicated by name+arguments: the caller uses
+      // this to decide whether the escalate tool already handled this episode, and
+      // that must not depend on which pass happened to be the last one.
+      toolCalls: mergeToolCalls(groundedCalls, mergeToolCalls(firstPassToolCalls, extractToolCalls(result))),
+      validationWarnings: validation.warnings,
+      thinking,
+      critic,
+    };
+  } finally {
+    thinkingState.close();
+  }
 }

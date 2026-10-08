@@ -1,4 +1,5 @@
 import type { FastFoodContext } from "./types.js";
+import { getMenuBudgetInquiry, isMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { matchingNoteIds, menuItemBlockedByNotes, menuVocabulary, publicNoteConstraints } from "../services/noteProvenance.service.js";
 import { classifyKitchenSalesPolicyForContext, extractOperatorWaitNotice, formatKitchenWait } from "../services/kitchenPolicy.service.js";
 import { planResponse, readCustomerStyle } from "../services/responsePlan.service.js";
@@ -185,7 +186,7 @@ function customerMemory(ctx: FastFoodContext) {
  * priority stop depending on a lucky first token. Facts still come only from
  * tools and FACTS_CONTEXT.
  */
-function turnAnalysis(ctx: FastFoodContext) {
+export function turnAnalysis(ctx: FastFoodContext) {
   const thinking = ctx.thinking || null;
   if (!thinking) return null;
   return {
@@ -452,6 +453,15 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
       {
         now_iso: new Date().toISOString(),
         mandatory_constraints: mandatoryConstraints(ctx),
+        current_food_budget: isMenuBudgetInquiry(ctx.text) ? {
+          ceiling_amount: getMenuBudgetInquiry(ctx.text),
+          currency: "KZT",
+          origin: "current_customer_turn",
+          checkout_authority: false,
+          rule: getMenuBudgetInquiry(ctx.text) === null
+            ? "The current food budget amount is unknown. Ask for amount clarification before affordability claims; never infer it from history or bank balance. Preserve independently requested actions and safety."
+            : "Each proposed food choice must fit this ceiling separately. Current menu, availability, shift notes and allergy safeguards remain authoritative. Preserve independently requested actions; this budget grants no checkout authority.",
+        } : null,
         // The same instruction used to be repeated across five separate keys
         // (lang, language, language_enforcement, language_policy,
         // language_persistence). Five shouted copies of one rule crowded out the

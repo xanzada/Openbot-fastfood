@@ -1209,7 +1209,12 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   if (budget === null) return null;
   const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
   // A budget answer must not replace another current requested answer/action.
-  if (/(?:оператор|админ|жалоб|шағым|шагым|отрав|ақша|акша|возврат|вернит|оплат|төлем|толем|чек|заказ|тапсырыс|состав|құрам|курам|ингредиент|кухн|асүй|ас\s?үй)/iu.test(current)) return null;
+  const requestedAction = current.replace(/(?<!\p{L})бас[қк]а\s+а[қк]шам\s+жо[қк](?!\p{L})/giu, "");
+  if (/(?:оператор|админ|жалоб|шағым|шагым|отрав|ақша|акша|возврат|вернит|оплат|төлем|толем|чек|состав|құрам|курам|ингредиент|кухн|асүй|ас\s?үй)/iu.test(requestedAction)) return null;
+  if (/(?<!\p{L})закажи(?:те)?(?!\p{L})|(?:тапсырыс|заказ)\p{L}*\s+(?:жаса|бер)(?:ңыз|ныз|іңіз|иниз|ңдар|ндар|іңдер|индер)?(?!\p{L})/iu.test(current)) return null;
+  // Generic pre-order exploration can need budget advice; specific order actions keep their own flow.
+  if (isCustomerOrderStatusQuestion(current)
+    || /(?:оформ\p{L}*|созда\p{L}*|измен\p{L}*|отмен\p{L}*|добав\p{L}*|удал\p{L}*)[^.!?]{0,40}(?:заказ|тапсырыс)|(?:заказ|тапсырыс)\p{L}*[^.!?]{0,40}(?:оформ|созда|измен|отмен|рәсімде|расимде|өзгерт|озгерт|болдырма|жой|жасаңыз|жасаныз|беріңіз|бериниз)/iu.test(current)) return null;
   const drinksOnly = /(?:напит|попить|пить|сусын|ішетін|ишетин)/iu.test(current);
   const nearestUser = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-6)
     .filter((row: any) => row?.role === "user")

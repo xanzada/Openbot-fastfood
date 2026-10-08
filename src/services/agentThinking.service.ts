@@ -94,14 +94,28 @@ function thinkModel() {
   return getAnalysisModel();
 }
 
-async function generateWithTimeout(model: any, args: Record<string, any>, timeoutMs: number) {
-  const { generateText } = await import("ai");
-  return await Promise.race([
-    generateText({ model, temperature: 0, ...args } as any),
-    new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error(`THINK_TIMEOUT:${timeoutMs}ms`)), timeoutMs)
-    ),
-  ]);
+export async function generateWithTimeout(
+  model: any, args: Record<string, any>, timeoutMs: number,
+  injectedGenerate?: (options: any) => Promise<any>,
+) {
+  const generateText = injectedGenerate || (await import("ai")).generateText;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error("THINK_TIMEOUT:" + timeoutMs + "ms"));
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    const generation = Promise.resolve().then(() =>
+      generateText({ model, temperature: 0, ...args, abortSignal: controller.signal } as any));
+    // The remote implementation may settle after local cancellation.
+    void generation.catch(() => {});
+    return await Promise.race([generation, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 const THINK_SYSTEM_PROMPT = `You are the silent pre-analysis layer of a fast-food WhatsApp service agent.
