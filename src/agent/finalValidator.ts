@@ -1,6 +1,7 @@
 import {isMenuAttributeVerificationQuestion, customerMenuRelationSubject} from "../utils/menuQuestionContext.js";
 import {shoppingConstraintsForContext, eligibleShoppingItems, isShoppingDecision, shoppingBasketQuote, type ShoppingItem} from "../services/shoppingConstraints.service.js";
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
+import {detectKitchenConsentAnswer} from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { activeOrderQuestionKind, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
@@ -24,7 +25,7 @@ const ORDER_STATUS_RE =
 // so the kitchen guard now demands an explicit kitchen subject next to the
 // claim. Otherwise a correct answer got replaced by the canned kitchen line.
 const KITCHEN_STATUS_RE =
-  /(асүй|ас\s?үй|кухн|kitchen)[^.!?\n]{0,40}?(дайын|әзір|жұмыс|ашық|жабық|бос|істе|готов|работа|открыт|закрыт|загружен|busy|closed|open)/iu;
+  /(асүй|ас\s?үй|асхан\p{L}*|кухн\p{L}*|kitchen)[^.!?\n]{0,40}?(дайын|әзір|жұмыс|ашық|жабық|бос|істе|готов|работа|открыт|закрыт|загружен|busy|closed|open)/iu;
 const KAZAKH_SPECIFIC_RE = /[әғқңөұүһіӘҒҚҢӨҰҮҺІ]/u;
 // JavaScript's \\b is ASCII-based and misses Cyrillic boundaries, so the old
 // detector silently accepted a fully Russian answer in a Kazakh conversation.
@@ -213,18 +214,26 @@ function orderStateClaimMatches(sentence: string, evidence: any, ctx: FastFoodCo
 const ACTION_NOT_DONE_RE = /(?:не\s+(?:получил|получили|получено)\s+подтвержден\p{L}*|(?:нет|не\s+было)\s+подтвержден\p{L}*|не\s+могу\s+подтвердить|не\s+(?:принят|подтвержд|оформлен|оформил|готов|уведомл|извещ|передал|отправил|сообщил)|(?:қабылдан|хабарлан|хабардар|дайын)[^.!?]{0,15}(?:жоқ|емес))/iu;
 
 function actionAssertionClauses(sentence:string):string[] {
-  return sentence.replace(/о\s+том,\s*что/giu,"о том что")
-    .replace(/(подтвердить|подтвержден\p{L}*),\s*(?=что(?!\p{L}))/giu,"$1 ")
-    .split(/,(?!\s*(?:когда|как\s+только|после)(?!\p{L}))|;|\s+(?:но|бірақ|однако|зато|а)\s+/iu)
-    .flatMap(clause=>{
-      // A denial governs its explicit "что" complement, but cannot authorize
-      // a separately coordinated human-action assertion.
-      const governed=ACTION_NOT_DONE_RE.test(clause)
-        && /(?:подтвержден\p{L}*|подтвердить)\s+(?:о\s+том\s+)?что(?!\p{L})/iu.test(clause);
-      return governed?[clause]:clause.split(/\s+(?:и|және)\s+(?=(?:оператор|администратор|админ|әкімш\p{L}*)(?!\p{L}))/iu);
-    });
+  // Protect only grammatical complements of an uncertainty governor. Keep
+  // original commas in surviving clauses; an independent action remains split.
+  const governedCommas=new Set<number>();
+  for(const match of sentence.matchAll(/(?:о\s+том|подтвердить|подтвержден\p{L}*),\s*(?=что(?!\p{L})|когда(?!\p{L})|(?:\p{L}+\s+){1,3}ли(?!\p{L}))/giu))
+    governedCommas.add(match.index!+match[0].indexOf(","));
+  for(const match of sentence.matchAll(/,\s*(?:кажется|похоже|вероятно|возможно)\s*,/giu)){
+    governedCommas.add(match.index!);governedCommas.add(match.index!+match[0].lastIndexOf(","));
+  }
+  const clauses:string[]=[];let start=0;
+  for(const match of sentence.matchAll(/,(?!\s*(?:когда|как\s+только|после)(?!\p{L}))|;|\s+(?:но|бірақ|однако|зато|а)\s+/giu)){
+    if(match[0]===","&&governedCommas.has(match.index!))continue;
+    clauses.push(sentence.slice(start,match.index));start=match.index!+match[0].length;
+  }
+  clauses.push(sentence.slice(start));
+  return clauses.flatMap(clause=>{
+    const governed=ACTION_NOT_DONE_RE.test(clause)
+      && /(?:подтвержден\p{L}*|подтвердить)\s*,?\s+(?:о\s+том,?\s+)?что(?!\p{L})/iu.test(clause);
+    return governed?[clause]:clause.split(/\s+(?:и|және)\s+(?=(?:оператор|администратор|админ|әкімш\p{L}*)(?!\p{L}))/iu);
+  });
 }
-
 function isActionAssertion(value: string, pattern: RegExp | ((sentence: string) => boolean), ctx?: FastFoodContext) {
   const unquoted = value.replace(/«([^»]*)»|“([^”]*)”|"([^"]*)"/gu, (_whole,a,b,c) => {
     const inner=String(a??b??c??"");
@@ -1072,14 +1081,20 @@ function validateFinalTextCore(
   if (!ctx.runtimeStatus || ctx.runtimeStatus.runtime_available === false || ctx.hardRealtimeContext?.stale) {
     if (ctx.runtimeStatus?.runtime_available === false) {
       const before=text;
-      const unknownRuntime=(sentence:string)=>isActionAssertion(sentence, KITCHEN_STATUS_RE)
+      const unknownRuntime=(sentence:string)=>isActionAssertion(sentence, (clause:string)=>KITCHEN_STATUS_RE.test(clause)
+        &&!nonCurrentFactAssertion(clause)
+        &&!(ctx.config?.work_hours&&/(?:график|расписани|кесте)/iu.test(clause)&&/\d{1,2}(?::\d{2})?/.test(clause)&&!/(?:сейчас|қазір|значит|демек)/iu.test(clause)))
         || isActionAssertion(sentence, /(?:заказы|тапсырыстар)[^.!?]{0,35}(?:принима|қабылд)|(?:күту\s+уақыты|время\s+ожидания|күту)[^.!?]{0,30}\d+\s*(?:минут|мин|сағат)|без\s+ожидания|(?:ждать|ожидани\p{L}*)[^.!?]{0,35}(?:не\s+требуется|не\s+нужно|не\s+надо)|күту\p{L}*[^.!?]{0,35}(?:қажет\p{L}*\s+(?:жоқ|емес)|керек\s+емес)/iu);
-      const units=text.match(SENTENCE_RE)||[text];const kept=units.filter(sentence=>!unknownRuntime(sentence));
-      if(kept.length!==units.length)text=kept.map(sentence=>sentence.trim()).join(" ").trim();
+      if(unknownRuntime(text))text=removeUnsupportedActionClauses(text,unknownRuntime);
       if(text!==before){
         warnings.push("unsupported_kitchen_claim_clause_removed");
         if(text&&/(?:ждать|ожидан|күту|қанша|белгісіз|неизвест|подтвержден|расталған)/iu.test(ctx.text))
           text=(ctx.language==="kk"?"Асүйдің жұмысын және күту уақытын қазір растай алмаймын.":"Работу кухни и время ожидания сейчас подтвердить не могу.")+" "+text;
+      }
+      const menuReply=mixedMenuAvailabilityReply(ctx,grounding?.toolsCalled||[]);
+      if(menuReply&&!namedMenuItems(ctx,text).length){
+        text=dropSentencesMatching(text,/(?:мәзір[^.!?]{0,40}тексерсем\s*бе|(?:проверить|посмотреть)[^.!?]{0,30}меню[^.!?]{0,10}\?)/iu);
+        text=[text||runtimeUnavailableText(ctx),menuReply].join(" ");
       }
       if(!text)return {text:runtimeUnavailableText(ctx),hasLink:false,warnings:[...warnings,"unsupported_kitchen_claim"]};
     }
@@ -1379,15 +1394,49 @@ import {
   manualCancellationBoundaryText,
 } from "../services/orderAuthority.service.js";
 
-/** A failed language rewrite retains a verified answer instead of a generic closing. */
-export function groundedReplyFallback(ctx:FastFoodContext,toolsCalled:string[]=[],runtime:any=null):string|null {
- if(!/(?:сколько\s+ждать|как\s+долго|қанша\s+күту|күту\s+уақыты)/iu.test(ctx.text))return null;
+function mixedMenuAvailabilityReply(ctx:FastFoodContext,toolsCalled:string[]):string|null {
+ const current=String(ctx.text||"").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu,"");
+ if(!/(?:что\s+(?:есть|доступно)|какие\s+(?:блюда|позиции)|не\s+бар(?:ын)?|қандай\s+(?:тағам|ас))/iu.test(current)
+   || /не\s+(?:нужно|надо|показыв\p{L}*|рассказыв\p{L}*)|мәзір\p{L}*[^.!?]{0,20}(?:керек\s+емес|қажет\s+емес)/iu.test(current))return null;
+ const snapshot=ctx.menuSnapshot, catalog=ctx.menuGrounding;
+ const unknown=ctx.language==="kk"?"Мәзірде не қолжетімді екенін қазір растай алмаймын.":"Что сейчас доступно в меню, подтвердить не могу.";
+ // Operational runtime staleness does not invalidate independently current menu facts.
+ const catalogStale=Boolean(catalog?.stale||catalog?.is_stale||catalog?.stale_menu_backup
+   ||/stale|backup|fallback/.test(String(catalog?.source||""))||/stale|backup|fallback/.test(String(snapshot?.source||"")));
+ if(!snapshot||snapshot.source==="menu_unavailable"||catalog?.menu_lookup==="unavailable"||catalog?.error||catalogStale
+   ||(!catalog&&!toolsCalled.includes("searchMenu"))||!Array.isArray(ctx.activeShiftNotes))return unknown;
+ const items=Array.isArray(catalog?.items)&&catalog.items.length?catalog.items:snapshot.items;
+ if(!Array.isArray(items))return unknown;
+ const blocked=[...(catalog?.unavailable_now||[]),...(catalog?.sold_out_now||[])];
+ const vocabulary=menuVocabulary(items);
+ const names=eligibleShoppingItems(ctx,items).filter((item:any)=>item?.available===true&&typeof item.name==="string"&&item.name.trim()
+   &&!menuItemBlockedByNotes(ctx.activeShiftNotes,item,vocabulary).blocked
+   &&!blocked.some((entry:any)=>menuClaimKey(entry?.name??entry)===menuClaimKey(item.name)))
+   .slice(0,4).map((item:any)=>item.name.trim().replace(/\s+/g," "));
+ if(!names.length)return unknown;
+ return ctx.language==="kk"?"Қазіргі мәзірде қолжетімді деп көрсетілген: "+names.join("; ")+".":"В текущем каталоге отмечены доступными: "+names.join("; ")+".";
+}
+/** A failed language rewrite retains verified facts and current expressed intent. */
+export function groundedReplyFallback(ctx:FastFoodContext,toolsCalled:string[]=[],runtime:any=null,linkOutcome:any=undefined):string|null {
+ const current=String(ctx.text||"").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu,"");
+ const consent=detectKitchenConsentAnswer(current)==="yes"&&/(?:ждать|подожд|күт\p{L}*)/iu.test(current)
+   &&!/(?:не\s+соглас\p{L}*|не\s+готов\p{L}*|(?:күтуге|күтемін)[^.!?]{0,20}(?:емес|жоқ)|күтпеймін)/iu.test(current);
+ if(!consent&&!/(?:сколько\s+ждать|как\s+долго|қанша\s+күту|күту\s+уақыты)/iu.test(current))return null;
  const unknown=ctx.language==="kk"?"Күту уақытын қазір растай алмаймын.":"Время ожидания сейчас подтвердить не могу.";
- if(!toolsCalled.includes("getKitchenStatus")||!runtime||runtime.runtime_available!==true||runtime.live!==true||runtime.is_last_known===true
-   ||runtime.stale_runtime_backup||runtime.redis_runtime_fallback||/backup|stale|fallback/.test(String(runtime.source||"")))return unknown;
- const raw=runtime.wait_time??runtime.kitchen_status?.wait_time;const minutes=Number(raw);
- if(raw===null||raw===undefined||!Number.isFinite(minutes)||minutes<0||minutes>1440)return unknown;
- return ctx.language==="kk"?"Қазіргі шамамен күту уақыты — "+minutes+" минут.":"Сейчас ориентировочное ожидание — "+minutes+" минут.";
+ let wait=unknown;
+ if(toolsCalled.includes("getKitchenStatus")&&runtime?.runtime_available===true&&runtime.live===true&&runtime.is_last_known!==true
+   &&!runtime.stale_runtime_backup&&!runtime.redis_runtime_fallback&&!/backup|stale|fallback/.test(String(runtime.source||""))){
+  const raw=runtime.wait_time??runtime.kitchen_status?.wait_time;const minutes=Number(raw);
+  if(raw!==null&&raw!==undefined&&Number.isFinite(minutes)&&minutes>=0&&minutes<=1440)
+   wait=ctx.language==="kk"?"Қазіргі шамамен күту уақыты — "+minutes+" минут.":"Сейчас ориентировочное ожидание — "+minutes+" минут.";
+ }
+ if(!consent)return wait;
+ const acknowledged=ctx.language==="kk"?"Күтуге дайын екеніңізді түсіндім.":"Понимаю вашу готовность ждать.";
+ const granted=linkOutcome?.allowed===true&&ctx.magicLinkGranted===true&&Boolean(ctx.magicLink)&&typeof linkOutcome.link==="string"&&linkOutcome.link===ctx.magicLink;
+ const next=granted
+  ?ctx.language==="kk"?"Рәсімдеу сілтемесі бөлек хабарламамен жіберіледі.":"Ссылка для оформления будет отправлена отдельным сообщением."
+  :ctx.language==="kk"?"Рәсімдеу сілтемесін қазір растай алмаймын. Тапсырысты жалғастырғыңыз келсе, сілтемені сұраңыз.":"Ссылку для оформления сейчас подтвердить не могу. Если хотите продолжить оформление, попросите ссылку.";
+ return acknowledged+" "+wait+" "+next;
 }
 export { fallbackReply };
 

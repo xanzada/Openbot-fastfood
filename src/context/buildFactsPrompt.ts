@@ -299,8 +299,9 @@ function operationalRuntime(ctx: FastFoodContext) {
     // when the wait is zero. A wait the policy still calls normal is an estimate,
     // not an alarm: calling a 30-minute queue "loaded" talked guests out of
     // ordering for no reason.
+    mixed_fact_answer_rule: "Answer each requested fact separately. Current verified catalog/menu availability stays useful when operational runtime is unknown: honor notes and stock, name only supported available items, and separately state unknown kitchen/wait facts. If catalog data is unavailable or stale, read it using existing read-only tools or state that uncertainty. Do not ask permission to read menu facts the customer already requested. Empty notes cannot establish operational status.",
     timing_answer_rule: runtimeUnknown
-      ? "Current kitchen state and waiting time are unknown. Successful fresh getKitchenStatus is required before any operational timing claim; defaults are not evidence."
+      ? "Current kitchen state and waiting time are unknown. Successful fresh getKitchenStatus is required before any operational timing claim; defaults, empty notes or absence of special instructions never prove that the kitchen is open or closed."
       : policy.requiresConsent
       ? "If the customer asks how long, say the kitchen is loaded and name the wait out loud, then say you will write the moment it is ready. Never answer that you have no information."
       : effectiveWait > 0

@@ -472,3 +472,89 @@ test("candidate04 genuine known zero and honest unknown wait statements retain c
  c.runtimeStatus.runtime_available=false;const denied="Овощной ролл — 2000 тг. Время ожидания сейчас подтвердить не могу.";
  assert.equal(validateFinalText(denied,c,grounded).text,denied);
 });
+
+const candidate05UnknownDraft="Кешіріңіз, бірақ мен асхананың қазіргі күйін немесе күту уақытын тексере алмаймын. Дегенмен, арнайы нұсқаулар жоқ, демек, асхана ашық сияқты. Сізге қандай тағамдар ұсынылғанын білу үшін мәзірді тексерсем бе?";
+function candidate05UnknownContext(language="kk"){
+ const c=context(language==="kk"?"Не барын және қанша күту керегін түсінбедім. Деректерді тексеріп, ненің расталғанын, ненің белгісіз екенін айтыңыз.":"Что доступно и сколько ждать? Укажите подтверждённое и неизвестное.",language);
+ c.runtimeStatus={runtime_available:false,is_accepting_orders:true,within_work_hours:true,wait_time:0};
+ c.fetchedSettings={wait_time:0};return c;
+}
+test("candidate05 exact mixed unknown-runtime answer retains catalog facts without inferred openness",()=>{
+ const c=candidate05UnknownContext();const r=validateFinalText(candidate05UnknownDraft,c,{toolsCalled:["getKitchenStatus","getShiftNotes"]});
+ assert.ok(r.warnings.includes("unsupported_kitchen_claim_clause_removed"));
+ assert.doesNotMatch(r.text,/асхана ашық сияқты/u);assert.match(r.text,/Донер/u);assert.match(r.text,/растай алмай|тексере алмай|белгісіз/u);
+ assert.doesNotMatch(r.text,/0 минут|күту(?:ден)? қажеттілік жоқ/u);
+});
+test("candidate05 hedged unknown kitchen closure is not established by absent notes",()=>{
+ const c=candidate05UnknownContext();const r=validateFinalText("Арнайы нұсқаулар жоқ, демек, асхана жабық сияқты.",c,{toolsCalled:["getKitchenStatus","getShiftNotes"]});
+ assert.doesNotMatch(r.text,/асхана жабық сияқты/u);assert.ok(r.warnings.some(x=>x.includes("unsupported_kitchen")));
+ const ru=candidate05UnknownContext("ru");const s=validateFinalText("Нет особых инструкций, поэтому кухня, кажется, открыта. Донер — 1990 тг.",ru,{toolsCalled:["getKitchenStatus","getShiftNotes","searchMenu"]});
+ assert.doesNotMatch(s.text,/кухня.*открыта/u);assert.match(s.text,/Донер/u);assert.match(s.text,/1990/u);
+});
+test("candidate05 live known kitchen states and real zero remain valid",()=>{
+ for(const [open,draft] of [[true,"Асхана ашық."],[false,"Асхана жабық."]] as const){
+  const c=context("Асхана ашық па?","kk");c.runtimeStatus.is_accepting_orders=open;c.runtimeStatus.within_work_hours=open;
+  assert.equal(validateFinalText(draft,c,{toolsCalled:["getKitchenStatus"]}).text,draft);
+ }
+ const c=context("Сколько ждать?");assert.equal(validateFinalText("Время ожидания — 0 минут.",c,{toolsCalled:["getKitchenStatus"]}).text,"Время ожидания — 0 минут.");
+});
+test("candidate05 configured schedule is not an unknown live kitchen status",()=>{
+ const c=candidate05UnknownContext("ru");c.config.work_hours="10:00-22:00";
+ const draft="По графику кухня работает с 10:00 до 22:00. Текущий статус кухни подтвердить не могу.";
+ const result=validateFinalText(draft,c,{toolsCalled:["getBusinessInfo","getKitchenStatus"]});assert.ok(result.text.startsWith(draft));
+ assert.doesNotMatch(validateFinalText("По графику работаем с 10:00 до 22:00, значит сейчас кухня открыта.",c,{toolsCalled:["getBusinessInfo"]}).text,/значит сейчас кухня открыта/u);
+});
+test("candidate05 explicit kitchen uncertainty and question do not become a positive assertion",()=>{
+ const c=context("Қазір асхана ашық па?","kk");c.runtimeStatus.runtime_available=false;
+ for(const draft of ["Асхана ашық па?","Асхана ашық екенін растай алмаймын."]){
+  assert.equal(validateFinalText(draft,c,{toolsCalled:["getKitchenStatus"]}).text,draft);
+ }
+});
+test("candidate05 mixed availability answer excludes blocked and explicitly unavailable items",()=>{
+ const c=candidate05UnknownContext("ru");
+ c.activeShiftNotes=[{id:"block-doner",text:"Донер временно недоступен",active:true,is_active:true}];
+ c.menuSnapshot.items=[{name:"Донер",price:1990,composition:"Курица",available:true},{name:"Овощной ролл",price:2000,composition:"Рис",available:true},{name:"Суши сет",price:3200,composition:"Рыба",available:false}];
+ c.menuGrounding={items:c.menuSnapshot.items,unavailable_now:["Донер"],sold_out_now:[]};
+ const r=validateFinalText("Нет ограничений, поэтому кухня открыта.",c,{toolsCalled:["getKitchenStatus","getShiftNotes"]});
+ assert.match(r.text,/Овощной ролл/u);assert.doesNotMatch(r.text,/Донер|Суши сет/u);
+});
+test("candidate05 failed or stale catalog does not become a verified availability fallback",()=>{
+ for(const stale of [false,true]){
+  const c=candidate05UnknownContext("ru");c.menuGrounding={items:c.menuSnapshot.items,menu_lookup:"unavailable"};c.hardRealtimeContext.stale=stale;
+  const r=validateFinalText("Нет ограничений, поэтому кухня открыта.",c,{toolsCalled:["getKitchenStatus"]});
+  assert.doesNotMatch(r.text,/Донер|1990|доступн.*ролл/u);assert.match(r.text,/подтверд|не могу|неизвест/iu);
+ }
+});
+test("candidate05 unknown-runtime prompt separates catalog facts from empty notes and asks no redundant permission",()=>{
+ const c=candidate05UnknownContext();const facts=JSON.parse(buildFactsPrompt(c).replace(/^FACTS_CONTEXT_START\s*/u,"").replace(/\s*FACTS_CONTEXT_END$/u,""));
+ assert.equal(facts.operational_runtime.wait_time,null);assert.equal(facts.operational_runtime.runtime_available,false);
+ assert.match(facts.operational_runtime.timing_answer_rule,/notes|instructions/u);
+ assert.match(facts.operational_runtime.mixed_fact_answer_rule,/catalog|menu/u);assert.match(facts.operational_runtime.mixed_fact_answer_rule,/unknown/u);
+ assert.equal(facts.menu_snapshot.items.length,c.menuSnapshot.items.length);
+});
+test("candidate05 original indirect human denial keeps its complete dependent clause",()=>{
+ const c=context("Пока оператор не ответил, что известно точно?");
+ const draft="Мы создали заявку на соединение с живым оператором по вашей проблеме. К сожалению, я не могу подтвердить, ответил ли оператор уже или когда именно он свяжется с вами. Спасибо за ваше терпение!";
+ const r=validateFinalText(draft,c,{toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}});
+ assert.equal(r.text,draft);assert.ok(!r.warnings.includes("unverified_human_action_removed"));
+});
+test("candidate05 indirect human uncertainty never shields an independent promised ETA",()=>{
+ const c=context("Оператор ответил?");const r=validateFinalText("Я не могу подтвердить, ответил ли оператор уже. Но оператор скоро свяжется с вами.",c,{toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}});
+ assert.match(r.text,/не могу подтвердить, ответил ли оператор уже/u);assert.doesNotMatch(r.text,/скоро свяжется/u);
+ const s=validateFinalText("Я не могу подтвердить, ответил ли оператор, и оператор скоро свяжется с вами.",c,{toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}});
+ assert.doesNotMatch(s.text,/оператор скоро свяжется/u);assert.match(s.text,/не могу подтвердить/u);
+});
+
+test("candidate05 fresh catalog survives operational staleness while stale catalog stays unknown",()=>{
+ const c=candidate05UnknownContext("ru");c.runtimeStatus.stale=true;c.hardRealtimeContext.stale=true;
+ c.menuSnapshot.source="menu_live";c.menuGrounding.source="catalog.context.get";
+ const r=validateFinalText("Статус кухни подтвердить не могу.",c,{toolsCalled:["getKitchenStatus","getShiftNotes"]});
+ assert.match(r.text,/Донер/u);assert.match(r.text,/Овощной ролл/u);assert.match(r.text,/подтвердить не могу/u);
+ assert.doesNotMatch(r.text,/0 минут|кухня открыта/u);
+ for(const mark of [{stale:true},{is_stale:true},{source:"menu_stale_backup"},{menu_lookup:"unavailable"}]){
+  const s=candidate05UnknownContext("ru");s.menuSnapshot.source="menu_live";s.menuGrounding={...s.menuGrounding,...mark};
+  const denied=validateFinalText("Статус кухни подтвердить не могу.",s,{toolsCalled:["getKitchenStatus"]});
+  assert.doesNotMatch(denied.text,/Донер|Овощной ролл|1990|2000/u);
+  assert.match(denied.text,/подтверд|не могу|неизвест/iu);
+ }
+});

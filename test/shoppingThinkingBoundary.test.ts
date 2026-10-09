@@ -15,7 +15,7 @@ function fixture(text:string,constrained:boolean,mode="parallel",reject=false,dr
  const modules:any={
   "../utils/menuQuestionContext.js":{isMenuAttributeVerificationQuestion},
   "../services/shoppingConstraints.service.js":{refreshShoppingConstraints:async()=>{events.push("state");},needsShoppingPrepass},
-  "@voltagent/core":{Agent:class{instructions:string;constructor(opts:any){this.instructions=opts.instructions;}async generateText(_text:string,opts:any){calls++;events.push("response");const messages=[{role:"system",content:this.instructions}];const step=opts.prepareStep({stepNumber:0,messages});captured.push((step.messages||messages)[0].content);return{text:drafts[Math.min(calls-1,drafts.length-1)],steps:options.steps||[]};}},stepCountIs:()=>()=>false},
+  "@voltagent/core":{Agent:class{instructions:string;constructor(opts:any){this.instructions=opts.instructions;}async generateText(_text:string,opts:any){calls++;events.push("response");const messages=[{role:"system",content:this.instructions}];const step=opts.prepareStep({stepNumber:0,messages});captured.push((step.messages||messages)[0].content);return{text:drafts[Math.min(calls-1,drafts.length-1)],steps:options.stepResults?.[calls-1]||options.steps||[]};}},stepCountIs:()=>()=>false},
   "../skills/index.js":{createFastFoodSkills:()=>[]},
   "../services/agentThinking.service.js":{analyzeTurnSituation:async(c:any)=>{events.push("think_start");assert.equal(shoppingEvidence(c)?.checkout_authority??false,false);await Promise.resolve();if(reject){events.push("think_error");throw Error("SYNTHETIC");}events.push("think_complete");return analysis;},critiqueDraftReply:async()=>{if(!highRisk)throw Error("EXTRA_MODEL_FORBIDDEN");critics++;return{ok:false,issues:criticIssues,fix_hint:criticFix};}},
   "./finalValidator.js":{validateFinalText:(text:string)=>({text,warnings:[]}),fallbackReply:()=>"safe",groundedReplyFallback:(actualValidator as any).groundedReplyFallback,replyLanguageMismatch},
@@ -98,4 +98,52 @@ test("candidate04 successful language rewrite retains truthful wait without anot
  const draft="Кешіріңіз, асханада күту уақыты - 1 сағат. Сіз күтуге дайынсыз ба?";
  const f=fixture("Сколько ждать?",false,"off",false,[draft,"Сейчас ориентировочное ожидание — 60 минут."],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}}});
  const r=await f.run();assert.equal(f.calls(),2);assert.equal(r.text,"Сейчас ориентировочное ожидание — 60 минут.");
+});
+
+const candidate05ConsentDraft="Кешіріңіз, бірақ мен тапсырысты рәсімдеу үшін сілтеме жібере алмаймын. Дегенмен, мен барлық тапсырыс беруге мүмкіндік беретін ас мәзірімізді ұсынамын. Сіз қандай ас алғыңыз келеді? Мысалы, донер немесе овощной ролл.";
+function candidate05Steps(kitchen:any,link:any){
+ return [{toolCalls:[{toolName:"getKitchenStatus",input:{}},{toolName:"sendMenuLink",input:{}}],toolResults:[{toolName:"getKitchenStatus",output:kitchen},{toolName:"sendMenuLink",output:link}]}];
+}
+test("candidate05 actual explicit wait consent uses one rewrite then meaningful verified Russian fallback",async()=>{
+ const steps=candidate05Steps({runtime_available:true,live:true,wait_time:60},{allowed:false,link:null});
+ const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60},magicLinkGranted:false,kitchenCheckoutFingerprint:"actual-current-fingerprint"},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/60 минут/u);assert.match(r.text,/готов.*ждать|готовность ждать|соглас.*ждать/u);
+ assert.match(r.text,/ссылк|оформлен/u);assert.doesNotMatch(r.text,/Я на связи|техническ|согласие.*сохран|ссылк.*(?:отправлена|отправлю|получена)/u);
+ assert.ok(!replyLanguageMismatch(r.text,{language:"ru"} as any));assert.ok(r.validationWarnings.includes("reply_language_unresolved"));
+});
+test("candidate05 current successful link grant alone permits the consent fallback link promise",async()=>{
+ const steps=candidate05Steps({runtime_available:true,live:true,wait_time:60},{allowed:true,link:"https://fixture.invalid/order"});
+ const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60},magicLinkGranted:true,magicLink:"https://fixture.invalid/order"},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/60 минут/u);assert.match(r.text,/ссылк.*отдельн/iu);assert.doesNotMatch(r.text,/https?:/u);
+});
+test("candidate05 latest rejected or unknown link result never inherits a prior grant",async()=>{
+ for(const link of [{allowed:false,link:null},null]){
+  const steps=candidate05Steps({runtime_available:true,live:true,wait_time:60},link);
+  const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60},magicLinkGranted:true,magicLink:"https://fixture.invalid/old"},steps});
+  const r=await f.run();assert.equal(f.calls(),2);assert.doesNotMatch(r.text,/ссылк.*(?:отдельн|отправлена|отправлю)|https?:/iu);assert.match(r.text,/60 минут/u);
+ }
+});
+test("candidate05 expressed consent cannot turn unknown or last-known wait into confirmed60",async()=>{
+ for(const kitchen of [{runtime_available:false,live:false,wait_time:null},{runtime_available:true,live:false,is_last_known:true,wait_time:60}]){
+  const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps:candidate05Steps(kitchen,{allowed:false,link:null})});
+  const r=await f.run();assert.equal(f.calls(),2);assert.doesNotMatch(r.text,/60 минут|0 минут/u);assert.match(r.text,/подтверд|неизвест/u);
+ }
+});
+test("candidate05 refusal or quoted consent is not a current acceptance",async()=>{
+ for(const text of ["Я не согласен ждать 60 минут","Клиент написал «Я согласен ждать 60 минут»"]){
+  const f=fixture(text,false,"off",false,[candidate05ConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps:candidate05Steps({runtime_available:true,live:true,wait_time:60},{allowed:false,link:null})});
+  const r=await f.run();assert.equal(f.calls(),2);assert.doesNotMatch(r.text,/Вы (?:готовы|согласны)|готовность ждать|согласие.*принято/u);
+ }
+});
+test("candidate05 explicit Kazakh consent fallback preserves customer language and verified wait",async()=>{
+ const f=fixture("Мен 60 минут күтуге келісемін",false,"off",false,["If you have further questions, feel free to ask!"],false,[],"",{ctx:{language:"kk",runtimeStatus:{runtime_available:true,wait_time:60}},steps:candidate05Steps({runtime_available:true,live:true,wait_time:60},{allowed:false,link:null})});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/60 минут/u);assert.match(r.text,/күтуге.*дайын|күтуге.*келіс/iu);
+ assert.ok(!replyLanguageMismatch(r.text,{language:"kk"} as any));
+});
+
+test("candidate05 successful current-turn grant survives a later rewrite duplicate refusal",async()=>{
+ const first=candidate05Steps({runtime_available:true,live:true,wait_time:60},{allowed:true,link:"https://fixture.invalid/current"});
+ const second=candidate05Steps({runtime_available:true,live:true,wait_time:60},{allowed:false,link:null});
+ const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60},magicLinkGranted:true,magicLink:"https://fixture.invalid/current"},stepResults:[first,second]});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/60 минут/u);assert.match(r.text,/ссылк.*отдельн/iu);
 });

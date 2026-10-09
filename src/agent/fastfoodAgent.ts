@@ -70,12 +70,16 @@ function extractToolCalls(result: any) {
 // successful order lookup from an empty one: every "your order is on the way" guard was
 // unlocked by the call alone, so the reply the model is most confident about - the one
 // where the lookup found nothing - was the one that shipped (found 2026-08-22).
-function latestKitchenResult(result:any):any {
+function latestToolResult(result:any,toolName:string):any {
   let latest:any=undefined;
   for(const step of Array.isArray(result?.steps)?result.steps:[]){
     for(const entry of Array.isArray(step?.toolResults)?step.toolResults:[]){
-      if(String(entry?.toolName||entry?.name||"")==="getKitchenStatus")
-        latest=entry?.output??entry?.result??entry?.response??null;
+      if(String(entry?.toolName||entry?.name||"")===toolName){
+        const outcome=entry?.output??entry?.result??entry?.response??null;
+        // A current-turn success remains evidence after a duplicate refusal.
+        if(toolName==="sendMenuLink"&&latest?.allowed===true&&typeof latest.link==="string"&&outcome?.allowed!==true)continue;
+        latest=outcome;
+      }
     }
   }
   return latest;
@@ -239,7 +243,8 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     }
     // Kept separately because the critic can replace `result` below.
     let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
-    let kitchenResult=latestKitchenResult(result);
+    let kitchenResult=latestToolResult(result,"getKitchenStatus");
+    let linkResult=latestToolResult(result,"sendMenuLink");
     let validation = validateFinalText(result.text, ctx, {
       toolsCalled: mergeToolCalls(groundedCalls, extractToolCalls(result)).map((call: { name: string }) => call.name),
       toolFindings: extractToolFindings(result),
@@ -304,7 +309,9 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
         });
         const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
         if (regeneratedText) {
-          const latestKitchen=latestKitchenResult(regenerated);
+          const latestKitchen=latestToolResult(regenerated,"getKitchenStatus");
+          const latestLink=latestToolResult(regenerated,"sendMenuLink");
+          if(latestLink!==undefined&&(latestLink?.allowed===true||!(linkResult?.allowed===true&&typeof linkResult.link==="string")))linkResult=latestLink;
           if(latestKitchen!==undefined)kitchenResult=latestKitchen;
           firstPassToolCalls = extractToolCalls(result);
           result = regenerated;
@@ -322,7 +329,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     }
 
     if(replyLanguageMismatch(finalText,ctx)){
-      finalText=groundedReplyFallback(ctx,mergeToolCalls(groundedCalls,mergeToolCalls(firstPassToolCalls,extractToolCalls(result))).map(call=>call.name),kitchenResult)||fallbackReply(ctx);
+      finalText=groundedReplyFallback(ctx,mergeToolCalls(groundedCalls,mergeToolCalls(firstPassToolCalls,extractToolCalls(result))).map(call=>call.name),kitchenResult,linkResult)||fallbackReply(ctx);
       validation={...validation,warnings:[...validation.warnings,"reply_language_unresolved"]};
     }
     // A promise the guest can see must be a promise the guest receives. Runs after every
