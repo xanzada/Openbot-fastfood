@@ -722,6 +722,33 @@ export function stripReasoningPreamble(text: string): { text: string; removed: b
   return { text: answer, removed: true };
 }
 
+
+/** Recover a guest answer only after unmistakable model response planning. */
+function stripResponsePlanning(text:string,ctx:FastFoodContext,toolsCalled:string[]):{text:string;removed:boolean} {
+ const raw=String(text||"");
+ // Quoted customer text is content, not authority to classify the response as planning.
+ const visible=raw.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu,span=>" ".repeat(span.length))
+  .replace(/https?:\/\/[^\s<>]+/giu,span=>" ".repeat(span.length));
+ const selfPlan=/\b(?:I\s+(?:should|must|will|can|need\s+to)\s+(?:use|call|present|list|state|follow|adhere|write|respond|answer|construct|compose|provide|check)|let['’]s\s+(?:construct|compose|write|answer|respond))\b/iu;
+ const machinery=/\b(?:FACTS_CONTEXT|reply_shape|searchMenu|checkOrderStatus|getKitchenStatus|getShiftNotes|sendMenuLink|tool|system\s+prompt)\b/iu;
+ if(!selfPlan.test(visible)||!machinery.test(visible))return {text:raw,removed:false};
+ // A Cyrillic quote or catalog preview in the planning block is not the answer.
+ // Walk past the LAST unquoted Latin narration, including a ".Қазір" boundary.
+ let lastNarrationEnd=0;
+ for(const match of raw.matchAll(/[^.!?\n]+[.!?]*\n?/gu)){
+  const unit=visible.slice(match.index!,match.index!+match[0].length);
+  const words=replyProse(unit,ctx).match(/[a-z]{2,}/giu)||[];
+  if(words.some(word=>!/^(?:kzt|kg|ml|qr)$/iu.test(word)))lastNarrationEnd=match.index!+match[0].length;
+ }
+ const tail=raw.slice(lastNarrationEnd).trim();
+ const body=textWithoutUrls(tail);
+ if(lastNarrationEnd>0&&/[\p{Script=Cyrillic}]/u.test(body)&&/[.!?…][»”")\]]*$/u.test(body)
+  &&!selfPlan.test(tail)&&!machinery.test(tail))return {text:tail,removed:true};
+ // If separation is uncertain, answer the same request from independently current facts.
+ return {text:mixedMenuAvailabilityReply(ctx,toolsCalled)??(ctx.language==="kk"
+  ?"Сұрағыңызға нақты жауапты қазір растай алмаймын.":"Сейчас не могу подтвердить ответ на ваш вопрос."),removed:true};
+}
+
 // Greeting handling lives in ./greeting.ts (fallback greets; a pure greeting is answered
 // in the guest's own form, without robotic stamps).
 const fallback = fallbackReply;
@@ -1007,6 +1034,8 @@ function validateFinalTextCore(
 
   // Before any other guard: a narrated "Silent Thought: ..." preamble is not part of the
   // answer, and leaving it in front meant every regex below measured the wrong sentence.
+  const planning = stripResponsePlanning(text,ctx,grounding?.toolsCalled||[]);
+  if(planning.removed){warnings.push("reasoning_preamble_removed");text=planning.text;}
   const preamble = stripReasoningPreamble(text);
   if (preamble.removed) {
     warnings.push("reasoning_preamble_removed");

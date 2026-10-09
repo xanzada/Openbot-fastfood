@@ -757,3 +757,60 @@ test("directcore07 valid absence cannot authorize an independent unsupported sta
  assert.doesNotMatch(r.text,/можно взять отдельно/u);
  assert.match(r.text,/нет напитков.*0,5|подтверд/iu);
 });
+
+const DIRECT_CORE08_ACTUAL_RAW="As the user is asking \"What food is available now?\", I should use the `searchMenu` tool to find out what dishes are currently available. The previous turn already shows that `searchMenu` was executed and returned a list of available dishes. Therefore, I should use the information from the `searchMenu` result provided in the `FACTS_CONTEXT`.\n\nThe `searchMenu` result contains the following available dishes:\n- Донер (Тауық еті, лаваш, қызанақ) - 1990 KZT\n- Көкөніс роллы (Күріш, қияр, сәбіз) - 2000 KZT\n- Донер комбо (Донер, картоп фри) - 2500 KZT\n- Суши сет (Күріш, балық) - 3200 KZT\n\nI need to present this information to the user in Kazakh, as per the `FACTS_CONTEXT.language`. I should list the dishes with their names and prices. I should also adhere to the `reply_shape` constraints: at most 2 short sentences, one short message, casual register, and sparing emoji.\n\nLet's construct the response.\nThe user asked \"Қазір қандай тағам бар?\" which translates to \"What food is available now?\".\nThe `searchMenu` result shows the following:\n- Донер, price 1990\n- Көкөніс роллы, price 2000\n- Донер комбо, price 2500\n- Суши сет, price 3200\n\nI can present these in two sentences.\n\nSentence 1: List some of the items.\n\"Қазір бізде донер (1990 тг), көкөніс роллы (2000 тг) және донер комбо (2500 тг) бар.\"\n(Now we have doner (1990 KZT), vegetable rolls (2000 KZT), and doner combo (2500 KZT).)\n\nSentence 2: Mention the remaining item.\n\"Сонымен қатар, суши сетті (3200 тг) де ұсынамыз.\"\n(Additionally, we also offer sushi set (3200 KZT).)\n\nThis fits the \"at most 2 short sentences\" and \"one short message\" constraint. The register is casual and respectful. No emoji is needed for this factual response.Қазір бізде донер (1990 тг), көкөніс роллы (2000 тг) және донер комбо (2500 тг) бар. Сонымен қатар, суши сетті (3200 тг) де ұсынамыз.";
+
+test("directcore08 actual unlabelled planning keeps the final grounded Kazakh answer beyond quoted drafts",()=>{
+ const c=context("Қазір қандай тағам бар?","kk");
+ const r=validateFinalText(DIRECT_CORE08_ACTUAL_RAW,c,grounded);
+ assert.doesNotMatch(r.text,/I should|I need|The user|previous turn|searchMenu|reply_shape|FACTS_CONTEXT|construct the response|Sentence 1|Sentence 2/iu);
+ assert.match(r.text,/Қазір|Қазіргі/u);assert.match(r.text,/донер|Донер/u);
+ assert.match(r.text,/1990/u);assert.match(r.text,/2000/u);assert.match(r.text,/2500/u);
+ // Available-food answer is nonexclusive; preserve existing conservative inflected-SKU price guard.
+ assert.ok(r.warnings.includes("reasoning_preamble_removed"));
+});
+test("directcore08 response planning variants and Cyrillic customer quotes do not become an answer boundary",()=>{
+ const c=context("Қазір қандай тағам бар?","kk");
+ for(const prefix of [
+  'The customer asked "Қазір қандай тағам бар?". I must present the searchMenu data. Draft: "Донер — 2500 тг." I need to follow reply_shape. ',
+  'Analysis: I should call searchMenu. The customer wrote "Қазір қандай тағам бар?". Draft: "Донер — 2500 тг." I will compose the final response. '
+ ]){
+  const r=validateFinalText(prefix+"Қазір Донер — 1990 тг.",c,grounded);
+  assert.doesNotMatch(r.text,/customer|searchMenu|reply_shape|Draft|Analysis|compose|2500/iu);
+  assert.match(r.text,/Донер.*1990/u);
+ }
+});
+test("directcore08 planning without complete guest tail uses only independently available current catalog",()=>{
+ const c=context("Қазір қандай тағам бар?","kk");
+ const r=validateFinalText('The customer asks what is available. I should use searchMenu and follow reply_shape. Draft: "Ойдан тағам — 9999 тг."',c,grounded);
+ assert.doesNotMatch(r.text,/customer|searchMenu|reply_shape|Draft|Ойдан|9999/iu);
+ assert.match(r.text,/Донер/u);assert.match(r.text,/Көкөніс роллы/u);
+});
+test("directcore08 no-current-catalog planning yields Cyrillic uncertainty without invented facts or effects",()=>{
+ const c=context("Қазір қандай тағам бар?","kk");c.menuSnapshot={source:"menu_unavailable",items:[]};c.menuGrounding={menu_lookup:"unavailable",items:[]};
+ const r=validateFinalText('The user asks for food. I should use searchMenu. I need to follow reply_shape.',c,grounded);
+ assert.doesNotMatch(r.text,/The user|I should|searchMenu|reply_shape|Донер|1990|жібер|https:/iu);
+ assert.match(r.text,/растай алмай/u);
+});
+test("directcore08 extracted guest tail still rejects unsupported price and ingredient facts",()=>{
+ const prefix="The customer wants a reply. I should present searchMenu facts. I need to follow reply_shape.";
+ const c=context("Донердің бағасы мен құрамы қандай?","kk");
+ const r=validateFinalText(prefix+"Донер — 2500 тг. Донердің құрамында күріш пен балық бар.",c,grounded);
+ assert.doesNotMatch(r.text,/2500|күріш пен балық/u);
+ assert.ok(r.warnings.includes("menu_price_mismatch_removed"));assert.ok(r.warnings.includes("unsupported_ingredient_claim_removed"));
+});
+test("directcore08 extracted guest tail cannot grant a link or prove a sent payment receipt",()=>{
+ const prefix="The customer asked about the order. I should use checkOrderStatus results. I need to construct the response.";
+ const c=candidate06OrderContext("Төлем расталды ма?","accepted");c.magicLink="https://example.test/order";c.magicLinkGranted=false;c.explicitMenuLinkIntent=false;
+ const r=validateFinalText(prefix+"Төлем чегі жіберілді. "+c.magicLink,c,candidate06OrderGrounding(c));
+ assert.doesNotMatch(r.text,/чегі жіберілді|https:\/\/example/u);
+ assert.ok(r.warnings.includes("unconfirmed_payment_receipt_removed"));
+});
+test("directcore08 legitimate quoted prose and known English SKU remain customer content",()=>{
+ const c=context("Қазір қандай тағам бар?","kk");
+ const quoted='Қонақ «I should list the dishes» деп жазды. Қазір Донер — 1990 тг.';
+ assert.equal(validateFinalText(quoted,c,grounded).text,quoted);
+ const named=context("Қазір қандай тағам бар?","kk");named.menuSnapshot.items=[...named.menuSnapshot.items,{name:"Green Bowl",price:2000,composition:"Күріш, қияр",available:true}];named.menuGrounding={...named.menuGrounding,items:named.menuSnapshot.items};
+ const raw="Қазір Green Bowl — 2000 тг.";
+ assert.equal(validateFinalText(raw,named,grounded).text,raw);
+});
