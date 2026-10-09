@@ -4,7 +4,7 @@ import { Agent, stepCountIs } from "@voltagent/core";
 import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
 import { analyzeTurnSituation, critiqueDraftReply, type DraftCritique, type TurnAnalysis } from "../services/agentThinking.service.js";
-import { fallbackReply, validateFinalText, replyLanguageMismatch, type ToolGroundingFindings } from "./finalValidator.js";
+import { fallbackReply, groundedReplyFallback, validateFinalText, replyLanguageMismatch, type ToolGroundingFindings } from "./finalValidator.js";
 import { readGuestGreeting } from "./greeting.js";
 import { buildAgentInstructions, composeReadyAnalysisStepPolicy, createTurnThinkingState } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
@@ -70,6 +70,17 @@ function extractToolCalls(result: any) {
 // successful order lookup from an empty one: every "your order is on the way" guard was
 // unlocked by the call alone, so the reply the model is most confident about - the one
 // where the lookup found nothing - was the one that shipped (found 2026-08-22).
+function latestKitchenResult(result:any):any {
+  let latest:any=undefined;
+  for(const step of Array.isArray(result?.steps)?result.steps:[]){
+    for(const entry of Array.isArray(step?.toolResults)?step.toolResults:[]){
+      if(String(entry?.toolName||entry?.name||"")==="getKitchenStatus")
+        latest=entry?.output??entry?.result??entry?.response??null;
+    }
+  }
+  return latest;
+}
+
 function extractToolFindings(result: any): ToolGroundingFindings {
   const steps = Array.isArray(result?.steps) ? result.steps : [];
   let sawLookup = false;
@@ -228,6 +239,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     }
     // Kept separately because the critic can replace `result` below.
     let firstPassToolCalls: { name: string; arguments: unknown }[] = [];
+    let kitchenResult=latestKitchenResult(result);
     let validation = validateFinalText(result.text, ctx, {
       toolsCalled: mergeToolCalls(groundedCalls, extractToolCalls(result)).map((call: { name: string }) => call.name),
       toolFindings: extractToolFindings(result),
@@ -292,6 +304,8 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
         });
         const regeneratedText = enforceExplicitMagicLink(regeneratedValidation.text, ctx);
         if (regeneratedText) {
+          const latestKitchen=latestKitchenResult(regenerated);
+          if(latestKitchen!==undefined)kitchenResult=latestKitchen;
           firstPassToolCalls = extractToolCalls(result);
           result = regenerated;
           validation = {
@@ -308,7 +322,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     }
 
     if(replyLanguageMismatch(finalText,ctx)){
-      finalText=fallbackReply(ctx);
+      finalText=groundedReplyFallback(ctx,mergeToolCalls(groundedCalls,mergeToolCalls(firstPassToolCalls,extractToolCalls(result))).map(call=>call.name),kitchenResult)||fallbackReply(ctx);
       validation={...validation,warnings:[...validation.warnings,"reply_language_unresolved"]};
     }
     // A promise the guest can see must be a promise the guest receives. Runs after every

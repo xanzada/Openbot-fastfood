@@ -274,9 +274,9 @@ function operationalRuntime(ctx: FastFoodContext) {
   const effectiveWait = Math.max(waitMinutes, noticeMinutes);
   const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   return {
-    wait_time: policy.waitMinutes,
-    delivery_wait_time: policy.deliveryWaitMinutes,
-    pickup_wait_time: policy.pickupWaitMinutes,
+    wait_time: ctx.runtimeStatus?.runtime_available===false?null:policy.waitMinutes,
+    delivery_wait_time: ctx.runtimeStatus?.runtime_available===false?null:policy.deliveryWaitMinutes,
+    pickup_wait_time: ctx.runtimeStatus?.runtime_available===false?null:policy.pickupWaitMinutes,
     ...(noticeMinutes > waitMinutes ? { operator_wait_notice_minutes: noticeMinutes } : {}),
     // The gate no longer answers for you when the kitchen is merely busy, so the
     // wait has to be raised in conversation before the order is placed.
@@ -298,7 +298,9 @@ function operationalRuntime(ctx: FastFoodContext) {
     // when the wait is zero. A wait the policy still calls normal is an estimate,
     // not an alarm: calling a 30-minute queue "loaded" talked guests out of
     // ordering for no reason.
-    timing_answer_rule: policy.requiresConsent
+    timing_answer_rule: ctx.runtimeStatus?.runtime_available===false
+      ? "Current kitchen state and waiting time are unknown. Successful fresh getKitchenStatus is required before any operational timing claim; defaults are not evidence."
+      : policy.requiresConsent
       ? "If the customer asks how long, say the kitchen is loaded and name the wait out loud, then say you will write the moment it is ready. Never answer that you have no information."
       : effectiveWait > 0
         ? `If the customer asks how long, name ${effectiveWait === noticeMinutes && noticeMinutes > waitMinutes ? formatKitchenWait(noticeMinutes, ctx.language === "ru" ? "ru" : "kk") + " (the kitchen announced a temporary delay)" : formatKitchenWait(effectiveWait, ctx.language === "ru" ? "ru" : "kk")} as the approximate readiness window - without calling the kitchen busy - then say you will write the moment it is ready. Never say there are no delays. Never answer that you have no information.`

@@ -8,6 +8,9 @@ import {resolveAgentToolPlan} from "../src/agent/toolPolicy.js";
 import {createSearchMenuSkill,groundMenuTurn,menuQueryForTurn} from "../src/skills/searchMenu.skill.js";
 import {shouldThink} from "../src/services/agentThinking.service.js";
 import {customerOrderFromRecord,classifyOrderStage} from "../src/services/customerOrder.service.js";
+import {normalizeOrderPayload} from "../src/services/dle.service.js";
+import {buildFactsPrompt} from "../src/context/buildFactsPrompt.js";
+import {getMenuBudgetInquiry} from "../src/utils/menuBudget.js";
 import {hasCustomerCheckoutIntent} from "../src/utils/orderIntent.js";
 
 const ruMenu=[
@@ -218,4 +221,169 @@ test("candidate02 each independent safety assertion is checked beside a question
  const payment={...c,language:"ru",text:"Как оплатить Пончик Шоколадный?"};
  const technical="Оплата для Пончик Шоколадный безопасна.";
  assert.equal(validateFinalText(technical,payment,grounded).text,technical);
+});
+
+test("candidate03 current KK genitive price keeps Doner1990 and rejects a wrongprice",()=>{
+ const c=context("Донер қанша тұрады?","kk");
+ const good=validateFinalText("Донердің бағасы 1990 KZT. Басқа сұрақтарыңыз болса, жазыңыз!",c,grounded);
+ assert.match(good.text,/1990/u);assert.ok(!good.warnings.includes("menu_price_mismatch_removed"));
+ assert.doesNotMatch(validateFinalText("Донердің бағасы 2500 KZT.",c,grounded).text,/2500/u);
+});
+test("candidate03 budget preface and same-unit anaphoric composition preserve eligible2000 roll",()=>{
+ const c=context("Құрамы мен бағасын тексеріңіз: тамақ алғым келеді, бірақ ақша қоса алмаймын. Бюджетімнен қымбат нұсқа жарамайды.","kk",[{role:"user",text:"Бюджетім 2000 теңге. Ет жемеймін."}]);
+ const draft="2000 тг шегінде бір ғана нұсқа бар: Көкөніс роллы — 2000 тг. Оның құрамы: күріш, қияр, сәбіз.";
+ const r=validateFinalText(draft,c,grounded);assert.match(r.text,/2000/u);assert.match(r.text,/күріш, қияр, сәбіз/u);
+ assert.ok(!r.warnings.includes("menu_price_mismatch_removed"));assert.ok(!r.warnings.includes("unsupported_ingredient_claim_removed"));
+});
+test("candidate03 ingredient anaphora never uses invented ingredients or cross-list subject",()=>{
+ const c=context("Құрамы мен бағасын тексеріңіз","kk");
+ assert.doesNotMatch(validateFinalText("Көкөніс роллы — 2000 тг. Оның құрамы: күріш, тауық еті.",c,grounded).text,/құрамы: күріш, тауық/u);
+ assert.doesNotMatch(validateFinalText("1. Көкөніс роллы — 2000 тг.\n2. Оның құрамы: күріш, қияр, сәбіз.",c,grounded).text,/Оның құрамы/u);
+});
+test("candidate03 item title outranks repeated composition name before its price",()=>{
+ const c=context("Енді қазіргі мәзірді тексере аласыз ба?","kk");
+ const good=validateFinalText("1. Донер комбо - Донер, картоп фри - 2500 ₸\n2. Донер - Тауық еті, лаваш - 1990 ₸",c,grounded);
+ assert.match(good.text,/Донер комбо.*2500/u);assert.match(good.text,/Донер.*1990/u);assert.ok(!good.warnings.includes("menu_price_mismatch_removed"));
+ assert.doesNotMatch(validateFinalText("1. Донер комбо - Донер, картоп фри - 1990 ₸",c,grounded).text,/Донер комбо/u);
+});
+test("candidate03 typed raw order pickup alias survives owned projection",()=>{
+ const r=customerOrderFromRecord({id:98,status:"ready",payment_status:"paid",type:"pickup",phone:"+77000000000"},"77000000000","kk");
+ assert.equal(r.state,"found");if(r.state==="found")assert.equal(r.order.fulfillmentType,"pickup");
+ for(const raw of [{id:98,status:"ready",type:"made_up"},{id:98,status:"ready",type:"pickup",phone:"+77000000002"}]){
+  const invalid=customerOrderFromRecord(raw,"77000000000","kk");if(invalid.state==="found")assert.equal(invalid.order.fulfillmentType??null,null);
+ }
+});
+test("candidate03 current pickup answer cannot offer unknown delivery choice",()=>{
+ const c=context("Жеткізу ме, әлде өзім алып кетемін бе?","kk");c.activeOrder={...owned,status:"ready",stage:"ready",fulfillmentType:"pickup"};
+ const r=validateFinalText("Сіздің 98 нөмірлі тапсырысыңыз дайын! Сіз оны өзіңіз алып кетуге немесе жеткізу үшін тапсырыс беруге болады. Шешіміңіз қандай?",c,{toolsCalled:["checkOrderStatus"],toolFindings:{orderFound:true,orderLookup:"found",orderStatus:"ready",orderStage:"ready",orderFulfillmentType:"pickup",orderItems:[{name:"Донер"}]}});
+ assert.match(r.text,/алып кет|самовывоз/u);assert.doesNotMatch(r.text,/немесе жеткізу|Шешіміңіз қандай/u);
+});
+test("candidate03 truthful denied operator confirmation survives while a positive contact claim is removed",()=>{
+ const c=context("Я жду, оператор уже ответил?");
+ const denied="К сожалению, я не получил подтверждения о том, что оператор с вами связался.";
+ assert.equal(validateFinalText(denied,c,{toolsCalled:["escalateToAdmin"],toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}}).text,denied);
+ const mixed=validateFinalText(denied+" Оператор уже работает над вопросом.",c,grounded);
+ assert.match(mixed.text,/не получил подтверждения/u);assert.doesNotMatch(mixed.text,/уже работает/u);
+});
+test("candidate03 runtimeunknown preserves verified menu and states unknown wait without manualorder refusal",()=>{
+ const c=context("Деректерді тексеріп, ненің расталғанын, ненің белгісіз екенін айтыңыз. Қанша күту керек?","kk");c.runtimeStatus.runtime_available=false;
+ const r=validateFinalText("Кухня жұмыс істеп тұр және тапсырыстар қабылдануда. Күту уақыты 0 минут.\n1. Донер - 1990 тг\n2. Көкөніс роллы - 2000 тг",c,{toolsCalled:["getKitchenStatus","searchMenu"]});
+ assert.match(r.text,/Донер.*1990/u);assert.match(r.text,/растай|белгісіз/u);assert.doesNotMatch(r.text,/жұмыс істеп тұр|0 минут|өзім рәсімдей/u);
+ assert.ok(!r.warnings.includes("manual_order_claim_blocked"));
+});
+test("candidate03 future readiness cannot be guaranteed at the moment of checkout",()=>{
+ const c=context("Возьму донер, пришлите ссылку для оформления");
+ const r=validateFinalText("Донер будет готов, когда вы оформите заказ. Вот ссылка для оформления.",c,grounded);
+ assert.doesNotMatch(r.text,/будет готов, когда вы оформите/u);assert.match(r.text,/ссылка/u);
+});
+test("candidate03 requested attribute uncertainty uses volume not a separate-combo question",()=>{
+ const c=context("Не придумывайте замену: подтвердите объём по меню","ru",[{role:"user",text:"Есть напиток 0,5 л?"}]);
+ const r=validateFinalText("В нашем меню нет напитков.",c,grounded);
+ assert.match(r.text,/об[ъь]ём|об[ъь]ем/u);assert.doesNotMatch(r.text,/отдельно.*комбо/u);
+});
+test("candidate03 current menu and replacement intents require live catalog without broad action routing",()=>{
+ for(const input of ["Какое блюдо можно вместо него?","Пришлите актуальное меню"]){
+  assert.equal(resolveAgentToolPlan(context(input)).requiredTools[0],"searchMenu");
+ }
+ assert.ok(!resolveAgentToolPlan(context("Какой оператор вместо него ответит?")).requiredTools.includes("searchMenu"));
+ assert.ok(!resolveAgentToolPlan(context("Не присылайте актуальное меню")).requiredTools.includes("searchMenu"));
+});
+test("candidate03 isolated KK affirmation in Russian service prose requires repair without translating brand",()=>{
+ assert.ok(validateFinalText("Иә, донер сейчас доступен! Его цена — 1990 тенге.",context("Донер доступен?"),grounded).warnings.includes("reply_language_mismatch"));
+ const c=context("Как к вам обращаться?");assert.equal(validateFinalText("Вы можете называть меня «Жеті самал қызметі».",c).text,"Вы можете называть меня «Жеті самал қызметі».");
+});
+
+test("candidate03 real order normalization retains only explicit known fulfillment",()=>{
+ const normalized=normalizeOrderPayload({id:98,status:"ready",phone:"+77000000000",type:"pickup"});
+ const result=customerOrderFromRecord(normalized,"77000000000","ru");
+ assert.equal(result.state,"found");if(result.state==="found")assert.equal(result.order.fulfillmentType,"pickup");
+ const unknown=customerOrderFromRecord(normalizeOrderPayload({id:98,status:"ready",is_pickup:false}),"77000000000","ru");
+ if(unknown.state==="found")assert.equal(unknown.order.fulfillmentType??null,null);
+});
+test("candidate03 unknown runtime facts never present defaultzero as operational evidence",()=>{
+ const c=context("Что подтверждено, сколько ждать?");c.runtimeStatus.runtime_available=false;c.hardRealtimeContext={runtime_available:false,wait_time:0,is_accepting_orders:true};
+ const prompt=buildFactsPrompt(c);const facts=JSON.parse(prompt.split("FACTS_CONTEXT_START\n")[1].split("\nFACTS_CONTEXT_END")[0]);
+ assert.equal(facts.operational_runtime.wait_time,null);assert.equal(facts.operational_runtime.pickup_wait_time,null);
+ assert.match(facts.operational_runtime.timing_answer_rule,/unknown|cannot|unavailable/iu);assert.doesNotMatch(facts.operational_runtime.timing_answer_rule,/normal pace/u);
+});
+
+test("candidate03 finite compound cases do not borrow constituent price",()=>{
+ const c=context("Комбоның бағасы қандай?","kk");
+ assert.match(validateFinalText("Донер комбоның бағасы 2500 тг.",c,grounded).text,/2500/u);
+ assert.doesNotMatch(validateFinalText("Донер комбоның бағасы 1990 тг.",c,grounded).text,/1990/u);
+});
+test("candidate03 composition anaphora uses latest verified subject without borrowing previous ingredients",()=>{
+ const c=context("Құрамы мен бағалары қандай?","kk");
+ const good=validateFinalText("Донер — 1990 тг. Көкөніс роллы — 2000 тг. Оның құрамы: күріш, қияр, сәбіз.",c,grounded);
+ assert.match(good.text,/Оның құрамы: күріш, қияр, сәбіз/u);
+ const wrong=validateFinalText("Донер — 1990 тг. Көкөніс роллы — 2000 тг. Оның құрамы: тауық еті, лаваш.",c,grounded);
+ assert.doesNotMatch(wrong.text,/Оның құрамы: тауық/u);
+});
+test("candidate03 hardbudget cannot be laundered by a ceiling preface but truthful price explanation survives",()=>{
+ const c=context("Что посоветуете из комбо?", "ru",[{role:"user",text:"Бюджет 2000 тг"}]);
+ assert.doesNotMatch(validateFinalText("В пределах бюджета 2000 тг рекомендую Комбо с донером за 2500 тг.",c,grounded).text,/рекомендую Комбо/u);
+ c.text="Почему Комбо с донером стоит 2500 тг и дороже бюджета 2000 тг?";
+ assert.match(validateFinalText("Комбо с донером стоит 2500 тг, это выше вашего бюджета 2000 тг.",c,grounded).text,/2500/u);
+});
+test("candidate03 same-sentence denied ack cannot launder an independent positive contact or humanaction",()=>{
+ const c=context("Оператор ответил?");
+ const r=validateFinalText("Я не получил подтверждения, но оператор уже связался с вами и решает вопрос.",c,grounded);
+ assert.match(r.text,/не получил подтверждения/u);assert.doesNotMatch(r.text,/связался с вами|решает вопрос/u);
+ const denied="Оператор пока не ответил.";assert.equal(validateFinalText(denied,c,grounded).text,denied);
+});
+test("candidate03 unknownruntime and unavailablecatalog never reconstruct stale menu as verified",()=>{
+ const c=context("Что точно подтверждено?");c.runtimeStatus.runtime_available=false;c.menuSnapshot={source:"menu_unavailable",items:[]};c.menuGrounding={items:[],menu_lookup:"unavailable"};
+ const r=validateFinalText("Кухня открыта. Донер —1990тг.",c,{toolsCalled:["getKitchenStatus","searchMenu"]});
+ assert.doesNotMatch(r.text,/1990|Кухня открыта/u);
+});
+test("candidate03 delivery remains known while unsupported fulfillment cannot authorize either option",()=>{
+ const c=context("Доставка или самовывоз?");c.activeOrder={...owned,status:"ready",stage:"ready",fulfillmentType:"delivery"};
+ const r=validateFinalText("Заберите ваш заказ сами.",c,{toolsCalled:["checkOrderStatus"],toolFindings:{orderFound:true,orderLookup:"found",orderStatus:"ready",orderStage:"ready",orderFulfillmentType:"delivery"}});
+ assert.match(r.text,/доставк/u);assert.doesNotMatch(r.text,/Заберите/u);
+ const u=customerOrderFromRecord({id:98,status:"ready",fulfillment_type:"other"},"77000000000","ru");
+ if(u.state==="found")assert.equal(u.order.fulfillmentType??null,null);
+});
+test("candidate03 correct brand prose does not exempt an independent KK service affirmation",()=>{
+ const c=context("Как к вам обращаться?");assert.ok(validateFinalText("Вы можете называть меня «Жеті самал қызметі». Иә, сейчас доступно.",c).warnings.includes("reply_language_mismatch"));
+});
+test("candidate03 accepting orders is not an effect receipt for a separate manual order claim",()=>{
+ const c=context("Кухня работает?");
+ assert.equal(validateFinalText("Кухня принимает заказы.",c).text,"Кухня принимает заказы.");
+ const mixed=validateFinalText("Кухня принимает заказы, я оформил ваш заказ №98.",c);
+ assert.ok(mixed.warnings.includes("manual_order_claim_blocked"));assert.doesNotMatch(mixed.text,/я оформил/u);
+});
+
+test("candidate03 glued explicit budget is a ceiling across a fresh followup context",()=>{
+ assert.equal(getMenuBudgetInquiry("Бюджет2000тг"),2000);
+ const c=context("Что посоветуете из комбо?","ru",[{role:"user",text:"Бюджет2000тг"}]);
+ assert.doesNotMatch(validateFinalText("В пределах бюджета2000тг рекомендую Комбо с донером за2500тг.",c,grounded).text,/рекомендую Комбо/u);
+ c.text="Почему Комбо с донером стоит2500тг и дороже бюджета2000тг?";
+ assert.match(validateFinalText("Комбо с донером стоит2500тг, это выше вашего бюджета2000тг.",c,grounded).text,/2500/u);
+});
+test("candidate03 glued budget normalization cannot reinterpret identifiers quotes or unsupported money",()=>{
+ for(const text of ["Номер заказа2000тг","Бюджет-2000тг","Бюджет2000,5тг","Он сказал «Бюджет2000тг»","Бюджет2000usd","Бюджет2000тг или3000тг","супербюджет2000тг"]){
+  assert.equal(getMenuBudgetInquiry(text),null,text);
+ }
+ assert.equal(getMenuBudgetInquiry("Бюджет 2000 тг"),2000);
+});
+
+test("candidate03 latest explicit same-unit composition beats a different requested SKU",()=>{
+ const c=context("Донердің орнына не бар?","kk");
+ const wrong=validateFinalText("Көкөніс роллы — 2000 тг. Оның құрамы: тауық еті, лаваш, қызанақ.",c,grounded);
+ assert.match(wrong.text,/Көкөніс роллы.*2000/u);assert.doesNotMatch(wrong.text,/тауық|лаваш|қызанақ/u);
+ const good=validateFinalText("Көкөніс роллы — 2000 тг. Оның құрамы: күріш, қияр, сәбіз.",c,grounded);
+ assert.match(good.text,/Оның құрамы: күріш, қияр, сәбіз/u);
+});
+test("candidate03 independent coordinated human action cannot borrow a confirmation denial",()=>{
+ const c=context("Оператор ответил?");
+ const actual=validateFinalText("Я не получил подтверждения и оператор уже работает над вашим вопросом.",c,grounded);
+ assert.match(actual.text,/не получил подтверждения/u);assert.doesNotMatch(actual.text,/оператор уже работает/u);
+ const governed="Я не получил подтверждения о том, что оператор работает над вопросом.";
+ assert.equal(validateFinalText(governed,c,grounded).text,governed);
+});
+test("candidate03 explicit verified old-to-current discount retains one identity without lending to another SKU",()=>{
+ const c=context("Какие скидки?");c.menuSnapshot.items=[{name:"Калифорния",price:2500,old_price:3000,composition:"рис, лосось"},{name:"Макидзуси",price:2000,composition:"рис"}];c.menuGrounding={items:c.menuSnapshot.items};
+ assert.match(validateFinalText("Калифорния — 3000 тг вместо прежней цены, теперь 2500 тг.",c,grounded).text,/2500/u);
+ assert.doesNotMatch(validateFinalText("Калифорния — 3000 тг орнына 2700 тг.",c,grounded).text,/2700/u);
+ assert.doesNotMatch(validateFinalText("Калифорния — 3000 тг орнына Макидзуси — 2500 тг.",c,grounded).text,/Макидзуси.*2500/u);
 });

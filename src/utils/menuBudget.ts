@@ -50,7 +50,7 @@ function amountFromTokens(raw: string): number | null {
 }
 
 function currentBudgetClauses(text: string): string[] {
-  const value = foldIntentText(String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, ""));
+  const value = foldIntentText(String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "")).replace(/(?<!\p{L})(бюджет(?:ім|ым|а)?)(?=\d)/giu, "$1 ");
   // A refusal of an independent URL does not erase the food budget in that clause.
   const budgetText = value.replace(/(?:силтеме\p{L}*|ссылк\p{L}*|линк|link|url)[^\d.!?]{0,24}(?:(?:керек|кажет)\s*емес|кереги\s*жок|(?<!\p{L})не\s*(?:нуж\p{L}*|надо))|(?<!\p{L})не\s*(?:нуж\p{L}*|надо)[^\d.!?]{0,24}(?:силтеме\p{L}*|ссылк\p{L}*|линк|link|url)/giu, "")
     // Having this amount and "no other money" is not a denial of the stated budget.
@@ -79,7 +79,7 @@ export function isMenuBudgetInquiry(text: string): boolean {
 export function getMenuBudgetInquiry(text: string): number | null {
   const amounts = new Set<number>();
   for (const clause of currentBudgetClauses(text)) {
-    if (/\d\s*(?:или|немесе)\s*\d|(?<!\p{L})(?:usd|eur|руб\p{L}*|доллар\p{L}*|евро)(?!\p{L})|[$€₽]/iu.test(clause)) return null;
+    if (/\d\s*(?:(?:тенге(?:ге|м)?|тг|kzt|₸)\s*)?(?:или|немесе)\s*\d|(?<!\p{L})(?:usd|eur|руб\p{L}*|доллар\p{L}*|евро)(?!\p{L})|[$€₽]/iu.test(clause)) return null;
     for (const match of clause.matchAll(AMOUNT_RE)) {
       const amount = amountFromTokens(match[1]);
       if (amount === null) return null;

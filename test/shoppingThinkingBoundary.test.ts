@@ -3,21 +3,22 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
+import * as actualValidator from "../src/agent/finalValidator.js";
 import {replyLanguageMismatch} from "../src/agent/finalValidator.js";
 import {isMenuAttributeVerificationQuestion} from "../src/utils/menuQuestionContext.js";
 import {needsShoppingPrepass,shoppingEvidence} from "../src/services/shoppingConstraints.service.js";
 import {buildAgentInstructions,composeReadyAnalysisStepPolicy,createTurnThinkingState} from "../src/agent/instructionAssembly.js";
-function fixture(text:string,constrained:boolean,mode="parallel",reject=false,drafts=["safe"],highRisk=false,criticIssues=["wrong_language"],criticFix="Use customer language."){
+function fixture(text:string,constrained:boolean,mode="parallel",reject=false,drafts=["safe"],highRisk=false,criticIssues=["wrong_language"],criticFix="Use customer language.",options:any={}){
  const events:string[]=[],captured:string[]=[];let calls=0,critics=0;
- const ctx:any={instanceId:"think-fixture",phone:"77000000001",text,language:"ru",config:{system_prompt:"Service name: Жеті самал қызметі."},chatHistory:constrained?[{role:"user",text:"Бюджет 2000 тг",createdAt:Date.now()}]:[],menuSnapshot:{source:"dle",items:[{name:"Овощной ролл",price:2000,composition:"рис"}]},activeShiftNotes:[],hardRealtimeContext:{},runtimeStatus:null,shporContext:[],mediaContext:null};
+ const ctx:any={instanceId:"think-fixture",phone:"77000000001",text,language:"ru",config:{system_prompt:"Service name: Жеті самал қызметі."},chatHistory:constrained?[{role:"user",text:"Бюджет 2000 тг",createdAt:Date.now()}]:[],menuSnapshot:{source:"dle",items:[{name:"Овощной ролл",price:2000,composition:"рис"}]},activeShiftNotes:[],hardRealtimeContext:{},runtimeStatus:null,shporContext:[],mediaContext:null,...options.ctx};
  const analysis={goal:"menu",mood:"unsure",urgency:"normal",complexity:"moderate",risk:highRisk?"high":"low",style_hint:"brief",reasoning_brief:"eligible2000",proactive_note:"verify"};
  const modules:any={
   "../utils/menuQuestionContext.js":{isMenuAttributeVerificationQuestion},
   "../services/shoppingConstraints.service.js":{refreshShoppingConstraints:async()=>{events.push("state");},needsShoppingPrepass},
-  "@voltagent/core":{Agent:class{instructions:string;constructor(opts:any){this.instructions=opts.instructions;}async generateText(_text:string,opts:any){calls++;events.push("response");const messages=[{role:"system",content:this.instructions}];const step=opts.prepareStep({stepNumber:0,messages});captured.push((step.messages||messages)[0].content);return{text:drafts[Math.min(calls-1,drafts.length-1)],steps:[]};}},stepCountIs:()=>()=>false},
+  "@voltagent/core":{Agent:class{instructions:string;constructor(opts:any){this.instructions=opts.instructions;}async generateText(_text:string,opts:any){calls++;events.push("response");const messages=[{role:"system",content:this.instructions}];const step=opts.prepareStep({stepNumber:0,messages});captured.push((step.messages||messages)[0].content);return{text:drafts[Math.min(calls-1,drafts.length-1)],steps:options.steps||[]};}},stepCountIs:()=>()=>false},
   "../skills/index.js":{createFastFoodSkills:()=>[]},
   "../services/agentThinking.service.js":{analyzeTurnSituation:async(c:any)=>{events.push("think_start");assert.equal(shoppingEvidence(c)?.checkout_authority??false,false);await Promise.resolve();if(reject){events.push("think_error");throw Error("SYNTHETIC");}events.push("think_complete");return analysis;},critiqueDraftReply:async()=>{if(!highRisk)throw Error("EXTRA_MODEL_FORBIDDEN");critics++;return{ok:false,issues:criticIssues,fix_hint:criticFix};}},
-  "./finalValidator.js":{validateFinalText:(text:string)=>({text,warnings:[]}),fallbackReply:()=>"safe",replyLanguageMismatch},
+  "./finalValidator.js":{validateFinalText:(text:string)=>({text,warnings:[]}),fallbackReply:()=>"safe",groundedReplyFallback:(actualValidator as any).groundedReplyFallback,replyLanguageMismatch},
   "./greeting.js":{readGuestGreeting:()=>null},"./instructionAssembly.js":{buildAgentInstructions,composeReadyAnalysisStepPolicy,createTurnThinkingState},
   "./modelRouter.js":{resolveModel:()=>({})},"./toolPolicy.js":{resolveLiveAgentToolPlan:async()=>({requiredTools:[],reason:"fixture"}),createAgentStepPolicy:()=>()=>({toolChoice:"none"})},
   "../skills/searchMenu.skill.js":{groundMenuTurn:async()=>{throw Error("UNEXPECTED_GROUND");},menuQueryForTurn:()=>""},
@@ -61,4 +62,27 @@ test("simultaneous language and factual critic failures enter one rewrite instru
  await f.run();assert.equal(f.calls(),2);assert.equal(f.critics(),1);assert.equal(f.events.filter(x=>x==="think_start").length,1);
  assert.match(f.captured[1],/LANGUAGE_REPAIR/u);assert.match(f.captured[1],/CRITIC_NOTE/u);
  assert.match(f.captured[1],/invented_fact/u);assert.match(f.captured[1],/Remove the unverified delivery promise\./u);
+});
+
+test("candidate03 one failed language rewrite retains verified wait60 in customer language",async()=>{
+ const steps=[{toolCalls:[{toolName:"getKitchenStatus",input:{}}],toolResults:[{toolName:"getKitchenStatus",output:{runtime_available:true,live:true,wait_time:60}}]}];
+ const f=fixture("Сколько ждать?",false,"off",false,["Кейін 1 сағат күту қажет болады. Сіз күте аласыз ба?"],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60},fetchedSettings:{wait_time:60}},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/60 минут|1 час/u);assert.ok(!replyLanguageMismatch(r.text,{language:"ru"} as any));
+ assert.ok(r.validationWarnings.includes("reply_language_unresolved"));
+});
+test("candidate03 failed language rewrite never confirms a wait from runtimeunknown default",async()=>{
+ const steps=[{toolCalls:[{toolName:"getKitchenStatus",input:{}}],toolResults:[{toolName:"getKitchenStatus",output:{runtime_available:false,live:false,wait_time:null}}]}];
+ const f=fixture("Сколько ждать?",false,"off",false,["If you have further questions, feel free to ask!"],false,[],"",{ctx:{runtimeStatus:{runtime_available:false,wait_time:0}},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.doesNotMatch(r.text,/0 минут/u);assert.match(r.text,/подтверд|неизвест|не могу/u);
+});
+
+test("candidate03 language fallback never authorizes a cached wait after a failed fresh read",async()=>{
+ const steps=[{toolCalls:[{toolName:"getKitchenStatus",input:{}}],toolResults:[{toolName:"getKitchenStatus",output:{runtime_available:false,live:false,wait_time:null}}]}];
+ const f=fixture("Сколько ждать?",false,"off",false,["If you have further questions, feel free to ask!"],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/подтвердить не могу/u);assert.doesNotMatch(r.text,/60|0 минут/u);
+});
+test("candidate03 language fallback preserves lastknown uncertainty instead of advertising an exact fresh wait",async()=>{
+ const steps=[{toolCalls:[{toolName:"getKitchenStatus",input:{}}],toolResults:[{toolName:"getKitchenStatus",output:{runtime_available:true,live:false,is_last_known:true,wait_time:60}}]}];
+ const f=fixture("Сколько ждать?",false,"off",false,["If you have further questions, feel free to ask!"],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/подтвердить не могу/u);assert.doesNotMatch(r.text,/60/u);
 });

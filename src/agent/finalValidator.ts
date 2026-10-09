@@ -1,9 +1,9 @@
-import {customerMenuRelationSubject} from "../utils/menuQuestionContext.js";
+import {isMenuAttributeVerificationQuestion, customerMenuRelationSubject} from "../utils/menuQuestionContext.js";
 import {shoppingConstraintsForContext, eligibleShoppingItems, isShoppingDecision, shoppingBasketQuote, type ShoppingItem} from "../services/shoppingConstraints.service.js";
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import type { FastFoodContext } from "../context/types.js";
 import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
-import { isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { activeOrderQuestionKind, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
 import { guardCheckoutSelection, hasCatalogProductMention, hasCatalogSafetyAssertion } from "./checkoutSelectionGuard.js";
 
@@ -162,7 +162,7 @@ function dropSentencesMatchingUnless(
   return urls.length ? `${rebuilt}\n${urls.join("\n")}` : rebuilt;
 }
 
-const ACCEPTED_ORDER_CLAIM_RE = /(?:заказ[^.!?]{0,50}(?:принят|подтвержд[её]н|оформлен)|тапсырыс[^.!?]{0,50}(?:қабылдан|расталды|рәсімделді))/iu;
+const ACCEPTED_ORDER_CLAIM_RE = /(?:заказ[^.!?]{0,50}(?:принят|подтвержд[её]н|оформлен)|тапсырыс(?:ыңыз|ы|ты|тың)?(?!\p{L})[^.!?]{0,50}(?:қабылдан|расталды|рәсімделді))/iu;
 const OPERATOR_NOTIFICATION_CLAIM_RE = /(?:оператор|администратор|әкімш)[^.!?]{0,60}(?:уведомл|извещ[её]н|хабардар|хабарлан|передал|отправил|сообщил)|(?:передал|отправил|сообщил)[^.!?]{0,60}(?:оператор|администратор|әкімш)/iu;
 const CONFIRMED_OPERATOR_NOTIFICATION_RE = /(?:оператор|администратор|әкімш)[^.!?]{0,60}(?:уведомл|извещ[её]н|хабардар|хабарлан)/iu;
 const CONFIRMED_HUMAN_CONTACT_RE = /(?:оператор|администратор|админ|әкімш|экімш)[^.!?]{0,70}(?:хабарластық|хабарластым|хабарладық|хабарладым|хабар бердім|хабар бердік|байланыстық|байланыстым|уведомил|уведомили|сообщил|сообщили|связался|связались)|(?:хабарластық|хабарластым|хабарладық|хабарладым|хабар бердім|хабар бердік|байланыстық|байланыстым|уведомил|уведомили|сообщил|сообщили|связался|связались)[^.!?]{0,70}(?:оператор|администратор|админ|әкімш|экімш)/iu;
@@ -182,7 +182,8 @@ export interface ToolGroundingFindings {
 
 function customerProductReadyClaim(sentence: string, ctx: FastFoodContext) {
   return namedMenuItems(ctx, sentence).length > 0
-    && /(?:ваш[аи]?\s+[^.!?]{1,60}|\p{L}+(?:ңыз|ңіз)\s+)(?:готов[аоы]?|дайын)(?=$|[^\p{L}])/iu.test(sentence);
+    && (/(?:ваш[аи]?\s+[^.!?]{1,60}|\p{L}+(?:ңыз|ңіз)\s+)(?:готов[аоы]?|дайын)(?=$|[^\p{L}])/iu.test(sentence)
+      || /(?:будет\s+готов[ао]?|дайын\s+болады)[^.!?]{0,60}(?:когда|как\s+только|после|рәсімдеген|тапсырыс\s+берген)/iu.test(sentence));
 }
 
 function orderStateClaimMatches(sentence: string, evidence: any, ctx: FastFoodContext): boolean | null {
@@ -209,7 +210,19 @@ function orderStateClaimMatches(sentence: string, evidence: any, ctx: FastFoodCo
   return null;
 }
 
-const ACTION_NOT_DONE_RE = /(?:не\s+(?:принят|подтвержд|оформлен|оформил|готов|уведомл|извещ|передал|отправил|сообщил)|(?:қабылдан|хабарлан|хабардар|дайын)[^.!?]{0,15}(?:жоқ|емес))/iu;
+const ACTION_NOT_DONE_RE = /(?:не\s+(?:получил|получили|получено)\s+подтвержден\p{L}*|(?:нет|не\s+было)\s+подтвержден\p{L}*|не\s+могу\s+подтвердить|не\s+(?:принят|подтвержд|оформлен|оформил|готов|уведомл|извещ|передал|отправил|сообщил)|(?:қабылдан|хабарлан|хабардар|дайын)[^.!?]{0,15}(?:жоқ|емес))/iu;
+
+function actionAssertionClauses(sentence:string):string[] {
+  return sentence.replace(/о\s+том,\s*что/giu,"о том что")
+    .split(/,(?!\s*(?:когда|как\s+только|после)(?!\p{L}))|;|\s+(?:но|бірақ|однако|зато|а)\s+/iu)
+    .flatMap(clause=>{
+      // A denial governs its explicit "что" complement, but cannot authorize
+      // a separately coordinated human-action assertion.
+      const governed=ACTION_NOT_DONE_RE.test(clause)
+        && /(?:подтвержден\p{L}*|подтвердить)\s+(?:о\s+том\s+)?что(?!\p{L})/iu.test(clause);
+      return governed?[clause]:clause.split(/\s+(?:и|және)\s+(?=(?:оператор|администратор|админ|әкімш\p{L}*)(?!\p{L}))/iu);
+    });
+}
 
 function isActionAssertion(value: string, pattern: RegExp | ((sentence: string) => boolean), ctx?: FastFoodContext) {
   const unquoted = value.replace(/«([^»]*)»|“([^”]*)”|"([^"]*)"/gu, (_whole,a,b,c) => {
@@ -218,11 +231,17 @@ function isActionAssertion(value: string, pattern: RegExp | ((sentence: string) 
     return ctx && namedMenuItems(ctx,inner).some(item=>priceItemKey(item.name)===priceItemKey(inner))?inner:"";
   });
   return (unquoted.match(SENTENCE_RE) || [unquoted])
-    .flatMap((sentence) => sentence.split(/[,;]|\s+(?:но|бірақ|однако|зато|а)\s+/iu))
+    .flatMap(actionAssertionClauses)
     .some((clause) => (typeof pattern === "function" ? pattern(clause) : new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")).test(clause))
       && !ACTION_NOT_DONE_RE.test(clause));
 }
 
+function removeUnsupportedActionClauses(text:string,unsupported:(clause:string)=>boolean):string {
+ return (text.match(SENTENCE_RE)||[text]).flatMap(sentence=>
+   actionAssertionClauses(sentence)
+   .filter(clause=>!unsupported(clause)).map(clause=>clause.trim().replace(/[,;]\s*$/u,""))
+ ).join(" ").trim();
+}
 function menuClaimKey(value: unknown) {
   return String(value || "").toLowerCase()
     .replace(/(?:coca[-\s]*cola|кока[-\s]*кол[ауые]|(?<!\p{L})кол[ауые](?!\p{L}))/gu, "кола")
@@ -241,7 +260,7 @@ function priceItemKey(value:unknown) {
 function menuWordPattern(word:string):string {
  const escape=(s:string)=>s.replace(/[.*+?^$(){}|[\]\\]/g,"\\$&");
  const exact=escape(word);
- const cases="(?:ның|нің|тың|тің|ға|ге|қа|ке|да|де|та|те|дан|ден|тан|тен|ды|ді|ты|ті|мен|пен|бен|ңыз|ңіз|ыңыз|іңіз|а|у|ом|е|ы)?";
+ const cases="(?:ның|нің|дың|дің|тың|тің|ға|ге|қа|ке|да|де|та|те|дан|ден|тан|тен|ды|ді|ты|ті|мен|пен|бен|ңыз|ңіз|ыңыз|іңіз|а|у|ом|е|ы)?";
  if(word.length<4||/\d/u.test(word))return exact;
  if(/ая$/u.test(word))return escape(word.slice(0,-2))+"(?:ая|ой|ую)";
  if(/[ая]$/u.test(word))return "(?:"+exact+cases+"|"+escape(word.slice(0,-1))+(word.endsWith("а")?"(?:у|ы|е|ой|ою)":"(?:ю|и|е|ей)")+")";
@@ -264,25 +283,50 @@ function priceItemSpans(ctx:FastFoodContext,value:string):Array<{item:ShoppingIt
 function priceSubjects(ctx:FastFoodContext,prefix:string){
   const normalized=priceItemKey(prefix);
   const composition=normalized.search(/(?:входит|содержит|состав|ингредиент|құрам)/iu);
-  const spans=priceItemSpans(ctx,prefix).filter(hit=>composition<0||hit.start<composition);
-  const latest=spans.at(-1)?.start;return spans.filter(hit=>hit.start===latest).map(hit=>hit.item);
+   const spans=priceItemSpans(ctx,prefix).filter(hit=>composition<0||hit.start<composition);
+   const first=spans[0];
+   // An explicit title — verified composition — price stays bound to that title,
+   // rather than a repeated constituent product inside its composition.
+   if(first){
+     const description=normalized.slice(first.end).match(/^\s*[-—–:]\s*([\s\S]+?)\s*[-—–:]\s*$/u);
+     const words=description?.[1].match(/\p{L}+/gu)?.filter(word=>!/^(?:и|мен|пен|және|с|со)$/iu.test(word)).map(ingredientKey)||[];
+     const known=String(first.item.composition||first.item.ingredients||"").toLowerCase().match(/\p{L}+/gu)?.map(ingredientKey)||[];
+     if(words.length&&words.every(word=>known.includes(word)))return spans.filter(hit=>hit.start===first.start).map(hit=>hit.item);
+   }
+   const latest=spans.at(-1)?.start;return spans.filter(hit=>hit.start===latest).map(hit=>hit.item);
 }
 function menuSentencePricesMatch(sentence: string, ctx: FastFoodContext, antecedent:ShoppingItem[]=[]):boolean {
   const amounts=[...sentence.matchAll(/(\d[\d \u00a0]*(?:[.,]\d+)?)\s*(?:₸|тг|тенге|теңге|kzt)/giu)];
-  return amounts.every(match=>{
-    const prefix=sentence.slice(0,match.index);const amount=Number(match[1].replace(/[ \u00a0]/g,"").replace(",","."));
+   let previousEnd=0;
+   let previousPrice:{item:ShoppingItem;amount:number}|null=null;
+   return amounts.every(match=>{
+     const prefix=sentence.slice(previousEnd,match.index);previousEnd=match.index!+match[0].length;
+     const amount=Number(match[1].replace(/[ \u00a0]/g,"").replace(",","."));
     const named=priceSubjects(ctx,prefix);
     // A guest's stated budget is not a price for an unnamed menu SKU.
     const budgetSubject=/(?:у\s+вас|у\s+меня|вашим|ваш\p{L}*|сенде|сізде|бюджет\p{L}*|шегінде)/giu;
      const budgetAt=[...prefix.matchAll(budgetSubject)].at(-1)?.index??-1;
      const namedAt=priceItemSpans(ctx,prefix).at(-1)?.start??-1;
-     if(shoppingConstraintsForContext(ctx).budget===amount&&budgetAt>namedAt)return true;
+      const ceilingAfter=/^\s*(?:шегінде|ше[кг]пен|бюджет\p{L}*|(?:это\s+)?(?:мой|ваш)\s+бюджет)(?!\p{L})/iu.test(sentence.slice(previousEnd));
+      if(shoppingConstraintsForContext(ctx).budget===amount&&(budgetAt>namedAt||namedAt<0&&ceilingAfter)){
+        previousPrice=null;return true;
+      }
     const requested=priceItemSpans(ctx,ctx.text).map(hit=>hit.item);
     const anonymous=priceItemKey(prefix).replace(/[^\p{L}]+/gu," ").trim();
     const anonymousPrice=/^(?:(?:цена|стоимость|стоит|он|она|оно|это|этот|эта|данное|блюдо|позиция|за|штуку|бағасы|тұрады|ол|оның|бұл|осы|тағам)\s*)*$/iu.test(anonymous);
     const anaphoric=/^\s*(?:в\s+(?:него|неё|нее)|он[ао]?|его|ее|её|это|цена|стоимость|стоит|құрамында|оның|ол|бағасы|тұрады)(?!\p{L})/iu.test(prefix);
-    const candidates=named.length?named:anaphoric&&antecedent.length===1?antecedent:anonymousPrice&&requested.length===1?requested:[];
-    return candidates.length===1 && candidates.some(item=>Number(item.price)===amount||(Number(item.compare_at_price||item.old_price)>Number(item.price)&&Number(item.compare_at_price||item.old_price)===amount));
+    const oldToCurrent=/^[\s,;:—–-]*(?:орнына|(?:а\s+)?(?:теперь|сейчас)|вместо\s+прежней\s+цены,\s*(?:теперь|сейчас))\s*$/iu.test(prefix);
+    const currentToOld=/^[\s,;:—–-]*вместо\s*$/iu.test(prefix);
+    const previous=previousPrice as {item:ShoppingItem;amount:number}|null;
+    const oldPrice=Number(previous?.item.compare_at_price||previous?.item.old_price);
+    const currentPrice=Number(previous?.item.price);
+    const comparison=previous && oldPrice>currentPrice
+      && (oldToCurrent&&previous.amount===oldPrice&&amount===currentPrice
+        || currentToOld&&previous.amount===currentPrice&&amount===oldPrice);
+    const candidates=named.length?named:comparison?[previous!.item]:anaphoric&&antecedent.length===1?antecedent:anonymousPrice&&requested.length===1?requested:[];
+    const valid=candidates.length===1 && candidates.some(item=>Number(item.price)===amount||(Number(item.compare_at_price||item.old_price)>Number(item.price)&&Number(item.compare_at_price||item.old_price)===amount));
+    previousPrice=valid?{item:candidates[0],amount}:null;
+    return valid;
   });
 }
 /** List markers stay attached to their item; other factual guards keep their old sentence policy. */
@@ -316,7 +360,7 @@ function ingredientKey(word: string) {
   return aliases.find(([pattern]) => pattern.test(value))?.[1] || value.slice(0, Math.max(3, value.length - 2));
 }
 
-function menuCompositionCandidates(sentence: string, ctx: FastFoodContext, claimIndex: number): any[] {
+function menuCompositionCandidates(sentence: string, ctx: FastFoodContext, claimIndex: number, antecedent: any[] = []): any[] {
   const prefix = sentence.slice(0, claimIndex);
   const named = namedMenuItems(ctx, prefix);
   if (named.length) return named;
@@ -324,8 +368,8 @@ function menuCompositionCandidates(sentence: string, ctx: FastFoodContext, claim
   const reference = prefix.replace(/(?:безглютен|безлактоз|орех|жаңғақ|жангак|арахис|яйц|яиц|жұмыртқа|молок|сүт|кунжут|күнжіт|соев|соя|глютен|лактоз)\p{L}*/giu, "")
     .replace(/[^\p{L}]+/gu, " ").trim();
   const anonymous = /^(?:(?:в|у|этом|этой|этого|блюде|блюда|оно|он|она|его|её|состав|составе|это|данном|оның|онда|бұл|осы|тағам|тағамда|тағамның|құрамында|құрамы|ол)\s*)*$/iu.test(reference);
-  if (requested.length !== 1) return [];
-  if (anonymous) return requested;
+   if (anonymous) return antecedent.length ? (antecedent.length === 1 ? antecedent : []) : requested.length === 1 ? requested : [];
+   if (requested.length !== 1) return [];
   // A translated adjective/case can accompany the exact item requested this
   // turn. Resolve only its supported subject words; never use this for prices.
   const titleWords = priceItemKey(requested[0].name).match(/[\p{L}\p{N}]+/gu) || [];
@@ -344,11 +388,11 @@ function menuCompositionCandidates(sentence: string, ctx: FastFoodContext, claim
     && subjectWords.every(word => filler.test(word) || matchesTitle(word)) ? requested : [];
 }
 
-function menuSupportsIngredientClaim(sentence: string, ctx: FastFoodContext) {
+function menuSupportsIngredientClaim(sentence: string, ctx: FastFoodContext, antecedent: any[] = []) {
   if (isCompositionUncertaintyOnly(sentence)) return true;
   const claim = /(?:содержит|в\s+составе\s*[:—-]?|состав\s*:|құрамында|құрамы\s*[:—-])\s+([^.!?]+)/iu.exec(sentence);
   if (!claim || /(?:не\s*содержит|нет|жоқ|емес)/iu.test(sentence)) return true;
-  const candidates = menuCompositionCandidates(sentence, ctx, claim.index);
+  const candidates = menuCompositionCandidates(sentence, ctx, claim.index, antecedent);
   const claimed = (claim[1].match(/\p{L}+/gu) || []).filter((word) => !/^(?:и|с|со|в|және|пен|мен|бар|қосылған)$/iu.test(word)).map(ingredientKey);
   return Boolean(candidates.length && claimed.length && candidates.every((item) => {
     const known = (String(item.composition || item.ingredients || "").match(/\p{L}+/gu) || []).map(ingredientKey);
@@ -356,6 +400,25 @@ function menuSupportsIngredientClaim(sentence: string, ctx: FastFoodContext) {
   }));
 }
 
+/** A composition pronoun can inherit a verified subject only in this same unit. */
+function validateMenuCompositionClaims(text:string,ctx:FastFoodContext):string {
+ const units=text.split(/\n\s*\n|\n(?=\s*\d+[.)]\s)/u);let removed=false;
+ const kept=units.flatMap(unit=>{
+   const marker=unit.match(/^\s*\d+[.)]\s+/u);const content=marker?unit.slice(marker[0].length):unit;
+   let antecedent:any[]=[];let invalid=false;
+   const output=(content.match(SENTENCE_RE)||[content]).filter(sentence=>{
+     const good=menuSupportsIngredientClaim(sentence,ctx,antecedent);
+     if(!good){removed=true;invalid=true;return false;}
+     const named=priceSubjects(ctx,sentence);
+     if(named.length)antecedent=named;
+     else if(!/^\s*(?:он[ао]?|его|е[её]|оның|онда|ол|құрам)/iu.test(sentence))antecedent=[];
+     return true;
+   });
+   if(marker&&invalid)return [];
+   const value=output.join(" ").trim();return value?[marker?marker[0]+value:value]:[];
+ });
+ return removed?kept.join("\n").trim():text;
+}
 const COMPOSITION_UNKNOWN_RE = /(?:нет\s*(?:данных|информац|сведени)|не\s*(?:могу|можем)\s*(?:подтверд|провер)|состав[^.!?]*(?:неизвест|не\s*указ|уточня)|құрам[^.!?]*(?:белгісіз|көрсетілмеген|нақтыла)|растай\s*алмай)/iu;
 const ALLERGEN_GROUPS = [/орех|жаңғақ|жангак/iu, /арахис/iu, /глютен/iu, /лактоз/iu,
   /яйц|яиц|жұмыртқа/iu, /молок|сүт/iu, /кунжут|күнжіт/iu, /соев|соя/iu,
@@ -474,7 +537,7 @@ function discountedMenuNames(ctx: FastFoodContext): string[] {
  * honest one takes its place.
  */
 const DELIVERY_ZONE_REFUSAL_RE =
-  /[^.!?\n]*(?:тек|только|лишь)[^.!?\n]{0,60}(?:жеткіз|жеткиз|достав|доставля)[^.!?\n]*[.!?]?|[^.!?\n]*(?:жеткіз|жеткиз|достав)[^.!?\n]{0,40}(?:мүмкін емес|мумкин емес|алмаймыз|болмайды|не\s+можем|невозможн|не\s+осуществля)[^.!?\n]{0,40}(?:мекенжай|адрес|көше|улиц|аудан|район)[^.!?\n]*[.!?]?|[^.!?\n]*(?:мекенжай|адрес|көше|улиц|аудан|район)[^.!?\n]{0,50}(?:жеткіз\p{L}*\s*(?:мүмкін емес|алмаймыз|болмайды)|не\s+доставля|вне\s+зоны|аймақтан\s+тыс)[^.!?\n]*[.!?]?/giu;
+  /[^.!?\n]*(?<!\p{L})(?:тек|только|лишь)(?!\p{L})[^.!?\n]{0,60}(?:жеткіз|жеткиз|достав|доставля)[^.!?\n]*[.!?]?|[^.!?\n]*(?:жеткіз|жеткиз|достав)[^.!?\n]{0,40}(?:мүмкін емес|мумкин емес|алмаймыз|болмайды|не\s+можем|невозможн|не\s+осуществля)[^.!?\n]{0,40}(?:мекенжай|адрес|көше|улиц|аудан|район)[^.!?\n]*[.!?]?|[^.!?\n]*(?:мекенжай|адрес|көше|улиц|аудан|район)[^.!?\n]{0,50}(?:жеткіз\p{L}*\s*(?:мүмкін емес|алмаймыз|болмайды)|не\s+доставля|вне\s+зоны|аймақтан\s+тыс)[^.!?\n]*[.!?]?/giu;
 
 function deliveryZoneUnknownText(language: unknown) {
   return language === "kk"
@@ -803,7 +866,8 @@ export function replyLanguageMismatch(text:string,ctx:FastFoodContext):boolean {
  const kk=new Set(words.filter(w=>/^(?:сіз|сізге|мені|деп|атай|аласыз|көмек|керек|жазыңыз|сұрақтарыңыз|болса|тапсырысыңыз|болады|қазір)$/u.test(w))).size;
  const ru=new Set(words.filter(w=>/^(?:вы|ваш|ваша|ваши|можете|если|хотите|сейчас|пожалуйста|пришлите|заказ|оплата|доставка|напишите|помочь|готов)$/u.test(w))).size;
  const english=new Set(words.filter(w=>/^(?:if|you|your|have|further|questions|feel|free|ask|please|can|order|delivery|would|like)$/u.test(w))).size;
- return ctx.language==="ru"?(kk>=3&&ru<2||english>=4&&ru<2):ctx.language==="kk"?(ru>=3&&kk<2||english>=4&&kk<2):false;
+  const foreignAffirmation=/(?:^|[.!?]\s*)(?:иә|жоқ)(?=$|[^\p{L}])/iu.test(prose);
+  return ctx.language==="ru"?(foreignAffirmation||kk>=3&&ru<2||english>=4&&ru<2):ctx.language==="kk"?(ru>=3&&kk<2||english>=4&&kk<2):false;
 }
 
 function validateFinalTextCore(
@@ -823,7 +887,9 @@ function validateFinalTextCore(
   let text = stripBotTags(protocolSafe.text);
   const warnings: string[] = protocolSafe.removed ? ["tool_protocol_removed"] : [];
   if(customerMenuRelationSubject(ctx)?.needsClarification){
-    text=ctx.language==="kk"?"Қай өнімді айтып тұрғаныңызды нақтылаңыз: бөлек сатыла ма, әлде комбо құрамында ма?":"Уточните, какой товар вы имеете в виду: продаётся ли он отдельно или входит в комбо?";
+    text=isMenuAttributeVerificationQuestion(ctx.text)
+      ?ctx.language==="kk"?"Қай өнімнің көлемін тексеру керек екенін нақтылаңыз. Көлемін мәзір деректерімен ғана растай аламын.":"Уточните, объём какого товара нужно проверить. Объём могу подтвердить только по данным меню."
+      :ctx.language==="kk"?"Қай өнімді айтып тұрғаныңызды нақтылаңыз: бөлек сатыла ма, әлде комбо құрамында ма?":"Уточните, какой товар вы имеете в виду: продаётся ли он отдельно или входит в комбо?";
     warnings.push("menu_relation_reference_clarification");
   }
 
@@ -854,6 +920,13 @@ function validateFinalTextCore(
   const orderLookup = grounding?.toolFindings?.orderLookup;
   const statusGrounded = statusCalled && orderFound === true && (!orderLookup || orderLookup === "found");
   const orderEvidence = statusCalled ? (statusGrounded ? grounding?.toolFindings : null) : ctx.activeOrder;
+  const fulfillment=orderEvidence?.orderFulfillmentType??(orderEvidence as any)?.fulfillmentType;
+  if(orderEvidence&&activeOrderQuestionKind(ctx.text,orderEvidence)==="fulfillment"&&["pickup","delivery"].includes(String(fulfillment))){
+    text=fulfillment==="pickup"
+      ?ctx.language==="kk"?"Бұл тапсырысты өзіңіз алып кетесіз.":"Ваш текущий заказ оформлен на самовывоз."
+      :ctx.language==="kk"?"Бұл тапсырыс жеткізумен рәсімделген.":"Ваш текущий заказ оформлен с доставкой.";
+    warnings.push("order_fulfillment_grounded");
+  }
   const manualWrite = isActionAssertion(text, (sentence) => MANUAL_ORDER_WRITE_CLAIM_RE.test(sentence)
     || isManualOrderHandlingClaim(sentence.replace(ACCEPTED_ORDER_CLAIM_RE, "")));
   if (manualWrite || (!orderEvidence && isActionAssertion(text, ACCEPTED_ORDER_CLAIM_RE))) {
@@ -924,7 +997,7 @@ function validateFinalTextCore(
       || isActionAssertion(sentence, CONFIRMED_HUMAN_CONTACT_RE)));
   PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
   if (unverifiedEscalation(text)) {
-    text = (text.match(SENTENCE_RE) || [text]).filter((sentence) => !unverifiedEscalation(sentence)).join(" ").trim();
+    text = removeUnsupportedActionClauses(text, unverifiedEscalation);
     PAST_ESCALATION_CLAIM_RE.lastIndex = 0;
     warnings.push("unverified_operator_notification_removed");
     if (!textWithoutUrls(text)) return { text: unverifiedHumanActionText(ctx, caseCreated, notificationAccepted), hasLink: false, warnings };
@@ -938,7 +1011,7 @@ function validateFinalTextCore(
     || promisedHumanAction(sentence, KITCHEN_CHECK_CAPABILITY_RE)
     || isActionAssertion(sentence, /(?:оператор|администратор|әкімш)[^.!?]{0,40}(?:работает\s+над|решает|разбирает|изучает|мәселені\s+шеш|қарастырып\s+жатыр)/iu);
   if (unverifiedHumanAction(text)) {
-    text = (text.match(SENTENCE_RE) || [text]).filter((sentence) => !unverifiedHumanAction(sentence)).join(" ").trim();
+    text = removeUnsupportedActionClauses(text, unverifiedHumanAction);
     warnings.push("unverified_human_action_removed");
     if (!textWithoutUrls(text)) return { text: /құрам|состав|орех|жаңғақ|аллерг/iu.test(ctx.text)
       ? allergenUnverifiedText(ctx)
@@ -995,10 +1068,14 @@ function validateFinalTextCore(
       const unknownRuntime=(sentence:string)=>isActionAssertion(sentence, KITCHEN_STATUS_RE)
         || isActionAssertion(sentence, /(?:заказы|тапсырыстар)[^.!?]{0,35}(?:принима|қабылд)|(?:күту\s+уақыты|время\s+ожидания|күту)[^.!?]{0,30}\d+\s*(?:минут|мин|сағат)/iu);
       text=(text.match(SENTENCE_RE)||[text]).filter(sentence=>!unknownRuntime(sentence)).join(" ").trim();
-      if(text!==before)warnings.push("unsupported_kitchen_claim_clause_removed");
+      if(text!==before){
+        warnings.push("unsupported_kitchen_claim_clause_removed");
+        if(text&&/(?:ждать|ожидан|күту|қанша|белгісіз|неизвест|подтвержден|расталған)/iu.test(ctx.text))
+          text=(ctx.language==="kk"?"Асүйдің жұмысын және күту уақытын қазір растай алмаймын.":"Работу кухни и время ожидания сейчас подтвердить не могу.")+" "+text;
+      }
       if(!text)return {text:runtimeUnavailableText(ctx),hasLink:false,warnings:[...warnings,"unsupported_kitchen_claim"]};
     }
-    if (KITCHEN_STATUS_RE.test(text)) {
+    if (ctx.runtimeStatus?.runtime_available !== false && KITCHEN_STATUS_RE.test(text)) {
       const withoutKitchenClaims = dropSentencesMatching(text, KITCHEN_STATUS_RE);
       if (withoutKitchenClaims) {
         text = withoutKitchenClaims;
@@ -1140,8 +1217,9 @@ function validateFinalTextCore(
     // shown. Requiring a tool call on top of that deleted prices the prompt had
     // just told the model to quote - and MENU_LOOKUP_RE does not catch every way a
     // guest asks ("Пицца почем?"), so no tool ran (found 2026-08-22).
-    const snapshotPrices = Array.isArray(ctx.menuSnapshot?.items) && ctx.menuSnapshot!.items.length > 0;
-    const toolGrounded = grounding.toolsCalled.some((tool) => PRICE_GROUNDING_TOOLS.includes(tool));
+    const catalogUnavailable=ctx.menuSnapshot?.source==="menu_unavailable"||(ctx.menuGrounding as any)?.menu_lookup==="unavailable";
+    const snapshotPrices = !catalogUnavailable && Array.isArray(ctx.menuSnapshot?.items) && ctx.menuSnapshot!.items.length > 0;
+    const toolGrounded = grounding.toolsCalled.some((tool) => PRICE_GROUNDING_TOOLS.includes(tool) && (tool!=="searchMenu" || !catalogUnavailable));
     const grounded = snapshotPrices || toolGrounded;
     if (snapshotPrices && PRICE_CLAIM_RE.test(text)
       && (ctx.menuGrounding || !grounding.toolsCalled.some((tool) => tool === "checkOrderStatus" || tool === "getPaymentDetails"))) {
@@ -1241,8 +1319,7 @@ function validateFinalTextCore(
     }
     const compositionClaim = /(?:содержит|в\s+составе|состав\s*:|құрамында|құрамы\s*[:—-])/iu;
     if (compositionClaim.test(text)) {
-      const withoutInventedIngredients = dropSentencesMatchingUnless(text, compositionClaim,
-        (sentence) => menuSupportsIngredientClaim(sentence, ctx));
+      const withoutInventedIngredients = validateMenuCompositionClaims(text, ctx);
       if (withoutInventedIngredients !== text) {
         text = withoutInventedIngredients;
         warnings.push("unsupported_ingredient_claim_removed");
@@ -1294,6 +1371,16 @@ import {
   manualCancellationBoundaryText,
 } from "../services/orderAuthority.service.js";
 
+/** A failed language rewrite retains a verified answer instead of a generic closing. */
+export function groundedReplyFallback(ctx:FastFoodContext,toolsCalled:string[]=[],runtime:any=null):string|null {
+ if(!/(?:сколько\s+ждать|как\s+долго|қанша\s+күту|күту\s+уақыты)/iu.test(ctx.text))return null;
+ const unknown=ctx.language==="kk"?"Күту уақытын қазір растай алмаймын.":"Время ожидания сейчас подтвердить не могу.";
+ if(!toolsCalled.includes("getKitchenStatus")||!runtime||runtime.runtime_available!==true||runtime.live!==true||runtime.is_last_known===true
+   ||runtime.stale_runtime_backup||runtime.redis_runtime_fallback||/backup|stale|fallback/.test(String(runtime.source||"")))return unknown;
+ const raw=runtime.wait_time??runtime.kitchen_status?.wait_time;const minutes=Number(raw);
+ if(raw===null||raw===undefined||!Number.isFinite(minutes)||minutes<0||minutes>1440)return unknown;
+ return ctx.language==="kk"?"Қазіргі шамамен күту уақыты — "+minutes+" минут.":"Сейчас ориентировочное ожидание — "+minutes+" минут.";
+}
 export { fallbackReply };
 
 // «Сілтеме чатымызда сәл жоғарыда тұр» / «посмотрите выше» - live 2026-10-04 the guest
@@ -1530,7 +1617,7 @@ function currentStaffEffortClaims(text: string, ctx: FastFoodContext) {
   return result;
 }
 
-const GENERIC_CLOSING_RE = /(?:^|(?<=\s))(?:(?:Егер\s+)?(?:қосымша\s+)?сұра[қғ](?:тар)?ыңыз\s+болса[,\s]+(?:жазыңыз|жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын)|не\s+көмек\s+керек[,\s]+жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын|если\s+(?:у\s+вас\s+)?(?:(?:будут|возникнут|есть)\s+)?(?:ещ[её]\s+|дополнительные\s+)?вопросы[,\s]+(?:напишите|пишите|обращайтесь)|обращайтесь[,\s]+если\s+(?:возникнут|будут)\s+вопросы)[.!\s😊🙂]*(?=(?:\s+https?:\/\/[^\s<>]+)*$)/iu;
+const GENERIC_CLOSING_RE = /(?:^|(?<=\s))(?:(?:Егер\s+)?(?:(?:қосымша|басқа)\s+)?сұра[қғ](?:тар)?ыңыз\s+болса[,\s]+(?:жазыңыз|жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын)|не\s+көмек\s+керек[,\s]+жаза\s+беріңіз|мен\s+көмектесуге\s+дайынмын|если\s+(?:у\s+вас\s+)?(?:(?:будут|возникнут|есть)\s+)?(?:ещ[её]\s+|дополнительные\s+)?вопросы[,\s]+(?:напишите|пишите|обращайтесь)|обращайтесь[,\s]+если\s+(?:возникнут|будут)\s+вопросы)[.!\s😊🙂]*(?=(?:\s+https?:\/\/[^\s<>]+)*$)/iu;
 
 function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string {
   const recentAssistant = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [])

@@ -147,7 +147,9 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const customerWords = text.toLowerCase().match(/\p{L}{3,}/gu) || [];
   const namedCatalogItem = catalogWords.some((name: string) => customerWords.some((word) =>
     word === name || (name.length >= 4 && word.startsWith(name))));
-  const menuLookup = isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+   const currentCatalogRequest=intentMatches(/(?:какое|какие)\s+(?:блюдо|блюда|вариант\p{L}*)[^.!?]{0,45}(?:вместо|взамен)|(?:покаж\p{L}*|пришл\p{L}*|отправ\p{L}*)\s+(?:актуальн\p{L}*|текущ\p{L}*|свеж\p{L}*)\s+меню/iu,text)
+     &&!/(?:не\s+(?:присылай|пришл|отправ|показы)|не\s+нуж)/iu.test(text);
+   const menuLookup = currentCatalogRequest || isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && (hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");

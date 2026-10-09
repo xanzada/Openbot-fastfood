@@ -730,6 +730,8 @@ function normalizeOrderItems(items: unknown) {
 // Dividing by 100 corrupted the order sum to 70 ₸.
 export function normalizeOrderPayload(order: Record<string, any> = {}) {
   const items = normalizeOrderItems(order.items);
+  const fulfillment=String(order.fulfillment_type??order.delivery_type??order.type??"").trim().toLowerCase();
+  const fulfillmentType=["pickup","delivery"].includes(fulfillment)?fulfillment:order.is_pickup===true?"pickup":null;
   const paymentFields = paymentFieldsFrom(order);
   const id = String(order.id || order.order_id || order.uuid || "").trim();
   const displayNumber = String(
@@ -751,7 +753,8 @@ export function normalizeOrderPayload(order: Record<string, any> = {}) {
     ),
     address: String(order.address || "").trim().slice(0, 240),
     comment: String(order.comment || "").trim().slice(0, 500),
-    is_pickup: toBool(order.is_pickup, String(order.fulfillment_type || order.delivery_type || "").trim().toLowerCase() === "pickup"),
+    fulfillment_type: fulfillmentType,
+    is_pickup: toBool(order.is_pickup, fulfillmentType === "pickup"),
     payment_status: String(order.payment_status || "").trim().slice(0, 80),
     // null = legacy order (prepayment flow), not "paid" and not "on receipt".
     payment_timing: paymentFields.timing,

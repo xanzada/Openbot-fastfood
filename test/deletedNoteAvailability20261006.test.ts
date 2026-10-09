@@ -41,7 +41,14 @@ for(const [name,extra] of [
 ] as const){
   test(`a real restriction or missing authority does not authorize a positive availability correction: ${name}`,()=>{
     const reply='Кола қазір қолжетімсіз. Спрайт 650 теңге.';
-    assert.equal(validate(reply,ctx(extra)),reply);
+    const output=validate(reply,ctx(extra));
+    if(name==='failed fresh catalog'){
+      // This fixture has no current snapshot provenance; a failed read cannot
+      // certify the cached alternative's price.
+      assert.match(output,/Кола қазір қолжетімсіз/u);
+      assert.doesNotMatch(output,/Спрайт|650/u);
+      assert.doesNotMatch(output,/Кола (?:мәзірде )?(?:қазір )?қолжетімді/u);
+    }else assert.equal(output,reply);
   });
 }
 for(const reply of [
