@@ -1,3 +1,5 @@
+import {customerMenuRelationSubject} from "../utils/menuQuestionContext.js";
+import {shoppingConstraintsForContext, eligibleShoppingItems, isShoppingDecision, shoppingBasketQuote, type ShoppingItem} from "../services/shoppingConstraints.service.js";
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import type { FastFoodContext } from "../context/types.js";
 import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
@@ -228,22 +230,67 @@ function namedMenuItems(ctx: FastFoodContext, value: string): any[] {
     .filter((item: any) => menuClaimKey(item.name) && lower.includes(menuClaimKey(item.name)));
 }
 
-function menuSentencePricesMatch(sentence: string, ctx: FastFoodContext) {
-  const amounts = [...sentence.matchAll(/(\d[\d \u00a0]*(?:[.,]\d+)?)\s*(?:₸|тг|тенге|теңге|kzt)/giu)];
-  return amounts.every((match) => {
-    const prefix = menuClaimKey(sentence.slice(0, match.index));
-    const named = namedMenuItems(ctx, prefix).sort((a, b) =>
-      prefix.lastIndexOf(menuClaimKey(b.name)) - prefix.lastIndexOf(menuClaimKey(a.name)));
-    const requested = namedMenuItems(ctx, ctx.text);
-    const anonymousPrefix = prefix.replace(/[^\p{L}]+/gu, " ").trim();
-    const anonymousPrice = /^(?:(?:цена|стоимость|стоит|он|она|оно|это|этот|эта|данное|блюдо|позиция|за|штуку|бағасы|тұрады|ол|оның|бұл|осы|тағам)\s*)*$/iu.test(anonymousPrefix);
-    const candidates = named.length ? [named[0]] : anonymousPrice && requested.length === 1 ? requested : [];
-    if (!candidates.length) return false;
-    const amount = Number(match[1].replace(/[ \u00a0]/g, "").replace(",", "."));
-    return candidates.some((item) => Number(item.price) === amount
-      || (Number(item.compare_at_price || item.old_price) > Number(item.price)
-        && Number(item.compare_at_price || item.old_price) === amount));
+function priceItemKey(value: unknown) {
+  return String(value || "").toLowerCase().replace(/(?:coca[-\s]*cola|кока[-\s]*кол[ауые]|(?<!\p{L})кол[ауые](?!\p{L}))/gu,"кола").replace(/\s+/g," ").trim();
+}
+function priceItemSpans(ctx: FastFoodContext, value: string) {
+  const text=priceItemKey(value);const hits:Array<{item:ShoppingItem;start:number;end:number}>=[];
+  for(const item of (Array.isArray(ctx.menuSnapshot?.items)?ctx.menuSnapshot.items:[]) as ShoppingItem[]){
+    const name=priceItemKey(item.name);if(!name)continue;
+    for(let at=text.indexOf(name);at>=0;at=text.indexOf(name,at+1)){
+      const before=text[at-1]||"",after=text[at+name.length]||"";
+      if(!/\p{L}|\p{N}/u.test(before)&&!/\p{L}|\p{N}/u.test(after))hits.push({item,start:at,end:at+name.length});
+    }
+  }
+  hits.sort((a,b)=>(b.end-b.start)-(a.end-a.start)||a.start-b.start);
+  const spans:typeof hits=[];
+  for(const hit of hits)if(!spans.some(other=>hit.start<other.end&&hit.end>other.start&&(hit.start!==other.start||hit.end!==other.end)))spans.push(hit);
+  return spans.sort((a,b)=>a.start-b.start);
+}
+function priceSubjects(ctx:FastFoodContext,prefix:string){
+  const normalized=priceItemKey(prefix);
+  const composition=normalized.search(/(?:входит|содержит|состав|ингредиент|құрам)/iu);
+  const spans=priceItemSpans(ctx,prefix).filter(hit=>composition<0||hit.start<composition);
+  const latest=spans.at(-1)?.start;return spans.filter(hit=>hit.start===latest).map(hit=>hit.item);
+}
+function menuSentencePricesMatch(sentence: string, ctx: FastFoodContext, antecedent:ShoppingItem[]=[]):boolean {
+  const amounts=[...sentence.matchAll(/(\d[\d \u00a0]*(?:[.,]\d+)?)\s*(?:₸|тг|тенге|теңге|kzt)/giu)];
+  return amounts.every(match=>{
+    const prefix=sentence.slice(0,match.index);const amount=Number(match[1].replace(/[ \u00a0]/g,"").replace(",","."));
+    const named=priceSubjects(ctx,prefix);
+    // A guest's stated budget is not a price for an unnamed menu SKU.
+    const budgetSubject=/(?:у\s+вас|у\s+меня|вашим|ваш\p{L}*|сенде|сізде|бюджет\p{L}*|шегінде)/giu;
+     const budgetAt=[...prefix.matchAll(budgetSubject)].at(-1)?.index??-1;
+     const namedAt=priceItemSpans(ctx,prefix).at(-1)?.start??-1;
+     if(shoppingConstraintsForContext(ctx).budget===amount&&budgetAt>namedAt)return true;
+    const requested=priceItemSpans(ctx,ctx.text).map(hit=>hit.item);
+    const anonymous=priceItemKey(prefix).replace(/[^\p{L}]+/gu," ").trim();
+    const anonymousPrice=/^(?:(?:цена|стоимость|стоит|он|она|оно|это|этот|эта|данное|блюдо|позиция|за|штуку|бағасы|тұрады|ол|оның|бұл|осы|тағам)\s*)*$/iu.test(anonymous);
+    const anaphoric=/^\s*(?:в\s+(?:него|неё|нее)|он[ао]?|его|ее|её|это|цена|стоимость|стоит|құрамында|оның|ол|бағасы|тұрады)(?!\p{L})/iu.test(prefix);
+    const candidates=named.length?named:anaphoric&&antecedent.length===1?antecedent:anonymousPrice&&requested.length===1?requested:[];
+    return candidates.length===1 && candidates.some(item=>Number(item.price)===amount||(Number(item.compare_at_price||item.old_price)>Number(item.price)&&Number(item.compare_at_price||item.old_price)===amount));
   });
+}
+/** List markers stay attached to their item; other factual guards keep their old sentence policy. */
+function validateMenuPriceClaims(text:string,ctx:FastFoodContext):string {
+  const urls=uniqueUrls(text);const body=text.replace(URL_RE," ");
+  const units=body.split(/\n\s*\n|\n(?=\s*\d+[.)]\s)|(?<=[.!?])\s+(?=\d+[.)]\s)/u);const kept:string[]=[];let nextNumber=1;let removed=false;
+  for(const unit of units){
+    const marker=unit.match(/^\s*\d+[.)]\s+/u);const content=marker?unit.slice(marker[0].length):unit;
+    const sentences=content.match(SENTENCE_RE)||[content];let antecedent:ShoppingItem[]=[];let invalid=false;const output:string[]=[];
+    for(const raw of sentences){
+      const sentence=raw.trim();if(!sentence)continue;
+      const named=priceSubjects(ctx,sentence);
+      const good=!new RegExp(PRICE_CLAIM_RE.source,PRICE_CLAIM_RE.flags.replace(/[gy]/g,"")).test(sentence)||menuSentencePricesMatch(sentence,ctx,antecedent);
+      if(!good){invalid=true;removed=true;if(!marker&&antecedent.length===1&&output.length&&/(?:рекоменд|посовет|предлага|усына)/iu.test(output.at(-1)||""))output.pop();}
+      else output.push(sentence);
+      if(named.length)antecedent=named;
+    }
+    if(marker&&invalid)continue;
+    const value=output.join(" ").trim();if(value)kept.push(marker?`${nextNumber++}. ${value}`:value);
+  }
+  if(!removed)return text;
+  const rebuilt=kept.join("\n").trim();return [rebuilt,...urls].filter(Boolean).join("\n");
 }
 
 function ingredientKey(word: string) {
@@ -705,6 +752,10 @@ function validateFinalTextCore(
   const protocolSafe = stripToolProtocolArtifacts(String(rawText || "").trim());
   let text = stripBotTags(protocolSafe.text);
   const warnings: string[] = protocolSafe.removed ? ["tool_protocol_removed"] : [];
+  if(customerMenuRelationSubject(ctx)?.needsClarification){
+    text=ctx.language==="kk"?"Қай өнімді айтып тұрғаныңызды нақтылаңыз: бөлек сатыла ма, әлде комбо құрамында ма?":"Уточните, какой товар вы имеете в виду: продаётся ли он отдельно или входит в комбо?";
+    warnings.push("menu_relation_reference_clarification");
+  }
 
   if (!text) return { text: fallback(ctx), hasLink: false, warnings: [...warnings, "empty_model_output"] };
 
@@ -1014,11 +1065,11 @@ function validateFinalTextCore(
     const grounded = snapshotPrices || toolGrounded;
     if (snapshotPrices && PRICE_CLAIM_RE.test(text)
       && (ctx.menuGrounding || !grounding.toolsCalled.some((tool) => tool === "checkOrderStatus" || tool === "getPaymentDetails"))) {
-      const checked = dropSentencesMatchingUnless(text, PRICE_CLAIM_RE, (sentence) => menuSentencePricesMatch(sentence, ctx));
+      const checked = validateMenuPriceClaims(text, ctx);
       if (checked !== text) {
         warnings.push("menu_price_mismatch_removed");
         text = checked;
-        if (!textWithoutUrls(text)) return { text: fallback(ctx), hasLink: false, warnings };
+        if (!textWithoutUrls(text)) return { text: ctx.language === "kk" ? "Бұл бағаны қазір растай алмаймын." : "Сейчас не могу подтвердить эту цену.", hasLink: false, warnings };
       }
     }
     if (!grounded) {
@@ -1028,7 +1079,7 @@ function validateFinalTextCore(
           text = withoutPrices;
           warnings.push("ungrounded_price_claim_removed");
         } else {
-          warnings.push("ungrounded_price_claim_kept_no_survivor");
+          return {text:ctx.language === "kk" ? "Бағаны қазір растай алмаймын." : "Сейчас не могу подтвердить цену.",hasLink:false,warnings:[...warnings,"ungrounded_price_claim_removed"]};
         }
       }
       // Deliberately NOT relaxed by the snapshot: telling a guest an allergen is
@@ -1204,13 +1255,26 @@ function isVoiceContext(ctx: FastFoodContext) {
   return Boolean(media && /audio|voice|ptt/i.test(String(media.kind || media.type || media.mimeType || "")));
 }
 
-function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] = []): string | null {
-  const budget = getMenuBudgetInquiry(ctx.text);
-  if (budget === null) return null;
+function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] = [], draft = ""): string | null {
+  const shopping = shoppingConstraintsForContext(ctx);
+  const budget = shopping.budget;
+  const basket = shoppingBasketQuote(ctx);
+  if (basket && !ctx.shoppingPriorStateUnknown && !shopping.uncertainBudget) {
+    const lines = basket.lines.map(line => line.quantity+" × "+line.name+" ("+line.unit_price+" тг)").join("; ");
+    const comparison = basket.budget === null ? "" : ctx.language === "kk"
+      ? (basket.fits ? " "+basket.budget+" тг бюджет шегінде." : " "+basket.budget+" тг бюджеттен асады.")
+      : (basket.fits ? " В пределах бюджета "+basket.budget+" тг." : " Превышает бюджет "+basket.budget+" тг.");
+    return ctx.language === "kk" ? lines+": барлығы "+basket.total+" тг."+comparison+" Жеткізу құны бұл сомаға кірмейді."
+      : lines+": всего "+basket.total+" тг."+comparison+" Стоимость доставки в сумму не включена.";
+  }
+  if (!isShoppingDecision(ctx)) return null;
+  if (ctx.shoppingPriorStateUnknown || ctx.shoppingStateUnavailable && budget === null && !shopping.avoidMeat) return ctx.language === "kk" ? "Алдыңғы шектеулеріңізді растай алмаймын. Бюджет пен тағам шектеулерін нақтылай аласыз ба?" : "Не могу подтвердить прежние ограничения. Уточните бюджет и ограничения по еде.";
+  if (budget === null && !shopping.avoidMeat && !shopping.uncertainBudget) return null;
+  if (shopping.uncertainBudget) return ctx.language === "kk" ? "Бюджет сомасын нақтылай аласыз ба?" : "Уточните, пожалуйста, сумму бюджета.";
   const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
   // A budget answer must not replace another current requested answer/action.
-  const requestedAction = current.replace(/(?<!\p{L})бас[қк]а\s+а[қк]шам\s+жо[қк](?!\p{L})/giu, "");
-  if (/(?:оператор|админ|жалоб|шағым|шагым|отрав|ақша|акша|возврат|вернит|оплат|төлем|толем|чек|состав|құрам|курам|ингредиент|кухн|асүй|ас\s?үй)/iu.test(requestedAction)) return null;
+  const requestedAction = current.replace(/(?<!\p{L})бас[қк]а\s+а[қк]шам?\s+жо[қк](?!\p{L})/giu, "");
+  if (/(?:оператор|админ|жалоб|шағым|шагым|отрав|ақша|акша|возврат|вернит|оплат|төлем|толем|чек|кухн|асүй|ас\s?үй)/iu.test(requestedAction)) return null;
   if (/(?<!\p{L})закажи(?:те)?(?!\p{L})|(?:тапсырыс|заказ)\p{L}*\s+(?:жаса|бер)(?:ңыз|ныз|іңіз|иниз|ңдар|ндар|іңдер|индер)?(?!\p{L})/iu.test(current)) return null;
   // Generic pre-order exploration can need budget advice; specific order actions keep their own flow.
   if (isCustomerOrderStatusQuestion(current)
@@ -1222,25 +1286,30 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     .filter((value: string) => value.trim() && value.trim() !== current.trim()).slice(-1)[0] || "";
   // Price alone cannot satisfy health/diet constraints. Preserve their safety answer.
   if (ALLERGY_TOPIC_RE.test(current) || ALLERGY_TOPIC_RE.test(nearestUser)
-    || [current, nearestUser].some(value => /вегетари|веган|халал|диет|без[^.!?]{0,20}(?:мяса|молока|яиц|глютена)|етсіз|сүтсіз/iu.test(value))) return null;
+    || [current, nearestUser].some(value => /вегетари|веган|халал|диет|без[^.!?]{0,20}(?:молока|яиц|глютена)|сүтсіз/iu.test(value))) return null;
   const unknown = ctx.language === "kk"
-    ? `${budget} тг бюджетке сай нұсқалардың бағасын қазір растай алмаймын.`
-    : `Сейчас не могу подтвердить цены вариантов в пределах ${budget} тг.`;
+    ? "Шектеулеріңізге сай нұсқаларды қазір растай алмаймын."
+    : "Сейчас не могу подтвердить варианты с учётом ваших ограничений.";
   const snapshot = ctx.menuSnapshot;
   const grounding = ctx.menuGrounding;
   if (!snapshot || !Array.isArray(snapshot.items) || snapshot.source === "menu_unavailable"
     || grounding?.menu_lookup === "unavailable" || grounding?.error
     || (!grounding && !toolsCalled.includes("searchMenu"))) return unknown;
   const vocabulary = menuVocabulary(snapshot.items);
-  const priced = snapshot.items.filter((item: any) => item && item.available !== false
+  const priced = eligibleShoppingItems(ctx, snapshot.items).filter((item: any) => item && item.available !== false
     && typeof item.name === "string" && item.name.trim()
     && !menuItemBlockedByNotes(ctx.activeShiftNotes || [], item, vocabulary).blocked)
     .map((item: any) => ({item, price: typeof item.price === "number" ? item.price
       : typeof item.price === "string" && /^\d+(?:[.,]\d+)?$/.test(item.price.trim()) ? Number(item.price.trim().replace(",", ".")) : NaN}))
     .filter(({price}: any) => Number.isFinite(price) && price > 0);
-  if (!priced.length) return unknown;
+  const honestUnknown = /^(?:подтвердить\s+(?:подходящий\s+вариант|состав)\s+(?:пока\s+)?не\s+могу|(?:сейчас\s+)?не\s+могу\s+подтвердить\s+(?:подходящий\s+вариант|состав))[.!?]?$/iu.test(draft.trim());
+  if (!priced.length && shopping.avoidMeat && honestUnknown) return null;
+  if (!priced.length && shopping.avoidMeat) return ctx.language === "kk"
+    ? "Құрамы туралы қазіргі деректерден етсіз лайық нұсқаны растай алмаймын."
+    : "По текущим данным о составе не могу подтвердить подходящий вариант без мяса.";
+  if (!priced.length) return ctx.language === "kk" ? "Қазіргі мәзірде шектеулеріңізге сай расталған нұсқа табылмады." : "В текущем меню нет подтверждённого варианта с учётом ваших ограничений.";
   const food = (item: any) => /донер|пицц|бургер|шаурм|фри|ролл|суши|цезар|наггетс|сэндвич|еда|тағам|тамақ/iu.test(`${item.name} ${item.category_name || item.category || ""}`);
-  const choices = priced.filter(({item,price}: any) => price <= budget
+  const choices = priced.filter(({item,price}: any) => (budget === null || price <= budget)
     && (!drinksOnly || /напит|сусын|сок|шырын|спрайт|кола|фанта|вода|су(?:\s|$)|чай|шай|кофе/iu.test(`${item.name} ${item.category_name || item.category || ""}`)))
     .sort((a: any, b: any) => Number(food(b.item)) - Number(food(a.item)) || b.price - a.price)
     .slice(0, 3);
@@ -1249,8 +1318,8 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     : `Среди доступных позиций с подтверждённой ценой не нашёл варианта в пределах ${budget} тг.`;
   const lines = choices.map(({item,price}: any) => `${item.name.trim()} — ${price} тг`).join("; ");
   return ctx.language === "kk"
-    ? `${budget} тг шегінде әрқайсысын бөлек таңдауға болады: ${lines}.`
-    : `В пределах ${budget} тг можно выбрать каждый вариант отдельно: ${lines}.`;
+    ? `${budget === null ? "Шектеулеріңізге сай" : budget + " тг шегінде"} әрқайсысын бөлек таңдауға болады: ${lines}.`
+    : `${budget === null ? "С учётом ваших ограничений" : "В пределах " + budget + " тг"} можно выбрать каждый вариант отдельно: ${lines}.`;
 }
 
 
@@ -1417,7 +1486,7 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   const voiceReplacement = replaceGenericVoiceGreeting(aligned.text, args[1]);
   if (voiceReplacement) warnings.push("generic_voice_greeting_blocked");
   let finalText = voiceReplacement || aligned.text;
-  const budgetReply = boundedBudgetAlternatives(args[1], args[2]?.toolsCalled);
+  const budgetReply = boundedBudgetAlternatives(args[1], args[2]?.toolsCalled, finalText);
   if (budgetReply !== null) {
     const links = finalText.match(/https?:\/\/[^\s<>]+/giu) || [];
     finalText = [budgetReply, ...links].join(" ");

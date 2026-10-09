@@ -1,3 +1,4 @@
+import type {ShoppingConstraints} from "../services/shoppingConstraints.service.js";
 export interface FastFoodContext {
   instanceId: string;
   phone: string;
@@ -13,6 +14,9 @@ export interface FastFoodContext {
   chatHistory: any[];
   menuSnapshot: Record<string, any> | null;
   menuGrounding?: Record<string, any>;
+  shoppingConstraints?: ShoppingConstraints;
+  shoppingStateUnavailable?: boolean;
+  shoppingPriorStateUnknown?: boolean;
   // Current Redis checkout grace, bound to this exact kitchen policy.
   kitchenCheckoutFingerprint?: string | null;
   activeShiftNotes: any[];

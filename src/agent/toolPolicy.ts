@@ -1,3 +1,4 @@
+import {needsShoppingPrepass} from "../services/shoppingConstraints.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
@@ -145,7 +146,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const customerWords = text.toLowerCase().match(/\p{L}{3,}/gu) || [];
   const namedCatalogItem = catalogWords.some((name: string) => customerWords.some((word) =>
     word === name || (name.length >= 4 && word.startsWith(name))));
-  const menuLookup = hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+  const menuLookup = needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && (hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");

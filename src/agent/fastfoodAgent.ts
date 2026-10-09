@@ -1,3 +1,4 @@
+import {refreshShoppingConstraints, needsShoppingPrepass} from "../services/shoppingConstraints.service.js";
 import { Agent, stepCountIs } from "@voltagent/core";
 import type { FastFoodContext } from "../context/types.js";
 import { createFastFoodSkills } from "../skills/index.js";
@@ -135,6 +136,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   const CRITIC_BUDGET_MS = envNumber(process.env.CRITIC_BUDGET_MS, 20_000, { min: 10_000, max: 60_000 });
   const REGEN_BUDGET_MS = envNumber(process.env.REGEN_BUDGET_MS, 38_000, { min: CRITIC_BUDGET_MS + 5_000, max: 90_000 });
 
+  await refreshShoppingConstraints(ctx);
   const toolPlan = await resolveLiveAgentToolPlan(ctx);
   const menuGrounding = toolPlan.requiredTools.includes("searchMenu") ? await groundMenuTurn(ctx) : null;
   const groundedCalls = menuGrounding ? [{ name: "searchMenu", arguments: { query: typeof menuGrounding.lookup_query === "string" ? menuGrounding.lookup_query : menuQueryForTurn(ctx.text, ctx), limit: 12 } }] : [];
@@ -165,7 +167,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   const thinkingState = createTurnThinkingState(ctx.thinking);
   let pendingThinking: Promise<TurnAnalysis | null> | null = null;
   if (ctx.thinking === undefined || ctx.thinking === null) {
-    if (thinkMode === "blocking") {
+    if (thinkMode === "blocking" || thinkMode !== "off" && needsShoppingPrepass(ctx)) {
       ctx.thinking = await analyzeTurnSituation(ctx, toolPlan).catch(() => null);
       thinkingState.settle(ctx.thinking);
     } else if (thinkMode !== "off") {

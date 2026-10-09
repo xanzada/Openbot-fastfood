@@ -1,5 +1,6 @@
+import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { customerCompositionSubject, isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
+import { customerCompositionSubject, customerMenuRelationSubject, isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -33,7 +34,8 @@ const QUERY_FILLERS = new Set([
 ]);
 
 export function menuQueryForTurn(text: string, ctx?: FastFoodContext) {
-  const queryText = ctx && isContextualCompositionQuestion(text) ? customerCompositionSubject(ctx) || "" : text;
+  const relation=ctx?customerMenuRelationSubject(ctx):null;
+  const queryText = relation ? relation.subject || "" : ctx && isContextualCompositionQuestion(text) ? customerCompositionSubject(ctx) || "" : text;
   return (normalizeText(queryText).match(/[\p{L}\p{N}]+/gu) || [])
     .filter((word) => !QUERY_FILLERS.has(word)).join(" ").slice(0, 80);
 }
@@ -189,6 +191,13 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         : await readMenu(ctx.instanceId, domain, ctx.language, { forceFresh: true });
       ctx.menuSnapshot = menu;
       const items = Array.isArray(menu?.items) ? menu.items : [];
+      const relation=customerMenuRelationSubject(ctx);
+      if(relation?.needsClarification)return {
+        ...pageMenuMatches([]),eligible_choices:[],categories:[],promotions_now:[],
+        menu_relation:{needs_clarification:true,reason:"customer_reference_unresolved"},
+        ...(menu?.source==="menu_unavailable"?{menu_lookup:"unavailable"}:{})
+      };
+      if(relation?.subject)query=relation.subject;
       const vocabulary = menuVocabulary(items);
       // Hub-level availability was carried in the payload (line ~94) but never acted
       // on: allowedItems filtered only note-blocked dishes, so a dish the hub marks
@@ -243,6 +252,8 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         // items / offset / nextOffset / totalMatched / returned / hasMore, and the
         // truncation hint whenever the page is shorter than the total.
         ...page,
+        shopping_constraints: shoppingEvidence(ctx),
+        eligible_choices: selectPublicMenuItems(eligibleShoppingItems(ctx, allowedItems), "", category, 12),
         // The catalog's own section list, taken from every item the guest may be
         // shown - not from the page above. It is what makes "what categories do
         // you have?" answerable without paging the whole menu.

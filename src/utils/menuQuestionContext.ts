@@ -29,3 +29,36 @@ export function customerCompositionSubject(ctx: FastFoodContext): string | null 
   }
   return null;
 }
+
+const MENU_RELATION_FOLLOW_UP_RE=/^(?:(?:а|и|ал)\s+)?(?:он|она|оно|это|ол)(?!\p{L})[^.!?]{0,140}(?:отдельно|в\s+(?:составе\s+)?комбо|бөлек|болек|комбода)[?.!]*$/iu;
+/** A relation question can use only a fresh, scoped customer identity, never a previous reply. */
+export function customerMenuRelationSubject(ctx:FastFoodContext):{subject:string|null;needsClarification:boolean}|null {
+ const current=fold(unquoted(ctx.text));if(!MENU_RELATION_FOLLOW_UP_RE.test(current))return null;
+ const items=Array.isArray(ctx.menuSnapshot?.items)?ctx.menuSnapshot.items:[];
+ const exactNames=(text:string)=>{
+  const names=[...new Set(items.map((item:any)=>String(item.name||item.title||"").trim()).filter(Boolean))].sort((a,b)=>b.length-a.length);
+  const spans:{name:string;start:number;end:number}[]=[];
+  for(const name of names){
+   const target=fold(name);let from=0;let start:number;
+   while((start=text.indexOf(target,from))!==-1){from=start+target.length;const end=from;
+    if(/\p{L}|\p{N}/u.test(text[start-1]||"")||/\p{L}|\p{N}/u.test(text[end]||""))continue;
+    if(!spans.some(span=>start<span.end&&end>span.start))spans.push({name,start,end});
+   }
+  }
+  return [...new Set(spans.map(span=>span.name))];
+ };
+ // A newly stated product takes precedence over pronoun recovery.
+ if(exactNames(current).length)return null;
+ const unknown={subject:null,needsClarification:true};const now=Date.now();
+ for(const row of (Array.isArray(ctx.chatHistory)?ctx.chatHistory:[]).slice(-12).reverse()){
+  if(!row||row.role!=="user")continue;
+  const text=fold(unquoted(row.text??row.content??row.body??""));if(text===current)continue;
+  if(row.instanceId&&row.instanceId!==ctx.instanceId||row.instance_id&&row.instance_id!==ctx.instanceId)return unknown;
+  if(row.phone&&String(row.phone).replace(/\D/g,"")!==String(ctx.phone).replace(/\D/g,""))return unknown;
+  const raw=row.createdAt??row.timestamp;const at=typeof raw==="number"?raw:Date.parse(String(raw||""));
+  if(!Number.isFinite(at)||at>now||at<=now-30*60_000)return unknown;
+  if(NEUTRAL_ACK_RE.test(text))continue;
+  const names=exactNames(text);return names.length===1?{subject:names[0],needsClarification:false}:unknown;
+ }
+ return unknown;
+}

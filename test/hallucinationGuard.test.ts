@@ -58,5 +58,7 @@ test("older callers without a grounding report behave exactly as before", () => 
 test("a lone ungrounded claim is never replaced with a dead fallback", () => {
   const out = validateFinalText("Пицца стоит 2500 тенге.", ctx(), { toolsCalled: [] });
   assert.ok(out.text.length > 0);
-  assert.ok(out.warnings.includes("ungrounded_price_claim_kept_no_survivor"));
+  assert.doesNotMatch(out.text,/2500/u);
+  assert.match(out.text,/не могу подтвердить цену/iu);
+  assert.ok(out.warnings.includes("ungrounded_price_claim_removed"));
 });

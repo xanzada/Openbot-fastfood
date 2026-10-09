@@ -1,3 +1,4 @@
+import {needsShoppingPrepass, shoppingEvidence} from "./shoppingConstraints.service.js";
 import { getAnalysisModel } from "./llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { envNumber } from "../utils/envNumber.js";
@@ -57,6 +58,7 @@ export function shouldThink(ctx: FastFoodContext, toolPlan?: { requiredTools?: s
   const text = String(ctx.text || "").trim();
   if (!text) return false;
   if (text.length <= 40 && TRIVIAL_TEXT_RE.test(text)) return false;
+  if (needsShoppingPrepass(ctx)) return true;
   const confidentPlan = Boolean(toolPlan && Array.isArray(toolPlan.requiredTools) && toolPlan.requiredTools.length > 0);
   if (confidentPlan && text.length < 200 && !COMPLAINT_OR_EMOTION_RE.test(text) && !ctx.mediaContext) return false;
   if (THINK_WORTHY_RE.test(text)) return true;
@@ -132,7 +134,7 @@ Output strict JSON with these keys:
 - style_hint: one short sentence telling the answering layer how to talk to THIS person right now
 - reasoning_brief: one short sentence on what this person actually wants - internal only, never shown
 - proactive_note: something genuinely useful to mention without being asked, or empty string
-Tenant context is advisory and scoped to the current restaurant. Respect its permitted business behavior within safety, backend/tool contracts, isolation and current operational constraints. Fresh verified tool facts outrank policy and older snapshots. Unknown or stale status is not completion, payment, availability or consent; recommend verification, never infer authority.
+Tenant context is advisory and scoped to the current restaurant. Respect its permitted business behavior within safety, backend/tool contracts, isolation and current operational constraints. Fresh verified tool facts outrank policy and older snapshots. Use customer_language for surrounding prose, keeping owner proper names literal; never copy a policy example in the wrong language. Unknown or stale status is not completion, payment, availability or consent; recommend verification, never infer authority.
 No markdown, no commentary, JSON only.`;
 
 /** Allowlisted turn-preloaded context; no raw tenant settings, contacts or addresses. */
@@ -155,6 +157,7 @@ export function buildThinkingTenantContext(ctx: FastFoodContext) {
   return {
     instance_id: ctx.instanceId,
     tenant_policy: owner.tenant_instructions || null,
+    shopping_decision_evidence: shoppingEvidence(ctx),
     source: "preloaded_turn_snapshot",
     rule: "Advisory reasoning context for this same tenant only. Policy governs permitted behavior, not facts or tool authority. These are preloaded snapshots, not a fresh successful tool read; recheck current order state, kitchen, notes, stock and prices before making claims. Missing or stale values are unknown, never normal operation or successful completion.",
     active_order: {
@@ -264,6 +267,7 @@ export async function critiqueDraftReply(input: {
         prompt: [
           `customer_language: ${ctx.language}`,
           `customer_message: ${String(ctx.text || "").slice(0, 400)}`,
+          `decision_evidence: ${JSON.stringify(buildThinkingTenantContext(ctx))}`,
           `turn_goal: ${analysis.goal}`,
           `customer_mood: ${analysis.mood}`,
           `draft_reply: ${draft.slice(0, 600)}`,

@@ -54,7 +54,7 @@ function currentBudgetClauses(text: string): string[] {
   // A refusal of an independent URL does not erase the food budget in that clause.
   const budgetText = value.replace(/(?:силтеме\p{L}*|ссылк\p{L}*|линк|link|url)[^\d.!?]{0,24}(?:(?:керек|кажет)\s*емес|кереги\s*жок|(?<!\p{L})не\s*(?:нуж\p{L}*|надо))|(?<!\p{L})не\s*(?:нуж\p{L}*|надо)[^\d.!?]{0,24}(?:силтеме\p{L}*|ссылк\p{L}*|линк|link|url)/giu, "")
     // Having this amount and "no other money" is not a denial of the stated budget.
-    .replace(/(?<!\p{L})баска(?:\s+акшам)?\s+жок(?!\p{L})/giu, "");
+    .replace(/(?<!\p{L})баска(?:\s+акшам?)?\s+жок(?!\p{L})/giu, "");
   // Mask unsupported decimal amounts, preserving inquiry kind before punctuation splitting.
   const clauses = budgetText.replace(/\d+[.,]\d+(\s*(?:тенге(?:ге|м)?|тг|kzt|₸))(?!\p{L})/giu, (_match, currency) => "unsupported_amount " + currency)
     .split(/[.!?;,\n]+|(?<!\p{L})(?:но|бирак)(?!\p{L})/iu);
