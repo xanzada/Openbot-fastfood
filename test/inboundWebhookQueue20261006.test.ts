@@ -111,7 +111,7 @@ test("actual Redis durable inbound lane, bundle, retry and cold recovery", {skip
    const queue=createInboundWebhookQueue({store,now:()=>now,process:async()=>{throw new Error("fixture must never process customers");}});let callback:any;
    const env:any={exports:{},Date,console:{info(){},log(){},warn(){},error(){}},createRouter:()=>({post:(...args:any[])=>{callback=args.at(-1);}}),resolveTenantInstance:()=>{},verifySecret:()=>{},
     isOwnWhatsAppMessage:()=>false,getInstanceId:(b:any)=>b.instanceId,getPhone:(b:any)=>b.phone,maskPhone:()=>"masked",extractMessageId:(b:any)=>b.messageId,extractInboundText:(b:any)=>b.body,extractInboundMedia:()=>null,
-    DEVELOPER_ALERT_MARKER_RE:/__never_in_fixture__/,inboundBufferDelayMs:()=>500,startInboundWebhookQueueWorker:()=>{},processWhatsAppWebhook:()=>{},enqueueVerifiedInboundWebhook:(body:any,identity:any)=>queue.enqueue(body,identity)};
+    DEVELOPER_ALERT_MARKER_RE:/__never_in_fixture__/,inboundBufferDelayMs:()=>500,inboundAudioBufferDelayMs:()=>6000,startInboundWebhookQueueWorker:()=>{},processWhatsAppWebhook:()=>{},enqueueVerifiedInboundWebhook:(body:any,identity:any)=>queue.enqueue(body,identity)};
    vm.runInNewContext(source+";exports.whatsappWebhookRoute();",env);const samples:number[]=[];
    for(let i=0;i<25;i++){
     let status=0;const res:any={status(n:number){status=n;return this;},json(body:any){return{status,body};}};const started=performance.now();const result=await callback({body:{instanceId:"queue-fixture",phone:"70000000001",messageId:"latency-"+i,body:"донер"}},res);const elapsed=performance.now()-started;

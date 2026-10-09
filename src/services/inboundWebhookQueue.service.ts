@@ -2,11 +2,13 @@ import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
 import { MAX_INBOUND_WEBHOOK_BYTES } from "../utils/mediaLimits.js";
 
-export interface InboundWebhookIdentity { instance: string; phone: string; messageId: string; text: string; hasMedia: boolean; bufferMs: number }
+export interface InboundWebhookIdentity { instance: string; phone: string; messageId: string; text: string; hasMedia: boolean; mediaKind?: string; bufferMs: number }
+export type InboundWebhookKind = "text" | "audio" | "media";
+export interface InboundWebhookPart { id: string; kind: InboundWebhookKind; body: Record<string, unknown>; text: string; resolvedText?: string; createdAt: number }
 export interface InboundWebhookJob {
-  id: string; instance: string; phone: string; body: Record<string, unknown>; text: string; kind: "text" | "media";
-  createdAt: number; nextAttemptAt: number; attempts: number; bytes: number; textChars: number; sequence?: number;
-  members?: string[]; fragments?: string[]; rootId?: string;
+  id: string; instance: string; phone: string; body: Record<string, unknown>; text: string; kind: InboundWebhookKind;
+  createdAt: number; nextAttemptAt: number; bufferMs?: number; attempts: number; bytes: number; textChars: number; resolvedText?: string; sequence?: number;
+  members?: string[]; fragments?: string[]; rootId?: string; collecting?: boolean;
 }
 export interface InboundWebhookStore {
   put(job: InboundWebhookJob): Promise<boolean>;
@@ -15,8 +17,11 @@ export interface InboundWebhookStore {
   renew(job: InboundWebhookJob, token: string): Promise<void>;
   finish(job: InboundWebhookJob, token: string): Promise<void>;
   retry(job: InboundWebhookJob, token: string, at: number): Promise<void>;
+  parts(job: InboundWebhookJob): Promise<InboundWebhookPart[]>;
+  resolvePartText(job: InboundWebhookJob, token: string, partId: string, text: string): Promise<boolean>;
+  authorizeReply(job: InboundWebhookJob, token: string): Promise<boolean>;
 }
-export type InboundWebhookProcessor = (body: Record<string, unknown>, started: number, durable: { fragments: string[]; attempts: number }) => Promise<void>;
+export type InboundWebhookProcessor = (body: Record<string, unknown>, started: number, durable: { fragments: string[]; parts: InboundWebhookPart[]; attempts: number; resolvePartText: (partId: string, text: string) => Promise<boolean>; authorizeReply: () => Promise<boolean> }) => Promise<void>;
 const LEASE_MS = 20_000;
 const DONE_SECONDS = 86_400;
 const MAX_BYTES = MAX_INBOUND_WEBHOOK_BYTES;
@@ -25,6 +30,8 @@ const MAX_QUEUE_BYTES = Math.max(128 * 1024 * 1024, 2 * MAX_BYTES);
 const MAX_QUEUE_JOBS = 1024;
 const MAX_LANE_JOBS = 64;
 const ID_RE = /^[a-f0-9]{64}$/;
+const MAX_RESOLVED_TEXT_CHARS = 8_000;
+const MAX_RESOLVED_TEXT_BYTES = 16_384;
 const ALLOWED_FIELDS = new Set((
   "instance instanceId instance_id restaurant_id restaurant_instance restaurantInstance normalizedPhone senderPhone phone sender from chatId " +
   "body text message caption data messageData key id messageId remoteJid participant fromMe isFromMe isGroup source " +
@@ -68,9 +75,13 @@ export function createInboundWebhookJob(body: unknown, identity: InboundWebhookI
   const id = crypto.createHash("sha256").update(JSON.stringify([identity.instance, identity.phone, discriminator])).digest("hex");
   // An id-less accepted job also has a stable processing/request scope on restart.
   persisted.messageId = identity.messageId || `queued:${id}`;
+  const bufferMs = Math.max(0, Math.min(15_000, identity.bufferMs));
+  const kind: InboundWebhookKind = identity.hasMedia
+    ? String(identity.mediaKind || "").toLowerCase() === "audio" ? "audio" : "media"
+    : "text";
   const job: InboundWebhookJob = { id, instance: identity.instance, phone: identity.phone, body: persisted, text: identity.text,
-    kind: identity.hasMedia ? "media" : "text", createdAt: now, attempts: 0, bytes: 0, textChars: identity.text.length,
-    nextAttemptAt: now + (identity.hasMedia ? 0 : Math.max(0, Math.min(5000, identity.bufferMs))) };
+    kind, createdAt: now, bufferMs, attempts: 0, bytes: 0, textChars: identity.text.length,
+    nextAttemptAt: now + (kind === "media" ? 0 : bufferMs) };
   // Count both the original body and extracted text, with room for the frozen
   // eight-member bundle and JSON escaping. The limit bounds serialized payloads,
   // rather than pretending to measure Redis allocator overhead.
@@ -87,10 +98,12 @@ export function inboundWebhookRetryDelay(attempts: number) {
 function validJob(job: any): job is InboundWebhookJob {
   return !!job && ID_RE.test(job.id) && /^[a-zA-Z0-9_-]{2,64}$/.test(job.instance) && /^(?:\d{10,15}|\d+@lid)$/.test(job.phone)
     && !!job.body && typeof job.body === "object" && !Array.isArray(job.body) && typeof job.text === "string"
-    && ["text", "media"].includes(job.kind) && Number.isSafeInteger(job.sequence) && job.sequence > 0
-    && Number.isFinite(job.createdAt) && Number.isFinite(job.nextAttemptAt) && Number.isSafeInteger(job.attempts) && job.attempts >= 0
+    && ["text", "audio", "media"].includes(job.kind) && Number.isSafeInteger(job.sequence) && job.sequence > 0
+    && Number.isFinite(job.createdAt) && Number.isFinite(job.nextAttemptAt) && (job.bufferMs === undefined || (Number.isFinite(job.bufferMs) && job.bufferMs >= 0 && job.bufferMs <= 15_000)) && Number.isSafeInteger(job.attempts) && job.attempts >= 0
+    && (job.resolvedText === undefined || (typeof job.resolvedText === "string" && job.resolvedText.length > 0 && job.resolvedText.length <= MAX_RESOLVED_TEXT_CHARS))
     && Number.isSafeInteger(job.bytes) && job.bytes >= 0 && job.bytes <= MAX_BYTES && job.textChars === job.text.length
     && (!job.rootId || ID_RE.test(job.rootId))
+    && (job.collecting === undefined || typeof job.collecting === "boolean")
     && (!job.members || (Array.isArray(job.members) && job.members.length >= 1 && job.members.length <= 8 && new Set(job.members).size === job.members.length && job.members[0] === job.id && job.members.every((id: unknown) => typeof id === "string" && ID_RE.test(id))))
     && (!job.fragments || (Array.isArray(job.fragments) && job.fragments.length <= 8 && job.fragments.every((s: unknown) => typeof s === "string")));
 }
@@ -108,7 +121,7 @@ export function createRedisInboundWebhookStore(client: typeof redisClient = redi
   return {
     async put(job) {
       const result = await evalScript(`
-        local expected={'string','zset','zset','string','string','string'}
+        local expected={'string','zset','zset','string','string','string','string'}
         for i,k in ipairs(KEYS) do local t=redis.call('TYPE',k).ok; if t~='none' and t~=expected[i] then return redis.error_reply('INBOUND_STORAGE_TYPE') end end
         local raw=redis.call('GET',KEYS[1]); if raw then
           local old=cjson.decode(raw); if old.status=='processed' then return 0 end
@@ -119,8 +132,28 @@ export function createRedisInboundWebhookStore(client: typeof redisClient = redi
         local j=cjson.decode(ARGV[1]); j.sequence=redis.call('INCR',KEYS[6]);
         redis.call('INCRBY',KEYS[4],ARGV[2]); redis.call('INCR',KEYS[5]);
         redis.call('SET',KEYS[1],cjson.encode(j)); redis.call('ZADD',KEYS[3],j.sequence,j.id)
-        local head=redis.call('ZRANGE',KEYS[3],0,0); if head[1]==j.id then redis.call('ZADD',KEYS[2],j.nextAttemptAt,j.id) end; return 1
-      `, [key(job.id), dueKey, lane(job), bytesKey, countKey, sequenceKey], [JSON.stringify(job), String(job.bytes), job.id, String(MAX_QUEUE_BYTES), String(MAX_QUEUE_JOBS), String(MAX_LANE_JOBS)]);
+        local head=redis.call('ZRANGE',KEYS[3],0,0)
+        if head[1] then
+          local headKey=ARGV[7]..head[1]; local headRaw=redis.call('GET',headKey)
+          if headRaw then
+            local h=cjson.decode(headRaw)
+            local conversational=(h.kind=='text' or h.kind=='audio') and (j.kind=='text' or j.kind=='audio')
+            local barrier=false
+            local between=redis.call('ZRANGE',KEYS[3],1,-2)
+            for _,betweenId in ipairs(between) do
+              local betweenRaw=redis.call('GET',ARGV[7]..betweenId)
+              if not betweenRaw then barrier=true; break end
+              local betweenJob=cjson.decode(betweenRaw)
+              if betweenJob.kind=='media' then barrier=true; break end
+            end
+            if head[1]~=j.id and conversational and not barrier and not h.status and not h.rootId and (not h.members or h.collecting==true) and redis.call('EXISTS',KEYS[7])==0 and j.nextAttemptAt>h.nextAttemptAt then
+              h.nextAttemptAt=j.nextAttemptAt; redis.call('SET',headKey,cjson.encode(h))
+            end
+            if not h.rootId then redis.call('ZADD',KEYS[2],h.nextAttemptAt,h.id) end
+          end
+        end
+        return 1
+      `, [key(job.id), dueKey, lane(job), bytesKey, countKey, sequenceKey, lane(job) + ":lease"], [JSON.stringify(job), String(job.bytes), job.id, String(MAX_QUEUE_BYTES), String(MAX_QUEUE_JOBS), String(MAX_LANE_JOBS), `${prefix}:job:`]);
       return Number(result) === 1;
     },
     async due(now, limit) {
@@ -150,28 +183,43 @@ export function createRedisInboundWebhookStore(client: typeof redisClient = redi
     async claim(job, token, now) {
       const result = await evalScript(`
         if redis.call('EXISTS',KEYS[3])==1 then return nil end
+        redis.call('DEL',KEYS[5])
         local head=redis.call('ZRANGE',KEYS[2],0,0); if head[1]~=ARGV[1] then return nil end
         local raw=redis.call('GET',KEYS[1]); if not raw then return nil end; local j=cjson.decode(raw)
         if j.status or j.rootId or j.nextAttemptAt>tonumber(ARGV[3]) then return nil end
-        if not j.members then
-          j.members={j.id}; j.fragments={j.text}; local updates={}; local chars=j.textChars
-          if j.kind=='text' then
-            local ids=redis.call('ZRANGE',KEYS[2],1,7)
-            for _,id in ipairs(ids) do
+        local initialized=false
+        if not j.members then j.members={j.id}; j.fragments={j.text}; initialized=true end
+        local included={}; local chars=0; local updates={}
+        for _,id in ipairs(j.members) do
+          included[id]=true
+          local memberRaw=redis.call('GET',ARGV[5]..id)
+          if memberRaw then local member=cjson.decode(memberRaw); chars=chars+(member.textChars or 0) end
+        end
+        local mayExpand=initialized or j.collecting==true
+        if mayExpand and (j.kind=='text' or j.kind=='audio') then
+          local ids=redis.call('ZRANGE',KEYS[2],1,-1)
+          for _,id in ipairs(ids) do
+            if not included[id] then
               local r=redis.call('GET',ARGV[5]..id); if not r then break end; local child=cjson.decode(r)
-              if child.kind~='text' or child.rootId or child.members or child.nextAttemptAt>tonumber(ARGV[3]) or child.instance~=j.instance or child.phone~=j.phone or chars+child.textChars>2000 then break end
-              chars=chars+child.textChars; child.rootId=j.id; table.insert(j.members,id); table.insert(j.fragments,child.text); table.insert(updates,ARGV[5]..id); table.insert(updates,cjson.encode(child))
+              local conversational=child.kind=='text' or child.kind=='audio'
+              if not conversational or child.rootId or child.members or child.nextAttemptAt>tonumber(ARGV[3]) or child.instance~=j.instance or child.phone~=j.phone or #j.members>=8 or chars+child.textChars>2000 then break end
+              chars=chars+child.textChars; child.rootId=j.id
+              j.nextAttemptAt=math.max(j.nextAttemptAt or 0,child.nextAttemptAt or 0)
+              table.insert(j.members,id); table.insert(j.fragments,child.text); included[id]=true
+              table.insert(updates,ARGV[5]..id); table.insert(updates,cjson.encode(child))
             end
           end
-          table.insert(updates,KEYS[1]); table.insert(updates,cjson.encode(j)); redis.call('MSET',unpack(updates))
-          for i=2,#j.members do redis.call('ZREM',KEYS[4],j.members[i]) end
         end
+        if initialized or #updates>0 then
+          table.insert(updates,KEYS[1]); table.insert(updates,cjson.encode(j)); redis.call('MSET',unpack(updates))
+        end
+        for i=2,#j.members do redis.call('ZREM',KEYS[4],j.members[i]) end
         redis.call('SET',KEYS[3],ARGV[2],'PX',ARGV[4]); return cjson.encode(j)
-      `, [key(job.id), lane(job), lane(job) + ":lease", dueKey], [job.id, token, String(now), String(LEASE_MS), `${prefix}:job:`]);
+      `, [key(job.id), lane(job), lane(job) + ":lease", dueKey, lane(job) + ":reply_fence"], [job.id, token, String(now), String(LEASE_MS), `${prefix}:job:`]);
       if (!result) return null; const claimed = JSON.parse(String(result)); if (!validJob(claimed)) throw new Error("INBOUND_RECORD_INVALID"); return claimed;
     },
     async renew(job, token) {
-      const result = await evalScript("if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('PEXPIRE',KEYS[1],ARGV[2]) end; return 0", [lane(job) + ":lease"], [token, String(LEASE_MS)]);
+      const result = await evalScript("if redis.call('GET',KEYS[1])==ARGV[1] then redis.call('PEXPIRE',KEYS[1],ARGV[2]); if redis.call('GET',KEYS[2])==ARGV[1] then redis.call('PEXPIRE',KEYS[2],ARGV[2]) end; return 1 end; return 0", [lane(job) + ":lease", lane(job) + ":reply_fence"], [token, String(LEASE_MS)]);
       if (Number(result) !== 1) throw new Error("INBOUND_LEASE_LOST");
     },
     async finish(job, token) {
@@ -181,13 +229,83 @@ export function createRedisInboundWebhookStore(client: typeof redisClient = redi
         for _,id in ipairs(j.members) do redis.call('SET',ARGV[3]..id,cjson.encode({id=id,status='processed',createdAt=j.createdAt,attempts=j.attempts}),'EX',ARGV[2]); redis.call('ZREM',KEYS[2],id); redis.call('ZREM',KEYS[4],id) end
         redis.call('DECRBY',KEYS[5],total); redis.call('DECRBY',KEYS[6],#j.members)
         local nextIds=redis.call('ZRANGE',KEYS[4],0,0); if nextIds[1] then local raw=redis.call('GET',ARGV[3]..nextIds[1]); if raw then local next=cjson.decode(raw); redis.call('ZADD',KEYS[2],next.nextAttemptAt,next.id) end end
-        redis.call('DEL',KEYS[3]); return 1
-      `, [key(job.id), dueKey, lane(job) + ":lease", lane(job), bytesKey, countKey], [token, String(DONE_SECONDS), `${prefix}:job:`]);
+        redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[7]); return 1
+      `, [key(job.id), dueKey, lane(job) + ":lease", lane(job), bytesKey, countKey, lane(job) + ":reply_fence"], [token, String(DONE_SECONDS), `${prefix}:job:`]);
       if (Number(result) !== 1) throw new Error("INBOUND_LEASE_LOST");
     },
     async retry(job, token, at) {
-      const result = await evalScript(owned + "local j=cjson.decode(redis.call('GET',KEYS[1])); j.attempts=j.attempts+1; j.nextAttemptAt=tonumber(ARGV[2]); redis.call('SET',KEYS[1],cjson.encode(j)); redis.call('ZADD',KEYS[2],ARGV[2],j.id); redis.call('DEL',KEYS[3]); return 1", [key(job.id), dueKey, lane(job) + ":lease"], [token, String(at)]);
+      const result = await evalScript(owned + "local j=cjson.decode(redis.call('GET',KEYS[1])); j.attempts=j.attempts+1; j.nextAttemptAt=math.max(j.nextAttemptAt or 0,tonumber(ARGV[2])); redis.call('SET',KEYS[1],cjson.encode(j)); redis.call('ZADD',KEYS[2],j.nextAttemptAt,j.id); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[4]); return 1", [key(job.id), dueKey, lane(job) + ":lease", lane(job) + ":reply_fence"], [token, String(at)]);
       if (Number(result) !== 1) throw new Error("INBOUND_LEASE_LOST");
+    },
+    async parts(job) {
+      const ids = job.members?.length ? job.members : [job.id];
+      await ensure();
+      const raws = await client.mGet(ids.map(key));
+      return raws.map((raw, index) => {
+        let value: unknown; try { value = raw ? JSON.parse(raw) : null; } catch { value = null; }
+        if (!validJob(value) || (value as InboundWebhookJob).id !== ids[index]) throw new Error("INBOUND_MEMBER_INVALID");
+        const member = value as InboundWebhookJob;
+        if (index > 0 && member.rootId !== job.id) throw new Error("INBOUND_MEMBER_CONFLICT");
+        return { id: member.id, kind: member.kind, body: { ...member.body }, text: member.text, resolvedText: member.resolvedText, createdAt: member.createdAt };
+      });
+    },
+    async resolvePartText(job, token, partId, text) {
+      if (!ID_RE.test(partId) || typeof text !== "string" || !text.trim()) throw new Error("INBOUND_RESOLVED_TEXT_INVALID");
+      const resolvedText = text.trim();
+      if (resolvedText.length > MAX_RESOLVED_TEXT_CHARS
+        || Buffer.byteLength(JSON.stringify(resolvedText), "utf8") > MAX_RESOLVED_TEXT_BYTES) return false;
+      const result = await evalScript(`
+        if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end
+        local rootRaw=redis.call('GET',KEYS[1]); if not rootRaw then return 0 end; local root=cjson.decode(rootRaw)
+        local allowed=false; for _,id in ipairs(root.members or {root.id}) do if id==ARGV[2] then allowed=true; break end end
+        if not allowed then return 0 end
+        local partKey=ARGV[4]..ARGV[2]; local partRaw=redis.call('GET',partKey); if not partRaw then return 0 end
+        local part=cjson.decode(partRaw); if part.kind~='audio' then return 0 end
+        part.resolvedText=ARGV[3]; redis.call('SET',partKey,cjson.encode(part)); return 1
+      `, [key(job.id), lane(job) + ":lease"], [token, partId, resolvedText, `${prefix}:job:`]);
+      if (Number(result) !== 1) throw new Error("INBOUND_LEASE_LOST");
+      return true;
+    },
+    async authorizeReply(job, token) {
+      const result = await evalScript(`
+        if redis.call('GET',KEYS[3])~=ARGV[1] then return 0 end
+        local fence=redis.call('GET',KEYS[4])
+        if fence then return fence==ARGV[1] and 1 or 0 end
+        local raw=redis.call('GET',KEYS[1]); if not raw then return 0 end; local j=cjson.decode(raw)
+        j.members=j.members or {j.id}; j.fragments=j.fragments or {j.text}
+        local included={}; local chars=0
+        for _,id in ipairs(j.members) do
+          included[id]=true
+          local memberRaw=redis.call('GET',ARGV[2]..id)
+          if memberRaw then local member=cjson.decode(memberRaw); chars=chars+(member.textChars or 0) end
+        end
+        local ids=redis.call('ZRANGE',KEYS[2],0,-1)
+        local additions=0; local updates={}
+        for _,id in ipairs(ids) do
+          if not included[id] then
+            local nextRaw=redis.call('GET',ARGV[2]..id)
+            if not nextRaw then break end
+            local next=cjson.decode(nextRaw)
+            if next.kind=='media' then break end
+            if next.kind~='text' and next.kind~='audio' then break end
+            if next.rootId or next.members or #j.members>=8 or chars+(next.textChars or 0)>2000 then break end
+            chars=chars+(next.textChars or 0); next.rootId=j.id
+            j.nextAttemptAt=math.max(j.nextAttemptAt or 0,next.nextAttemptAt or 0)
+            table.insert(j.members,id); table.insert(j.fragments,next.text); included[id]=true; additions=additions+1
+            table.insert(updates,ARGV[2]..id); table.insert(updates,cjson.encode(next))
+          end
+        end
+        if additions>0 then
+          j.collecting=true
+          table.insert(updates,KEYS[1]); table.insert(updates,cjson.encode(j)); redis.call('MSET',unpack(updates))
+          for i=#j.members-additions+1,#j.members do redis.call('ZREM',KEYS[5],j.members[i]) end
+          return 0
+        end
+        j.collecting=false; redis.call('SET',KEYS[1],cjson.encode(j))
+        redis.call('SET',KEYS[4],ARGV[1],'PX',ARGV[3])
+        return 1
+      `, [key(job.id), lane(job), lane(job) + ":lease", lane(job) + ":reply_fence", dueKey], [token, `${prefix}:job:`, String(LEASE_MS)]);
+      return Number(result) === 1;
     },
   };
 }
@@ -207,12 +325,20 @@ export function createInboundWebhookQueue(options: { store: InboundWebhookStore;
           let leaseLost = false; let renewing: Promise<void> | null = null;
           const heartbeat = setInterval(() => { if (!renewing) renewing = options.store.renew(job, token).catch(() => { leaseLost = true; }).finally(() => { renewing = null; }); }, LEASE_MS / 4); heartbeat.unref?.();
           try {
-            await options.process({ ...job.body }, job.createdAt, { fragments: job.fragments || [job.text], attempts: job.attempts });
+            const parts = await options.store.parts(job);
+            await options.process({ ...job.body }, job.createdAt, {
+              fragments: job.fragments || [job.text],
+              parts,
+              attempts: job.attempts,
+              resolvePartText: (partId, text) => options.store.resolvePartText(job, token, partId, text),
+              authorizeReply: () => options.store.authorizeReply(job, token),
+            });
             if (renewing) await renewing; if (leaseLost) throw new Error("INBOUND_LEASE_LOST");
             await options.store.finish(job, token); processed++;
-          } catch {
-            await options.store.retry(job, token, now() + inboundWebhookRetryDelay(job.attempts + 1));
-            console.warn("[OPENBOT:INBOUND_QUEUE] event=RETRY job=" + job.id.slice(0, 16));
+          } catch (error) {
+            const superseded = error instanceof Error && error.message === "INBOUND_REPLY_SUPERSEDED";
+            await options.store.retry(job, token, now() + (superseded ? Math.max(200, job.bufferMs ?? 1000) : inboundWebhookRetryDelay(job.attempts + 1)));
+            console.warn("[OPENBOT:INBOUND_QUEUE] event=" + (superseded ? "SUPERSEDED_RETRY" : "RETRY") + " job=" + job.id.slice(0, 16));
           } finally { clearInterval(heartbeat); }
         }));
         for (const result of results) if (result.status === "rejected") console.error("[OPENBOT:INBOUND_QUEUE] event=STORAGE_OR_LEASE_PENDING");

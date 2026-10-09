@@ -18,6 +18,7 @@ const DUPLICATE_TEXT_SECONDS = 5;
 // the leader can fold it in - the guest's second message simply vanished.
 const INBOUND_BUFFER_SECONDS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_TTL_SECONDS, 60, { min: 5 });
 const INBOUND_BUFFER_DELAY_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_MS, 2400, { min: 600 });
+const INBOUND_AUDIO_BUFFER_DELAY_MS = envNumber(process.env.OPENBOT_INBOUND_AUDIO_BUFFER_MS, 6000, { min: 1000, max: 15_000 });
 // Zero-lag (2026-10-04): the full window is only for a fragment that is probably not done
 // yet («донер», «2»). A bare greeting or a finished sentence/question is answered almost
 // at once; a part that still arrives inside the short window is merged exactly as before.
@@ -29,6 +30,8 @@ const INBOUND_BUFFER_COMPLETE_MS = envNumber(process.env.OPENBOT_INBOUND_BUFFER_
 // with the normal agent policy.
 const COMPLETE_CATALOG_REQUEST = /^(?:(?:покаж(?:и|ите)|пришл(?:и|ите)|скин(?:ь|ьте)|отправ(?:ь|ьте)|да(?:й|йте))\s+)?(?:меню|мәзір(?:ді)?|menu|каталог|прайс|ассортимент)(?:\s+(?:пожалуйста|берші|беріңіз|жібер(?:ші|іңіз)))?$/iu;
 const COMPLETE_ORDER_STATUS_REQUEST = /^(?:где\s+(?:мой\s+)?заказ|статус\s+(?:моего\s+)?заказа|тапсырыс(?:ым|тың)?\s+(?:қайда|дайын\s+ба|күйі\s+қандай))$/iu;
+
+export function inboundAudioBufferDelayMs(): number { return INBOUND_AUDIO_BUFFER_DELAY_MS; }
 
 export function inboundBufferDelayMs(text: string): number {
   const value = String(text || "").trim();

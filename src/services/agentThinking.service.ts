@@ -35,6 +35,7 @@ export interface TurnAnalysis {
   style_hint: string;
   reasoning_brief: string;
   proactive_note: string;
+  question_need: "none" | "clarification" | "wait_consent" | "handoff";
 }
 
 const TRIVIAL_TEXT_RE =
@@ -58,6 +59,7 @@ const COMPLAINT_OR_EMOTION_RE =
 export function shouldThink(ctx: FastFoodContext, toolPlan?: { requiredTools?: string[] }): boolean {
   const text = String(ctx.text || "").trim();
   if (!text) return false;
+  if ((ctx as any).batchedCustomerTurn === true) return true;
   if (text.length <= 40 && TRIVIAL_TEXT_RE.test(text)) return false;
   if (needsShoppingPrepass(ctx) || isMenuAttributeVerificationQuestion(text)) return true;
   const confidentPlan = Boolean(toolPlan && Array.isArray(toolPlan.requiredTools) && toolPlan.requiredTools.length > 0);
@@ -135,6 +137,7 @@ Output strict JSON with these keys:
 - style_hint: one short sentence telling the answering layer how to talk to THIS person right now
 - reasoning_brief: one short sentence on what this person actually wants - internal only, never shown
 - proactive_note: something genuinely useful to mention without being asked, or empty string
+- question_need: none|clarification|wait_consent|handoff. Use none when the combined customer turn is complete enough to answer. Use clarification only when a required fact is truly missing; never use it for a generic menu-choice or upsell question.
 Tenant context is advisory and scoped to the current restaurant. Respect its permitted business behavior within safety, backend/tool contracts, isolation and current operational constraints. Fresh verified tool facts outrank policy and older snapshots. Use customer_language for surrounding prose, keeping owner proper names literal; never copy a policy example in the wrong language. Unknown or stale status is not completion, payment, availability or consent; recommend verification, never infer authority.
 No markdown, no commentary, JSON only.`;
 
@@ -223,6 +226,7 @@ export async function analyzeTurnSituation(ctx: FastFoodContext, toolPlan?: { re
       style_hint: shortText(parsed.style_hint, 220),
       reasoning_brief: shortText(parsed.reasoning_brief, 220),
       proactive_note: shortText(parsed.proactive_note, 220),
+      question_need: pickEnum(parsed.question_need, ["none", "clarification", "wait_consent", "handoff"], "none") as TurnAnalysis["question_need"],
     };
     console.info(`[THINK] instance=${ctx.instanceId} goal=${analysis.goal} mood=${analysis.mood} risk=${analysis.risk}`);
     return analysis;

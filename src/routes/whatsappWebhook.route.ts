@@ -48,6 +48,7 @@ import {
 import {
   acquireTurnLock,
   bufferInboundText,
+  inboundAudioBufferDelayMs,
   inboundBufferDelayMs,
   claimMediaAiQuota,
   claimOutboundReply,
@@ -112,9 +113,9 @@ import { computeProactiveSignals } from "../services/proactiveSignals.service.js
 import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
 import { recordLearningEvent } from "../services/learningLoop.service.js";
 import { bumpMetric, recordLatency } from "../services/metrics.service.js";
-import { mergeBufferedParts } from "../services/bufferBrain.service.js";
+import { mergeBufferedParts, mergePartsDeterministic } from "../services/bufferBrain.service.js";
 import { greetingReply, readGuestGreeting } from "../agent/greeting.js";
-import { enqueueVerifiedInboundWebhook, startInboundWebhookQueueWorker } from "../services/inboundWebhookQueue.service.js";
+import { enqueueVerifiedInboundWebhook, startInboundWebhookQueueWorker, type InboundWebhookPart } from "../services/inboundWebhookQueue.service.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
 
@@ -756,9 +757,19 @@ function logTurnTiming(ctx: FastFoodContext, source: string, sendStartedAt: numb
   );
 }
 
+function appendBatchedAudioFailureNotice(text: string, ctx: FastFoodContext): string {
+  if (!(ctx as any).batchedAudioFailure) return text;
+  const notice = ctx.language === "ru"
+    ? "Одно из аудиосообщений не удалось распознать — его можно отправить ещё раз или написать текстом."
+    : "Аудиохабарламалардың бірін тани алмадым — оны қайта жіберуге немесе мәтінмен жазуға болады.";
+  return [String(text || "").trim(), notice].filter(Boolean).join(" ");
+}
+
 async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: string, reply: string, source: string) {
+  const authorizeDurableReply = (ctx as any).authorizeDurableReply as undefined | (() => Promise<boolean>);
+  if (authorizeDurableReply && !(await authorizeDurableReply())) throw new Error("INBOUND_REPLY_SUPERSEDED");
   const sendStartedAt = Date.now();
-  const cleanReply = stripEscalationSignals(reply);
+  const cleanReply = appendBatchedAudioFailureNotice(stripEscalationSignals(reply), ctx);
   if (cleanReply) {
     const delivery = await sendWhatsProResponseSequence({
       instanceId: ctx.instanceId,
@@ -791,7 +802,7 @@ async function sendCustomerReplyAndFinish(ctx: FastFoodContext, messageId: strin
   logTurnTiming(ctx, source, sendStartedAt);
 }
 
-async function processWhatsAppWebhook(body: any, started: number, durable?: { fragments: string[]; attempts: number }) {
+async function processWhatsAppWebhook(body: any, started: number, durable?: { fragments: string[]; parts: InboundWebhookPart[]; attempts: number; resolvePartText: (partId: string, text: string) => Promise<boolean>; authorizeReply: () => Promise<boolean> }) {
   const instanceId = getInstanceId(body);
   const phone = getPhone(body);
   // Reassigned once the guard reports the id it deduped on (see below).
@@ -803,6 +814,12 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
     mediaContext?.caption ||
     mediaContext?.historyLabel ||
     (mediaContext ? "[Media sent]" : "");
+  let batchedConversation = false;
+  let batchedAudioFailure: "" | "invalid" | "quota" | "unreadable" = "";
+  let batchedReadableParts = 0;
+  const durableParts = durable?.parts || [];
+  const batchedConversationCandidate = durableParts.length > 1
+    && durableParts.every((part) => part.kind === "text" || part.kind === "audio");
   if (durable && !mediaContext && durable.fragments.length > 1) text = durable.fragments.join("\n");
   let customerLanguageText = durable && !mediaContext ? text : extractInboundText(body) || mediaContext?.caption || "";
   let stopTyping: () => void = () => {};
@@ -998,17 +1015,71 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
       }
     }
 
-    // Durable text uses the same acquisition site as media before any shared
-    // work. Its accepted fragments already belong to a frozen Redis bundle;
-    // never hand a follower to the volatile buffer or mark it done early.
-    if (durable && !mediaContext && text) {
-      if (durable.fragments.length > 1) text = await mergeBufferedParts(durable.fragments).catch(() => text);
+    // Resolve a conversational bundle only after the normal inbound guard and
+    // per-chat turn lock accepted it. Text and voice fragments are interpreted
+    // together; non-conversational media never enters this branch.
+    if (durable && batchedConversationCandidate) {
+      const ordered: string[] = [];
+      for (const part of durableParts) {
+        if (part.kind === "text") {
+          const partText = String(extractInboundText(part.body) || part.text || "").trim();
+          if (partText) ordered.push(partText);
+          continue;
+        }
+        if (part.resolvedText) {
+          ordered.push(part.resolvedText);
+          continue;
+        }
+        if (batchedAudioFailure === "quota" || !(await claimMediaAiQuota(instanceId, phone))) {
+          batchedAudioFailure = "quota";
+          continue;
+        }
+        const rawMedia = extractInboundMedia(part.body);
+        const audio = await hydrateInboundMedia(part.body, rawMedia);
+        if (!audio?.valid || !audio.base64 || audio.kind !== "audio") {
+          batchedAudioFailure ||= "invalid";
+          continue;
+        }
+        const analysis = await analyzeMedia(
+          audio.base64,
+          audio.mimeType || audio.mediaType || "audio/ogg",
+          audio.caption || "",
+          "kk",
+        );
+        const transcript = String((analysis as any)?.transcript || "").trim()
+          || voiceTranscriptForAgent(analysis as any, audio.mimeType || audio.mediaType || "audio/ogg");
+        if (!transcript) {
+          batchedAudioFailure ||= "unreadable";
+          continue;
+        }
+        await durable.resolvePartText(part.id, transcript);
+        ordered.push(transcript);
+      }
+      batchedReadableParts = ordered.filter(Boolean).length;
+      text = mergePartsDeterministic(ordered.filter(Boolean))
+        || mergePartsDeterministic(durable.fragments.filter(Boolean));
+      if (!text) throw new Error("INBOUND_BATCH_EMPTY");
+      mediaContext = null;
       customerLanguageText = text;
+      batchedConversation = true;
+      console.info("[OPENBOT:BUFFER] durable conversation parts=" + durableParts.length
+        + " audio=" + (durableParts.some((part) => part.kind === "audio") ? "yes" : "no")
+        + " instance=" + instanceId + " phone=" + maskPhone(phone));
+    } else if (durable && !mediaContext && text) {
+      const parts = durable.fragments.filter(Boolean);
+      text = parts.length > 1 ? mergePartsDeterministic(parts) : (parts[0] || text);
+      customerLanguageText = text;
+      if (parts.length > 1) batchedConversation = true;
     }
 
     const bufferedAt = Date.now();
     mediaContext = await hydrateInboundMedia(body, mediaContext);
     const ctx = await preloadContext({ instanceId, phone, text, languageCandidateText: customerLanguageText, mediaContext, senderMeta });
+    const conversationalDurable = Boolean(durable?.parts?.length)
+      && durable!.parts.every((part) => part.kind === "text" || part.kind === "audio");
+    if (conversationalDurable) (ctx as any).authorizeDurableReply = durable!.authorizeReply;
+    if (batchedAudioFailure && batchedReadableParts > 0) (ctx as any).batchedAudioFailure = batchedAudioFailure;
+    (ctx as any).batchedCustomerTurn = batchedConversation;
     (ctx as any).turnTiming = { started, buffered: bufferedAt, preloaded: Date.now() };
     console.log(
       `[OPENBOT:CONTEXT] loaded instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} lang=${ctx.language} domain=${ctx.config?.domain || "-"} runtime=${ctx.runtimeStatus ? "ok" : "missing"} wait=${ctx.hardRealtimeContext.wait_time ?? "-"} order=${ctx.activeOrder?.order_id || "none"} notes=${ctx.activeShiftNotes.length} history=${ctx.chatHistory.length} link_sent=${ctx.magicLinkAlreadySent}`
@@ -1030,6 +1101,18 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
       });
     };
     await recordInboundTurn();
+
+    if (batchedAudioFailure && batchedReadableParts === 0) {
+      const reply = batchedAudioFailure === "quota"
+        ? ctx.language === "ru"
+          ? "Получил ваши сообщения, но сейчас не могу обработать все аудио. Подождите несколько минут и отправьте аудио ещё раз."
+          : "Хабарламаларыңызды алдым, бірақ қазір барлық аудионы өңдей алмаймын. Бірнеше минут күтіп, аудионы қайта жіберіңіз."
+        : ctx.language === "ru"
+          ? "Не удалось распознать одно из аудиосообщений. Отправьте его ещё раз или напишите текстом."
+          : "Аудиохабарламалардың бірін тани алмадым. Оны қайта жіберіңіз немесе мәтінмен жазыңыз.";
+      await sendCustomerReplyAndFinish(ctx, messageId, reply, "batched_audio_unreadable");
+      return;
+    }
 
     if (mediaContext?.kind === "video") {
       const reply =
@@ -1397,12 +1480,17 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
             mediaContext.mimeType || mediaContext.mediaType || ""
           );
           if (transcript) {
-            text = transcript;
-            customerLanguageText = transcript;
-            ctx.text = transcript;
-            const voiceLanguage = await detectLanguageDecision(transcript).catch(() => null);
+            const durableAudioPart = durable?.parts?.length === 1 && durable.parts[0]?.kind === "audio" ? durable.parts[0] : null;
+            if (durableAudioPart) await durable!.resolvePartText(durableAudioPart.id, transcript);
+            const carried = durable ? await drainInboundBuffer(ctx.instanceId, ctx.phone).catch(() => [] as string[]) : [];
+            const combinedTranscript = mergePartsDeterministic([...carried, transcript].filter(Boolean));
+            text = combinedTranscript;
+            customerLanguageText = combinedTranscript;
+            ctx.text = combinedTranscript;
+            if (carried.length) (ctx as any).batchedCustomerTurn = true;
+            const voiceLanguage = await detectLanguageDecision(combinedTranscript).catch(() => null);
             if (voiceLanguage?.lockable) ctx.language = voiceLanguage.language;
-            await refreshCheckoutContextForText(ctx, transcript);
+            await refreshCheckoutContextForText(ctx, combinedTranscript);
             await saveToHistory(ctx.instanceId, ctx.phone, "user", transcript, {
               source: "voice_transcript",
               messageId,
@@ -1908,6 +1996,9 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
     // The turn key is what keeps a repeated guest question answerable: the
     // guard used to silence any identical reply within 60s, so a guest who
     // asked the same thing twice got no answer at all the second time.
+    finalText = appendBatchedAudioFailureNotice(finalText, ctx);
+    const authorizeDurableReply = (ctx as any).authorizeDurableReply as undefined | (() => Promise<boolean>);
+    if (authorizeDurableReply && !(await authorizeDurableReply())) throw new Error("INBOUND_REPLY_SUPERSEDED");
     const outboundIsNew = await claimOutboundReply(ctx.instanceId, ctx.phone, finalText, messageId).catch(() => true);
     if (!outboundIsNew) {
       console.warn(`[OPENBOT:OUTBOUND] duplicate reply suppressed instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)}`);
@@ -2018,6 +2109,10 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
   } catch (error) {
     // Do not clear another processor's lock or issue developer alerts for an
     // ordinary busy retry. The Redis queue retains ownership and retry state.
+    if (durable && error instanceof Error && error.message === "INBOUND_REPLY_SUPERSEDED") {
+      await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);
+      throw error;
+    }
     if (durable && error instanceof Error && error.message === "INBOUND_PROCESSING_PENDING") throw error;
     await clearInboundProcessing(String(instanceId || ""), messageId).catch(() => undefined);
     await notifyDeveloperSystemFailure(String(instanceId || ""), error, {
@@ -2103,7 +2198,8 @@ export function whatsappWebhookRoute(): Router {
     try {
       const job = await enqueueVerifiedInboundWebhook(body, {
         instance: getInstanceId(body), phone: getPhone(body), messageId: extractMessageId(body),
-        text: String(text), hasMedia: Boolean(mediaContext), bufferMs: inboundBufferDelayMs(String(text)),
+        text: String(text), hasMedia: Boolean(mediaContext), mediaKind: mediaContext?.kind,
+        bufferMs: mediaContext?.kind === "audio" ? inboundAudioBufferDelayMs() : inboundBufferDelayMs(String(text)),
       });
       return res.status(202).json({ ok: true, accepted: true, job_id: job.id, duplicate: !job.inserted });
     } catch (error) {

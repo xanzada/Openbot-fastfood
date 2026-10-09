@@ -186,7 +186,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   const thinkingState = createTurnThinkingState(ctx.thinking);
   let pendingThinking: Promise<TurnAnalysis | null> | null = null;
   if (ctx.thinking === undefined || ctx.thinking === null) {
-    if (thinkMode === "blocking" || thinkMode !== "off" && (needsShoppingPrepass(ctx) || isMenuAttributeVerificationQuestion(ctx.text))) {
+    if (thinkMode === "blocking" || thinkMode !== "off" && ((ctx as any).batchedCustomerTurn === true || needsShoppingPrepass(ctx) || isMenuAttributeVerificationQuestion(ctx.text))) {
       ctx.thinking = await analyzeTurnSituation(ctx, toolPlan).catch(() => null);
       thinkingState.settle(ctx.thinking);
     } else if (thinkMode !== "off") {

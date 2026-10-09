@@ -16,7 +16,7 @@ function fixture(enqueue: (...args: any[]) => Promise<any>, media: any = null) {
     isOwnWhatsAppMessage: () => false, getInstanceId: (b: any) => b.instanceId,
     getPhone: (b: any) => b.phone, maskPhone: () => "masked", extractMessageId: (b: any) => b.messageId,
     extractInboundText: (b: any) => b.body, extractInboundMedia: () => media,
-    DEVELOPER_ALERT_MARKER_RE: /__never_in_fixture__/, inboundBufferDelayMs: () => 500,
+    DEVELOPER_ALERT_MARKER_RE: /__never_in_fixture__/, inboundBufferDelayMs: () => 500, inboundAudioBufferDelayMs: () => 6000,
     setImmediate: () => { scheduled++; }, processWhatsAppWebhook: async () => { processed++; },
     startInboundWebhookQueueWorker: () => {}, enqueueVerifiedInboundWebhook: enqueue,
   };

@@ -156,4 +156,10 @@ test("final replies drop generic menu-selection questions but retain facts, link
  assert.match(quoted.text,/«Что вас интересует\?»/);
  ctx.language="kk";
  assert.equal(validateFinalText("Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз. Қайсысын қалайсыз?",ctx).text,"Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз.");
+ const advisoryOnly={...ctx,thinking:{question_need:"none"}};
+ const necessary=validateFinalText("Нақты мекенжайыңызды жібере аласыз ба?",advisoryOnly);
+ assert.match(necessary.text,/\?$/u);
+ assert.ok(!necessary.warnings.includes("unneeded_question_removed"));
+ const clarification={...ctx,thinking:{question_need:"clarification"}};
+ assert.match(validateFinalText("Қай мекенжайды тексерейін?",clarification).text,/\?$/u);
 });
