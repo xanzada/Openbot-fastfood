@@ -915,6 +915,51 @@ export function replyLanguageMismatch(text:string,ctx:FastFoodContext):boolean {
  });
 }
 
+function attributeVolumeMentions(value:string):number[] {
+ return [...value.matchAll(/(?<![\p{L}\p{N}])(\d+(?:[.,]\d+)?)\s*(мл|ml|литр\p{L}*|л|l)(?!\p{L})/giu)]
+  .map(match=>Number(match[1].replace(",","."))*(/^(?:мл|ml)$/iu.test(match[2])?1:1000));
+}
+/** A customer description resolves only the query, never catalog/availability authority. */
+function freshCustomerAttributeVolume(ctx:FastFoodContext):number|null {
+ const fold=(value:unknown)=>String(value||"").toLowerCase().replace(/ё/g,"е");
+ const unquoted=(value:unknown)=>fold(value).replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu,"");
+ const current=unquoted(ctx.text);
+ const requestWords=new Set(["не","придумывайте","придумывай","замену","подтвердите","подтверди","проверьте","проверь","уточните","уточни","пожалуйста","объем","размер","по","меню"]);
+ if((current.match(/\p{L}+/gu)||[]).some(word=>!requestWords.has(word)))return null;
+ const now=Date.now();
+ for(const row of (Array.isArray(ctx.chatHistory)?ctx.chatHistory:[]).slice(-12).reverse()){
+  if(!row||row.role!=="user")continue;
+  const text=unquoted(row.text??row.content??row.body??"").trim();if(text===current.trim())continue;
+  if(row.instanceId&&row.instanceId!==ctx.instanceId||row.instance_id&&row.instance_id!==ctx.instanceId)return null;
+  if(row.phone&&String(row.phone).replace(/\D/g,"")!==String(ctx.phone).replace(/\D/g,""))return null;
+  const raw=row.createdAt??row.timestamp,at=typeof raw==="number"?raw:Date.parse(String(raw||""));
+  if(!Number.isFinite(at)||at>now||at<=now-30*60_000)return null;
+  const quantities=attributeVolumeMentions(text);
+  if(quantities.length!==1||!Number.isFinite(quantities[0])||quantities[0]<=0)return null;
+  const noun=text.replace(/^(?:(?:у\s+вас\s+)?есть(?:\s+ли)?|сколько\s+стоит|цена)\s+/iu,"")
+   .replace(/\s*\d+(?:[.,]\d+)?\s*(?:мл|ml|литр\p{L}*|л|l)[.!?]*$/iu,"").trim();
+  if(noun===text||!/^(?:[\p{L}-]{3,}\s+){0,3}[\p{L}-]{3,}$/u.test(noun)
+   ||/(?<!\p{L})(?:он|она|оно|это|его|ее|и|или|және|немесе)(?!\p{L})/iu.test(noun))return null;
+  return quantities[0];
+ }
+ return null;
+}
+function groundedAttributeNegative(text:string,ctx:FastFoodContext,volume:number):string|null {
+  const source=String(ctx.menuSnapshot?.source||"");
+  if(!hasCurrentCompositionCatalog(ctx)||!/(?:dle_spa_items|catalog_current|live_menu)/u.test(source)
+   ||namedMenuItems(ctx,text).length)return null;
+  // A verified component volume contradicts global absence, without proving
+  // that the component is a standalone purchasable SKU.
+  if((ctx.menuSnapshot?.items||[]).some((item:any)=>attributeVolumeMentions(
+   String(item.name||item.title||"")+" "+String(item.composition||item.ingredients||"")
+  ).includes(volume)))return null;
+  const negatives=(text.match(SENTENCE_RE)||[text]).filter(sentence=>!nonCurrentFactAssertion(sentence)&&!/\?/u.test(sentence)
+   &&/(?<!\p{L})(?:нет|отсутств\p{L}*|не\s+(?:найден\p{L}*|представлен\p{L}*))(?!\p{L})/iu.test(sentence)
+   &&attributeVolumeMentions(sentence).length===1&&attributeVolumeMentions(sentence)[0]===volume);
+  // Matching one factual negative does not authorize independent raw claims.
+  return negatives.length?negatives.map(sentence=>sentence.trim()).join(" "):null;
+}
+
 function validateFinalTextCore(
   rawText: string,
   ctx: FastFoodContext,
@@ -932,10 +977,23 @@ function validateFinalTextCore(
   let text = stripBotTags(protocolSafe.text);
   const warnings: string[] = protocolSafe.removed ? ["tool_protocol_removed"] : [];
   if(customerMenuRelationSubject(ctx)?.needsClarification){
-    text=isMenuAttributeVerificationQuestion(ctx.text)
-      ?ctx.language==="kk"?"Қай өнімнің көлемін тексеру керек екенін нақтылаңыз. Көлемін мәзір деректерімен ғана растай аламын.":"Уточните, объём какого товара нужно проверить. Объём могу подтвердить только по данным меню."
-      :ctx.language==="kk"?"Қай өнімді айтып тұрғаныңызды нақтылаңыз: бөлек сатыла ма, әлде комбо құрамында ма?":"Уточните, какой товар вы имеете в виду: продаётся ли он отдельно или входит в комбо?";
-    warnings.push("menu_relation_reference_clarification");
+    const attribute=isMenuAttributeVerificationQuestion(ctx.text);
+    const reference=attribute?freshCustomerAttributeVolume(ctx):null;
+    if(reference!==null){
+      const negative=groundedAttributeNegative(text,ctx,reference);
+      if(negative===null){
+        text=ctx.language==="kk"?"Сұралған көлемді мәзір деректерімен қазір растай алмаймын.":"Запрошенный объём по данным меню сейчас подтвердить не могу.";
+        warnings.push("menu_attribute_unverified");
+      }else{
+        if(negative!==text.trim())warnings.push("menu_attribute_unverified");
+        text=negative;
+      }
+    }else{
+      text=attribute
+        ?ctx.language==="kk"?"Қай өнімнің көлемін тексеру керек екенін нақтылаңыз. Көлемін мәзір деректерімен ғана растай аламын.":"Уточните, объём какого товара нужно проверить. Объём могу подтвердить только по данным меню."
+        :ctx.language==="kk"?"Қай өнімді айтып тұрғаныңызды нақтылаңыз: бөлек сатыла ма, әлде комбо құрамында ма?":"Уточните, какой товар вы имеете в виду: продаётся ли он отдельно или входит в комбо?";
+      warnings.push("menu_relation_reference_clarification");
+    }
   }
 
   if (!text) return { text: fallback(ctx), hasLink: false, warnings: [...warnings, "empty_model_output"] };
@@ -1006,6 +1064,13 @@ function validateFinalTextCore(
      &&/(?:чек\p{L}*|чег\p{L}*|түбіртек\p{L}*)[^.!?]{0,35}(?:отправлен|получен|загружен|прислан|жіберіл(?:ді|ген)|алын(?:ды|ған))|(?:отправлен|получен|загружен|прислан)[^.!?]{0,35}чек/iu.test(sentence));
    if(!receiptProven&&receiptAssertion(text)){
      text=removeUnsupportedActionClauses(text,receiptAssertion);
+     const knownUnverified=["unverified","awaiting_receipt","pending"].includes(receiptPayment);
+     const receiptUncertainty=ctx.language==="kk"?"Төлем чегінің алынғанын қазір растай алмаймын":"Получение платёжного чека сейчас подтвердить не могу";
+     // A removed receipt assertion cannot leave its dependent negative without a subject.
+     text=text.replace(/(^|[.!?]\s+)(?:ол\s+)?әлі\s+расталма(?:ды|ған)(?=\s*(?:[.!?]|$))/giu,
+       (_whole,prefix)=>prefix+(knownUnverified?"Төлем әлі расталмады":receiptUncertainty));
+     text=text.replace(/(^|[.!?]\s+)(?:(?:он|она|это)\s+)?(?:ещ[её]|пока)\s+не\s+подтвержд[её]н(?:а|о|ы)?(?=\s*(?:[.!?]|$))/giu,
+       (_whole,prefix)=>prefix+(knownUnverified?"Оплата пока не подтверждена":receiptUncertainty));
      warnings.push("unconfirmed_payment_receipt_removed");
      if(!textWithoutUrls(text))return {text:ctx.language==="kk"?"Төлем чегінің алынғанын қазір растай алмаймын.":"Получение платёжного чека сейчас подтвердить не могу.",hasLink:false,warnings};
    }

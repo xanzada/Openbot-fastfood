@@ -682,3 +682,78 @@ test("stopped06 verified current snapshot composition does not require optional 
  const result=validateFinalText(raw,c,grounded);
  assert.equal(result.text,raw);assert.ok(!result.warnings.includes("unsupported_ingredient_claim_removed"));
 });
+
+const directcore07History=[
+ {role:"user",text:"Есть напиток 0,5 л?"},
+ {role:"assistant",text:"Донер и комбо."},
+ {role:"user",text:"Он продаётся отдельно или только в составе комбо?"},
+ {role:"user",text:"Какие отдельные напитки есть именно в меню?"},
+ {role:"user",text:"Сколько стоит отдельный напиток 0,5 л?"}
+];
+const directcore07Attribute="Не придумывайте замену: подтвердите объём по меню";
+const directcore07Negative="К сожалению, в нашем меню на данный момент нет напитков объемом 0,5 литра.";
+test("directcore07 actual scoped absent-product attribute retains verified negative instead of asking again",()=>{
+ const c=context(directcore07Attribute,"ru",directcore07History);
+ const r=validateFinalText(directcore07Negative,c,grounded);
+ assert.match(r.text,/нет напитков.*0,5/u);assert.doesNotMatch(r.text,/уточните.*какого товара/iu);
+ assert.ok(!r.warnings.includes("menu_relation_reference_clarification"));
+});
+test("directcore07 customer description is no authority for failed or stale catalog absence",()=>{
+ for(const marker of [{menu_lookup:"unavailable"},{stale:true}]){
+  const c=context(directcore07Attribute,"ru",directcore07History);c.menuGrounding={...c.menuGrounding,...marker};
+  const r=validateFinalText(directcore07Negative,c,grounded);assert.doesNotMatch(r.text,/нет напитков.*0,5/u);
+ }
+});
+test("directcore07 current catalog volume defeats a false absent-volume draft",()=>{
+ const c=context(directcore07Attribute,"ru",directcore07History);
+ c.menuSnapshot.items=[...c.menuSnapshot.items,{name:"Кола 0,5 л",price:800,composition:"Вода, сахар",available:true}];
+ assert.doesNotMatch(validateFinalText(directcore07Negative,c,grounded).text,/нет напитков.*0,5/u);
+});
+test("directcore07 customer attribute reference rejects assistant quoted foreign stale ambiguous and new-topic authority",()=>{
+ for(const rows of [
+  [{role:"assistant",text:"Есть напиток 0,5 л?"}],
+  [{role:"user",text:'Он написал «Есть напиток 0,5 л?»'}],
+  [{role:"user",text:"Есть напиток 0,5 л?",instanceId:"other"}],
+  [{role:"user",text:"Есть напиток 0,5 л?",phone:"77000000001"}],
+  [{role:"user",text:"Есть напиток 0,5 л?",createdAt:Date.now()-1800001}],
+  [{role:"user",text:"Есть напиток 0,5 л или бутылка 1 л?"}],
+  [...directcore07History,{role:"user",text:"А где мой заказ?"}]
+ ]){
+  const c=context(directcore07Attribute,"ru",rows);
+  assert.ok(validateFinalText(directcore07Negative,c,grounded).warnings.includes("menu_relation_reference_clarification"));
+ }
+});
+test("directcore07 unrelated product draft cannot replace an absent customer attribute",()=>{
+ const c=context(directcore07Attribute,"ru",directcore07History);
+ const r=validateFinalText("Донер — 1990 тг. Комбо с донером — 2500 тг.",c,grounded);
+ assert.doesNotMatch(r.text,/Донер|Комбо|1990|2500/u);assert.match(r.text,/объ[её]м|подтверд/iu);
+});
+test("directcore07 actual unverified receipt removal retains a complete truthful payment subject",()=>{
+ const c=candidate06OrderContext("Төлеген сияқтымын. Жүйеде төлем расталды ма?","accepted");
+ const raw="98 нөмірлі тапсырысыңыздың статусы - чек күтудеміз. Төлем чегі жіберілді, бірақ әлі расталмады. Тапсырыс ішінде 1 Донер бар.";
+ const r=validateFinalText(raw,c,candidate06OrderGrounding(c));
+ assert.doesNotMatch(r.text,/чегі жіберілді|[.!?]\s*әлі расталмады/u);
+ assert.match(r.text,/Төлем әлі расталмады/u);assert.match(r.text,/98.*чек күтудеміз/u);
+ assert.ok(r.warnings.includes("unconfirmed_payment_receipt_removed"));
+});
+test("directcore07 paid order does not become unconfirmed payment after unsupported receipt removal",()=>{
+ const c=candidate06OrderContext("Чек келді ме?","paid","paid");
+ const r=validateFinalText("Төлем чегі жіберілді, бірақ әлі расталмады.",c,candidate06OrderGrounding(c));
+ assert.doesNotMatch(r.text,/чегі жіберілді|Төлем әлі расталмады/u);assert.match(r.text,/растай алмай/u);
+});
+
+test("directcore07 verified combo component volume cannot become global catalog absence or standalone availability",()=>{
+ const c=context(directcore07Attribute,"ru",directcore07History);
+ c.menuSnapshot.items=c.menuSnapshot.items.map((item:any)=>item.id==="combo"?{...item,composition:"Донер, картофель фри, напиток 0,5 л"}:{...item});
+ c.menuGrounding={...c.menuGrounding,items:c.menuSnapshot.items};
+ const r=validateFinalText("В меню нет напитков 0,5 л.",c,grounded);
+ assert.doesNotMatch(r.text,/нет напитков.*0,5/u);
+ assert.doesNotMatch(r.text,/можно.*(?:отдельно|комбо)|прода[её]тся/u);
+ assert.match(r.text,/объ[её]м|подтверд/iu);
+});
+test("directcore07 valid absence cannot authorize an independent unsupported standalone-volume claim",()=>{
+ const c=context(directcore07Attribute,"ru",directcore07History);
+ const r=validateFinalText("В меню нет напитков 0,5 л. Напиток 0,5 л можно взять отдельно.",c,grounded);
+ assert.doesNotMatch(r.text,/можно взять отдельно/u);
+ assert.match(r.text,/нет напитков.*0,5|подтверд/iu);
+});
