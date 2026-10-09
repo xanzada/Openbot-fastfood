@@ -8,7 +8,7 @@ import { getMenuContext } from "./dle.service.js";
 import { classifyKitchenSalesPolicyForContext } from "./kitchenPolicy.service.js";
 import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent } from "../utils/orderIntent.js";
 import { hasExplicitMenuLinkIntent } from "../utils/magicLink.js";
-import { hasConfirmedCustomerIncident, isLikelyComplaintText, isLikelyOperatorRequestText, resolveComplaintContinuation, routeComplaintToAdmin } from "./complaintRouting.service.js";
+import { hasConfirmedCustomerIncident, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest, isLikelyComplaintText, isLikelyOperatorRequestText, resolveComplaintContinuation, routeComplaintToAdmin } from "./complaintRouting.service.js";
 import { honorMenuLinkPromise } from "../agent/linkPromise.js";
 import { foldIntentText, intentMatches } from "../utils/intentText.js";
 import { findBlockedMenuItemMention } from "./operationalPreemption.service.js";
@@ -50,6 +50,7 @@ const NON_TEXT_MEDIA_RE = /(image|photo|document|video|sticker|file)/i;
 export function needsHumanRecovery(ctx: FastFoodContext) {
   const text = String(ctx.text || "").trim();
   if (!text) return false;
+  if (isCurrentComplaintRequest(text) || isExplicitCourierContactRequest(text) || isExplicitHumanOperatorRequest(text)) return true;
   if (resolveAgentToolPlan(ctx).requiredTools.includes("checkOrderStatus") && !hasConfirmedCustomerIncident(ctx, text)) return false;
   if (isLikelyComplaintText(text) || isLikelyOperatorRequestText(text)) return true;
   if (intentMatches(NEEDS_PERSON_RE, text)) return true;
@@ -272,7 +273,7 @@ export async function answerAgentFailure(
   if (continuation) return continuation.customerReply;
   const plan = await resolveLiveAgentToolPlan(ctx);
   if (plan.requiredTools.includes("checkOrderStatus") && !hasConfirmedCustomerIncident(ctx)) {
-    const number = requestedOrderNumber(ctx.text) || lastDiscussedOrderNumber(ctx.chatHistory);
+    const number = requestedOrderNumber(ctx.text, ctx.chatHistory) || lastDiscussedOrderNumber(ctx.chatHistory);
     const lookup = await readOrder(ctx.instanceId, ctx.config?.domain || "", ctx.phone, ctx.language, number || undefined)
       .catch(() => ({ state: "unavailable" as const }));
     if (lookup.state === "found") {
@@ -303,6 +304,7 @@ export async function answerAgentFailure(
       "Қазір мәзірді тексере алмай тұрмын. Біраздан кейін қайта сұраңызшы.",
       "Сейчас не могу проверить меню. Попробуйте, пожалуйста, чуть позже.");
     const compositionQuestion = intentMatches(COMPOSITION_QUESTION_RE, ctx.text);
+    if (compositionQuestion && needsKitchenCompositionCheck(ctx)) return answerCompositionQuestion(ctx, route);
     const compositionSubject = compositionQuestion ? compositionRecoverySubject(ctx) : null;
     if (compositionSubject?.clarification) return compositionSubject.clarification;
     const matches = (compositionSubject ? compositionSubject.items : grounding.items || [])
@@ -453,15 +455,26 @@ const fold = (value: unknown) => String(value || "").toLowerCase().replace(/ё/g
  */
 export function needsKitchenCompositionCheck(ctx: FastFoodContext): boolean {
   if (!COMPOSITION_QUESTION_RE.test(String(ctx.text || ""))) return false;
-  const items: any[] = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot!.items : [];
-  if (!items.length || items.some((item) => !("composition" in Object(item)))) return false;
+  const menu = ctx.menuGrounding as any;
+  const snapshot = ctx.menuSnapshot;
+  if (menu?.menu_lookup === "unavailable" || menu?.stale === true || menu?.is_stale === true
+    || /backup|stale|fallback|unavailable/iu.test(String(snapshot?.source || "") + " " + String(menu?.source || ""))) return false;
+  const items: any[] = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  if (!items.length) return false;
+  const current = menu?.menu_lookup === "menu_live" || /^(?:dle_spa_items|catalog_current|live_menu)$/u.test(String(snapshot?.source || ""));
+  if (!current) return false;
   const known = (item: any) => Boolean(String(item.composition || "").trim());
-  if (!items.some(known)) return true;
   const text = fold(ctx.text);
   const named = items.filter((item) => {
     const head = fold(item.name).split(/\s+/)[0] || "";
-    return head.length >= 4 && text.includes(head);
+    return item.available !== false && "composition" in Object(item) && head.length >= 4 && (text.match(/\p{L}{3,}/gu) || []).some(word => word.startsWith(head.replace(/[аяьй]$/u, "")))
+      && !menuItemBlockedByNotes(ctx.activeShiftNotes || [], item, menuVocabulary(items)).blocked;
   });
+  // A real allergy inquiry can need a person even without a particular SKU;
+  // an ordinary missing field requires a matched current, available item.
+  if (hasConfirmedCustomerIncident(ctx) && /аллерг/iu.test(String(ctx.text || ""))) {
+    return items.some(item => "composition" in Object(item)) && !items.some(known);
+  }
   return named.length > 0 && !named.some(known);
 }
 
@@ -474,15 +487,15 @@ export async function answerCompositionQuestion(ctx: FastFoodContext, route: Rou
   const actualAllergy = Boolean(latestAllergyStatement && hasConfirmedCustomerIncident(ctx, latestAllergyStatement));
   const uncertainty = say(ctx, "Құрамы мен аллергендері туралы расталған дерек жоқ. Қауіпсіздігіне кепілдік бере алмаймын.",
     "У меня нет подтверждённых данных о составе и аллергенах. Гарантировать безопасность не могу.");
-  if (!actualAllergy) return uncertainty;
+  if (!actualAllergy && !needsKitchenCompositionCheck(ctx)) return uncertainty;
   const routing = await route(ctx, {
-    summary: `Аллергия: құрамы мен қауіпсіздігін нақтылау қажет. ${String(ctx.text || "").slice(0, 300)}`,
+    summary: `Құрамы мен аллергендері туралы деректі нақтылау қажет. ${String(ctx.text || "").slice(0, 300)}`,
     customerText: ctx.text,
     urgency: "normal",
     source: "composition_check",
   }).catch(() => null);
   return routing?.action === "operator_case_created"
-    ? say(ctx, "Құрам туралы сұрағыңыз операторға берілді. Қауіпсіздігіне кепілдік бере алмаймын.",
-      "Вопрос о составе передан оператору. Гарантировать безопасность не могу.")
+    ? say(ctx, "Құрам туралы сұрағыңыз оператор үшін тіркелді. Қауіпсіздігіне кепілдік бере алмаймын.",
+      "Вопрос о составе зарегистрирован для оператора. Гарантировать безопасность не могу.")
     : uncertainty;
 }

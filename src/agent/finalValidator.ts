@@ -195,7 +195,7 @@ function orderStateClaimMatches(sentence: string, evidence: any, ctx: FastFoodCo
   const active = !["cancelled", "canceled", "unknown", ""].includes(status)
     && !["cancelled"].includes(stage);
   if (/(?:доставлен|заверш[её]н|аяқтал|жеткізілді)/iu.test(sentence)) return active && (stage === "completed" || status === "completed");
-  if (/(?:в\s+процессе\s+приготовления|на\s+стадии\s+приготовления|готовится|готовим|дайындалып|әзірленіп|дайындалуда)/iu.test(sentence)) return active && (stage === "preparing" || ["paid", "preparing", "cooking"].includes(status));
+  if (/(?:в\s+процессе\s+приготовления|на\s+стадии\s+приготовления|готовится|готовим|дайындалып|әзірленіп|әзірленуде|дайындалуда)/iu.test(sentence)) return active && (stage === "preparing" || ["paid", "preparing", "cooking"].includes(status));
   if (/(?:готов[аоы]?(?=$|[^\p{L}])|дайын(?=$|[^\p{L}]))/iu.test(sentence)) {
     const orderedItems = Array.isArray(evidence?.orderItems || evidence?.items) ? (evidence.orderItems || evidence.items) : [];
     const productFound = !productReady || namedMenuItems(ctx, sentence).every((item) =>
@@ -231,7 +231,7 @@ function actionAssertionClauses(sentence:string):string[] {
   return clauses.flatMap(clause=>{
     const governed=ACTION_NOT_DONE_RE.test(clause)
       && /(?:подтвержден\p{L}*|подтвердить)\s*,?\s+(?:о\s+том,?\s+)?что(?!\p{L})/iu.test(clause);
-    return governed?[clause]:clause.split(/\s+(?:и|және)\s+(?=(?:оператор|администратор|админ|әкімш\p{L}*)(?!\p{L}))/iu);
+    return governed?[clause]:clause.split(/\s+(?:и|және)\s+(?=(?:(?:оператор|администратор|админ|әкімш\p{L}*)(?!\p{L})|(?:плат[её]жный\s+)?чек\p{L}*|(?:төлем\s+)?чек\p{L}*|түбіртек\p{L}*))/iu);
   });
 }
 function isActionAssertion(value: string, pattern: RegExp | ((sentence: string) => boolean), ctx?: FastFoodContext) {
@@ -270,7 +270,7 @@ function priceItemKey(value:unknown) {
 function menuWordPattern(word:string):string {
  const escape=(s:string)=>s.replace(/[.*+?^$(){}|[\]\\]/g,"\\$&");
  const exact=escape(word);
- const cases="(?:ның|нің|дың|дің|тың|тің|ға|ге|қа|ке|да|де|та|те|дан|ден|тан|тен|ды|ді|ты|ті|мен|пен|бен|ңыз|ңіз|ыңыз|іңіз|а|у|ом|е|ы)?";
+ const cases="(?:сының|сінің|ның|нің|дың|дің|тың|тің|ға|ге|қа|ке|да|де|та|те|дан|ден|тан|тен|ды|ді|ты|ті|мен|пен|бен|ңыз|ңіз|ыңыз|іңіз|а|у|ом|е|ы)?";
  if(word.length<4||/\d/u.test(word))return exact;
  if(/ая$/u.test(word))return escape(word.slice(0,-2))+"(?:ая|ой|ую)";
  if(/[ая]$/u.test(word))return "(?:"+exact+cases+"|"+escape(word.slice(0,-1))+(word.endsWith("а")?"(?:у|ы|е|ой|ою)":"(?:ю|и|е|ей)")+")";
@@ -398,10 +398,30 @@ function menuCompositionCandidates(sentence: string, ctx: FastFoodContext, claim
     && subjectWords.every(word => filler.test(word) || matchesTitle(word)) ? requested : [];
 }
 
+function hasCurrentCompositionCatalog(ctx:FastFoodContext):boolean {
+ const snapshot=ctx.menuSnapshot,menu=ctx.menuGrounding as any;
+ // A successful menu tool or preload may populate the snapshot without the optional grounding projection.
+ return Boolean((menu||Array.isArray(snapshot?.items)&&snapshot.items.length>0)
+   &&menu?.menu_lookup!=="unavailable"&&menu?.stale!==true&&menu?.is_stale!==true
+   &&snapshot?.source!=="menu_unavailable"&&!/backup|stale|fallback/u.test(String(snapshot?.source||"")+" "+String(menu?.source||"")));
+}
+/** Restore only the direct catalog composition; nested component details are not inferred. */
+function verifiedCompositionCore(sentence:string,ctx:FastFoodContext,antecedent:any[]):string|null {
+ if(!/(?:состав|құрам)/iu.test(ctx.text)||ALLERGY_TOPIC_RE.test(ctx.text)||!hasCurrentCompositionCatalog(ctx))return null;
+ const claim=/(?:содержит|в\s+составе\s*[:—-]?|состав\s*:|құрамында|құрамы\s*[:—-])\s+/iu.exec(sentence);
+ if(!claim)return null;
+ const candidates=menuCompositionCandidates(sentence,ctx,claim.index,antecedent);
+ const requested=namedMenuItems(ctx,ctx.text);
+ if(candidates.length!==1||requested.length>1||requested.length===1&&requested[0]!==candidates[0])return null;
+ const item=candidates[0],composition=String(item.composition||item.ingredients||"").trim();
+ if(!composition||composition.length>500)return null;
+ return String(item.name)+(ctx.language==="kk"?" — құрамы: ":" — состав: ")+composition.replace(/[.!?]\s*$/u,"")+".";
+}
 function menuSupportsIngredientClaim(sentence: string, ctx: FastFoodContext, antecedent: any[] = []) {
   if (isCompositionUncertaintyOnly(sentence)) return true;
   const claim = /(?:содержит|в\s+составе\s*[:—-]?|состав\s*:|құрамында|құрамы\s*[:—-])\s+([^.!?]+)/iu.exec(sentence);
   if (!claim || /(?:не\s*содержит|нет|жоқ|емес)/iu.test(sentence)) return true;
+  if (!hasCurrentCompositionCatalog(ctx)) return false;
   const candidates = menuCompositionCandidates(sentence, ctx, claim.index, antecedent);
   const claimed = (claim[1].match(/\p{L}+/gu) || []).filter((word) => !/^(?:и|с|со|в|және|пен|мен|бар|қосылған)$/iu.test(word)).map(ingredientKey);
   return Boolean(candidates.length && claimed.length && candidates.every((item) => {
@@ -416,14 +436,19 @@ function validateMenuCompositionClaims(text:string,ctx:FastFoodContext):string {
  const kept=units.flatMap(unit=>{
    const marker=unit.match(/^\s*\d+[.)]\s+/u);const content=marker?unit.slice(marker[0].length):unit;
    let antecedent:any[]=[];let invalid=false;
-   const output=(content.match(SENTENCE_RE)||[content]).filter(sentence=>{
-     const good=menuSupportsIngredientClaim(sentence,ctx,antecedent);
-     if(!good){removed=true;invalid=true;return false;}
-     const named=priceSubjects(ctx,sentence);
-     if(named.length)antecedent=named;
-     else if(!/^\s*(?:он[ао]?|его|е[её]|оның|онда|ол|құрам)/iu.test(sentence))antecedent=[];
-     return true;
-   });
+   const output=(content.match(SENTENCE_RE)||[content]).flatMap(sentence=>{
+      const good=menuSupportsIngredientClaim(sentence,ctx,antecedent);
+      if(!good){
+        removed=true;
+        const core=verifiedCompositionCore(sentence,ctx,antecedent);
+        if(!core){invalid=true;return [];}
+        antecedent=priceSubjects(ctx,core);return [core];
+      }
+      const named=priceSubjects(ctx,sentence);
+      if(named.length)antecedent=named;
+      else if(!/^\s*(?:он[ао]?|его|е[её]|оның|онда|ол|құрам)/iu.test(sentence))antecedent=[];
+      return [sentence];
+    });
    if(marker&&invalid)return [];
    const value=output.join(" ").trim();return value?[marker?marker[0]+value:value]:[];
  });
@@ -882,7 +907,11 @@ export function replyLanguageMismatch(text:string,ctx:FastFoodContext):boolean {
   const ru=new Set(words.filter(w=>/^(?:вы|ваш|ваша|ваши|можете|если|хотите|сейчас|пожалуйста|пришлите|заказ|оплата|доставка|напишите|помочь|готов)$/u.test(w))).size;
   const english=new Set(words.filter(w=>/^(?:if|you|your|have|further|questions|feel|free|ask|please|can|order|delivery|would|like)$/u.test(w))).size;
   const foreignAffirmation=/^\s*(?:иә|жоқ)(?=$|[^\p{L}])/iu.test(sentence);
-  return ctx.language==="ru"?(foreignAffirmation||(kk>=3||kkScript>=3)&&ru<2||english>=4&&ru<2):ctx.language==="kk"?(ru>=3&&kk<2||english>=4&&kk<2):false;
+   // Clear Ukrainian surrounding prose is another language, including after a
+   // failed rewrite. Masked catalog and service names never count as prose.
+   const ukrainian=new Set(words.filter(w=>/^(?:дякую|готовність|чекати|напишіть|ласка|хочете|замовити|замовлення|можливість|унікальна|допоможу|будь|цим)$/u.test(w))).size;
+   const ukrainianProse=ukrainian>=3||ukrainian>=2&&/[їєґ]/iu.test(sentence);
+  return ctx.language==="ru"?(foreignAffirmation||ukrainianProse||(kk>=3||kkScript>=3)&&ru<2||english>=4&&ru<2):ctx.language==="kk"?(ukrainianProse||ru>=3&&kk<2||english>=4&&kk<2):false;
  });
 }
 
@@ -966,7 +995,22 @@ function validateFinalTextCore(
     if (!text) return { text: orderStatusUnknownText(ctx), hasLink: false, warnings };
   }
 
-  const wrongState = Boolean(orderEvidence) && isActionAssertion(text, (sentence) => orderStateClaimMatches(sentence, orderEvidence, ctx) === false, ctx);
+  // A found/unverified order proves neither receipt upload nor receipt receipt.
+   // The customer-safe receipt_review projection is the existing explicit proof.
+   const receiptStage=String(orderEvidence?.orderStage??(orderEvidence as any)?.stage??"");
+   const receiptPayment=String(orderEvidence?.orderPaymentStatus??(orderEvidence as any)?.paymentStatus??"");
+   const receiptProven=Boolean(orderEvidence)&&(receiptStage==="receipt_review"
+     ||["receipt_review","receipt_uploaded","pending_review"].includes(receiptPayment));
+   const receiptAssertion=(value:string)=>isActionAssertion(value,(sentence:string)=>!nonCurrentFactAssertion(sentence)
+     &&!/(?:чек\p{L}*\s+(?:ещ[её]\s+)?не\s+(?:получ|отправ)|(?:чек|түбіртек)[^.!?]{0,25}(?:жіберілмеген|алынбаған|келген\s+жоқ)|чег\p{L}*[^.!?]{0,25}(?:жіберілмеген|алынбаған))/iu.test(sentence)
+     &&/(?:чек\p{L}*|чег\p{L}*|түбіртек\p{L}*)[^.!?]{0,35}(?:отправлен|получен|загружен|прислан|жіберіл(?:ді|ген)|алын(?:ды|ған))|(?:отправлен|получен|загружен|прислан)[^.!?]{0,35}чек/iu.test(sentence));
+   if(!receiptProven&&receiptAssertion(text)){
+     text=removeUnsupportedActionClauses(text,receiptAssertion);
+     warnings.push("unconfirmed_payment_receipt_removed");
+     if(!textWithoutUrls(text))return {text:ctx.language==="kk"?"Төлем чегінің алынғанын қазір растай алмаймын.":"Получение платёжного чека сейчас подтвердить не могу.",hasLink:false,warnings};
+   }
+
+   const wrongState = Boolean(orderEvidence) && isActionAssertion(text, (sentence) => orderStateClaimMatches(sentence, orderEvidence, ctx) === false, ctx);
   if (wrongState) {
     const kept = (textWithoutUrls(text).match(SENTENCE_RE) || [text]).filter((sentence) =>
       !isActionAssertion(sentence, (claim) => orderStateClaimMatches(claim, orderEvidence, ctx) === false, ctx)).join(" ").trim();

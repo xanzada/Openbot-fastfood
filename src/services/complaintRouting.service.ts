@@ -146,9 +146,8 @@ export function isLikelyOperatorRequestText(text = "") {
   return Boolean(detectOperatorCaseKind(text));
 }
 
-// "Шағым бар" tells an operator nothing. A complaint that already names what
-// went wrong goes straight through; a bare one earns a single question first,
-// so the case that reaches the operator is worth reading.
+// Detail improves the case summary; a current complaint itself is enough for
+// the human handoff. Technical failures and unrelated turns are not complaints.
 export function complaintHasActionableDetail(text = "") {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   if (hasCurrentMissingArrivalReport(text)) return true;
@@ -164,8 +163,8 @@ export function buildComplaintDetailQuestion(language: "kk" | "ru") {
     : "Кешіріңіз. Нақты не болғанын жазып жіберіңізші — операторға беремін.";
 }
 
-// A courier-contact question or unexplained complaint earns one clarification.
-// An explicit request for a human creates a case immediately.
+// A clarification is available for ambiguous turns, not an explicit current
+// complaint, courier-contact request or human request.
 export function buildEscalationClarifyQuestion(kind: string | null, language: "kk" | "ru") {
   if (language === "ru") {
     if (kind === "courier_request") {
@@ -242,7 +241,9 @@ export function isExplicitHumanOperatorRequest(text = ""): boolean {
   const value = String(text).toLowerCase().replace(/«[^»]*»|“[^”]*”|"[^"]*"/g, " ").replace(/\s+/g, " ").trim();
   const human = "(?:оператор\\p{L}*|администратор\\p{L}*|админ\\p{L}*|менеджер\\p{L}*|человек\\p{L}*|адам\\p{L}*)";
   return value.split(/[.!?;]|\s+но\s+|бірақ/iu).map(part => {
-    const clause = part.trim();
+    // Urgency/politeness modifies a request; it is not evidence by itself.
+    // Keep the remaining negation and explicit human-request grammar unchanged.
+    const clause = part.trim().replace(/^(?:(?:(?:очень\s+)?срочно|шұғыл|пожалуйста|өтінемін)(?:\s*[,:\u2014-]\s*|\s+)){1,3}/iu, "");
     const refusal = "(?:хочу|хотел\\p{L}*|нужен|нужна|нужно|надо|зов\\p{L}*|позов\\p{L}*|вызыв\\p{L}*|соедин\\p{L}*|переключ\\p{L}*|свяж\\p{L}*|поговор\\p{L}*)";
     if (new RegExp("(?:^|[^\\p{L}])не\\s+" + refusal + "(?:\\s+(?:говорить|разговаривать|поговорить|с|со|меня|нас|видеть|живого|живой|настоящего|пожалуйста)){0,6}\\s+" + human + "|" + human + ".{0,20}(?:не\\s+(?:нужен|нужна|нужно|надо)|керек\\s*емес|қажет\\s*емес)", "iu").test(clause)) return false;
     if (new RegExp("^(?:пожалуйста[, ]*)?(?:живой\\s+|тірі\\s+|жанды\\s+)?" + human + "(?:[, ]*пожалуйста)?$", "iu").test(clause)) return true;
@@ -260,8 +261,42 @@ export function isExplicitHumanOperatorRequest(text = ""): boolean {
 }
 
 
+function currentRequestClauses(text: string): string[] {
+  return String(text).replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, " ")
+    .split(/[.!?;]|\s+но\s+|\s+бірақ\s+/iu).map(part => part.trim()).filter(Boolean);
+}
+
+export function isCurrentComplaintRequest(text = ""): boolean {
+  let requested = false;
+  for (const clause of currentRequestClauses(text)) {
+    if (/^(?:если|егер|друг|клиент|оператор|он\s+сказал|она\s+сказала)/iu.test(clause)) continue;
+    if (/(?:не\s+хочу\s+(?:жаловаться|пожаловаться)|жалоб\p{L}*.{0,15}(?:нет|не\s+нуж)|шағым.{0,30}(?:емес|жоқ)|передумал)/iu.test(clause)) {
+      requested = false; continue;
+    }
+    const describesFailure = !isLikelyMenuQuestion(clause)
+      || /(заказ|тапсырыс|привез|келді|келдi|достав|волос|тырнақ|отрав|улан)/iu.test(clause);
+    if (/^(?:(?:я\s+)?хочу\s+пожаловаться|(?:у\s+меня\s+)?жалоба|шағым\s+(?:айтқым\s+келеді|бар))$/iu.test(clause)
+      || (describesFailure && hasExistingComplaintText(clause) && complaintHasActionableDetail(clause))) requested = true;
+  }
+  // Arrival authority retains whole-message question, reporting and resolution scope.
+  return requested || hasCurrentMissingArrivalReport(text);
+}
+
+export function isExplicitCourierContactRequest(text = ""): boolean {
+  let requested = false;
+  for (const clause of currentRequestClauses(text)) {
+    if (/^(?:если|егер|друг|клиент|он\s+сказал|она\s+сказала)/iu.test(clause)) continue;
+    if (!/курьер/iu.test(clause) || !/(?:номер|нөмір|номір|телефон|хабарлас)/iu.test(clause)) continue;
+    if (/(?:не\s+(?:нуж|надо|хочу)|керек\s*емес|қажет\s*емес|не\s+давайте|бермеңіз)/iu.test(clause)) { requested = false; continue; }
+    if (/(?:дай|дайте|пришл|подскаж|покаж|нуж|надо|хочу|связ|хабарлас|керек|қажет|бер|какой|қандай|где)/iu.test(clause)
+      || /^(?:номер|телефон)\s+курьера$/iu.test(clause)) requested = true;
+  }
+  return requested;
+}
+
 export function hasConfirmedCustomerIncident(ctx: FastFoodContext, guestText = ctx.text || ""): boolean {
-  if (isExplicitHumanOperatorRequest(guestText)) return true;
+  if (isExplicitHumanOperatorRequest(guestText) || isExplicitCourierContactRequest(guestText)
+    || isCurrentComplaintRequest(guestText)) return true;
   if (hasCurrentMissingArrivalReport(guestText)) return true;
   const clauses = String(guestText).split(/[.!?;,]|\s+но\s+|\s+бірақ\s+/iu).map(part => part.trim()).filter(Boolean);
   const cancellationDenied = /(?:^|[^\p{L}])не\s+(?:надо\s+|нужно\s+|хочу\s+)?(?:отмен\p{L}*|отказ\p{L}*|откаж\p{L}*)|(?:отмен\p{L}*|отказ\p{L}*).{0,20}(?:не\s+(?:нуж|надо|хочу)|керек\s*емес)|жойма|болдырма.{0,20}керек\s*емес/iu;
@@ -307,7 +342,7 @@ export async function resolveComplaintContinuation(ctx: FastFoodContext) {
   if (!instanceId || !customerPhone) return clarification;
   try {
     const caseId = await getActiveOperatorCaseId(instanceId, customerPhone);
-    if (!caseId) return clarification;
+    if (!caseId) return null;
     // This is the unchanged canonical operatorCase record, not a history entry
     // or a model assertion. Redis expiry/null and read failures stay fail-closed.
     const raw = await redisClient.get(`operator_case:${instanceId}:${caseId}`);
@@ -320,7 +355,7 @@ export async function resolveComplaintContinuation(ctx: FastFoodContext) {
       || record.kind !== "complaint" || !Number.isFinite(lastTouch) || lastTouch <= 0
       || age < 0 || age > CASE_FLAG_QUIET_MS
       || !isLikelyComplaintText(String(record.summary || ""))
-      || !complaintHasActionableDetail(String(record.summary || ""))) return clarification;
+      || !complaintHasActionableDetail(String(record.summary || ""))) return null;
     return {
       action: "complaint_continued" as const, caseId: String(caseId),
       customerReply: ctx.language === "ru"
@@ -328,7 +363,7 @@ export async function resolveComplaintContinuation(ctx: FastFoodContext) {
         : "Шағымыңыз бойынша не қосқыңыз немесе нақтылағыңыз келеді?",
     };
   } catch {
-    return clarification;
+    return null;
   }
 }
 

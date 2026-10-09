@@ -147,3 +147,22 @@ test("candidate05 successful current-turn grant survives a later rewrite duplica
  const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60},magicLinkGranted:true,magicLink:"https://fixture.invalid/current"},stepResults:[first,second]});
  const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/60 минут/u);assert.match(r.text,/ссылк.*отдельн/iu);
 });
+
+const candidate06UkrainianConsentDraft="Дякую за вашу готовність чекати! 😊 У вас уже є унікальна можливість оформити замовлення. Напишіть, будь ласка, що ви хочете замовити, і я допоможу вам з цим.";
+test("candidate06 actual Ukrainian second draft uses existing one-rewrite truthful Russian consent fallback",async()=>{
+ const steps=candidate05Steps({runtime_available:true,live:true,wait_time:60},{allowed:false,link:null});
+ const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft,candidate06UkrainianConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/60 минут/u);assert.match(r.text,/готов.*ждать|готовность ждать|соглас.*ждать/u);
+ assert.doesNotMatch(r.text,/Дякую|готовність|будь ласка|унікальна|у вас уже есть|Я на связи/u);
+ assert.ok(!replyLanguageMismatch(r.text,{language:"ru"} as any));assert.ok(r.validationWarnings.includes("reply_language_unresolved"));
+ assert.doesNotMatch(r.text,/ссылк.*(?:отправлена|отправлю)|https?:|техническ|согласие.*сохран/u);
+});
+test("candidate06 Ukrainian first draft cannot bypass the one existing Russian rewrite",async()=>{
+ const f=fixture("Сколько ждать?",false,"off",false,[candidate06UkrainianConsentDraft,"Сейчас ориентировочное ожидание — 60 минут."],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}}});
+ const r=await f.run();assert.equal(f.calls(),2);assert.equal(r.text,"Сейчас ориентировочное ожидание — 60 минут.");assert.match(f.captured[1],/LANGUAGE_REPAIR/u);
+});
+test("candidate06 Ukrainian fallback cannot certify customer60 after an unavailable tool read",async()=>{
+ const steps=candidate05Steps({runtime_available:false,live:false,wait_time:null},{allowed:false,link:null});
+ const f=fixture("Я согласен ждать 60 минут",false,"off",false,[candidate05ConsentDraft,candidate06UkrainianConsentDraft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.doesNotMatch(r.text,/60 минут|0 минут/u);assert.match(r.text,/подтверд|неизвест/u);
+});

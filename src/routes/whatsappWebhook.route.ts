@@ -39,6 +39,8 @@ import {
   isLikelyOperatorRequestText,
   routeComplaintToAdmin,
   isExplicitHumanOperatorRequest,
+  isExplicitCourierContactRequest,
+  isCurrentComplaintRequest,
   stripEscalationSignals,
   type ComplaintMediaPayload,
   type ComplaintUrgency,
@@ -403,7 +405,7 @@ async function resolveCancellationTarget(ctx: FastFoodContext): Promise<{
   orderNumber: string;
   statusLine: string;
 }> {
-  const quotedNumber = requestedOrderNumber(ctx.text);
+  const quotedNumber = requestedOrderNumber(ctx.text, ctx.chatHistory);
   const discussedNumber = quotedNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
   const discussedRecord = discussedNumber ? pickConversationOrder(ctx.activeOrder, discussedNumber) : null;
   const lookup = quotedNumber
@@ -429,7 +431,7 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
   if (isLikelyComplaintText(ctx.text) || isLikelyOperatorRequestText(ctx.text)) return null;
   // A timing question with no order in play at all belongs to the runtime wait
   // time, not to the status route - see isUnownedOrderTimingQuestion.
-  const quotedNumber = requestedOrderNumber(ctx.text);
+  const quotedNumber = requestedOrderNumber(ctx.text, ctx.chatHistory);
   const priorNumber = quotedNumber ? "" : lastDiscussedOrderNumber(ctx.chatHistory);
   if (isUnownedOrderTimingQuestion({
     text: ctx.text,
@@ -442,7 +444,7 @@ async function customerOrderReply(ctx: FastFoodContext): Promise<string | null> 
   const timingAsked = Boolean(ctx.activeOrder)
     && isOrderTimingQuestion(ctx.text)
     && !isProspectiveOrderTimingQuestion(ctx.text);
-  if (!isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked) return null;
+  if (!quotedNumber && !isCustomerOrderStatusQuestion(ctx.text) && !(ctx.activeOrder && isLikelyOrderStatusFollowUp(ctx.text)) && !timingAsked) return null;
   const orderNumber = quotedNumber;
   const discussedNumber = priorNumber;
   const discussedRecord = discussedNumber ? pickConversationOrder(ctx.activeOrder, discussedNumber) : null;
@@ -710,7 +712,7 @@ function prepTimeReply(ctx: FastFoodContext): string | null {
   if (!isUnownedOrderTimingQuestion({
     text: ctx.text,
     hasActiveOrder: Boolean(ctx.activeOrder),
-    quotedOrderNumber: requestedOrderNumber(ctx.text),
+    quotedOrderNumber: requestedOrderNumber(ctx.text, ctx.chatHistory),
     discussedOrderNumber: lastDiscussedOrderNumber(ctx.chatHistory),
   })) return null;
   // A mixed message ("суши қанша тұрады, қанша уақытта жетеді?") needs the menu
@@ -1818,14 +1820,13 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
     if (plannedEscalationMissed) {
       console.warn(`[OPENBOT:ESCALATION] forced instance=${ctx.instanceId} phone=${maskPhone(ctx.phone)} reason=planned_tool_missed`);
     }
-    // Asking for a human, a courier number, or lodging a complaint no longer
-    // fires SOS on the spot: a bare demand earns one clarifying question, and
-    // only the guest's answer (or a message that already carries the story, or
-    // photo evidence) creates the operator case.
+    // Current human/courier-contact requests and complaints go straight to the
+    // canonical case router; model uncertainty alone still cannot create SOS.
     const caseKind = detectOperatorCaseKind(ctx.text);
     const explicitHumanRequest = isExplicitHumanOperatorRequest(ctx.text);
-    const askedForOperator = explicitHumanRequest || (!menuQuestion && caseKind === "courier_request");
-    const complaintText = !menuQuestion && isLikelyComplaintText(ctx.text);
+    const immediateHandoff = explicitHumanRequest || isExplicitCourierContactRequest(ctx.text) || isCurrentComplaintRequest(ctx.text);
+    const askedForOperator = explicitHumanRequest || isExplicitCourierContactRequest(ctx.text);
+    const complaintText = isCurrentComplaintRequest(ctx.text);
     const awaitingDetailRaw = toolHandledEscalation ? null : await takeComplaintClarification(ctx.instanceId, ctx.phone);
     // "error" means we could not read the state at all. Neither branch may act on a guess:
     // re-asking would double the question, routing would double the case - so this turn
@@ -1835,7 +1836,7 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
     const hasDetailNow = !menuQuestion && complaintHasActionableDetail(ctx.text);
     const needsClarification =
       !toolHandledEscalation
-      && !explicitHumanRequest
+      && !immediateHandoff
       && !plannedEscalationMissed
       && !clarificationUnknown
       && (askedForOperator || complaintText)
@@ -1846,12 +1847,12 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
     const shouldRouteComplaint =
       !toolHandledEscalation
       && !needsClarification
-      && (!clarificationUnknown || explicitHumanRequest)
+      && (!clarificationUnknown || immediateHandoff)
       // The pending flag is the guest's answer to OUR question. A menu question is them
       // moving on to something else, not the detail of a complaint - and without this
       // guard the menu question opened a silent operator case while the reply talked
       // about pizza (found 2026-08-23).
-      && (!menuQuestion || explicitHumanRequest)
+      && (!menuQuestion || immediateHandoff)
       && (needsAdminEscalation || pendingComplaintMedia || askedForOperator || complaintText || awaitingDetail !== null)
       || plannedEscalationMissed;
 

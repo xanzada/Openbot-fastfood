@@ -60,7 +60,7 @@ test("a lane refusal (security-check 400, 429, 500, empty 200) fails over to the
 
 const routed: any[] = [];
 const route = (action: string) => (async (_ctx: any, input: any) => { routed.push(input); return { action } as any; }) as any;
-const ctx = (text: string, language: "kk" | "ru", items: any[] = []) => ({ text, language, instanceId: "t", phone: "77000000000", menuSnapshot: { items } }) as any;
+const ctx = (text: string, language: "kk" | "ru", items: any[] = []) => ({ text, language, instanceId: "t", phone: "77000000000", menuSnapshot: { source: "dle_spa_items", items } }) as any;
 
 test("a real paid-and-delayed incident still reaches an operator when every model fails", async () => {
   const { answerAgentFailure } = await import("../src/services/turnSafetyNet.service.js");
@@ -101,8 +101,8 @@ test("missing composition is honest; a known customer allergy can warrant record
   assert.equal(needsKitchenCompositionCheck(ctx("донер канша турады", "kk", blank)), false);
   assert.equal(needsKitchenCompositionCheck(ctx("состав?", "ru", [{ name: "Пицца" }])), false, "a snapshot that says nothing changes nothing");
   routed.length = 0;
-  assert.match(await answerCompositionQuestion(ctx("У ребенка аллергия на орехи", "ru", blank), route("operator_case_created")), /передан оператору/);
-  assert.match(await answerCompositionQuestion(ctx("Балама жаңғаққа аллергия бар", "kk", blank), route("operator_case_created")), /операторға берілді/);
+  assert.match(await answerCompositionQuestion(ctx("У ребенка аллергия на орехи", "ru", blank), route("operator_case_created")), /зарегистрирован для оператора/);
+  assert.match(await answerCompositionQuestion(ctx("Балама жаңғаққа аллергия бар", "kk", blank), route("operator_case_created")), /оператор үшін тіркелді/);
   assert.equal(routed[0].source, "composition_check");
   const noSos = await answerCompositionQuestion(ctx("орехи есть?", "ru", blank), route("escalation_failed"));
   assert.doesNotMatch(noSos, /кухн/, "no kitchen promise without a person behind it");

@@ -158,3 +158,26 @@ test("an inflected guest question hits the note that governs it", () => {
   assert.deepEqual(matchingNoteIds(notes, "пиццаны алам"), ["live-pizza"]);
   assert.deepEqual(matchingNoteIds(notes, "донер бар ма"), []);
 });
+
+const imperativeItems=[{name:"4 сезона",category:"Суши"},{name:"Цезарь",category:"Суши"},{name:"Футомаки",category:"Суши"},{name:"Донер",category:"Донеры"}];
+for(const row of [
+ {label:"mixed imperative blocks sushi only",text:"сушиға пока что заказ қабылдама",blocked:[true,true,true,false],count:1},
+ {label:"existing unavailable control preserved",text:"Суши уақытша жоқ",blocked:[true,true,true,false],count:1},
+ {label:"restored acceptance is not a prohibition",text:"Сушиға заказ қайта қабылдаймыз",blocked:[false,false,false,false],count:0},
+ {label:"positive acceptance is not a prohibition",text:"Сушиға заказ қабылдаймыз",blocked:[false,false,false,false],count:0},
+ {label:"informational availability is not a prohibition",text:"Суши бар",blocked:[false,false,false,false],count:0}
+])test(row.label,()=>{
+ const notes=[{noteId:"synthetic-imperative",text:row.text}];
+ assert.deepEqual(imperativeItems.map(item=>menuItemBlockedByNotes(notes,item,menuVocabulary(imperativeItems)).blocked),row.blocked);
+ const constraints=publicNoteConstraints(notes);assert.equal(constraints.length,row.count);
+ assert.equal(matchingNoteIds(notes,"Суши бар ма?").length,row.count);
+ if(row.label==="mixed imperative blocks sushi only")assert.deepEqual(constraints[0].blocked_terms,["сушиға"]);
+});
+
+test("mixed sushi imperative never matches a short preposition in unrelated descriptions",()=>{
+ const notes=[{noteId:"synthetic-imperative",text:"сушиға пока что заказ қабылдама"}];
+ const menu=[{name:"Суши сет",category:"Суши",description:"Рис и рыба"},
+ {name:"Донер",category:"Донеры",description:"Курица с овощами и соусом"},
+ {name:"Кальцоне",category:"Пиццы",description:"Закрытая пицца с начинкой"}];
+ assert.deepEqual(menu.map(item=>menuItemBlockedByNotes(notes,item,menuVocabulary(menu)).blocked),[true,false,false]);
+});

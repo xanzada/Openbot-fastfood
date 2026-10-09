@@ -5,7 +5,7 @@ import { resolveAgentToolPlan } from "../src/agent/toolPolicy.js";
 import { classifyKitchenSalesPolicyForContext } from "../src/services/kitchenPolicy.service.js";
 import { createSendMenuLinkSkill } from "../src/skills/menuLink.skill.js";
 import { honorMenuLinkPromise } from "../src/agent/linkPromise.js";
-import { answerCompositionQuestion, answerAgentFailure } from "../src/services/turnSafetyNet.service.js";
+import { answerCompositionQuestion, answerAgentFailure, needsKitchenCompositionCheck } from "../src/services/turnSafetyNet.service.js";
 import { redisClient } from "../src/services/redis.service.js";
 const fixtureKeys=new Map<string,string>();
 Object.defineProperty(redisClient,"isReady",{value:true,configurable:true});
@@ -22,7 +22,7 @@ test("accepted exact kitchen state pins lookup and checkout; changed state revok
  assert.ok(!resolveAgentToolPlan(c).requiredTools.includes("sendMenuLink"));
 });
 test("ordinary active-order timing follow-up requires fresh status, no SOS",()=>{
- for(const text of ["Почему еще не пришел?","Неге әлі келмеді?","Тапсырыс нөмірі 42","42"]){
+ for(const text of ["Почему еще не пришел?","Неге әлі келмеді?","Тапсырыс нөмірі 42"]){
   const p=resolveAgentToolPlan(ctx(text,{activeOrder:{status:"cooking",id:42}}));
   assert.ok(p.requiredTools.includes("checkOrderStatus"),text);assert.ok(!p.requiredTools.includes("escalateToAdmin"),text);
  }
@@ -2398,3 +2398,45 @@ for (const language of ["kk", "ru"] as const) {
     });
   }
 }
+
+test("a prompted bare order number pins a fresh order read, while an unprompted number does not",()=>{
+ const history=[{role:"assistant",text:"Тапсырысыңыздың номерін жібере аласыз ба?"}];
+ assert.ok(resolveAgentToolPlan(ctx("42",{chatHistory:history})).requiredTools.includes("checkOrderStatus"));
+ for(const text of ["42","60","2000"])assert.ok(!resolveAgentToolPlan(ctx(text)).requiredTools.includes("checkOrderStatus"),text);
+});
+test("fresh matched missing composition creates a real handoff without inventing notification delivery",async()=>{
+ const c=ctx("Какой состав Цезаря?",{menuSnapshot:{source:"dle_spa_items",items:[{name:"Цезарь",available:true,composition:""}]},menuGrounding:{menu_lookup:"menu_live"}});
+ assert.equal(needsKitchenCompositionCheck(c),true);
+ const routed:any[]=[];const reply=await answerCompositionQuestion(c,(async(_ctx:any,input:any)=>{routed.push(input);return{action:"operator_case_created",caseId:"fixture-case"};}) as any);
+ assert.equal(routed.length,1);assert.equal(routed[0].source,"composition_check");assert.match(reply,/зарегистрирован/iu);
+ assert.doesNotMatch(reply,/уведомлен|получил|свяжется|безопасен|без аллерген/iu);
+ const failed=await answerCompositionQuestion(c,(async()=>({action:"escalation_failed"})) as any);
+ assert.doesNotMatch(failed,/зарегистрирован|передан|свяжется/iu);
+});
+test("composition handoff excludes known no-item no-stock failed stale or unspecified catalog",async()=>{
+ const fresh={source:"dle_spa_items",items:[{name:"Цезарь",available:true,composition:""}]};
+ const controls=[ctx("Состав колы?",{menuSnapshot:fresh}),ctx("Состав Цезаря?",{menuSnapshot:{...fresh,items:[{name:"Цезарь",available:false,composition:""}]}}),
+  ctx("Состав Цезаря?",{menuSnapshot:{...fresh,source:"menu_backup"}}),ctx("Состав Цезаря?",{menuSnapshot:fresh,menuGrounding:{menu_lookup:"unavailable"}}),
+  ctx("Состав Цезаря?",{menuSnapshot:fresh,menuGrounding:{menu_lookup:"menu_live",stale:true}}),
+  ctx("Состав Цезаря?",{menuSnapshot:{items:[{name:"Цезарь",composition:""}]}}),
+  ctx("Состав Цезаря?",{menuSnapshot:{...fresh,items:[{name:"Цезарь",composition:"курица, салат"}]}})];
+ for(const c of controls){assert.equal(needsKitchenCompositionCheck(c),false,JSON.stringify(c.menuSnapshot));let calls=0;await answerCompositionQuestion(c,(async()=>{calls++;return{action:"operator_case_created"};}) as any);assert.equal(calls,0);}
+});
+
+test("current courier contact and complaint pin human handoff without borrowing model urgency",()=>{
+ for(const text of ["Дайте номер курьера","Хочу пожаловаться","Курьердің нөмірін беріңізші","Шағым бар"])assert.ok(resolveAgentToolPlan(ctx(text)).requiredTools.includes("escalateToAdmin"),text);
+ for(const text of ["Курьер уже едет?","Номер курьера не нужен","«Шағым бар»","Состав колы?"])assert.ok(!resolveAgentToolPlan(ctx(text)).requiredTools.includes("escalateToAdmin"),text);
+});
+
+test("post-read missing composition handoff uses fresh matched facts and preserves known no-item and outage answers",async()=>{
+ for(const mode of ["missing","known","no-item","outage"]){
+  const c=ctx("Какой состав Цезаря?",{menuSnapshot:{source:"menu_backup",items:[]},menuGrounding:undefined});
+  const routed:any[]=[];
+  const answer=await answerAgentFailure(c,new Error("synthetic model failure"),(async(_c:any,input:any)=>{routed.push(input);return{action:"operator_case_created",caseId:"fixture-case"};}) as any,
+   (async()=>false) as any,(async()=>{if(mode==="outage")return{items:[],source:"menu_unavailable",notes:[]};return{source:"dle_spa_items",items:mode==="no-item"?[]:[{name:"Цезарь",price:2200,available:true,composition:mode==="known"?"курица, салат":""}],notes:[]};}) as any);
+  assert.equal(routed.length,mode==="missing"?1:0,mode);
+  if(mode==="missing"){assert.equal(routed[0].source,"composition_check");assert.match(answer,/зарегистрирован для оператора/iu);assert.doesNotMatch(answer,/уведомлен|свяжется|получил/iu);}
+  if(mode==="known")assert.match(answer,/курица, салат/iu);
+  if(mode==="outage")assert.match(answer,/не могу проверить меню/iu);
+ }
+});

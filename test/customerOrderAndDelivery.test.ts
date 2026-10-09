@@ -337,3 +337,20 @@ test("operator cancel words reach the guest humanized, and the phone falls back 
   const { humanizeCancellationReason } = await import("../src/services/operatorVoice.service.js");
   assert.equal(await humanizeCancellationReason("", "kk"), "");
 });
+
+test("explicit requested80 cannot accept a backend fallback record100",()=>{
+ const context=normalizeOrderContextPayload({order_id:"100",status:"pending",phone:"77000000000",active_orders:[{id:"100",status:"pending",phone:"77000000000"}]},{phone:"77000000000",orderId:"80"});
+ const lookup=customerOrderFromContext(context,"77000000000","kk","80");
+ assert.deepEqual(lookup,{state:"not_found"});
+});
+test("explicit reference retains matching display80 and legacy record80 without confusing UUID",()=>{
+ for(const record of [{id:"order-uuid",display_number:"80",phone:"77000000000",status:"ready"},{id:"80",phone:"77000000000",status:"paid"}]){
+  const lookup=customerOrderFromContext({order:record},"77000000000","ru","80");
+  assert.equal(lookup.state,"found");if(lookup.state==="found")assert.equal(lookup.order.orderNumber,"80");
+ }
+});
+test("requested reference keeps ordinary own-order and stale-context boundaries",()=>{
+ assert.equal(customerOrderFromContext({order:{id:"100",phone:"77000000000",status:"pending"}},"77000000000","ru").state,"found");
+ assert.equal(customerOrderFromContext({is_stale:true,order:{id:"80",phone:"77000000000",status:"ready"}},"77000000000","ru","80").state,"unavailable");
+ assert.equal(customerOrderFromContext({order:{id:"80",phone:"77000000001",status:"ready"}},"77000000000","ru","80").state,"not_found");
+});

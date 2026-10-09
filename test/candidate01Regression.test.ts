@@ -558,3 +558,127 @@ test("candidate05 fresh catalog survives operational staleness while stale catal
   assert.match(denied.text,/подтверд|не могу|неизвест/iu);
  }
 });
+
+const candidate06ComboDraft="Донер комбосының құрамында Донер (тауық еті, лаваш, қызанақ) және картоп фри бар. Сізге тапсырыс жасау керек пе?";
+test("candidate06 actual compound with nested ingredients retains verified direct combo core",()=>{
+ const r=validateFinalText(candidate06ComboDraft,context("Комбоның құрамында не бар?","kk"),grounded);
+ assert.match(r.text,/Донер.*картоп фри/u);assert.doesNotMatch(r.text,/^Сізге тапсырыс/u);
+});
+test("candidate06 possessive compound identity keeps exact core composition and2500 price",()=>{
+ const draft="Донер комбосының құрамында Донер және картоп фри бар. Оның бағасы 2500 KZT.";
+ const r=validateFinalText(draft,context("Донер комбоның құрамы мен бағасы қандай?","kk"),grounded);
+ assert.equal(r.text,draft);assert.ok(!r.warnings.includes("menu_price_mismatch_removed"));
+});
+test("candidate06 compound possessive cannot borrow constituent1990 price",()=>{
+ const r=validateFinalText("Донер комбосының бағасы 1990 KZT.",context("Донер комбо қанша?","kk"),grounded);
+ assert.doesNotMatch(r.text,/1990/u);assert.ok(r.warnings.includes("menu_price_mismatch_removed"));
+});
+test("candidate06 failed nested detail restores only direct verified core without ingredient hierarchy",()=>{
+ const r=validateFinalText("Донер комбосының құрамында Донер (майонез, жұмыртқа) және картоп фри бар.",context("Комбоның құрамында не бар?","kk"),grounded);
+ assert.match(r.text,/Донер.*картоп фри/u);assert.doesNotMatch(r.text,/майонез|жұмыртқа/u);
+ assert.ok(r.warnings.includes("unsupported_ingredient_claim_removed"));
+});
+test("candidate06 requested different variant cannot authorize nested combo details",()=>{
+ const c=context("Көкөніс роллының құрамы қандай?","kk");
+ const r=validateFinalText("Көкөніс роллының құрамында тауық еті, лаваш және қызанақ бар.",c,grounded);
+ assert.doesNotMatch(r.text,/тауық|лаваш|қызанақ/u);
+});
+test("candidate06 unavailable or stale catalog cannot salvage a combo composition",()=>{
+ for(const marker of [{menu_lookup:"unavailable"},{stale:true},{is_stale:true}]){
+  const c=context("Комбоның құрамында не бар?","kk");c.menuGrounding={...c.menuGrounding,...marker};
+  const r=validateFinalText(candidate06ComboDraft,c,grounded);assert.doesNotMatch(r.text,/құрамында.*Донер.*картоп/u);
+ }
+});
+test("candidate06 ambiguous anonymous combo cannot be rebuilt from a guessed catalog subject",()=>{
+ const c=context("Комбоның құрамында не бар?","kk");
+ c.menuSnapshot.items.push({name:"Суши комбо",price:3500,composition:"Суши, картоп",available:true});
+ const r=validateFinalText("Комбоның құрамында тауық пен күріш бар.",c,grounded);
+ assert.doesNotMatch(r.text,/тауық пен күріш|Суши комбоның|Донер комбосының/u);
+});
+function candidate06OrderContext(text:string,status:string,paymentStatus="unverified"){
+ const c=context(text,"kk");const record={id:98,phone:c.phone,status,payment_status:paymentStatus,items:[{name:"Донер",quantity:1}],type:"pickup"};
+ const lookup=customerOrderFromRecord(record,c.phone,"kk");assert.equal(lookup.state,"found");
+ c.activeOrder=(lookup as any).order;return c;
+}
+function candidate06OrderGrounding(c:any){
+ const o=c.activeOrder;
+ return {toolsCalled:["checkOrderStatus"],toolFindings:{orderFound:true,orderLookup:"found",orderStatus:o.status,orderStage:o.stage,orderStatusLabel:o.statusLabel,orderItems:o.items,orderPaymentStatus:o.paymentStatus,orderFulfillmentType:o.fulfillmentType}};
+}
+test("candidate06 actual pending order cannot be asserted preparing in inflected Kazakh",()=>{
+ const c=candidate06OrderContext("98 нөмірлі тапсырысым қайда?","pending");
+ const draft="98 нөмірлі тапсырысыңыз қазір әзірленуде, бірақ төлем күтілуде. Тапсырысыңыз сайтта рәсімделген, бірақ оның дайындалуы үшін төлем чегі келеді. Қосымша сұрағыңыз болса, жазыңыз!";
+ const r=validateFinalText(draft,c,candidate06OrderGrounding(c));assert.doesNotMatch(r.text,/қазір әзірленуде/u);
+ assert.ok(r.warnings.includes("order_state_mismatch_removed"));assert.match(r.text,/төлем|растай алмай/u);
+});
+test("candidate06 actual accepted unverified order has no sent receipt authority",()=>{
+ const c=candidate06OrderContext("Қазір оның күйі қандай?","accepted");
+ const draft='98 нөмірлі тапсырысыңыз қабылданды және қазір чек күтілуде. Төлем чегі жіберілді, бірақ ол әлі расталмаған. Тапсырысыңыз "Донер" бар.';
+ const r=validateFinalText(draft,c,candidate06OrderGrounding(c));assert.doesNotMatch(r.text,/чегі жіберілді/u);
+ assert.match(r.text,/чек күтілуде|қабылданды/u);assert.ok(r.warnings.includes("unconfirmed_payment_receipt_removed"));
+});
+test("candidate06 actual payment question cannot turn unverified status into a sent receipt",()=>{
+ const c=candidate06OrderContext("Төлеген сияқтымын. Жүйеде төлем расталды ма?","accepted");
+ const r=validateFinalText('98 нөмірлі тапсырысыңыз қазір чек күтілуде. Төлем чегі жіберілді, бірақ ол әлі расталмаған. Сізде "Донер" бар.',c,candidate06OrderGrounding(c));
+ assert.doesNotMatch(r.text,/чегі жіберілді/u);assert.match(r.text,/чек күтілуде|растай алмай/u);
+});
+test("candidate06 receipt review proof supports receipt claim but paid alone does not",()=>{
+ const c=candidate06OrderContext("Чек келді ме?","accepted","receipt_uploaded");
+ const draft="Төлем чегі жіберілді және тексеруді күтуде.";assert.equal(validateFinalText(draft,c,candidate06OrderGrounding(c)).text,draft);
+ const paid=candidate06OrderContext("Чек келді ме?","paid","paid");
+ assert.doesNotMatch(validateFinalText(draft,paid,candidate06OrderGrounding(paid)).text,/чегі жіберілді/u);
+});
+test("candidate06 grounded preparing ready paid and pickup continue to survive",()=>{
+ for(const [status,payment,draft] of [["paid","paid","98 нөмірлі тапсырысыңыз қазір әзірленуде."],["ready","paid","98 нөмірлі тапсырысыңыз дайын."]] as const){
+  const c=candidate06OrderContext("Тапсырыс дайын ба?",status,payment);assert.equal(validateFinalText(draft,c,candidate06OrderGrounding(c)).text,draft);
+ }
+ const c=candidate06OrderContext("Жеткізу ме, әлде өзім алып кетемін бе?","ready","paid");
+ assert.match(validateFinalText("Жеткізу де, алып кету де бар.",c,candidate06OrderGrounding(c)).text,/өзіңіз алып кетесіз/u);
+});
+test("candidate06 receipt questions and honest denial do not become sent-claim assertions",()=>{
+ const c=candidate06OrderContext("Чек келді ме?","accepted");
+ for(const draft of ["Төлем чегі жіберілді ме?","Төлем чегі жіберілгенін растай алмаймын.","Чек ещё не получен."]){
+  assert.equal(validateFinalText(draft,c,candidate06OrderGrounding(c)).text,draft);
+ }
+});
+test("candidate06 unavailable order lookup cannot reuse an old receipt review stage",()=>{
+ const c=candidate06OrderContext("Чек келді ме?","accepted","receipt_uploaded");
+ const r=validateFinalText("Төлем чегі жіберілді.",c,{toolsCalled:["checkOrderStatus"],toolFindings:{orderFound:false,orderLookup:"unavailable"}});
+ assert.doesNotMatch(r.text,/чегі жіберілді/u);
+});
+test("candidate06 Ukrainian prose needs repair while verified literal Ukrainian names remain literal",()=>{
+ const c=context("Как к вам обращаться?");
+ const wrong="Дякую за вашу готовність чекати! Напишіть, будь ласка, що ви хочете замовити.";
+ assert.ok(validateFinalText(wrong,c).warnings.includes("reply_language_mismatch"));
+ c.config.system_prompt="Service name: Дякую за вашу готовність.";
+ const good="Вы можете называть меня «Дякую за вашу готовність».";
+ const r=validateFinalText(good,c);assert.equal(r.text,good);assert.ok(!r.warnings.includes("reply_language_mismatch"));
+ const kk=context("Қалай атасам болады?","kk");assert.ok(validateFinalText(wrong,kk).warnings.includes("reply_language_mismatch"));
+});
+
+test("stopped06 direct composition cannot certify a failed or stale catalog",()=>{
+ const draft="Донер комбосының құрамында Донер және картоп фри бар.";
+ for(const mark of [{menu_lookup:"unavailable"},{stale:true},{is_stale:true}]){
+  const c=context("Комбоның құрамында не бар?","kk");c.menuGrounding={...c.menuGrounding,...mark};
+  const r=validateFinalText(draft,c,grounded);assert.doesNotMatch(r.text,/құрамында.*Донер.*картоп/u);
+  assert.ok(r.warnings.includes("unsupported_ingredient_claim_removed"));
+ }
+});
+test("stopped06 independent sent-receipt conjunction cannot borrow an honest receipt denial",()=>{
+ const c=candidate06OrderContext("Чек келді ме?","accepted");
+ const r=validateFinalText("Чек ещё не получен и платёжный чек уже отправлен.",c,candidate06OrderGrounding(c));
+ assert.doesNotMatch(r.text,/чек уже отправлен/u);assert.match(r.text,/не получен/u);
+ assert.ok(r.warnings.includes("unconfirmed_payment_receipt_removed"));
+ for(const draft of ["Чек ещё не получен.","Не могу подтвердить, что чек уже отправлен.","Төлем чегінің жіберілгенін растай алмаймын."]){
+  assert.equal(validateFinalText(draft,c,candidate06OrderGrounding(c)).text,draft);
+ }
+});
+
+test("stopped06 verified current snapshot composition does not require optional menuGrounding projection",async()=>{
+ const c=context("Что в составе Донера?","ru");c.menuGrounding=undefined;
+ const menu={...c.menuSnapshot};let reads=0;
+ await createSearchMenuSkill(c,async()=>{reads+=1;return menu;}).execute!({query:"Донер"},{} as any);
+ assert.equal(reads,1);assert.equal(c.menuGrounding,undefined);
+ const raw="Донер — состав: Курица, лаваш, томат.";
+ const result=validateFinalText(raw,c,grounded);
+ assert.equal(result.text,raw);assert.ok(!result.warnings.includes("unsupported_ingredient_claim_removed"));
+});

@@ -502,37 +502,62 @@ function historyRole(entry: any) {
 function mergeConversationHistory(openbotRows: string[], whatsProRows: string[]) {
   const combined = [
     ...parseHistoryRows(openbotRows, "openbot"),
-    ...parseHistoryRows(whatsProRows, "whatspro"),
+    ...parseHistoryRows(whatsProRows, "whatspro").map(({ language, lang, ...entry }: any) => entry),
   ].sort((a: any, b: any) =>
     (Number(a?.createdAt || a?.timestamp || 0) - Number(b?.createdAt || b?.timestamp || 0)) ||
     (Number(a?.__historyIndex || 0) - Number(b?.__historyIndex || 0))
   );
 
   const result: any[] = [];
-  const ids = new Set<string>();
-  for (const entry of combined) {
-    const id = String(entry?.id || entry?.messageId || "").trim();
-    if (id && ids.has(id)) continue;
-
-    const role = historyRole(entry);
-    const text = String(entry?.text || entry?.body || "").replace(/\s+/g, " ").trim();
-    const createdAt = Number(entry?.createdAt || entry?.timestamp || 0) || 0;
-    const duplicateIndex = result.findIndex((current) => {
-      if (historyRole(current) !== role) return false;
-      const currentText = String(current?.text || current?.body || "").replace(/\s+/g, " ").trim();
-      const currentAt = Number(current?.createdAt || current?.timestamp || 0) || 0;
-      return Boolean(text && text === currentText && createdAt && currentAt && Math.abs(createdAt - currentAt) <= 15000);
-    });
-    if (duplicateIndex >= 0) {
-      if (role === "operator" && historyRole(result[duplicateIndex]) !== "operator") result[duplicateIndex] = entry;
-      if (id) ids.add(id);
-      continue;
+  const ids = new Map<string, number>();
+  const entryIds = (entry: any) => [entry?.id, entry?.messageId].map(value => String(value || "").trim()).filter(Boolean);
+  const normalizedText = (entry: any) => String(entry?.text || entry?.body || "").replace(/\s+/g, " ").trim();
+  const mergeDuplicate = (current: any, next: any) => {
+    const operator = historyRole(current) === "operator" ? current : historyRole(next) === "operator" ? next : null;
+    // OpenBot's resolved language and voice transcript augment the same incoming
+    // WhatsApp row. They are not a second customer turn.
+    const trusted = next.__historyStore === "openbot" ? next : current.__historyStore === "openbot" ? current : null;
+    const preferred = operator || trusted || current;
+    const merged = { ...current, ...next, ...preferred, __historyStores: [...new Set([...(current.__historyStores || [current.__historyStore]), next.__historyStore])] };
+    merged.id = current.id || next.id;
+    merged.messageId = preferred.messageId || current.messageId || next.messageId;
+    const text = normalizedText(preferred) || normalizedText(current) || normalizedText(next);
+    if (text) merged.text = text;
+    const times = [Number(current.createdAt || current.timestamp), Number(next.createdAt || next.timestamp)].filter(value => value > 0);
+    if (times.length) merged.createdAt = Math.min(...times);
+    if (operator) {
+      merged.role = "operator";
+      delete merged.language; delete merged.lang;
+      if (merged.direction === "incoming") delete merged.direction;
+      if (merged.fromMe === false) delete merged.fromMe;
     }
-    if (id) ids.add(id);
-    result.push(entry);
+    return merged;
+  };
+  for (const entry of combined) {
+    const aliases = entryIds(entry);
+    let duplicateIndex = aliases.map(id => ids.get(id)).find(index => index !== undefined);
+    if (duplicateIndex === undefined) {
+      const role = historyRole(entry);
+      const text = normalizedText(entry);
+      const createdAt = Number(entry?.createdAt || entry?.timestamp || 0) || 0;
+      const found = result.findIndex(current => {
+        const currentAt = Number(current?.createdAt || current?.timestamp || 0) || 0;
+        return !(current.__historyStores || [current.__historyStore]).includes(entry.__historyStore)
+          && historyRole(current) === role && Boolean(text && text === normalizedText(current)
+          && createdAt && currentAt && Math.abs(createdAt - currentAt) <= 15000);
+      });
+      if (found >= 0) duplicateIndex = found;
+    }
+    if (duplicateIndex !== undefined) {
+      result[duplicateIndex] = mergeDuplicate(result[duplicateIndex], entry);
+      for (const id of [...aliases, ...entryIds(result[duplicateIndex])]) ids.set(id, duplicateIndex);
+    } else {
+      const index = result.push(entry) - 1;
+      for (const id of aliases) ids.set(id, index);
+    }
   }
 
-  return result.map(({ __historyStore, __historyIndex, ...entry }) => entry);
+  return result.map(({ __historyStore, __historyIndex, __historyStores, ...entry }) => entry);
 }
 
 export async function getChatHistory(instanceId: string, phone: string): Promise<any[]> {

@@ -362,3 +362,45 @@ for (const text of ["Уже оплатил", "Уже отправил чек"]) 
     });
   }
 }
+
+test("actual Redis history merge preserves resolved customer language and transcript without duplicate dialogue",async()=>{
+ const {createClient}=await import("redis");const {redisClient,getChatHistory}=await import("../src/services/redis.service.js");
+ const socket=process.env.AUDIT_REDIS_SOCKET;assert.ok(socket,"private fixture Redis is required");
+ const client=createClient({socket:{path:socket}});await client.connect();
+ const original=redisClient.lRange;const ready=Object.getOwnPropertyDescriptor(redisClient,"isReady");
+ Object.defineProperty(redisClient,"isReady",{value:true,configurable:true});(redisClient as any).lRange=client.lRange.bind(client);
+ const owner="merge-fixture-"+process.pid,phone="70000000001";const keys=["history:"+owner+":"+phone,"chatwoot:history:"+owner+":"+phone];
+ const read=async(ob:any[],wa:any[])=>{await client.del(keys);for(const [i,rows] of [ob,wa].entries())if(rows.length)await client.rPush(keys[i],rows.map(x=>JSON.stringify(x)));return getChatHistory(owner,phone);};
+ try{
+  for(const [language,text] of [["kk","Заказ берейін дегем"],["ru","Хочу оформить заказ"]] as const){
+   for(const obEarlier of [false,true]){
+    const time=Date.now();const ob={role:"user",text,language,messageId:"resolved",createdAt:time+(obEarlier?0:3500)};
+    const wa={role:"user",text,direction:"incoming",id:"wa-row",createdAt:time+(obEarlier?3500:0)};
+    const rows=await read([{role:"user",text:language==="kk"?"Здравствуйте":"Сәлем",language:language==="kk"?"ru":"kk",createdAt:time-60000},ob,{role:"user",text:"Ия",language:language==="kk"?"ru":"kk",createdAt:time+6000}],
+     [{...wa,language:language==="kk"?"ru":"kk"}]);
+    assert.equal(rows.filter(x=>x.text===text).length,1);assert.equal(lastResolvedCustomerLanguage(rows),language);
+    assert.equal(lastCustomerLanguage(rows),language);assert.equal(rows.find(x=>x.text===text).messageId,"resolved");
+   }
+  }
+  for(const obEarlier of [false,true]){
+   const time=Date.now();const rows=await read([{role:"user",text:"Брат, суши бар ма?",language:"kk",source:"voice_transcript",messageId:"voice-id",createdAt:time+(obEarlier?0:3000)}],
+    [{id:"voice-id",role:"user",text:"",direction:"incoming",media:{kind:"audio"},createdAt:time+(obEarlier?3000:0)}]);
+   assert.equal(rows.length,1);assert.equal(rows[0].text,"Брат, суши бар ма?");assert.equal(rows[0].source,"voice_transcript");assert.equal(rows[0].id,"voice-id");assert.equal(lastResolvedCustomerLanguage(rows),"kk");
+  }
+  const time=Date.now();const operator=await read([{role:"assistant",text:"Я отвечу",messageId:"operator-id",createdAt:time}],
+   [{role:"operator",source:"operator_panel",text:"Я отвечу",id:"operator-id",createdAt:time+1000}]);
+  assert.equal(operator.length,1);assert.equal(operator[0].role,"operator");
+
+  const repeatedTime=Date.now();
+  const repeated=await read([
+   {role:"user",text:"Заказ берейін дегем",language:"kk",messageId:"repeat-a",createdAt:repeatedTime},
+   {role:"user",text:"Заказ берейін дегем",language:"kk",messageId:"repeat-b",createdAt:repeatedTime+3000}],
+   [{role:"user",text:"Заказ берейін дегем",id:"wa-a",createdAt:repeatedTime-1000},
+    {role:"user",text:"Заказ берейін дегем",id:"wa-b",createdAt:repeatedTime+2000}]);
+  assert.equal(repeated.length,2,"two distinct real messages remain two turns after two-store enrichment");
+  assert.deepEqual(repeated.map(x=>x.messageId).sort(),["repeat-a","repeat-b"]);
+
+  const untrusted=await read([],[{role:"user",text:"Хочу оформить заказ",language:"kk",createdAt:time}]);
+  assert.equal(lastResolvedCustomerLanguage(untrusted),null,"WhatsPro miscellaneous language is not an OpenBot decision");
+ }finally{await client.del(keys);await client.quit();(redisClient as any).lRange=original;if(ready)Object.defineProperty(redisClient,"isReady",ready);else delete(redisClient as any).isReady;}
+});

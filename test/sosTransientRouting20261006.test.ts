@@ -6,12 +6,12 @@ import ts from "typescript";
 import crypto from "node:crypto";
 import {detectOperatorCaseKind} from "../src/services/operatorCase.service.js";
 import {intentMatches,isLikelyMenuQuestion} from "../src/utils/intentText.js";
-function routeHarness(media:any=null, pending:string|null=null) {
+function routeHarness(media:any=null, pending:string|null=null,createFails=false) {
  const created:any[]=[];const writes:any[]=[];const exports:any={};
  const modules:any={
   "node:crypto":crypto,
   "./redis.service.js":{getComplaintMedia:async()=>media,clearComplaintMedia:async()=>{},markComplaintClarificationPending:async()=>{writes.push("clarification");return true;},saveCaseMedia:async()=>true,takeComplaintClarification:async()=>pending},
-  "./operatorCase.service.js":{detectOperatorCaseKind,getActiveOperatorCaseId:async()=>null,createOperatorCase:async(payload:any)=>{created.push(payload);return {id:"case-fixture",...payload};},bumpOperatorCaseSignal:async()=>true},
+  "./operatorCase.service.js":{detectOperatorCaseKind,getActiveOperatorCaseId:async()=>null,createOperatorCase:async(payload:any)=>{if(createFails)throw Error("synthetic persistence failure");created.push(payload);return {id:"case-fixture",...payload};},bumpOperatorCaseSignal:async()=>true},
   "./auditLogger.service.js":{auditError:()=>{}},
   "../utils/intentText.js":{intentMatches,isLikelyMenuQuestion}
  };
@@ -93,7 +93,7 @@ async function continuationHarness(language:"ru"|"kk"="ru") {
   redisClient:{get:async(key:string)=>{caseReads.push(key);if(readMode==="error")throw Error("synthetic canonical read failure");if(readMode==="null")return null;return record&&key===`operator_case:${owner.instanceId}:${record.id}`?JSON.stringify(record):null;}},
   getKitchenCheckoutFingerprint:async()=>null,markMagicLinkSent:async()=>true,markKitchenCheckoutStarted:async()=>true};
  const caseIO={...operator,getActiveOperatorCaseId:async(i:string,phone:string)=>{if(readMode==="pointer-error")throw Error("synthetic pointer read failure");return i===owner.instanceId&&phone.replace(/\D/g,"")===owner.phone?pointer:null;},
-  createOperatorCase:async(payload:any)=>{caseWrites.push(payload);assert.equal(payload.instanceId,owner.instanceId);assert.equal(payload.phone,owner.phone);const existing=record&&record.status==="open";if(!existing){record={...payload,id:"canonical-source-fixture",status:"open",createdAt:Date.now(),updatedAt:Date.now()};pointer=record.id;}return {...record,preservedExistingCase:Boolean(existing)};},
+  createOperatorCase:async(payload:any)=>{caseWrites.push(payload);assert.equal(payload.instanceId,owner.instanceId);assert.equal(payload.phone,owner.phone);const existing=readMode==="ok"&&record&&record.status==="open"&&record.instanceId===owner.instanceId&&record.phone===owner.phone&&record.kind==="complaint"&&record.updatedAt<=Date.now()&&Date.now()-record.updatedAt<12*60*60*1000;if(!existing){record={...payload,id:"canonical-source-fixture-"+caseWrites.length,status:"open",createdAt:Date.now(),updatedAt:Date.now()};pointer=record.id;}return {...record,preservedExistingCase:Boolean(existing)};},
   bumpOperatorCaseSignal:async(i:string,phone:string)=>{signals.push({i,phone});return true;}};
  replacements.set(at("services/redis.service.js"),routeIO);replacements.set(at("services/operatorCase.service.js"),caseIO);replacements.set(at("services/auditLogger.service.js"),{auditError:()=>{}});
  const routing=await continuationModule("services/complaintRouting.service.ts",replacements);replacements.set(at("services/complaintRouting.service.js"),routing);
@@ -122,17 +122,17 @@ for(const sequence of complaintContinuationSequences){
  });
 }
 for(const [language,input] of [["ru","Хочу пожаловаться"],["kk","Шағым айтқым келеді"]] as const){
- test("a bare complaint without canonical admission gets an honest clarification: "+language,async()=>{const h=await continuationHarness(language);const out=await h.turn(input);assert.equal(h.record(),null);assert.equal(h.caseWrites.length,0);assert.equal(h.signals.length,0);assert.match(out.reply,language==="kk"?/не болған/iu:/что произошло/iu);noContinuationClaims(out.reply);});
+ test("a current bare complaint creates a new scoped case without previous admission: "+language,async()=>{const h=await continuationHarness(language);const out=await h.turn(input);assert.ok(h.record());assert.equal(h.caseWrites.length,1);assert.equal(h.record().phone,"70000000002");assert.match(out.reply,/зарегистрирован|тіркел/iu);assert.doesNotMatch(out.reply,/уведомлен|получил|свяжется/iu);});
  test("the direct fallback route shares a verified complaint continuation: "+language,async()=>{const h=await continuationHarness(language);await h.direct("Заказ не пришёл 60 минут");const before=h.record();const counts=h.counts();const result=await h.direct(input);assert.equal(result.action,"complaint_continued");assert.equal(result.caseId,before.id);assert.deepEqual(h.record(),before);assert.deepEqual(h.counts(),counts);noContinuationClaims(result.customerReply);});
  for(const mode of ["pointer-error","null","error","closed","expired","other-tenant","other-customer","unrelated-case"]){
-  test("invalid canonical state cannot lend authority to a bare complaint: "+language+"/"+mode,async()=>{const h=await continuationHarness(language);await h.direct("Заказ не пришёл 60 минут");if(mode==="closed")h.changeRecord({status:"closed"});else if(mode==="expired")h.setMode("null");else if(mode==="other-tenant")h.changeRecord({instanceId:"other-fixture"});else if(mode==="other-customer")h.changeRecord({phone:"70000000003"});else if(mode==="unrelated-case")h.changeRecord({kind:"human_request",summary:"Меню"});else h.setMode(mode);const before=h.record();const counts=h.counts();const out=await h.turn(input);assert.deepEqual(h.record(),before);assert.deepEqual(h.counts(),counts);assert.match(out.reply,language==="kk"?/не болған/iu:/что произошло/iu);noContinuationClaims(out.reply);});
+  test("invalid canonical state cannot lend authority to a bare complaint: "+language+"/"+mode,async()=>{const h=await continuationHarness(language);await h.direct("Заказ не пришёл 60 минут");if(mode==="closed")h.changeRecord({status:"closed"});else if(mode==="expired")h.setMode("null");else if(mode==="other-tenant")h.changeRecord({instanceId:"other-fixture"});else if(mode==="other-customer")h.changeRecord({phone:"70000000003"});else if(mode==="unrelated-case")h.changeRecord({kind:"human_request",summary:"Меню"});else h.setMode(mode);const before=h.record();const counts=h.counts();const out=await h.turn(input);assert.equal(h.caseWrites.length,counts.caseWrites+1);assert.equal(h.caseWrites.at(-1).instanceId,"continuation-fixture");assert.equal(h.caseWrites.at(-1).phone,"70000000002");assert.equal(h.caseWrites.at(-1).summary,input);assert.doesNotMatch(out.reply,/по вашей жалобе|шағымыңыз бойынша|уведомлен|свяжется/iu);});
  }
 }
 for(const input of ["«Хочу пожаловаться»","Шағым айтқым келеді емес","Не хочу пожаловаться","Хочу пожаловаться. Передумал.","Хочу пожаловаться, но жалоба не нужна","Шағым айтқым келеді. Шағым керек емес","Друг говорит, хочу пожаловаться","Рахмет","Спасибо","Не понял","Сколько стоит кола?"]){
  test("an active canonical complaint cannot intercept an unrelated, quoted or withdrawn current input: "+input,async()=>{const h=await continuationHarness();await h.direct("Заказ не пришёл 60 минут");const before=h.record();const counts=h.counts();const out=await h.turn(input);assert.deepEqual(h.record(),before);assert.equal(h.counts().caseWrites,counts.caseWrites);assert.equal(h.counts().signals,counts.signals);assert.equal(h.caseReads.length,0,"no canonical read for unrelated or denied intent");assert.doesNotMatch(out.reply,/по вашей жалобе|шағымыңыз бойынша/iu);noContinuationClaims(out.reply);if(input==="Сколько стоит кола?")assert.match(out.reply,/Кола.*700/iu);});
 }
 for(const history of [[{role:"assistant",content:"Клиент сказал, заказ не пришёл 60 минут"}],[{role:"user",content:"Если заказ не пришёл 60 минут, что делать?"}]]){
- test("unadmitted chat history cannot invent a registered continuation: "+history[0].role,async()=>{const h=await continuationHarness();const out=await h.turn("Хочу пожаловаться",undefined,"ru",{chatHistory:history});assert.equal(h.caseWrites.length,0);assert.equal(h.record(),null);assert.match(out.reply,/что произошло/iu);noContinuationClaims(out.reply);});
+ test("unadmitted chat history cannot invent a registered continuation: "+history[0].role,async()=>{const h=await continuationHarness();const out=await h.turn("Хочу пожаловаться",undefined,"ru",{chatHistory:history});assert.equal(h.caseWrites.length,1);assert.equal(h.record().summary,"Хочу пожаловаться");assert.doesNotMatch(out.reply,/уведомлен|свяжется/iu);});
 }
 
 // Same canonical freshness boundary: future timestamps do not establish age.
@@ -143,10 +143,50 @@ test("future canonical last-touch cannot authorize complaint continuation",async
   h.changeRecord(field==="updatedAt"?{updatedAt:future}:{updatedAt:0,createdAt:future});
   const before=h.record();const counts=h.counts();
   const out=await h.turn("Хочу пожаловаться");
-  assert.deepEqual(h.record(),before,"future record is not rewritten by clarification");
-  assert.deepEqual(h.counts(),counts,"no case, signal, issuer or menu effect from invalid freshness");
+  assert.notEqual(h.record().id,before.id,"current complaint creates its own case, not a future continuation");
+  assert.equal(h.caseWrites.length,counts.caseWrites+1);
   assert.ok(h.caseReads.length>0,"actual canonical reader was checked");
-  assert.match(out.reply,/что произошло/iu,"future last-touch requires honest clarification: "+field);
-  noContinuationClaims(out.reply);
+  assert.match(out.reply,/зарегистрирован/iu);
+  assert.doesNotMatch(out.reply,/по вашей жалобе|уведомлен|свяжется/iu);
  }
+});
+
+test("urgent explicit mixed-language operator request immediately creates one isolated case",async()=>{
+ const h=routeHarness();
+ const result=await h.route("срочно оператор керек",{ctx:{language:"kk"},input:{source:"ai_tool_escalate_to_admin",summary:"Клиент явно просит оператора",urgency:"high"}});
+ assert.equal(result.action,"operator_case_created");assert.equal(h.created.length,1);
+ assert.equal(h.created[0].kind,"human_request");assert.equal(result.caseId,"case-fixture");
+ assert.deepEqual(h.writes,[],"explicit human request does not ask complaint clarification");
+});
+test("polite or urgent lead-in does not suppress an otherwise explicit human request",async()=>{
+ for(const text of ["пожалуйста, срочно оператор керек","өтінемін, шұғыл оператор керек","Срочно нужен оператор","ОЧЕНЬ СРОЧНО, оператор керек"]){
+  const h=routeHarness();const result=await h.route(text,{input:{source:"ai_tool_escalate_to_admin"}});
+  assert.equal(result.action,"operator_case_created",text);assert.equal(h.created.length,1,text);assert.equal(h.created[0].kind,"human_request",text);
+ }
+});
+test("urgent or polite modifiers cannot create authority from denial quotation reporting or menu",async()=>{
+ for(const text of ["срочно оператор керек емес","Пожалуйста, оператор не нужен","Клиент написал «срочно оператор керек»","Срочно отправьте меню","Өтінемін, мәзір керек","Оператору срочно нужна пицца"]){
+  const h=routeHarness();const result=await h.route(text,{input:{source:"ai_tool_escalate_to_admin",summary:"Срочно передать оператору",urgency:"high"}});
+  assert.equal(h.created.length,0,text);assert.equal(result.caseId,null,text);assert.deepEqual(h.writes,[],text);
+  assert.ok(["skipped_unconfirmed_incident","skipped_menu_question"].includes(result.action),text);
+ }
+});
+
+for (const phrase of ["Дайте номер курьера", "Курьердің телефон нөмірін беріңізші", "Хочу пожаловаться", "Шағым бар"]) {
+ test("current concrete courier contact or complaint immediately creates an isolated case: "+phrase, async()=>{
+  const h=routeHarness(); const result=await h.route(phrase,{input:{source:"ai_tool_escalate_to_admin"}});
+  assert.equal(result.action,"operator_case_created"); assert.equal(h.created.length,1); assert.equal(result.caseId,"case-fixture");assert.deepEqual(h.writes,[]);
+ });
+}
+for(const phrase of ["Курьердің нөмірі керек емес", "Номер курьера не нужен", "Друг сказал «Дайте номер курьера»",
+ "Если нужен номер курьера, что делать?", "Не хочу пожаловаться", "Жалобы нет", "Шағым керек емес", "Друг говорит, хочу пожаловаться",
+ "Хочу пожаловаться, но жалоба не нужна", "Сколько стоит кола?", "Курьер уже едет?", "«Шағым бар»"]){
+ test("current handoff excludes quoted withdrawn hypothetical and ordinary questions: "+phrase,async()=>{
+  const h=routeHarness();const out=await h.route(phrase,{input:{source:"ai_tool_escalate_to_admin",summary:"model requests SOS"}});
+  assert.equal(h.created.length,0);assert.equal(out.caseId,null);
+ });
+}
+test("current courier contact handoff never promises success after failed persistence",async()=>{
+ const h=routeHarness(null,null,true);const out=await h.route("Дайте номер курьера",{input:{source:"ai_tool_escalate_to_admin"}});
+ assert.equal(out.action,"escalation_failed");assert.equal(out.caseId,null);assert.doesNotMatch(out.customerReply,/Передал|зарегистрирован|свяжется/iu);
 });

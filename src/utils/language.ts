@@ -24,7 +24,7 @@ export const KAZAKH_RE =
 // language switch. Treating "мхм" as Russian made a Kazakh wait-consent dialog
 // change language on the exact turn that should continue the order.
 const LANGUAGE_NEUTRAL_ACK_RE =
-  /^(?:м+\s*-?\s*х?м+|угу+|ага+|ок(?:ей|ей-ок)?|ok+(?:ay|ey|ie)?|k|дк|azhe|jarayd[iy]?)[.!)]*$/iu;
+  /^(?:м+\s*-?\s*х?м+|угу+|ага+|ок(?:ей|ей-ок)?|ok+(?:ay|ey|ie)?|k|дк|azhe|jarayd[iy]?|ия)[.!)]*$/iu;
 const ADDRESS_ONLY_RE = /^[\p{L}.'’\-]+(?:\s+[\p{L}.'’\-]+){0,3}\s+\d+[\p{L}]?(?:[\/-]\d+)?(?:\s*,?\s*(?:кв(?:артира)?|пәтер)\.?\s*\d+)?$/iu;
 
 import { generateMediaText, type MediaRequest } from "../services/llm.service.js";

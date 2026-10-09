@@ -157,14 +157,16 @@ test("the long-voice lane uses the source string complaintRouting actually compa
 });
 
 // ----------------------------------------------------------- contract regression
-test("the clarify-first gate still holds after the menu skip was narrowed", async () => {
-  const { buildEscalationClarifyQuestion } = await import("../src/services/complaintRouting.service.js");
+test("a current bare complaint never fabricates a handoff when persistence fails", async () => {
+  // Actual complaints now bypass clarify-first; persistence honesty is unchanged.
   const result = await routeComplaintToAdmin(CTX("шағым бар"), {
     summary: "Клиенттің шағымы бар",
     customerReply: "Бiр сатте",
     source: "ai_tool_escalate_to_admin",
   });
-  assert.equal(result.action, "clarification_requested");
+  assert.equal(result.action, "escalation_failed");
   assert.equal(result.caseId, null);
-  assert.equal(result.customerReply, buildEscalationClarifyQuestion("complaint", "kk"));
+  assert.equal(result.queuedForChat, false);
+  assert.equal(result.escalationAvailable, false);
+  assert.equal(result.customerReply, buildEscalationUnavailableReply("kk"));
 });

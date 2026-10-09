@@ -179,8 +179,29 @@ export function isUnownedOrderTimingQuestion(options: {
   return isOrderTimingQuestion(text) || isProspectiveOrderTimingQuestion(text);
 }
 
-export function requestedOrderNumber(text = "") {
-  return String(String(text || "").match(ORDER_NUMBER_RE)?.[1] || "");
+export function requestedOrderNumber(text = "", history?: unknown): string {
+  const value = String(text || "");
+  const explicit = value.match(ORDER_NUMBER_RE)?.[1];
+  if (explicit) return explicit;
+  const bare = value.match(/^\s*(\d{1,12})\s*[.!?]?\s*$/u)?.[1];
+  if (!bare || !Array.isArray(history) || !history.length) return "";
+  let index = history.length - 1;
+  const current = history[index];
+  // The persisted history can already include the current inbound user message.
+  if (current?.role === "user" && String(current?.text ?? current?.content ?? "").trim() === value.trim()) index -= 1;
+  const previous = history[index];
+  if (!previous || !["assistant", "model"].includes(String(previous.role))) return "";
+  const createdAt = previous.createdAt ?? previous.timestamp ?? previous.created_at;
+  if (createdAt != null) {
+    const time = typeof createdAt === "number" ? createdAt : Date.parse(String(createdAt));
+    const age = Date.now() - time;
+    if (!Number.isFinite(time) || age < 0 || age > 30 * 60 * 1000) return "";
+  }
+  const prompt = String(previous.text ?? previous.content ?? "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "").trim();
+  if (!/(?:заказ\p{L}*|тапсырыс\p{L}*)/iu.test(prompt)
+    || !/(?:номер\p{L}*|нөмір\p{L}*)/iu.test(prompt)
+    || !/(?:пришлите|укажите|напишите|назовите|сообщите|отправьте|жібер\p{L}*|жібере\p{L}*|жазы\p{L}*|айтың\p{L}*|көрсет\p{L}*)/iu.test(prompt)) return "";
+  return bare;
 }
 
 export function isCustomerOrderStatusQuestion(text = "") {
@@ -204,7 +225,7 @@ export function hasMenuInquiryIntent(text = ""): boolean {
 
 export function isLikelyOrderStatusFollowUp(text = "") {
   const value = String(text || "");
-  if (/^\s*(?:№|#)?\s*\d{1,12}\s*[.!?]?\s*$/u.test(value)) return true;
+  if (requestedOrderNumber(value)) return true;
   if (!intentMatches(ACTIVE_ORDER_FOLLOW_UP_RE, value)) return false;
   if (requestedOrderNumber(value) || intentMatches(ORDER_STATUS_QUESTION_RE, value)) return true;
   return !hasMenuBrowsingIntent(value);

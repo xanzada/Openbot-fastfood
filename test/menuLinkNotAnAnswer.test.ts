@@ -77,7 +77,7 @@ test("the cancellation branch looks the order up before it decides", async () =>
   // The lookup uses the same sources as the status route.
   const resolver = source.slice(source.indexOf("async function resolveCancellationTarget"));
   const resolverBody = resolver.slice(0, resolver.indexOf("\n}\n"));
-  assert.match(resolverBody, /requestedOrderNumber\(ctx\.text\)/);
+  assert.match(resolverBody, /requestedOrderNumber\(ctx\.text, ctx\.chatHistory\)/);
   assert.match(resolverBody, /lastDiscussedOrderNumber\(ctx\.chatHistory\)/);
   assert.match(resolverBody, /getCustomerOrder\(/);
   // And when an order is found, the guest is told its real state, not just "handed over".

@@ -139,8 +139,17 @@ export function pickConversationOrder(context: Record<string,any>|null|undefined
   if (current && orderIdOf(current) !== orderIdOf(pinned) && createdAtOf(current) > createdAtOf(pinned)) return null;
   return pinned;
 }
-export function customerOrderFromContext(context:Record<string,any>|null|undefined,expectedPhone:string,language:"kk"|"ru",hasRequestedOrderNumber=false):CustomerOrderLookup{if(!context)return{state:"not_found"};if(context.is_stale)return{state:"unavailable"};if(Array.isArray(context.active_orders)&&context.active_orders.length>1&&!hasRequestedOrderNumber)return{state:"ambiguous"};return customerOrderFromRecord(context,expectedPhone,language);}
-export async function getCustomerOrder(instanceId:string,domain:string,phone:string,language:"kk"|"ru",orderNumber?:string):Promise<CustomerOrderLookup>{try{const context=await getOrderContext(instanceId,domain,{phone,orderId:orderNumber}) as Record<string,any>|null;return customerOrderFromContext(context,phone,language,Boolean(orderNumber));}catch(error){auditError("Customer order lookup failed",error,{instanceId,orderNumber:orderNumber||"",phone:normalizePhone(phone)});return{state:"unavailable"};}}
+export function customerOrderFromContext(context:Record<string,any>|null|undefined,expectedPhone:string,language:"kk"|"ru",requestedReference:boolean|string=false):CustomerOrderLookup {
+  if(!context)return{state:"not_found"};
+  if(context.is_stale)return{state:"unavailable"};
+  if(Array.isArray(context.active_orders)&&context.active_orders.length>1&&!requestedReference)return{state:"ambiguous"};
+  const lookup=customerOrderFromRecord(context,expectedPhone,language);
+  // A backend fallback must never substitute the latest order for an explicit ID.
+  const expected=typeof requestedReference==="string"?requestedReference.trim():"";
+  if(expected&&lookup.state==="found"&&lookup.order.orderNumber!==expected&&lookup.order.orderId!==expected)return{state:"not_found"};
+  return lookup;
+}
+export async function getCustomerOrder(instanceId:string,domain:string,phone:string,language:"kk"|"ru",orderNumber?:string):Promise<CustomerOrderLookup>{try{const context=await getOrderContext(instanceId,domain,{phone,orderId:orderNumber}) as Record<string,any>|null;return customerOrderFromContext(context,phone,language,orderNumber||false);}catch(error){auditError("Customer order lookup failed",error,{instanceId,orderNumber:orderNumber||"",phone:normalizePhone(phone)});return{state:"unavailable"};}}
 // A status line that stops at the label leaves the guest wondering what to do
 // next, so every answer ends with who moves and when.
 export function orderNextStepLine(order:CustomerOrder,language:"kk"|"ru"){

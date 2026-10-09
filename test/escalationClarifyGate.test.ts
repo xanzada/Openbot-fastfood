@@ -13,6 +13,7 @@ const { operatorFixture } = await import("./helpers/operatorNotificationFixture.
 
 const {
   buildEscalationClarifyQuestion,
+  buildEscalationUnavailableReply,
   routeComplaintToAdmin,
 } = await import("../src/services/complaintRouting.service.js");
 const { redisClient } = await import("../src/services/redis.service.js");
@@ -43,14 +44,18 @@ test("an explicit operator demand bypasses clarification and reports unavailable
   assert.notEqual(result.customerReply, buildEscalationClarifyQuestion("human_request", "kk"));
 });
 
-test("a bare complaint via the AI tool asks what happened first", async () => {
+test("a current bare complaint immediately attempts handoff and reports persistence failure", async () => {
+  // The owner's current rule supersedes clarify-first for an actual complaint.
+  // This existing no-Redis fixture still cannot certify a case or notification.
   const result = await routeComplaintToAdmin(CTX("у меня жалоба", "ru"), {
     summary: "Жалоба",
     source: "ai_tool_escalate_to_admin",
   });
-  assert.equal(result.action, "clarification_requested");
+  assert.equal(result.action, "escalation_failed");
   assert.equal(result.caseId, null);
-  assert.equal(result.customerReply, buildEscalationClarifyQuestion("complaint", "ru"));
+  assert.equal(result.queuedForChat, false);
+  assert.equal(result.escalationAvailable, false);
+  assert.equal(result.customerReply, buildEscalationUnavailableReply("ru"));
 });
 
 test("a complaint that already tells the story is never sent back for clarification", async () => {

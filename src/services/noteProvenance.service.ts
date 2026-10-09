@@ -1,7 +1,7 @@
 import type { FastFoodContext } from "../context/types.js";
 
 const STOP_WORDS = new Set([
-  "уақытша","уакытша","временно","қазір","казир","сейчас","бүгін","бугин","сегодня","болмайды","жоқ","жок","нет","нету","мин","минут","сағат","сагат","час","дейін","дейин","до","қабылдамаймыз","кабылдамаймыз","сатылмайды","нельзя","недоступен","недоступна","недоступны","закончился","закончилась","закончились","отсутствует","отсутствуют","не","бар","есть","стоп","стоплист","лист",
+  "уақытша","уакытша","временно","қазір","казир","сейчас","бүгін","бугин","сегодня","болмайды","жоқ","жок","нет","нету","мин","минут","сағат","сагат","час","дейін","дейин","до","қабылдамаймыз","кабылдамаймыз","сатылмайды","нельзя","недоступен","недоступна","недоступны","закончился","закончилась","закончились","отсутствует","отсутствуют","не","бар","есть","стоп","стоплист","лист","пока","что","заказ","заказы","заказов",
 ]);
 
 function normalize(value: unknown) {
@@ -14,7 +14,7 @@ function noteId(note: any) {
   return String(note?.noteId || note?.id || "").trim();
 }
 
-const UNAVAILABLE_MARKER_RE = /(?:временно|уақытша|уакытша|нету?|жоқ|жок|болмайды|недоступ|законч|отсутств|сатылмайды|бітті|битти|таусыл|қалмады|калмады|стоп)/iu;
+const UNAVAILABLE_MARKER_RE = /(?:временно|уақытша|уакытша|нету?|жоқ|жок|болмайды|недоступ|законч|отсутств|сатылмайды|бітті|битти|таусыл|қалмады|калмады|стоп|(?<!\p{L})(?:қабылдама(?:ңыз|ймыз)?|кабылдама(?:ныз|ймыз)?)(?!\p{L}))/iu;
 
 export function noteConstraintTerms(text: unknown): string[] {
   return normalize(text).split(" ")
@@ -90,7 +90,7 @@ function stemOf(term: string) {
 // whichever side it appears on. Precision is unchanged: both directions still
 // compare whole words by a stem, never a substring anywhere inside a word.
 function termsShareStem(word: string, term: string) {
-  return word.startsWith(stemOf(term)) || term.startsWith(stemOf(word));
+  return word.length >= 3 && term.length >= 3 && (word.startsWith(stemOf(term)) || term.startsWith(stemOf(word)));
 }
 
 function textCarriesTerm(words: string[], term: string) {

@@ -1,7 +1,7 @@
 import {needsShoppingPrepass} from "../services/shoppingConstraints.service.js";
 import type { FastFoodContext } from "../context/types.js";
-import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, activeOrderQuestionKind } from "../utils/orderIntent.js";
-import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, activeOrderQuestionKind, requestedOrderNumber } from "../utils/orderIntent.js";
+import { complaintHasActionableDetail, isLikelyComplaintText, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest } from "../services/complaintRouting.service.js";
 import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
 import { isMenuBudgetInquiry } from "../utils/menuBudget.js";
@@ -97,7 +97,7 @@ function add(plan: AgentToolPlan, tool: AgentToolName, reason: string) {
 export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const text = String(ctx.text || "").trim();
   const plan: AgentToolPlan = { requiredTools: [], reason: [] };
-  const immediateServiceIncident = isLikelyComplaintText(text) && complaintHasActionableDetail(text);
+  const immediateServiceIncident = isExplicitHumanOperatorRequest(text) || isExplicitCourierContactRequest(text) || isCurrentComplaintRequest(text) || (isLikelyComplaintText(text) && complaintHasActionableDetail(text));
   const orderQuestion = activeOrderQuestionKind(text, ctx.activeOrder);
   const paymentDetailsIntent = orderQuestion !== "payment_confirmation" && intentMatches(PAYMENT_DETAILS_RE, text) && !intentMatches(RECEIPT_EVENT_RE, text);
   // hardRealtimeContext is ALWAYS truthy and carries neither is_accepting_orders nor
@@ -113,7 +113,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
 
   if (immediateServiceIncident) {
     add(plan, "escalateToAdmin", "actionable_service_incident");
-  } else if (isCustomerOrderStatusQuestion(text) || orderQuestion !== null) {
+  } else if (isCustomerOrderStatusQuestion(text) || Boolean(requestedOrderNumber(text, ctx.chatHistory)) || orderQuestion !== null) {
     add(plan, "checkOrderStatus", "live_order_status");
   }
 
