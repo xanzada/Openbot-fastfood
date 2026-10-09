@@ -19,6 +19,7 @@ import { handleKanbanWebhook } from "./controllers/kanban.js";
 import { startSiteWebhookQueueWorker } from "./services/siteWebhookQueue.service.js";
 import { safeCompare } from "./services/tenantAuth.service.js";
 import { envNumber } from "./utils/envNumber.js";
+import { MEDIA_WEBHOOK_JSON_BYTES } from "./utils/mediaLimits.js";
 
 const app = express();
 const port = envNumber(process.env.PORT, 4100, { min: 1 });
@@ -67,6 +68,8 @@ function normalizeMountPath(value: unknown, fallback: string) {
 const whatsproWebhookPath = normalizeMountPath(process.env.WHATSPRO_WEBHOOK_PATH, "/whatspro-webhook");
 const dleWebhookPath = normalizeMountPath(process.env.DLE_WEBHOOK_PATH, "/kanban-webhook");
 
+app.use(whatsproWebhookPath, express.json({ limit: MEDIA_WEBHOOK_JSON_BYTES }),
+  express.urlencoded({ extended: true, limit: MEDIA_WEBHOOK_JSON_BYTES }));
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 app.set("io", io);

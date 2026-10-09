@@ -55,7 +55,8 @@ test("a truncated voice menu question is answered from live menu facts without a
   assert.match(String(reply), /Тауық донер — 1800 ₸/);
   assert.match(String(reply), /Гриль — 2600 ₸/);
   assert.match(String(reply), /Цезарь — 2200 ₸/);
-  assert.doesNotMatch(String(reply), /көмектесуге дайынмын|сұрақтарыңыз болса/iu);
+  assert.doesNotMatch(String(reply), /көмектесуге дайынмын|сұрақтарыңыз болса|Қайсысы|Не қызықтырады|\?/iu);
+  assert.match(String(reply), /Тапсырысты төмендегі сілтеме арқылы рәсімдей аласыз/);
 });
 
 test("voice menu examples obey sold-out and operator-note restrictions", async () => {
@@ -118,7 +119,8 @@ test("a voice drink question names only available verified drinks and does not w
   assert.match(String(reply), /Ішетіннен бар:/);
   assert.match(String(reply), /Coca-Cola 0.5 — 650 ₸/);
   assert.match(String(reply), /Су 0.5 — 350 ₸/);
-  assert.doesNotMatch(String(reply), /Пепси|Фанта|Ақ соус|Бургер/);
+  assert.doesNotMatch(String(reply), /Пепси|Фанта|Ақ соус|Бургер|Қайсысын|\?/);
+  assert.match(String(reply), /Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз/);
 });
 
 test("a generic greeting cannot answer a meaningful voice transcript", () => {
@@ -139,4 +141,19 @@ test("a real voice greeting still receives a greeting", () => {
   );
   assert.ok(!result.warnings.includes("generic_voice_greeting_blocked"), JSON.stringify(result));
   assert.match(result.text, /^Сәлем!/u);
+});
+
+test("final replies drop generic menu-selection questions but retain facts, links and wait consent",()=>{
+ const ctx:any={language:"ru",text:"Спасибо",config:{},chatHistory:[],activeShiftNotes:[],runtimeStatus:{runtime_available:true},hardRealtimeContext:{},shporContext:[]};
+ for(const question of ["Что вас интересует?","Что вы выберете?","Что выберете?","Что вам больше нравится?"]){
+  const result=validateFinalText("Оформить заказ можно по ссылке на меню. "+question,ctx);
+  assert.equal(result.text,"Оформить заказ можно по ссылке на меню.");
+  assert.ok(result.warnings.includes("menu_selection_question_removed"));
+ }
+ const waiting=validateFinalText("Ожидание — 30 минут. Вы готовы подождать?",{...ctx,fetchedSettings:{wait_time:30}});
+ assert.match(waiting.text,/Вы готовы подождать\?/);
+ const quoted=validateFinalText("Не задаю вопрос «Что вас интересует?».",ctx);
+ assert.match(quoted.text,/«Что вас интересует\?»/);
+ ctx.language="kk";
+ assert.equal(validateFinalText("Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз. Қайсысын қалайсыз?",ctx).text,"Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз.");
 });

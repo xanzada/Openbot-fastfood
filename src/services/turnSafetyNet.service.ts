@@ -170,16 +170,16 @@ export async function answerVoiceMenuOverview(ctx: FastFoodContext, grantLink: G
     }
     const drinks = examples.map((item) => `${String(item.name).trim()} — ${Math.round(Number(item.price))} ₸`).join(", ");
     return ctx.language === "ru"
-      ? `Из напитков есть: ${drinks}. Что выберете?`
-      : `Ішетіннен бар: ${drinks}. Қайсысын қалайсыз?`;
+      ? `Из напитков есть: ${drinks}. Оформить заказ можно по ссылке на меню.`
+      : `Ішетіннен бар: ${drinks}. Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз.`;
   }
   if (!examples.length) return null;
   const linked = await grantLink(ctx).catch(() => false);
   const list = examples.map((item) => `${String(item.name).trim()} — ${Math.round(Number(item.price))} ₸`).join(", ");
   if (ctx.language === "ru") {
-    return `Есть 😊 Например: ${list}. Что вам больше нравится?${linked ? " Полное меню тоже отправляю ссылкой ниже." : ""}`;
+    return `Есть 😊 Например: ${list}.${linked ? " Оформить заказ можно по ссылке ниже." : ""}`;
   }
-  return `Бар 😊 Мысалы: ${list}. Қайсысы көңіліңізден шығады?${linked ? " Толық мәзірді де төмендегі сілтемеден көре аласыз." : ""}`;
+  return `Бар 😊 Мысалы: ${list}.${linked ? " Тапсырысты төмендегі сілтеме арқылы рәсімдей аласыз." : ""}`;
 }
 
 /** Same gates as a promised link: closed kitchen / unconfirmed wait / mint failure => false. */
@@ -346,9 +346,9 @@ export async function answerAgentFailure(
       const overview = voiceMenuExamples({ ...ctx, menuSnapshot: { ...ctx.menuSnapshot, items: knownItems } }, 3, beveragesOnly)
         .map((item: any) => String(item.name).trim() + " — " + Math.round(Number(item.price)) + " ₸").join(", ");
       return say(ctx, (stopped ? "Қазір тапсырыс қабылдамаймыз. " : "")
-        + (overview ? "Мәзірден мысалдар: " + overview + ". Не қызықтырады?" : "Қазір қолжетімді мәзір позицияларын растай алмаймын. Қай тағам не сусын қызықтырады?"),
+        + (overview ? "Мәзірден мысалдар: " + overview + "." : "Қазір қолжетімді мәзір позицияларын растай алмаймын."),
         (stopped ? "Сейчас заказы не принимаем. " : "")
-        + (overview ? "В меню, например: " + overview + ". Что вас интересует?" : "Не могу сейчас подтвердить доступные позиции меню. Какое блюдо или напиток вас интересует?"));
+        + (overview ? "В меню, например: " + overview + "." : "Не могу сейчас подтвердить доступные позиции меню."));
     }
     if (!matches.length) return say(ctx,
       "Бұл сұрағаныңыз қазір қолжетімсіз." + (list ? " Мыналар бар: " + list + "." : ""),

@@ -1043,46 +1043,17 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
     }
 
     if (mediaContext && !mediaContext.valid) {
-      if (mediaContext.reason === "voice_too_long") {
-        const routing = await routeComplaintToAdmin(ctx, {
-          summary: `Клиент ұзақ дауыстық хабарлама жіберді (${mediaContext.durationSeconds || "?"} сек). Оператордың жауабы қажет.`,
-          customerText: text,
-          customerReply: "",
-          urgency: "normal",
-          // complaintRouting compares against "long_voice" exactly, so the longer
-          // string never matched and the operator card said "complaint" for a
-          // voice note (found 2026-08-22).
-          source: "long_voice",
-        });
-        const reply = ctx.language === "ru"
-          ? routing.action === "operator_case_created"
-            ? "Голосовое сообщение слишком длинное для автоматической обработки. Я передал обращение оператору."
-            : "Голосовое сообщение слишком длинное. Пожалуйста, кратко опишите вопрос текстом."
-          : routing.action === "operator_case_created"
-            ? "Дауыстық хабарлама автоматты өңдеуге тым ұзақ. Өтінішті операторға жібердім."
-            : "Дауыстық хабарлама тым ұзақ. Мәселені мәтінмен қысқаша жазып жіберіңіз.";
-        await sendCustomerReplyAndFinish(ctx, messageId, reply, "long_voice");
-        return;
-      }
       const reply = mediaContext.reason === "media_too_large"
-        ? mediaContext.kind === "audio"
+        ? ctx.language === "ru"
+          ? "Файл превышает настроенный предел загрузки. Отправьте меньший файл или опишите вопрос текстом."
+          : "Файл жүктеудің бапталған көлем шегінен асады. Кішірек файл жіберіңіз немесе сұрақты мәтінмен жазыңыз."
+        : mediaContext.reason === "unsupported_document" || mediaContext.reason === "unsupported_mime_type" || mediaContext.reason === "unsupported_audio_mime"
           ? ctx.language === "ru"
-            ? "Аудиофайл слишком большой. Отправьте короткое голосовое сообщение или кратко напишите вопрос."
-            : "Аудиофайл тым үлкен. Қысқа дауыстық хабарлама жіберіңіз немесе сұрақты мәтінмен жазыңыз."
+            ? "Этот формат файла не поддерживается. Отправьте фото JPG/PNG/WEBP, PDF или аудиофайл поддерживаемого формата."
+            : "Бұл файл форматы қолдау таппайды. JPG/PNG/WEBP фото, PDF немесе қолдау көрсетілетін форматтағы аудиофайл жіберіңіз."
           : ctx.language === "ru"
-            ? "Файл слишком большой. Фото или документ должен быть не больше 5 МБ."
-            : "Файл көлемі тым үлкен. Фото немесе құжат 5 МБ-тан аспауы керек."
-        : mediaContext.reason === "music_audio_not_supported"
-          ? ctx.language === "ru"
-            ? "Музыку и обычные аудиофайлы не обрабатываю. Отправьте короткое голосовое сообщение или напишите текстом."
-            : "Музыка мен кәдімгі аудиофайлдарды өңдей алмаймын. Қысқа дауыстық хабарлама жіберіңіз немесе мәтінмен жазыңыз."
-          : mediaContext.reason === "unsupported_document" || mediaContext.reason === "unsupported_mime_type" || mediaContext.reason === "unsupported_audio_mime"
-            ? ctx.language === "ru"
-              ? "Этот формат файла не поддерживается. Отправьте фото JPG/PNG/WEBP, PDF или короткое голосовое сообщение."
-              : "Бұл файл форматы қолдау таппайды. JPG/PNG/WEBP фото, PDF немесе қысқа дауыстық хабарлама жіберіңіз."
-            : ctx.language === "ru"
-              ? "Не удалось безопасно загрузить файл. Попробуйте отправить его ещё раз или опишите вопрос текстом."
-              : "Файлды қауіпсіз жүктей алмадым. Қайта жіберіңіз немесе мәселені мәтінмен жазыңыз.";
+            ? "Не удалось безопасно загрузить файл. Попробуйте отправить его ещё раз или опишите вопрос текстом."
+            : "Файлды қауіпсіз жүктей алмадым. Қайта жіберіңіз немесе мәселені мәтінмен жазыңыз.";
       await sendCustomerReplyAndFinish(ctx, messageId, reply, `media_rejected:${mediaContext.reason || "invalid"}`);
       return;
     }

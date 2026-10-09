@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { connectRedis, redisClient } from "./redis.service.js";
+import { MAX_INBOUND_WEBHOOK_BYTES } from "../utils/mediaLimits.js";
 
 export interface InboundWebhookIdentity { instance: string; phone: string; messageId: string; text: string; hasMedia: boolean; bufferMs: number }
 export interface InboundWebhookJob {
@@ -18,8 +19,9 @@ export interface InboundWebhookStore {
 export type InboundWebhookProcessor = (body: Record<string, unknown>, started: number, durable: { fragments: string[]; attempts: number }) => Promise<void>;
 const LEASE_MS = 20_000;
 const DONE_SECONDS = 86_400;
-const MAX_BYTES = 16 * 1024 * 1024;
-const MAX_QUEUE_BYTES = 128 * 1024 * 1024;
+const MAX_BYTES = MAX_INBOUND_WEBHOOK_BYTES;
+// Retain aggregate backpressure while allowing two maximal media envelopes.
+const MAX_QUEUE_BYTES = Math.max(128 * 1024 * 1024, 2 * MAX_BYTES);
 const MAX_QUEUE_JOBS = 1024;
 const MAX_LANE_JOBS = 64;
 const ID_RE = /^[a-f0-9]{64}$/;

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import {
   MAX_IMAGE_BYTES,
-  MAX_VOICE_SECONDS,
+  MAX_AUDIO_BYTES,
+  MAX_DOCUMENT_BYTES,
   OPERATOR_ACTIVE_SECONDS,
   detectOggOpusDurationSeconds,
   extractInboundMedia,
@@ -28,12 +30,12 @@ test("oversized photos are rejected before AI processing", () => {
   assert.equal(media?.reason, "media_too_large");
 });
 
-test("Ogg Opus granule duration detects long voice without gateway seconds", () => {
+test("Ogg Opus granule duration remains metadata without gateway seconds", () => {
   const page = Buffer.alloc(27);
   page.write("OggS", 0, "ascii");
-  page.writeBigUInt64LE(BigInt((MAX_VOICE_SECONDS + 1) * 48000), 6);
+  page.writeBigUInt64LE(BigInt(181 * 48000), 6);
   page[26] = 0;
-  assert.equal(Math.round(detectOggOpusDurationSeconds(page.toString("base64"))), MAX_VOICE_SECONDS + 1);
+  assert.equal(Math.round(detectOggOpusDurationSeconds(page.toString("base64"))), 181);
 });
 
 test("video is recognized but intentionally unsupported", () => {
@@ -49,14 +51,16 @@ test("stickers are accepted as ephemeral non-AI media", () => {
   assert.equal(media?.valid, true);
 });
 
-test("WhatsPro ptt is accepted but music and long voice are rejected", () => {
+test("supported ordinary audio and long PTT are accepted without product duration refusal", () => {
   const voice = extractInboundMedia({ type: "ptt", mediaKind: "ptt", hasMedia: true, mediaType: "audio/ogg", seconds: 30 });
   const music = extractInboundMedia({ type: "audio", hasMedia: true, mediaType: "audio/mpeg", seconds: 30 });
-  const longVoice = extractInboundMedia({ type: "ptt", mediaKind: "ptt", hasMedia: true, mediaType: "audio/ogg", seconds: MAX_VOICE_SECONDS + 1 });
+  const longVoice = extractInboundMedia({ type: "ptt", mediaKind: "ptt", hasMedia: true, mediaType: "audio/ogg", seconds: 181 });
   assert.equal(voice?.valid, true);
   assert.equal(voice?.isVoiceNote, true);
-  assert.equal(music?.reason, "music_audio_not_supported");
-  assert.equal(longVoice?.reason, "voice_too_long");
+  assert.equal(music?.valid, true);
+  assert.equal(music?.isVoiceNote, false);
+  assert.equal(longVoice?.valid, true);
+  assert.equal(longVoice?.durationSeconds, 181);
 });
 
 test("safe media metadata never retains binary payload", () => {
@@ -73,4 +77,27 @@ test("safe media metadata never retains binary payload", () => {
   });
   assert.equal(Object.hasOwn(safe || {}, "base64"), false);
   assert.equal(Object.hasOwn(safe || {}, "dataUrl"), false);
+});
+
+test("all supported media kinds share the default 64MiB resource bound", () => {
+  assert.equal(MAX_AUDIO_BYTES, 64 * 1024 * 1024);
+  assert.equal(MAX_IMAGE_BYTES, MAX_AUDIO_BYTES);
+  assert.equal(MAX_DOCUMENT_BYTES, MAX_AUDIO_BYTES);
+});
+
+test("the shared resource setting controls every media kind in a fresh module", () => {
+  const script = `
+    globalThis.fetch = async () => new Response("{}", {headers: {"Content-Type":"application/json"}});
+    const guard = await import("./src/services/inboundGuard.service.ts");
+    const assert = (await import("node:assert/strict")).default;
+    for (const [type, mediaType] of [["audio","audio/mpeg"],["image","image/jpeg"],["document","application/pdf"]]) {
+      assert.equal(guard.extractInboundMedia({type,hasMedia:true,mediaType,fileLength:2048}).valid,true);
+      assert.equal(guard.extractInboundMedia({type,hasMedia:true,mediaType,fileLength:2049}).reason,"media_too_large");
+    }
+    assert.equal(guard.MAX_AUDIO_BYTES,2048);
+  `;
+  const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(), env: {...process.env, MAX_MEDIA_BYTES: "2048"}, encoding: "utf8",
+  });
+  assert.equal(child.status, 0, "fresh-module resource assertion failed");
 });

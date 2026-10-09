@@ -1,7 +1,9 @@
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import { getRuntimeStatus } from "../services/dle.service.js";
-import { getActiveShiftNotes } from "../services/redis.service.js";
+import crypto from "node:crypto";
+import { getActiveShiftNotes, getDeletedShiftNoteIds, withoutDeletedNotes } from "../services/redis.service.js";
+import { mergeShiftNoteSources } from "../services/noteProvenance.service.js";
 import { evaluateWorkHours } from "../services/workHours.service.js";
 import type { FastFoodContext } from "../context/types.js";
 
@@ -60,13 +62,29 @@ export function createGetShiftNotesSkill(ctx: FastFoodContext) {
   return createTool({
     name: "getShiftNotes",
     description:
-      "Read active operator shift notes from Redis memory. Use this before answering about temporary restrictions, kitchen notes, sold-out items, or operational instructions.",
+      "Refresh current operator shift notes from the restaurant and Redis. Use this before answering about temporary restrictions, kitchen notes, sold-out items, or operational instructions.",
     parameters: z.object({}),
     execute: async () => {
-      const notes = await getActiveShiftNotes(ctx.instanceId);
+      const runtime = await getRuntimeStatus(ctx.instanceId, ctx.config?.domain || "", { forceFresh: true });
+      const [cachedNotes, deletedIds] = await Promise.all([
+        getActiveShiftNotes(ctx.instanceId),
+        getDeletedShiftNoteIds(ctx.instanceId),
+      ]);
+      const notes = withoutDeletedNotes(mergeShiftNoteSources(runtime?.shift_notes, cachedNotes), deletedIds);
+      if (runtime) ctx.runtimeStatus = runtime;
+      ctx.activeShiftNotes = notes;
+      ctx.activeShiftNotesFingerprint = notes.length
+        ? crypto.createHash("sha256").update(notes.map((note: any) => `${String(note?.text || "").trim()}|${Number(note?.expiresAt || 0) || 0}`).sort().join("\n")).digest("hex")
+        : "";
+      delete ctx.menuGrounding;
+      const live = Array.isArray(runtime?.shift_notes) && runtime?.runtime_available !== false
+        && !runtime?.redis_runtime_fallback && !runtime?.stale_runtime_backup
+        && !/fallback|stale|backup/.test(String(runtime?.source || ""));
       return {
-        source: "redis_shift_notes",
-        fetched_at: new Date().toISOString(),
+        source: live ? "runtime_shift_notes" : "redis_shift_notes",
+        fetched_at: live ? runtime?.fetched_at || null : null,
+        live,
+        is_last_known: !live,
         count: notes.length,
         notes,
       };

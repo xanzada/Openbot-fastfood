@@ -1875,6 +1875,14 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
     finalText = withoutClosing;
     warnings.push("repeated_generic_closing_removed");
   }
+  const withoutMenuSelection = rewriteCurrentFactClauses(finalText, (clause) =>
+    /^(?:что\s+(?:вас\s+интересует|(?:вы\s+)?(?:выберете|хотите\s+выбрать)|вам\s+больше\s+нравится)|какое\s+(?:блюдо|напиток)(?:\s+или\s+(?:блюдо|напиток))?\s+вас\s+интересует|не\s+қызықтырады|қайсысын\s+(?:қалайсыз|таңдайсыз)|қайсысы\s+көңіліңізден\s+шығады)\s*\?$/iu.test(clause.trim()) ? "" : null);
+  if (withoutMenuSelection.changed) {
+    finalText = withoutMenuSelection.text || (args[1].language === "kk"
+      ? "Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз."
+      : "Оформить заказ можно по ссылке на меню.");
+    warnings.push("menu_selection_question_removed");
+  }
   return warnings.length === result.warnings.length && finalText === result.text
     ? result
     : { ...result, text: finalText, warnings };

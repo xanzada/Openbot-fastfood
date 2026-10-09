@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { createClient } from "redis";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
@@ -28,7 +28,21 @@ for(const [name,body] of [["root array",[]],["unsupported nested array",{message
 test("bounded schema rejects excessive depth without mutating the request", () => {
   let body:any={text:"x"};for(let i=0;i<18;i++)body={message:body};assert.throws(()=>createInboundWebhookJob(body,identity()),/BAD_INBOUND_EVENT/);assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype,"polluted"),false);
 });
-test("oversized functional media receives a retry-visible rejection",()=>assert.throws(()=>createInboundWebhookJob({base64:"x".repeat(16*1024*1024+1)},identity("media",{hasMedia:true})),/INBOUND_EVENT_TOO_LARGE/));
+test("ordinary audio above the former serialized limit preserves both compatible webhook representations",()=>{
+  const bytes = Buffer.alloc(17*1024*1024); bytes.write("ID3"); const mediaData=bytes.toString("base64");
+  const job=createInboundWebhookJob({type:"audio",hasMedia:true,mediaType:"audio/mpeg",mediaData,data:{mediaData,mediaType:"audio/mpeg"}},identity("media",{hasMedia:true}));
+  assert.equal(job.body.mediaData,mediaData); assert.equal((job.body.data as any).mediaData,mediaData); assert.equal(job.kind,"media");
+});
+test("configured serialized resource bound rejects excessive functional media",()=>{
+  const script=`
+    const {createInboundWebhookJob}=await import("./src/services/inboundWebhookQueue.service.ts");
+    const assert=(await import("node:assert/strict")).default;
+    const identity={instance:"queue-fixture",phone:"70000000001",messageId:"media",text:"",hasMedia:true,bufferMs:0};
+    assert.throws(()=>createInboundWebhookJob({base64:"x".repeat(2*Math.ceil(1024/3)*4+128*1024+1)},identity),/INBOUND_EVENT_TOO_LARGE/);
+  `;
+  const child=spawnSync(process.execPath,["--import","tsx","--input-type=module","-e",script],{cwd:process.cwd(),env:{...process.env,MAX_MEDIA_BYTES:"1024"},encoding:"utf8"});
+  assert.equal(child.status,0,"configured serialized bound assertion failed");
+});
 test("retry waits beyond the legacy text duplicate window and never abandons the job",()=>{assert.equal(inboundWebhookRetryDelay(1),10000);assert.equal(inboundWebhookRetryDelay(2),20000);assert.equal(inboundWebhookRetryDelay(999),300000);});
 
 test("actual Redis durable inbound lane, bundle, retry and cold recovery", {skip:process.env.AUDIT_REDIS_INTEGRATION!=="1"},async t=>{

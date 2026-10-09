@@ -3,6 +3,7 @@ import { connectRedis, redisClient } from "./redis.service.js";
 import { getRestaurantConfig } from "./platformConfig.service.js";
 import { getRuntimeSettings, runtimeTestModeEnabled } from "./llmWorkspace.service.js";
 import { envNumber } from "../utils/envNumber.js";
+import { MAX_MEDIA_BYTES } from "../utils/mediaLimits.js";
 import { readGuestGreeting } from "../agent/greeting.js";
 import { intentMatches } from "../utils/intentText.js";
 
@@ -46,10 +47,10 @@ const DONE_SECONDS = 86400;
 const MEDIA_CONTEXT_SECONDS = 60;
 const OPERATOR_MUTE_MAX_SECONDS = envNumber(process.env.OPERATOR_MUTE_MAX_SECONDS, 300, { min: 1 });
 export const OPERATOR_ACTIVE_SECONDS = envNumber(process.env.OPERATOR_ACTIVE_SECONDS, 40, { min: 1 });
-export const MAX_IMAGE_BYTES = envNumber(process.env.OPENBOT_MAX_IMAGE_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES, 5 * 1024 * 1024, { min: 1024 });
-export const MAX_DOCUMENT_BYTES = envNumber(process.env.OPENBOT_MAX_DOCUMENT_BYTES || process.env.OPENBOT_MAX_MEDIA_BYTES, 5 * 1024 * 1024, { min: 1024 });
-export const MAX_AUDIO_BYTES = envNumber(process.env.OPENBOT_MAX_AUDIO_BYTES, 8 * 1024 * 1024, { min: 1024 });
-export const MAX_VOICE_SECONDS = envNumber(process.env.OPENBOT_MAX_VOICE_SECONDS, 180, { min: 1 });
+// Retain the existing exports while using one media resource bound.
+export const MAX_IMAGE_BYTES = MAX_MEDIA_BYTES;
+export const MAX_DOCUMENT_BYTES = MAX_MEDIA_BYTES;
+export const MAX_AUDIO_BYTES = MAX_MEDIA_BYTES;
 export const MEDIA_DOWNLOAD_TIMEOUT_MS = envNumber(process.env.OPENBOT_MEDIA_DOWNLOAD_TIMEOUT_MS, 30_000, { min: 1_000, max: 120_000 });
 const MEDIA_AI_LIMIT_PER_5_MINUTES = envNumber(process.env.OPENBOT_MEDIA_AI_LIMIT_PER_5_MINUTES, 6, { min: 1 });
 const ALLOWED_MEDIA_MIME = /^(image\/(jpeg|jpg|png|webp)|application\/pdf|video\/mp4|audio\/(ogg|opus|mpeg|mp3|wav|x-wav|webm|mp4|m4a|aac|flac))(?:;.*)?$/i;
@@ -358,8 +359,7 @@ export function extractInboundMedia(body: any): InboundMediaContext | null {
   if (mimeBase && !ALLOWED_MEDIA_MIME.test(mimeType)) flags.push("unsupported_mime_type");
   if (kind !== "sticker" && kind !== "video" && sizeBytes > maxBytesForKind(kind)) flags.push("media_too_large");
   if (kind === "video") flags.push("video_unsupported");
-  if (kind === "audio" && !isVoiceNote) flags.push("music_audio_not_supported");
-  if (kind === "audio" && durationSeconds > MAX_VOICE_SECONDS) flags.push("voice_too_long");
+  // PTT and duration describe the audio; neither is an admission requirement.
   if (
     kind === "audio" &&
     ![
@@ -569,7 +569,7 @@ export async function getBase64Media(
   const direct = cleanDataUrlBase64(directMediaBase64(body), mimeType);
   const maxBytes = maxBytesForKind(mediaContext?.kind || "unknown");
   if (direct?.base64) {
-    const estimatedBytes = Math.floor(direct.base64.length * 0.75);
+    const estimatedBytes = Math.floor(direct.base64.length * 0.75) - (direct.base64.endsWith("==") ? 2 : direct.base64.endsWith("=") ? 1 : 0);
     if (estimatedBytes > maxBytes) return { error: "media_too_large" as const };
     return direct;
   }
@@ -628,24 +628,14 @@ export async function hydrateInboundMedia(body: any, mediaContext: InboundMediaC
   const downloadedMime = normalizeMimeBase(downloaded.mimeType || mediaContext.mimeType);
   if (!ALLOWED_MEDIA_MIME.test(downloadedMime)) return { ...mediaContext, valid: false, reason: "unsupported_mime_type", flags: [...mediaContext.flags, "unsupported_mime_type"] };
   if (!mediaSignatureMatches(downloadedMime, downloaded.base64)) return { ...mediaContext, valid: false, reason: "media_signature_mismatch", flags: Array.from(new Set([...mediaContext.flags, "media_signature_mismatch"])) };
-  if (mediaContext.kind === "audio" && mediaContext.isVoiceNote && !mediaContext.durationSeconds && !["audio/ogg","audio/opus"].includes(downloadedMime)) return { ...mediaContext, valid: false, reason: "voice_duration_unverified", flags: Array.from(new Set([...mediaContext.flags, "voice_duration_unverified"])) };
-  const measuredDuration = mediaContext.kind === "audio" && mediaContext.isVoiceNote && !mediaContext.durationSeconds
+  const measuredDuration = mediaContext.kind === "audio" && !mediaContext.durationSeconds
     ? detectOggOpusDurationSeconds(downloaded.base64)
     : Number(mediaContext.durationSeconds || 0);
-  if (mediaContext.kind === "audio" && mediaContext.isVoiceNote && measuredDuration > MAX_VOICE_SECONDS) {
-    return {
-      ...mediaContext,
-      valid: false,
-      reason: "voice_too_long",
-      flags: Array.from(new Set([...mediaContext.flags, "voice_too_long"])),
-      durationSeconds: Math.ceil(measuredDuration),
-    };
-  }
   return {
     ...mediaContext,
     mimeType: downloaded.mimeType || mediaContext.mimeType,
     mediaType: downloaded.mimeType || mediaContext.mediaType,
-    sizeBytes: Math.floor(downloaded.base64.length * 0.75),
+    sizeBytes: Math.floor(downloaded.base64.length * 0.75) - (downloaded.base64.endsWith("==") ? 2 : downloaded.base64.endsWith("=") ? 1 : 0),
     base64: downloaded.dataUrl,
     dataUrl: downloaded.dataUrl,
     durationSeconds: measuredDuration || mediaContext.durationSeconds,

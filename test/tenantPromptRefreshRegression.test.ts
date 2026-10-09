@@ -5,6 +5,7 @@ import vm from "node:vm";
 import crypto from "node:crypto";
 import ts from "typescript";
 import {buildFactsPrompt} from "../src/context/buildFactsPrompt.js";
+import { mergeShiftNoteSources } from "../src/services/noteProvenance.service.js";
 function load(relative:string,modules:Record<string,unknown>,extra:Record<string,unknown>={}){
  const raw=fs.readFileSync(new URL("../src/"+relative,import.meta.url),"utf8");
  const compiled=ts.transpileModule(raw,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
@@ -23,7 +24,7 @@ function configFixture(){
  const platform=load("services/platformConfig.service.ts",modules,{Date:Clock,process:{env:{TENANTS_PLATFORM_BASE_URL:"https://fixture.invalid",TENANTS_PLATFORM_API_TOKEN:"SYNTHETIC_NON_SECRET"}}});
  return{platform,cache,advance:(ms:number)=>{now+=ms;},set:(v:any)=>{latest=v;},outage:()=>{fail=true;},calls:()=>calls};
 }
-function preload(platform:any){
+function preload(platform:any,overrides:Record<string,unknown>={}){
  const empty=async()=>null,list=async()=>[];
  const modules:any={
   "node:crypto":crypto,"../utils/envNumber.js":{envNumber:(_v:any,fallback:number)=>fallback},
@@ -42,7 +43,7 @@ function preload(platform:any){
   "../utils/linkRecency.js":{isMagicLinkRecent:()=>false},
   "../services/languagePolicy.service.js":{resolvePriorConversationLanguage:()=>({language:null,source:"none"}),resolveOrganicLanguage:()=>({language:"ru",source:"fallback"}),shouldSwitchLockedLanguage:()=>false,textCarriesDecisiveLanguageSignal:()=>false,unclassifiedTextIsDecisive:()=>false,instantLanguageDecision:()=>null},
   "../services/workHours.service.js":{evaluateWorkHours:()=>({configured:false,withinWorkHours:true})}
- };return load("context/preloadContext.ts",modules).preloadContext;
+ };return load("context/preloadContext.ts",{...modules,...overrides}).preloadContext;
 }
 const incoming={instanceId:"alpha",phone:"77000000001",text:"ок"};
 const readFacts=(ctx:any)=>JSON.parse(buildFactsPrompt(ctx).split("FACTS_CONTEXT_START\n")[1].split("\nFACTS_CONTEXT_END")[0]);
@@ -70,4 +71,65 @@ test("unavailable config preserves known backup but authoritative forced path re
 test("wrong-tenant response cannot overwrite a known explicitly empty prompt",async()=>{
  const f=configFixture();f.set({instance_id:"alpha",system_prompt:"",prompt_mode:"shared"});await f.platform.getRestaurantConfig("alpha");
  f.set({instance_id:"beta",system_prompt:"FOREIGN_POLICY"});assert.equal(await f.platform.refreshRestaurantConfig("alpha"),null);assert.equal((await f.platform.getRestaurantConfig("alpha")).system_prompt,"");
+});
+
+test("each customer turn sees current operator notes before the fresh menu, including deletion and price changes",async()=>{
+ const events:string[]=[];
+ let notes:any[]=[{noteId:"old",text:"Sample sold out"}],price=1000,deleted=new Set<string>();
+ const hydrate=preload({getRestaurantConfig:async()=>({domain:"fixture.invalid"})},{
+  "../services/dle.service.js":{
+   normalizePhone:(x:string)=>x.replace(/\D/g,""),
+   getOrderStatus:async()=>null,
+   getRuntimeStatus:async(_id:string,_domain:string,options:any)=>{
+    assert.equal(options.forceFresh,true);assert.equal(options.staleWhileRevalidateMs,undefined);
+    events.push("runtime");notes=[];deleted=new Set(["old"]);
+    return {runtime_available:true,source:"fixture_live",shift_notes:[],fetched_at:new Date().toISOString()};
+   },
+   getMenuContext:async(_id:string,_domain:string,_lang:string,options:any)=>{
+    assert.equal(options.forceFresh,true);assert.deepEqual(events,["runtime","notes"]);
+    events.push("menu");return {source:"fixture_live",items:[{name:"Sample",price,available:true}]};
+   },
+  },
+  "../services/redis.service.js":{
+   connectRedis:async()=>true,getUserLang:async()=>null,getSiteLanguageHint:async()=>null,
+   getChatHistory:async()=>[{role:"assistant",content:"Sample sold out",sourceNoteIds:["old"]}],
+   getActiveShiftNotes:async()=>{events.push("notes");return notes;},
+   getMagicLinkSentAt:async()=>0,getDeletedShiftNoteIds:async()=>deleted,
+   withoutDeletedNotes:(rows:any[],ids:Set<string>)=>rows.filter(n=>!ids.has(String(n.noteId||n.id))),
+   replaceUserLang:async()=>null,saveUserLang:async()=>null,
+  },
+  "../services/noteProvenance.service.js":{matchingNoteIds:()=>[],mergeShiftNoteSources},
+ });
+ const first=await hydrate(incoming);
+ assert.deepEqual(first.activeShiftNotes,[]);assert.deepEqual(first.chatHistory,[]);
+ assert.equal(first.menuSnapshot.items[0].price,1000);
+ events.length=0;price=1200;
+ const second=await hydrate(incoming);
+ assert.equal(second.menuSnapshot.items[0].price,1200);
+ assert.deepEqual(events,["runtime","notes","menu"]);
+});
+
+test("fresh shift-note tool replaces stale restrictions in the agent context",async()=>{
+ const current=[{noteId:"fresh",text:"Sample temporarily unavailable"}];
+ let latest:any[]=current, confirmsNotes=true;
+ const ctx:any={instanceId:"alpha",config:{domain:"fixture.invalid"},activeShiftNotes:[{noteId:"old",text:"Old restriction"}],activeShiftNotesFingerprint:"old",menuGrounding:{items:[]}};
+ const skill=load("skills/runtimeStatus.skill.ts",{
+  "@voltagent/core":{createTool:(value:any)=>value},zod:{z:{object:()=>({})}},
+  "node:crypto":crypto,
+  "../services/dle.service.js":{getRuntimeStatus:async()=>({runtime_available:true,source:"fixture_live",...(confirmsNotes?{shift_notes:latest}:{}),fetched_at:"2026-10-09T00:00:00Z"})},
+  "../services/redis.service.js":{getActiveShiftNotes:async()=>latest,getDeletedShiftNoteIds:async()=>new Set(["old"]),withoutDeletedNotes:(rows:any[])=>rows.filter(n=>n.noteId!=="old")},
+  "../services/noteProvenance.service.js":{mergeShiftNoteSources},
+  "../services/workHours.service.js":{evaluateWorkHours:()=>({})},
+ }).createGetShiftNotesSkill(ctx);
+ const result=await skill.execute();
+ assert.equal(result.live,true);assert.deepEqual(ctx.activeShiftNotes,current);
+ assert.notEqual(ctx.activeShiftNotesFingerprint,"old");assert.equal(ctx.menuGrounding,undefined);
+ latest=[];ctx.menuGrounding={items:[]};
+ await skill.execute();
+ assert.deepEqual(ctx.activeShiftNotes,[]);assert.equal(ctx.activeShiftNotesFingerprint,"");assert.equal(ctx.menuGrounding,undefined);
+ latest=current;confirmsNotes=false;
+ const unconfirmed=await skill.execute();
+ assert.deepEqual(ctx.activeShiftNotes,current);assert.equal(unconfirmed.live,false);
+ assert.equal(unconfirmed.source,"redis_shift_notes");assert.equal(unconfirmed.fetched_at,null);
+
 });

@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import { detectLanguageDecision, isLanguageBearingCustomerText, lastCustomerLanguage, lastResolvedCustomerLanguage } from "../utils/language.js";
-import { envNumber } from "../utils/envNumber.js";
 import { hasBrokenLinkReport, hasExplicitMenuLinkIntent, isContextualLinkResendRequest, normalizeMenuDomain } from "../utils/magicLink.js";
 import { getMenuContext, getOrderStatus, getRuntimeStatus, normalizePhone } from "../services/dle.service.js";
 import { issueCustomerAccessLink, upsertCustomerLead } from "../services/alemiApi.service.js";
@@ -92,9 +91,6 @@ function firstValue(...values: unknown[]) {
   return "";
 }
 
-// Window in which a turn reads the hub runtime from the Redis snapshot (see getRuntimeStatus).
-const RUNTIME_SWR_MS = envNumber(process.env.OPENBOT_RUNTIME_SWR_MS, 30_000, { min: 0, max: 120_000 });
-
 export async function preloadContext(input: InboundMessage): Promise<FastFoodContext> {
   const redisAvailable = await connectRedis().then(() => true).catch(() => false);
 
@@ -106,20 +102,19 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   if (!phone) throw new Error("phone is required");
   if (!text) throw new Error("text is required");
 
-  const [config, storedLang, siteLanguageHint, rawChatHistory, cachedShiftNotes, magicLinkSentAt, deletedNoteIds] =
+  const [config, storedLang, siteLanguageHint, rawChatHistory, magicLinkSentAt, initialDeletedNoteIds] =
     await Promise.all([
       getRestaurantConfig(instanceId),
       getUserLang(instanceId, phone).catch(() => null),
       getSiteLanguageHint(instanceId, phone).catch(() => null),
       getChatHistory(instanceId, phone).catch(() => []),
-      getActiveShiftNotes(instanceId).catch(() => []),
       getMagicLinkSentAt(instanceId, phone).catch(() => 0),
       getDeletedShiftNoteIds(instanceId).catch(() => new Set<string>()),
     ]);
   // A reply built on a note the operator has just deleted is not shown to the model
   // again (a turn in flight during the delete can still save one).
-  const chatHistory = deletedNoteIds.size && Array.isArray(rawChatHistory)
-    ? rawChatHistory.filter((entry: any) => !(Array.isArray(entry?.sourceNoteIds) && entry.sourceNoteIds.some((id: unknown) => deletedNoteIds.has(String(id)))))
+  let chatHistory = initialDeletedNoteIds.size && Array.isArray(rawChatHistory)
+    ? rawChatHistory.filter((entry: any) => !(Array.isArray(entry?.sourceNoteIds) && entry.sourceNoteIds.some((id: unknown) => initialDeletedNoteIds.has(String(id)))))
     : rawChatHistory;
   // «Already sent» means still on the guest's screen (minutes ago / last messages),
   // not «at some point in the last 30 days» (owner report, 2026-10-04).
@@ -257,27 +252,35 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
   // Long-term memory is read in the same parallel batch as the live lookups, so
   // it adds no measurable latency. Every read degrades to null on failure:
   // memory enriches the answer, it must never be able to block one.
-  const [runtimeStatus, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal, liveMenu] =
+  const [{ runtimeStatus, activeShiftNotes, deletedNoteIds, liveMenu }, activeOrder, shporContext, customerProfile, conversationSummary, lastTurnTrace, activeGoal] =
     await Promise.all([
-      getRuntimeStatus(instanceId, domain, { forceFresh: true, staleWhileRevalidateMs: RUNTIME_SWR_MS }).catch(() => null),
+      (async () => {
+        // The runtime read synchronizes operator notes; read Redis afterwards so
+        // removed notes cannot return from a copy captured before that sync.
+        const runtimeStatus = await getRuntimeStatus(instanceId, domain, { forceFresh: true }).catch(() => null);
+        const [cachedShiftNotes, deletedNoteIds] = await Promise.all([
+          getActiveShiftNotes(instanceId).catch(() => []),
+          getDeletedShiftNoteIds(instanceId).catch(() => new Set<string>()),
+        ]);
+        if (runtimeStatus && Array.isArray(runtimeStatus.shift_notes)) {
+          runtimeStatus.shift_notes = withoutDeletedNotes(runtimeStatus.shift_notes, deletedNoteIds);
+        }
+        const activeShiftNotes = withoutDeletedNotes(mergeShiftNoteSources(runtimeStatus?.shift_notes, cachedShiftNotes), deletedNoteIds);
+        const liveMenu = await getMenuContext(instanceId, domain, language, { forceFresh: true }).catch(() => null);
+        return { runtimeStatus, activeShiftNotes, deletedNoteIds, liveMenu };
+      })(),
       getOrderStatus(instanceId, phone, domain).catch(() => null),
       getShporContext(instanceId, text).catch(() => []),
       getCustomerProfile(instanceId, phone).catch(() => null),
       getConversationSummary(instanceId, phone).catch(() => null),
       getTurnTrace(instanceId, phone).catch(() => null),
       getActiveGoal(instanceId, phone).catch(() => null),
-      getMenuContext(instanceId, domain, language).catch(() => null),
     ]);
 
   const menuSnapshot = buildMenuSnapshot(liveMenu);
-  // runtime.status.get is the authoritative recovery snapshot. Webhooks and the
-  // Redis copy keep the fast path, but a missed event or a bot deployment must
-  // not leave the AI without the current shift notes for even one turn. The merge
-  // keeps a hub that echoes shift_notes: [] from shadowing real Redis notes.
-  if (deletedNoteIds.size && runtimeStatus && Array.isArray((runtimeStatus as any).shift_notes)) {
-    (runtimeStatus as any).shift_notes = withoutDeletedNotes((runtimeStatus as any).shift_notes, deletedNoteIds);
+  if (deletedNoteIds.size) {
+    chatHistory = chatHistory.filter((entry: any) => !(Array.isArray(entry?.sourceNoteIds) && entry.sourceNoteIds.some((id: unknown) => deletedNoteIds.has(String(id)))));
   }
-  const activeShiftNotes = withoutDeletedNotes(mergeShiftNoteSources(runtimeStatus?.shift_notes, cachedShiftNotes), deletedNoteIds);
   const activeShiftNotesFingerprint = activeShiftNotes.length
     ? crypto.createHash("sha256").update(activeShiftNotes.map((note: any) => `${String(note?.text || "").trim()}|${Number(note?.expiresAt || 0) || 0}`).sort().join("\n")).digest("hex")
     : "";
