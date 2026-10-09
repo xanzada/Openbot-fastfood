@@ -222,6 +222,25 @@ function replyShape(ctx: FastFoodContext) {
   };
 }
 
+/** Public order projection already normalized by the current-phone lookup. */
+function activeOrderSnapshot(ctx: FastFoodContext) {
+  const order = ctx.activeOrder as any;
+  if (!order) return null;
+  const instance = String(order.instance_id || order.instanceId || "");
+  const phone = String(order.phone_e164 || order.phone || "").replace(/\D/g, "");
+  if ((instance && instance !== ctx.instanceId) || (phone && phone !== String(ctx.phone).replace(/\D/g, ""))) return null;
+  const allowedStatus = ["new", "pending", "confirmed", "accepted", "preparing", "cooking", "ready", "prepared", "delivery", "completed", "cancelled", "canceled"];
+  const status = String(order.status || "").toLowerCase();
+  const payment = String(order.paymentStatus || "").toLowerCase();
+  return {
+    order_number: String(order.orderNumber || "").slice(0, 40) || null,
+    status: allowedStatus.includes(status) ? status : "unknown",
+    payment_status: ["paid", "unverified", "awaiting_payment", "waiting_receipt", "awaiting_receipt", "receipt_review", "receipt_uploaded", "pending_review"].includes(payment) ? payment : null,
+    fulfillment_type: ["pickup", "delivery"].includes(order.fulfillmentType) ? order.fulfillmentType : null,
+    rule: "Current-phone preloaded order snapshot. Recheck checkOrderStatus before current status/payment/readiness/fulfillment claims. Fresh successful lookup outranks this snapshot. Unknown payment is not confirmed, and no order state proves a human has replied or is working.",
+  };
+}
+
 function activeMission(ctx: FastFoodContext) {
   const goal = ctx.activeGoal || null;
   if (!goal || goal.status !== "active") return null;
@@ -520,6 +539,7 @@ export function buildFactsPrompt(ctx: FastFoodContext): string {
       getShiftNotes: "Live operator shift-notes re-read. Use before claiming an item is unavailable.",
         },
         ...menuSnapshotBlock(ctx),
+        active_order: activeOrderSnapshot(ctx),
         payment_policy: paymentPolicyForOrder(ctx.activeOrder),
         operational_runtime: operationalRuntime(ctx),
         ...operationalShiftNotesBlock(ctx),

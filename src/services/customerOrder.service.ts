@@ -3,8 +3,8 @@ import { getOrderContext, normalizePhone } from "./dle.service.js";
 import { formatKitchenWait } from "./kitchenPolicy.service.js";
 import { paymentFieldsFrom, type PaymentTiming } from "../utils/paymentTiming.js";
 
-export type CustomerOrderStage = "awaiting_confirmation" | "awaiting_receipt" | "receipt_review" | "preparing" | "delivery" | "completed" | "cancelled" | "unknown";
-export interface CustomerOrder { orderId: string; orderNumber: string; status: string; stage: CustomerOrderStage; statusLabel: string; statusExplanation: string; items: Array<{ name: string; quantity: number }>; paymentTiming?: PaymentTiming | null; paymentRevision?: number | null; }
+export type CustomerOrderStage = "awaiting_confirmation" | "awaiting_receipt" | "receipt_review" | "preparing" | "ready" | "delivery" | "completed" | "cancelled" | "unknown";
+export interface CustomerOrder { orderId: string; orderNumber: string; status: string; stage: CustomerOrderStage; statusLabel: string; statusExplanation: string; items: Array<{ name: string; quantity: number }>; paymentTiming?: PaymentTiming | null; paymentRevision?: number | null; paymentStatus?: string | null; fulfillmentType?: "pickup"|"delivery"|null; }
 export type CustomerOrderLookup = { state: "found"; order: CustomerOrder } | { state: "not_found" } | { state: "ambiguous" } | { state: "unavailable" };
 
 function statusKey(status: string) { return String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_"); }
@@ -16,9 +16,13 @@ function hasReceiptMarker(aiComment: unknown) {
 export function classifyOrderStage(status: string, aiComment: unknown = "", paymentStatus: unknown = ""): CustomerOrderStage {
   const key = statusKey(status);
   const paymentKey = statusKey(String(paymentStatus || ""));
+  if (key === "cancelled" || key === "canceled") return "cancelled";
+  if (key === "completed") return "completed";
+  if (key === "delivery") return "delivery";
+  if (key === "ready" || key === "prepared") return "ready";
   if (["receipt_review", "receipt_uploaded", "waiting_review", "pending_review"].includes(paymentKey) || ["receipt_review", "receipt_uploaded"].includes(key)) return "receipt_review";
-  if (["waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(paymentKey) || ["confirmed", "accepted", "waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(key)) return "awaiting_receipt";
   if (paymentKey === "paid") return "preparing";
+  if (["waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(paymentKey) || ["confirmed", "accepted", "waiting_receipt", "awaiting_receipt", "payment_pending", "awaiting_payment"].includes(key)) return "awaiting_receipt";
   if (key === "pending") {
     if (hasPaymentRequest(aiComment)) return "awaiting_receipt";
     if (hasReceiptMarker(aiComment)) return "receipt_review";
@@ -32,9 +36,9 @@ export function classifyOrderStage(status: string, aiComment: unknown = "", paym
 }
 export function describeOrderStage(stage: CustomerOrderStage, language: "kk" | "ru") {
   const labels = language === "ru" ? {
-    awaiting_confirmation: ["Ждём оплату", "заказ оформлен на сайте, ждём оплату — приготовление начнётся после чека"], awaiting_receipt: ["Ждём чек", "реквизиты отправлены, ожидаем чек об оплате"], receipt_review: ["Чек отправлен", "чек получен и ожидает проверки оператора"], preparing: ["Готовится", "оплата подтверждена, заказ готовится"], delivery: ["В пути", "заказ у курьера и едет к вам"], completed: ["Завершён", "заказ завершён"], cancelled: ["Отменён", "заказ отменён"], unknown: ["Статус обновлён", "точный этап пока не определён"],
+    awaiting_confirmation: ["Ждём оплату", "заказ оформлен на сайте, ждём оплату — приготовление начнётся после чека"], awaiting_receipt: ["Ждём чек", "реквизиты отправлены, ожидаем чек об оплате"], receipt_review: ["Чек отправлен", "чек получен и ожидает проверки оператора"], preparing: ["Готовится", "оплата подтверждена, заказ готовится"], ready: ["Готов", "заказ готов"], delivery: ["В пути", "заказ у курьера и едет к вам"], completed: ["Завершён", "заказ завершён"], cancelled: ["Отменён", "заказ отменён"], unknown: ["Статус обновлён", "точный этап пока не определён"],
   } : {
-    awaiting_confirmation: ["Төлем күтудеміз", "тапсырыс сайтта рәсімделді, төлем чегі келген соң дайындау басталады"], awaiting_receipt: ["Чек күтудеміз", "реквизиттер жіберілді, төлем чегін күтіп тұрмыз"], receipt_review: ["Чек жіберілді", "чек алынды және оператор тексеруін күтуде"], preparing: ["Дайындалуда", "төлем расталды, тапсырыс дайындалып жатыр"], delivery: ["Жолда", "тапсырыс курьерде және сізге келе жатыр"], completed: ["Аяқталды", "тапсырыс аяқталды"], cancelled: ["Бас тартылды", "тапсырыстан бас тартылды"], unknown: ["Статус жаңартылды", "нақты кезеңі әзірге анықталмады"],
+    awaiting_confirmation: ["Төлем күтудеміз", "тапсырыс сайтта рәсімделді, төлем чегі келген соң дайындау басталады"], awaiting_receipt: ["Чек күтудеміз", "реквизиттер жіберілді, төлем чегін күтіп тұрмыз"], receipt_review: ["Чек жіберілді", "чек алынды және оператор тексеруін күтуде"], preparing: ["Дайындалуда", "төлем расталды, тапсырыс дайындалып жатыр"], ready: ["Дайын", "тапсырыс дайын"], delivery: ["Жолда", "тапсырыс курьерде және сізге келе жатыр"], completed: ["Аяқталды", "тапсырыс аяқталды"], cancelled: ["Бас тартылды", "тапсырыстан бас тартылды"], unknown: ["Статус жаңартылды", "нақты кезеңі әзірге анықталмады"],
   };
   const value = labels[stage] as string[]; return { label: value[0], explanation: value[1] };
 }
@@ -65,11 +69,13 @@ export function describeOnReceiptStage(stage: CustomerOrderStage, language: "kk"
 export function describeOrderStatus(status: string, language: "kk" | "ru", aiComment: unknown = "") { return describeOrderStage(classifyOrderStage(status, aiComment), language).explanation; }
 function localizedItemName(value: unknown): string { if(typeof value==="string"||typeof value==="number")return String(value).trim();if(!value||typeof value!=="object"||Array.isArray(value))return"";const record=value as Record<string,any>;for(const candidate of [record.ru,record.kk,record.kz,record.name,record.title,record.value]){const text=localizedItemName(candidate);if(text)return text;}return""; }
 function customerItems(value: unknown): Array<{ name: string; quantity: number }> { if (!Array.isArray(value)) return []; return value.map((item:any)=>{const name=localizedItemName(item?.name||item?.title||item?.product_name||item?.product?.name||item?.product?.title).slice(0,120);const quantity=Math.max(1,Math.min(99,Number(item?.qty||item?.quantity||item?.count||1)||1));return name?{name,quantity}:null;}).filter((x):x is {name:string;quantity:number}=>Boolean(x)); }
+function customerPaymentStatus(value:unknown):string|null {const key=statusKey(String(value??""));return ["paid","unverified","awaiting_payment","waiting_receipt","awaiting_receipt","receipt_review","receipt_uploaded","pending_review"].includes(key)?key:null;}
+function customerFulfillmentType(value:unknown):"pickup"|"delivery"|null {const key=statusKey(String(value??""));return key==="pickup"||key==="delivery"?key:null;}
 export function customerOrderFromRecord(value: Record<string,any>|null|undefined, expectedPhone:string, language:"kk"|"ru"): CustomerOrderLookup {
   const record=value?.order||value?.active_order||value||null; const orderId=String(record?.id||record?.order_id||record?.uuid||value?.order_id||"").trim().slice(0,80); const orderNumber=String(record?.display_number||record?.order_number||record?.number||record?.order_no||orderId).trim().slice(0,40); const status=String(record?.status||value?.status||"").trim().slice(0,80); if(!orderId||!status)return{state:"not_found"};
   const ownerPhone=normalizePhone(record?.phone||record?.phone_e164||value?.phone||value?.phone_e164||""); const requestedPhone=normalizePhone(expectedPhone); if(ownerPhone&&requestedPhone&&ownerPhone!==requestedPhone){auditError("Customer order ownership mismatch",new Error("ORDER_PHONE_MISMATCH"),{orderNumber,expectedPhone:requestedPhone,ownerPhone});return{state:"not_found"};}
   const payment=paymentFieldsFrom(record||value); const onReceipt=payment.timing==="on_receipt";
-  const baseStage=classifyOrderStage(status,record?.ai_comment||value?.ai_comment,record?.payment_status||value?.payment_status); const stage=onReceipt?classifyOnReceiptStage(baseStage):baseStage; const description=onReceipt?describeOnReceiptStage(stage,language):describeOrderStage(stage,language); return{state:"found",order:{orderId,orderNumber,status,stage,statusLabel:description.label,statusExplanation:description.explanation,items:customerItems(record?.items||value?.items),...(payment.timing?{paymentTiming:payment.timing,paymentRevision:payment.revision}:{})}};
+  const baseStage=classifyOrderStage(status,record?.ai_comment||value?.ai_comment,record?.payment_status||value?.payment_status); const stage=onReceipt?classifyOnReceiptStage(baseStage):baseStage; const description=onReceipt?describeOnReceiptStage(stage,language):describeOrderStage(stage,language); return{state:"found",order:{orderId,orderNumber,status,stage,statusLabel:description.label,statusExplanation:description.explanation,items:customerItems(record?.items||value?.items),...(customerPaymentStatus(record?.payment_status??value?.payment_status)?{paymentStatus:customerPaymentStatus(record?.payment_status??value?.payment_status)}:{}),...(customerFulfillmentType(record?.fulfillment_type??value?.fulfillment_type)?{fulfillmentType:customerFulfillmentType(record?.fulfillment_type??value?.fulfillment_type)}:{}),...(payment.timing?{paymentTiming:payment.timing,paymentRevision:payment.revision}:{})}};
 }
 function orderIdOf(record: any) { return String(record?.id || record?.order_id || "").trim(); }
 function orderMatchesNumber(record: any, value: string) { const expected=String(value||"").trim();return [record?.id,record?.order_id,record?.display_number,record?.order_number,record?.number,record?.order_no].some((candidate)=>String(candidate||"").trim()===expected); }

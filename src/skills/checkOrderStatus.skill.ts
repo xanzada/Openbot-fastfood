@@ -18,6 +18,7 @@ export function createCheckOrderStatusSkill(ctx: FastFoodContext) {
       const domain = ctx.config?.domain || "";
       const result = await getCustomerOrder(ctx.instanceId, domain, ctx.phone, ctx.language, orderId);
       if (result.state !== "found") return { lookup: result.state };
+      ctx.activeOrder = result.order;
       return {
         lookup: "found",
         orderNumber: result.order.orderNumber,
@@ -28,6 +29,8 @@ export function createCheckOrderStatusSkill(ctx: FastFoodContext) {
         items: result.order.items,
         // null = legacy prepayment order; on_receipt = pay when received, no receipt.
         paymentTiming: result.order.paymentTiming ?? null,
+        paymentStatus: result.order.paymentStatus ?? null,
+        fulfillmentType: result.order.fulfillmentType ?? null,
       };
     },
   });

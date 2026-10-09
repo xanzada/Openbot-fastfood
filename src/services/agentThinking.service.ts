@@ -1,3 +1,4 @@
+import {isMenuAttributeVerificationQuestion} from "../utils/menuQuestionContext.js";
 import {needsShoppingPrepass, shoppingEvidence} from "./shoppingConstraints.service.js";
 import { getAnalysisModel } from "./llm.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -58,7 +59,7 @@ export function shouldThink(ctx: FastFoodContext, toolPlan?: { requiredTools?: s
   const text = String(ctx.text || "").trim();
   if (!text) return false;
   if (text.length <= 40 && TRIVIAL_TEXT_RE.test(text)) return false;
-  if (needsShoppingPrepass(ctx)) return true;
+  if (needsShoppingPrepass(ctx) || isMenuAttributeVerificationQuestion(text)) return true;
   const confidentPlan = Boolean(toolPlan && Array.isArray(toolPlan.requiredTools) && toolPlan.requiredTools.length > 0);
   if (confidentPlan && text.length < 200 && !COMPLAINT_OR_EMOTION_RE.test(text) && !ctx.mediaContext) return false;
   if (THINK_WORTHY_RE.test(text)) return true;
@@ -163,6 +164,8 @@ export function buildThinkingTenantContext(ctx: FastFoodContext) {
     active_order: {
       present: Boolean(order),
       status: knownStatuses.includes(status) ? status : "unknown",
+      payment_status: ["paid", "unverified", "awaiting_payment", "waiting_receipt", "awaiting_receipt", "receipt_review", "receipt_uploaded", "pending_review"].includes(String((order as any)?.paymentStatus || "")) ? (order as any).paymentStatus : null,
+      fulfillment_type: ["pickup", "delivery"].includes(String((order as any)?.fulfillmentType || "")) ? (order as any).fulfillmentType : null,
       rule: "Preloaded order snapshot only; status is unknown unless recognized and is not proof of current completion, payment, delivery or permission. Recheck with the current tenant-scoped tool when relevant.",
     },
     operational_snapshot: {

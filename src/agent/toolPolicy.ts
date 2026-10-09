@@ -1,13 +1,13 @@
 import {needsShoppingPrepass} from "../services/shoppingConstraints.service.js";
 import type { FastFoodContext } from "../context/types.js";
-import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, activeOrderQuestionKind } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
 import { isMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { getKitchenCheckoutFingerprint } from "../services/redis.service.js";
 import { wantsMenuAsText } from "../utils/magicLink.js";
-import { isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
+import { isContextualCompositionQuestion, isMenuAttributeVerificationQuestion } from "../utils/menuQuestionContext.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -98,7 +98,8 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const text = String(ctx.text || "").trim();
   const plan: AgentToolPlan = { requiredTools: [], reason: [] };
   const immediateServiceIncident = isLikelyComplaintText(text) && complaintHasActionableDetail(text);
-  const paymentDetailsIntent = intentMatches(PAYMENT_DETAILS_RE, text) && !intentMatches(RECEIPT_EVENT_RE, text);
+  const orderQuestion = activeOrderQuestionKind(text, ctx.activeOrder);
+  const paymentDetailsIntent = orderQuestion !== "payment_confirmation" && intentMatches(PAYMENT_DETAILS_RE, text) && !intentMatches(RECEIPT_EVENT_RE, text);
   // hardRealtimeContext is ALWAYS truthy and carries neither is_accepting_orders nor
   // within_work_hours - and classifyKitchenSalesPolicy defaults BOTH to true. So a
   // closed, emergency-stopped or off-hours kitchen was classified "normal" here,
@@ -112,7 +113,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
 
   if (immediateServiceIncident) {
     add(plan, "escalateToAdmin", "actionable_service_incident");
-  } else if (isCustomerOrderStatusQuestion(text) || (Boolean(ctx.activeOrder) && isLikelyOrderStatusFollowUp(text))) {
+  } else if (isCustomerOrderStatusQuestion(text) || orderQuestion !== null) {
     add(plan, "checkOrderStatus", "live_order_status");
   }
 
@@ -124,7 +125,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     add(plan, "getBusinessInfo", "current_business_information");
   }
 
-  if (intentMatches(KITCHEN_STATUS_RE, text)) {
+  if (!orderQuestion && intentMatches(KITCHEN_STATUS_RE, text)) {
     add(plan, "getKitchenStatus", "live_kitchen_status");
   }
 
@@ -146,7 +147,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const customerWords = text.toLowerCase().match(/\p{L}{3,}/gu) || [];
   const namedCatalogItem = catalogWords.some((name: string) => customerWords.some((word) =>
     word === name || (name.length >= 4 && word.startsWith(name))));
-  const menuLookup = needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+  const menuLookup = isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && (hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");

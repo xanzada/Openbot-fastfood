@@ -8,6 +8,8 @@ function normalize(value: unknown) {
   return String(value || "").toLowerCase().replace(/[ё]/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+function currentNote(note:any):boolean {return note?.active !== false && note?.is_active !== false && note?.active !== 0 && note?.is_active !== 0;}
+
 function noteId(note: any) {
   return String(note?.noteId || note?.id || "").trim();
 }
@@ -47,7 +49,7 @@ export function matchingNoteIds(notes: any[] = [], value: unknown): string[] {
   const haystack = normalize(value);
   if (!haystack) return [];
   const words = haystack.split(" ").filter(Boolean);
-  return notes.filter((note) => {
+  return notes.filter(currentNote).filter((note) => {
     // Only a note that actually says something is unavailable may be reported as
     // hit by the message: an informational note ("Бүгін Цезарь салаты қосылды")
     // counted as a hit made the model announce a newly added dish as out.
@@ -130,7 +132,7 @@ export function menuItemBlockedByNotes(
   // item disappears. Single-word notes ("лаваш жоқ") still hide every dish that
   // lists the word anywhere, including inside their composition.
   const words = itemText.split(" ").filter(Boolean);
-  const matched = notes.filter((note) => {
+  const matched = notes.filter(currentNote).filter((note) => {
     const terms = catalogTerms(availabilityConstraintTerms(note?.text), vocabulary);
     return terms.length > 0 && terms.every((term) => textCarriesTerm(words, term));
   });
@@ -138,7 +140,7 @@ export function menuItemBlockedByNotes(
 }
 
 export function publicNoteConstraints(notes: any[] = []) {
-  return notes.map((note) => ({ note_id: noteId(note), blocked_terms: availabilityConstraintTerms(note?.text), expires_at: Number(note?.expiresAt || 0) || null }))
+  return notes.filter(currentNote).map((note) => ({ note_id: noteId(note), blocked_terms: availabilityConstraintTerms(note?.text), expires_at: Number(note?.expiresAt || 0) || null }))
     .filter((entry) => entry.note_id && entry.blocked_terms.length);
 }
 
@@ -158,5 +160,5 @@ export function mergeShiftNoteSources(runtimeNotes: unknown, cachedNotes: unknow
     const id = String((note as any)?.noteId || (note as any)?.id || "").trim();
     if (id && !notesById.has(id)) notesById.set(id, note);
   }
-  return [...notesById.values()].filter((note: any) => String(note?.text || "").trim());
+  return [...notesById.values()].filter(currentNote).filter((note: any) => String(note?.text || "").trim());
 }

@@ -30,10 +30,15 @@ export function customerCompositionSubject(ctx: FastFoodContext): string | null 
   return null;
 }
 
+export function isMenuAttributeVerificationQuestion(value:unknown):boolean {
+ const text=fold(unquoted(value));
+ return /(?:об[ъь]ем|көлем|колем|размер)(?!\p{L})/iu.test(text)
+  && /(?:подтверд|проверь|уточн|какой|сколько|нақты|тексер|қандай|не\s+придум|по\s+меню)/iu.test(text);
+}
 const MENU_RELATION_FOLLOW_UP_RE=/^(?:(?:а|и|ал)\s+)?(?:он|она|оно|это|ол)(?!\p{L})[^.!?]{0,140}(?:отдельно|в\s+(?:составе\s+)?комбо|бөлек|болек|комбода)[?.!]*$/iu;
 /** A relation question can use only a fresh, scoped customer identity, never a previous reply. */
 export function customerMenuRelationSubject(ctx:FastFoodContext):{subject:string|null;needsClarification:boolean}|null {
- const current=fold(unquoted(ctx.text));if(!MENU_RELATION_FOLLOW_UP_RE.test(current))return null;
+ const current=fold(unquoted(ctx.text));const attribute=isMenuAttributeVerificationQuestion(ctx.text);if(!attribute&&!MENU_RELATION_FOLLOW_UP_RE.test(current))return null;
  const items=Array.isArray(ctx.menuSnapshot?.items)?ctx.menuSnapshot.items:[];
  const exactNames=(text:string)=>{
   const names=[...new Set(items.map((item:any)=>String(item.name||item.title||"").trim()).filter(Boolean))].sort((a,b)=>b.length-a.length);
@@ -48,7 +53,7 @@ export function customerMenuRelationSubject(ctx:FastFoodContext):{subject:string
   return [...new Set(spans.map(span=>span.name))];
  };
  // A newly stated product takes precedence over pronoun recovery.
- if(exactNames(current).length)return null;
+ const currentNames=exactNames(current);if(currentNames.length)return attribute?{subject:currentNames.length===1?currentNames[0]:null,needsClarification:currentNames.length!==1}:null;
  const unknown={subject:null,needsClarification:true};const now=Date.now();
  for(const row of (Array.isArray(ctx.chatHistory)?ctx.chatHistory:[]).slice(-12).reverse()){
   if(!row||row.role!=="user")continue;

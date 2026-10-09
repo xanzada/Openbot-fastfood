@@ -1,6 +1,6 @@
 import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { customerCompositionSubject, customerMenuRelationSubject, isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
+import { customerCompositionSubject, customerMenuRelationSubject, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -236,7 +236,8 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       // A sales-minded agent never answers a plain "we don't have it". These are
       // drawn from allowedItems, which already dropped everything a note blocks,
       // so an alternative can never contain the missing ingredient itself.
-      const safeAlternatives = matches.length === 0 && allowedItems.length
+      const verification = isMenuAttributeVerificationQuestion(ctx.text);
+      const safeAlternatives = !verification && matches.length === 0 && allowedItems.length
         ? selectPublicMenuItems(allowedItems, "", category, 3).map((item: any) => ({
             name: item?.name || item?.title || "",
             price: item?.price ?? null,
@@ -253,11 +254,12 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         // truncation hint whenever the page is shorter than the total.
         ...page,
         shopping_constraints: shoppingEvidence(ctx),
-        eligible_choices: selectPublicMenuItems(eligibleShoppingItems(ctx, allowedItems), "", category, 12),
+        eligible_choices: verification ? [] : selectPublicMenuItems(eligibleShoppingItems(ctx, allowedItems), "", category, 12),
+        ...(verification ? {menu_verification:{subject:relation?.subject ?? null,attribute:"volume_or_size",rule:"Answer only the requested attribute from this exact current item. Missing volume/size is unknown; ask clarification, never substitute unrelated products."}} : {}),
         // The catalog's own section list, taken from every item the guest may be
         // shown - not from the page above. It is what makes "what categories do
         // you have?" answerable without paging the whole menu.
-        categories: summarizePublicCategories(allowedItems),
+        categories: verification ? [] : summarizePublicCategories(allowedItems),
         // Every dish genuinely on sale right now, across the WHOLE allowed catalog rather
         // than this page. "Акцияларыңыз бар ма?" carries no dish name, so the ranked page
         // for an empty query is the cheapest handful and told the model nothing - it then
