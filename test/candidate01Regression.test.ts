@@ -8,7 +8,7 @@ import {resolveAgentToolPlan} from "../src/agent/toolPolicy.js";
 import {createSearchMenuSkill,groundMenuTurn,menuQueryForTurn} from "../src/skills/searchMenu.skill.js";
 import {shouldThink} from "../src/services/agentThinking.service.js";
 import {customerOrderFromRecord,classifyOrderStage} from "../src/services/customerOrder.service.js";
-import {normalizeOrderPayload} from "../src/services/dle.service.js";
+import {normalizeOrderPayload,normalizeRuntimeStatus} from "../src/services/dle.service.js";
 import {buildFactsPrompt} from "../src/context/buildFactsPrompt.js";
 import {getMenuBudgetInquiry} from "../src/utils/menuBudget.js";
 import {hasCustomerCheckoutIntent} from "../src/utils/orderIntent.js";
@@ -386,4 +386,89 @@ test("candidate03 explicit verified old-to-current discount retains one identity
  assert.match(validateFinalText("Калифорния — 3000 тг вместо прежней цены, теперь 2500 тг.",c,grounded).text,/2500/u);
  assert.doesNotMatch(validateFinalText("Калифорния — 3000 тг орнына 2700 тг.",c,grounded).text,/2700/u);
  assert.doesNotMatch(validateFinalText("Калифорния — 3000 тг орнына Макидзуси — 2500 тг.",c,grounded).text,/Макидзуси.*2500/u);
+});
+
+const candidate04WaitDraft="Кешіріңіз, асханада күту уақыты - 1 сағат. Сіз күтуге дайынсыз ба?";
+test("candidate04 actual RU wait question rejects otherwise grounded full Kazakh prose",()=>{
+ const c=context("Сколько ждать?");c.runtimeStatus.wait_time=60;c.fetchedSettings.wait_time=60;
+ const r=validateFinalText(candidate04WaitDraft,c,{toolsCalled:["getKitchenStatus"]});
+ assert.ok(r.warnings.includes("reply_language_mismatch"));
+});
+test("candidate04 actual RU wait consent detects inflected Kazakh surrounding prose",()=>{
+ const c=context("Да, я готов ждать. Откройте оформление");c.magicLinkGranted=true;
+ const r=validateFinalText("Тапсырыс беруге тырысамын. Сонымен, сіз не алғыңыз келеді? Мен сіздерге біздің мәзірді ұсынамын!",c,{toolsCalled:["getKitchenStatus","sendMenuLink"]});
+ assert.ok(r.warnings.includes("reply_language_mismatch"));
+});
+test("candidate04 correct Russian wrapper preserves Kazakh brand and item names without repair",()=>{
+ const c=context("Как к вам обращаться?");c.config.agent_name="Жеті самал қызметі";
+ c.menuSnapshot.items=[{name:"Көкөніс роллы",price:2000,composition:"Күріш, қияр, сәбіз"}];
+ const text="Вы можете обращаться ко мне «Жеті самал қызметі». Көкөніс роллы — 2000 тг.";
+ const r=validateFinalText(text,c,grounded);
+ assert.equal(r.text,text);assert.ok(!r.warnings.includes("reply_language_mismatch"));
+ const mixed=validateFinalText("Вы можете называть меня «Жеті самал қызметі». "+candidate04WaitDraft,c,{toolsCalled:["getKitchenStatus"]});
+ assert.ok(mixed.warnings.includes("reply_language_mismatch"));
+});
+test("candidate04 current KK wait answer stays exact and language follows each fresh context",()=>{
+ const kk=context("Қанша күту керек?","kk");kk.runtimeStatus.wait_time=60;kk.fetchedSettings.wait_time=60;
+ const r=validateFinalText(candidate04WaitDraft,kk,{toolsCalled:["getKitchenStatus"]});
+ assert.equal(r.text,candidate04WaitDraft);assert.ok(!r.warnings.includes("reply_language_mismatch"));
+ const ru=context("Сколько ждать?");ru.runtimeStatus.wait_time=60;ru.fetchedSettings.wait_time=60;
+ assert.ok(validateFinalText(candidate04WaitDraft,ru,{toolsCalled:["getKitchenStatus"]}).warnings.includes("reply_language_mismatch"));
+});
+test("candidate04 recorded SOS does not promise an unsupported human response time",()=>{
+ const c=context("Оператор уже ответил?");
+ const draft="Ваш запрос о помощи с оператором был зафиксирован, и я не могу подтвердить, что уведомление было отправлено. Скоро должен ответить человек из службы поддержки.";
+ const r=validateFinalText(draft,c,{toolsCalled:[],toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}});
+ assert.match(r.text,/был зафиксирован/u);assert.match(r.text,/не могу подтвердить/u);
+ assert.doesNotMatch(r.text,/Скоро должен ответить/u);assert.ok(r.warnings.includes("unverified_human_action_removed"));
+});
+test("candidate04 human ETA denial and conditional possibility are not a timing guarantee",()=>{
+ const c=context("Когда ответит поддержка?");
+ for(const text of ["Скоро ли ответит человек из службы поддержки?","Не могу подтвердить, что человек из службы поддержки скоро ответит.","Если человек из службы поддержки ответит, вы увидите сообщение."]){
+  assert.equal(validateFinalText(text,c,{toolFindings:{escalationCreated:true,escalationNotificationAccepted:false}}).text,text);
+ }
+});
+test("candidate04 accepted notification still cannot prove a soon human reply",()=>{
+ const c=context("Когда ответит поддержка?");
+ const r=validateFinalText("Заявка зарегистрирована. Служба поддержки скоро ответит.",c,{toolFindings:{escalationCreated:true,escalationNotificationAccepted:true}});
+ assert.match(r.text,/зарегистрирована/u);assert.doesNotMatch(r.text,/скоро ответит/u);
+});
+test("candidate04 normalization retains unavailable authority into actual kitchen handler",async()=>{
+ const c=context("Кухня работает?");
+ const normalized=normalizeRuntimeStatus({runtime_available:false,is_accepting_orders:true,within_work_hours:true,wait_time:0});
+ assert.equal(normalized.runtime_available,false);
+ const r=await kitchenToolProjection(normalized,c);
+ assert.equal(r.runtime_available,false);assert.equal(r.live,false);assert.equal(r.wait_time,null);assert.equal(c.runtimeStatus.runtime_available,false);
+});
+test("candidate04 normalization preserves genuine live zero wait without an unavailable marker",async()=>{
+ for(const data of [{runtime_available:true,wait_time:0},{wait_time:0,is_accepting_orders:true,within_work_hours:true}]){
+  const c=context("Сколько ждать?");const normalized=normalizeRuntimeStatus(data);const r=await kitchenToolProjection(normalized,c);
+  assert.equal(r.runtime_available,true);assert.equal(r.live,true);assert.equal(r.wait_time,0);
+ }
+});
+test("candidate04 unknown runtime prompt exposes neither numeric nor verbal default zero",()=>{
+ const c=context("Қанша күту керек?","kk");c.runtimeStatus.runtime_available=false;
+ c.hardRealtimeContext={runtime_available:false,stale:false,wait_time:0,delivery:true,pickup:true};
+ const facts=JSON.parse(buildFactsPrompt(c).split("FACTS_CONTEXT_START\n")[1].split("\nFACTS_CONTEXT_END")[0]);
+ const runtime=facts.operational_runtime;assert.equal(runtime.wait_time,null);assert.equal(runtime.delivery_wait_time,null);assert.equal(runtime.pickup_wait_time,null);
+ assert.equal(runtime.wait_label,null);assert.equal(runtime.delivery_wait_label,null);assert.equal(runtime.pickup_wait_label,null);assert.equal(runtime.delivery,null);assert.equal(runtime.pickup,null);
+ assert.match(runtime.timing_answer_rule,/unknown/u);
+});
+test("candidate04 unavailable normalized runtime cannot certify zero or no-wait while keeping verified catalog",()=>{
+ const c=context("Ненің расталғанын, ненің белгісіз екенін айтыңыз. Қанша күту керек?","kk");
+ c.runtimeStatus=normalizeRuntimeStatus({runtime_available:false,wait_time:0,is_accepting_orders:true});
+ const draft="Донер — 1990 теңге, тауық еті, лаваш, қызанақ. Сіздің сұрауыңызға байланысты күту уақыты 0 минут. Яғни, тапсырыс жасаған жағдайда күтуден қажеттілік жоқ.";
+ const r=validateFinalText(draft,c,{toolsCalled:["getKitchenStatus","searchMenu"]});
+ assert.match(r.text,/Донер.*1990/u);assert.doesNotMatch(r.text,/0 минут|күтуден қажеттілік жоқ/u);assert.match(r.text,/растай|белгісіз/u);
+});
+test("candidate04 explicit unknown runtime blocks independent no-wait assurance",()=>{
+ const c=context("Сколько ждать?");c.runtimeStatus.runtime_available=false;
+ const r=validateFinalText("Овощной ролл — 2000 тг. Ожидание не требуется, можете заказать без ожидания.",c,grounded);
+ assert.match(r.text,/Овощной ролл.*2000/u);assert.doesNotMatch(r.text,/Ожидание не требуется|без ожидания/u);assert.match(r.text,/подтверд|неизвест/u);
+});
+test("candidate04 genuine known zero and honest unknown wait statements retain catalog prices",()=>{
+ const c=context("Сколько ждать?");const good="Овощной ролл — 2000 тг. Время ожидания 0 минут.";
+ assert.equal(validateFinalText(good,c,{toolsCalled:["getKitchenStatus","searchMenu"]}).text,good);
+ c.runtimeStatus.runtime_available=false;const denied="Овощной ролл — 2000 тг. Время ожидания сейчас подтвердить не могу.";
+ assert.equal(validateFinalText(denied,c,grounded).text,denied);
 });

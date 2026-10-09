@@ -308,8 +308,13 @@ export function normalizeRuntimeStatus(data: Record<string, any> = {}) {
     ? firstFiniteNumber(rawKitchenSettings.wait_time, rawKitchenSettings.wait_minutes, rawKitchenSettings.current_wait_minutes)
     : waitTime;
   const fetchedEmergency = rawKitchenSettings ? toBool(rawKitchenSettings.is_emergency, false) : isEmergency;
+  // An unavailable response can contain default numeric values. Preserve its
+  // authority marker through normalization; legacy reads without it stay compatible.
+  const rawAvailable=[data.runtime_available,nested.runtime_available,kitchen.runtime_available].find(value=>value!==undefined);
+  const runtimeAvailable=rawAvailable===undefined?true:toBool(rawAvailable,false);
 
   return {
+    runtime_available: runtimeAvailable,
     is_accepting_orders: toBool(
       nested.accepting_orders ?? nested.is_accepting_orders ?? data.accepting_orders ?? data.is_accepting_orders,
       true,

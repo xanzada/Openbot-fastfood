@@ -214,6 +214,7 @@ const ACTION_NOT_DONE_RE = /(?:не\s+(?:получил|получили|пол�
 
 function actionAssertionClauses(sentence:string):string[] {
   return sentence.replace(/о\s+том,\s*что/giu,"о том что")
+    .replace(/(подтвердить|подтвержден\p{L}*),\s*(?=что(?!\p{L}))/giu,"$1 ")
     .split(/,(?!\s*(?:когда|как\s+только|после)(?!\p{L}))|;|\s+(?:но|бірақ|однако|зато|а)\s+/iu)
     .flatMap(clause=>{
       // A denial governs its explicit "что" complement, but cannot authorize
@@ -559,7 +560,7 @@ const PAST_ESCALATION_CLAIM_RE =
   /[^.!?\n]*(?:әкімш|экімш|администратор|оператор)[^.!?\n]{0,40}(?:хабарласты(?:қ|м|ң)|хабарладым|жеткіздік|жеткіздім|жібердік|жібердім|растадым|айттым|жолдадым|жолдадық)[^.!?\n]*[.!?]?|[^.!?\n]*(?:хабарластық|жеткіздік|жібердік|жолдадық)[^.!?\n]{0,40}(?:әкімш|экімш|администратор|оператор)[^.!?\n]*[.!?]?/giu;
 
 const FUTURE_HUMAN_ACTION_RE = /(?:позову|подключу|передам|сообщу|отправлю|уточню|уточняю)[^.!?]{0,70}(?:оператор|администратор|кухн)|(?:оператор|администратор)[^.!?]{0,70}(?:ответит|свяжется|подключится)|(?:оператор|әкімш|ас\s*үй|асүй)[^.!?]{0,70}(?:жауап\s*береді|қосылады|хабарласады|хабарлаймын|жіберемін|жеткіземін|нақтылап\s*беремін|нақтылаймын)|(?:хабарлаймын|жіберемін|жеткіземін|нақтылап\s*беремін|нақтылаймын)[^.!?]{0,70}(?:оператор|әкімш|ас\s*үй|асүй)|(?:тезірек|жақын\s*арада)[^.!?]{0,40}жауап[^.!?]{0,20}аласыз|(?:скоро|в\s*ближайшее\s*время)[^.!?]{0,40}(?:получите\s*ответ|вам\s*ответят)/iu;
-const FUTURE_HUMAN_CONTACT_RE = /(?:^|[^\p{L}])(?:оператор\p{L}*|администратор\p{L}*|әкімш\p{L}*|они|он|она|олар|ол)(?=$|[^\p{L}])[^.!?]{0,80}(?:ответит|ответят|свяжется|свяжутся|подключится|подключатся|жауап\s*береді|байланысады|хабарласады|қосылады)|(?:с\s+вами|вам|сізбен|сізге)[^.!?]{0,60}(?:свяжется|свяжутся|ответят|байланысады|хабарласады|жауап\s*береді)/iu;
+const FUTURE_HUMAN_CONTACT_RE = /(?:^|[^\p{L}])(?:оператор\p{L}*|администратор\p{L}*|әкімш\p{L}*|они|он|она|олар|ол)(?=$|[^\p{L}])[^.!?]{0,80}(?:ответит|ответят|свяжется|свяжутся|подключится|подключатся|жауап\s*береді|байланысады|хабарласады|қосылады)|(?:с\s+вами|вам|сізбен|сізге)[^.!?]{0,60}(?:свяжется|свяжутся|ответят|байланысады|хабарласады|жауап\s*береді)|(?:человек|сотрудник|служба\s+поддержки|қолдау\s+қызметі)[^.!?]{0,80}(?:ответит|ответят|ответить|свяжется|свяжутся|жауап\s*береді|хабарласады)|(?:ответит|ответят|ответить|свяжется|свяжутся)[^.!?]{0,35}(?:человек|сотрудник|служба\s+поддержки)/iu;
 const HUMAN_CONTACT_TIME_RE = /(?:вскоре|скоро|в\s+ближайшее\s+время|сразу|немедленно|жақын\s+арада|жақында|тезірек|\d+\s*(?:минут|мин|сағат))/iu;
 const KITCHEN_ACTION_RE = /(?:кухн|ас\s*үй|асүй)[^.!?]{0,70}(?:нақтылап|нақтылай|тексеріп)|(?:уточню|уточняю|спрошу|проверю)[^.!?]{0,70}кухн/iu;
 // A conditional offer still asserts the bot can physically check with kitchen
@@ -569,9 +570,10 @@ function promisedHumanAction(sentence: string, pattern: RegExp) {
   const unquoted = pattern === KITCHEN_CHECK_CAPABILITY_RE
     ? sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "")
     : sentence.replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
-  return unquoted.split(/[,;]|\s+(?:но|бірақ|однако|зато)\s+/iu).some((clause) =>
-    pattern.test(clause) && !/(?:не\s*(?:буду|могу|стану|позову|передам|сообщу|уточню|ответит|свяжется|подключится)|(?:хабарлай|жібер|нақтыла)[^.!?]{0,20}(?:алмай|емес|жоқ))/iu.test(clause)
-      && !(pattern !== KITCHEN_CHECK_CAPABILITY_RE && /^\s*(?:если|егер|қажет\s*болса|керек\s*болса)/iu.test(clause)));
+  return (unquoted.match(SENTENCE_RE)||[unquoted]).flatMap(actionAssertionClauses).some((clause) =>
+    pattern.test(clause) && !ACTION_NOT_DONE_RE.test(clause)
+      && !/(?:не\s*(?:буду|могу|стану|позову|передам|сообщу|уточню|ответит|свяжется|подключится)|(?:хабарлай|жібер|нақтыла)[^.!?]{0,20}(?:алмай|емес|жоқ))/iu.test(clause)
+      && !(pattern !== KITCHEN_CHECK_CAPABILITY_RE && (clause.includes("?")||/^\s*(?:если|егер|қажет\s*болса|керек\s*болса)/iu.test(clause))));
 }
 
 function unverifiedHumanActionText(ctx: FastFoodContext, caseCreated: boolean, notificationAccepted: boolean) {
@@ -862,12 +864,17 @@ function replyProse(text:string,ctx:FastFoodContext):string {
 }
 export function replyLanguageMismatch(text:string,ctx:FastFoodContext):boolean {
  const prose=replyProse(text,ctx);
- const words=prose.toLowerCase().match(/\p{L}+/gu)||[];
- const kk=new Set(words.filter(w=>/^(?:сіз|сізге|мені|деп|атай|аласыз|көмек|керек|жазыңыз|сұрақтарыңыз|болса|тапсырысыңыз|болады|қазір)$/u.test(w))).size;
- const ru=new Set(words.filter(w=>/^(?:вы|ваш|ваша|ваши|можете|если|хотите|сейчас|пожалуйста|пришлите|заказ|оплата|доставка|напишите|помочь|готов)$/u.test(w))).size;
- const english=new Set(words.filter(w=>/^(?:if|you|your|have|further|questions|feel|free|ask|please|can|order|delivery|would|like)$/u.test(w))).size;
-  const foreignAffirmation=/(?:^|[.!?]\s*)(?:иә|жоқ)(?=$|[^\p{L}])/iu.test(prose);
-  return ctx.language==="ru"?(foreignAffirmation||kk>=3&&ru<2||english>=4&&ru<2):ctx.language==="kk"?(ru>=3&&kk<2||english>=4&&kk<2):false;
+ return (prose.match(SENTENCE_RE)||[prose]).some(sentence=>{
+  const words=sentence.toLowerCase().match(/\p{L}+/gu)||[];
+  const kk=new Set(words.filter(w=>/^(?:сіз|сізге|мені|деп|атай|аласыз|көмек|керек|жазыңыз|сұрақтарыңыз|болса|тапсырысыңыз|болады|қазір)$/u.test(w))).size;
+  // Inflected Kazakh prose remains recognizable after literal catalog/brand
+  // names were masked; a whole unrelated Russian sentence cannot hide it.
+  const kkScript=new Set(words.filter(w=>KAZAKH_SPECIFIC_RE.test(w))).size;
+  const ru=new Set(words.filter(w=>/^(?:вы|ваш|ваша|ваши|можете|если|хотите|сейчас|пожалуйста|пришлите|заказ|оплата|доставка|напишите|помочь|готов)$/u.test(w))).size;
+  const english=new Set(words.filter(w=>/^(?:if|you|your|have|further|questions|feel|free|ask|please|can|order|delivery|would|like)$/u.test(w))).size;
+  const foreignAffirmation=/^\s*(?:иә|жоқ)(?=$|[^\p{L}])/iu.test(sentence);
+  return ctx.language==="ru"?(foreignAffirmation||(kk>=3||kkScript>=3)&&ru<2||english>=4&&ru<2):ctx.language==="kk"?(ru>=3&&kk<2||english>=4&&kk<2):false;
+ });
 }
 
 function validateFinalTextCore(
@@ -1066,8 +1073,9 @@ function validateFinalTextCore(
     if (ctx.runtimeStatus?.runtime_available === false) {
       const before=text;
       const unknownRuntime=(sentence:string)=>isActionAssertion(sentence, KITCHEN_STATUS_RE)
-        || isActionAssertion(sentence, /(?:заказы|тапсырыстар)[^.!?]{0,35}(?:принима|қабылд)|(?:күту\s+уақыты|время\s+ожидания|күту)[^.!?]{0,30}\d+\s*(?:минут|мин|сағат)/iu);
-      text=(text.match(SENTENCE_RE)||[text]).filter(sentence=>!unknownRuntime(sentence)).join(" ").trim();
+        || isActionAssertion(sentence, /(?:заказы|тапсырыстар)[^.!?]{0,35}(?:принима|қабылд)|(?:күту\s+уақыты|время\s+ожидания|күту)[^.!?]{0,30}\d+\s*(?:минут|мин|сағат)|без\s+ожидания|(?:ждать|ожидани\p{L}*)[^.!?]{0,35}(?:не\s+требуется|не\s+нужно|не\s+надо)|күту\p{L}*[^.!?]{0,35}(?:қажет\p{L}*\s+(?:жоқ|емес)|керек\s+емес)/iu);
+      const units=text.match(SENTENCE_RE)||[text];const kept=units.filter(sentence=>!unknownRuntime(sentence));
+      if(kept.length!==units.length)text=kept.map(sentence=>sentence.trim()).join(" ").trim();
       if(text!==before){
         warnings.push("unsupported_kitchen_claim_clause_removed");
         if(text&&/(?:ждать|ожидан|күту|қанша|белгісіз|неизвест|подтвержден|расталған)/iu.test(ctx.text))

@@ -86,3 +86,16 @@ test("candidate03 language fallback preserves lastknown uncertainty instead of a
  const f=fixture("Сколько ждать?",false,"off",false,["If you have further questions, feel free to ask!"],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps});
  const r=await f.run();assert.equal(f.calls(),2);assert.match(r.text,/подтвердить не могу/u);assert.doesNotMatch(r.text,/60/u);
 });
+
+test("candidate04 exact full Kazakh wait prose uses one rewrite then verified Russian60 fallback",async()=>{
+ const steps=[{toolCalls:[{toolName:"getKitchenStatus",input:{}}],toolResults:[{toolName:"getKitchenStatus",output:{runtime_available:true,live:true,wait_time:60}}]}];
+ const draft="Кешіріңіз, асханада күту уақыты - 1 сағат. Сіз күтуге дайынсыз ба?";
+ const f=fixture("Сколько ждать?",false,"off",false,[draft],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}},steps});
+ const r=await f.run();assert.equal(f.calls(),2);assert.match(f.captured[1],/LANGUAGE_REPAIR/u);assert.match(r.text,/60 минут/u);
+ assert.ok(!replyLanguageMismatch(r.text,{language:"ru"} as any));assert.ok(r.validationWarnings.includes("reply_language_unresolved"));
+});
+test("candidate04 successful language rewrite retains truthful wait without another call",async()=>{
+ const draft="Кешіріңіз, асханада күту уақыты - 1 сағат. Сіз күтуге дайынсыз ба?";
+ const f=fixture("Сколько ждать?",false,"off",false,[draft,"Сейчас ориентировочное ожидание — 60 минут."],false,[],"",{ctx:{runtimeStatus:{runtime_available:true,wait_time:60}}});
+ const r=await f.run();assert.equal(f.calls(),2);assert.equal(r.text,"Сейчас ориентировочное ожидание — 60 минут.");
+});

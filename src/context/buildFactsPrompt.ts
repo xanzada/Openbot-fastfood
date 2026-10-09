@@ -273,10 +273,11 @@ function operationalRuntime(ctx: FastFoodContext) {
   const noticeMinutes = Math.max(notice.overall, notice.delivery, notice.pickup);
   const effectiveWait = Math.max(waitMinutes, noticeMinutes);
   const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
+  const runtimeUnknown=ctx.runtimeStatus?.runtime_available===false || !ctx.runtimeStatus&&live.runtime_available===false;
   return {
-    wait_time: ctx.runtimeStatus?.runtime_available===false?null:policy.waitMinutes,
-    delivery_wait_time: ctx.runtimeStatus?.runtime_available===false?null:policy.deliveryWaitMinutes,
-    pickup_wait_time: ctx.runtimeStatus?.runtime_available===false?null:policy.pickupWaitMinutes,
+    wait_time: runtimeUnknown?null:policy.waitMinutes,
+    delivery_wait_time: runtimeUnknown?null:policy.deliveryWaitMinutes,
+    pickup_wait_time: runtimeUnknown?null:policy.pickupWaitMinutes,
     ...(noticeMinutes > waitMinutes ? { operator_wait_notice_minutes: noticeMinutes } : {}),
     // The gate no longer answers for you when the kitchen is merely busy, so the
     // wait has to be raised in conversation before the order is placed.
@@ -286,19 +287,19 @@ function operationalRuntime(ctx: FastFoodContext) {
     // The operator sets 60 or 120, and guests read those as hours. Hand the
     // agent the spoken form in the locked language so it does not have to
     // convert the raw number itself, which is where "60 минут" came from.
-    wait_label: policy.waitMinutes > 0 ? formatKitchenWait(policy.waitMinutes, ctx.language === "ru" ? "ru" : "kk") : "",
-    delivery_wait_label: formatKitchenWait(policy.deliveryWaitMinutes, ctx.language === "ru" ? "ru" : "kk"),
-    pickup_wait_label: formatKitchenWait(policy.pickupWaitMinutes, ctx.language === "ru" ? "ru" : "kk"),
-    delivery: live.delivery ?? null, pickup: live.pickup ?? null,
-    is_emergency: Boolean(live.is_emergency), reset_at: Number(live.reset_at || 0),
-    stale: Boolean(live.stale), runtime_available: Boolean(live.runtime_available),
+    wait_label: runtimeUnknown?null:policy.waitMinutes > 0 ? formatKitchenWait(policy.waitMinutes, ctx.language === "ru" ? "ru" : "kk") : "",
+    delivery_wait_label: runtimeUnknown?null:formatKitchenWait(policy.deliveryWaitMinutes, ctx.language === "ru" ? "ru" : "kk"),
+    pickup_wait_label: runtimeUnknown?null:formatKitchenWait(policy.pickupWaitMinutes, ctx.language === "ru" ? "ru" : "kk"),
+    delivery: runtimeUnknown?null:live.delivery ?? null, pickup: runtimeUnknown?null:live.pickup ?? null,
+    is_emergency: runtimeUnknown?null:Boolean(live.is_emergency), reset_at: runtimeUnknown?null:Number(live.reset_at || 0),
+    stale: Boolean(live.stale), runtime_available: ctx.runtimeStatus?.runtime_available ?? Boolean(live.runtime_available),
     // A guest asking "how long?" has already paid; "I have no information" is the
     // one answer that is never true here. wait_time plus the order stage always
     // supports an honest estimate, and the kitchen can be quoted as normal speed
     // when the wait is zero. A wait the policy still calls normal is an estimate,
     // not an alarm: calling a 30-minute queue "loaded" talked guests out of
     // ordering for no reason.
-    timing_answer_rule: ctx.runtimeStatus?.runtime_available===false
+    timing_answer_rule: runtimeUnknown
       ? "Current kitchen state and waiting time are unknown. Successful fresh getKitchenStatus is required before any operational timing claim; defaults are not evidence."
       : policy.requiresConsent
       ? "If the customer asks how long, say the kitchen is loaded and name the wait out loud, then say you will write the moment it is ready. Never answer that you have no information."
