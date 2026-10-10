@@ -94,10 +94,28 @@ function catalogSurfaceWords(value: unknown): string[] {
     .match(/[\p{L}\p{N}-]+/gu) || [];
 }
 
-const CATALOG_DECISION_NOISE_RE = /^(?:а|ал|и|және|мен|я|мы|вы|но|бірақ|хоч\p{L}*|возьм\p{L}*|беру|закаж\p{L}*|заказ\p{L}*|дай(?:те)?|нуж\p{L}*|мне|нам|маған|бізге|тогда|онда|керек|қажет|алғым|кел\p{L}*|алайын|аламын|тапсырыс|бер\p{L}*|жаса\p{L}*|не|нет|жоқ|жок|емес|алмай\p{L}*|қаламай\p{L}*|передумал\p{L}*|отказ\p{L}*|ничего|никак\p{L}*|особенно|әсіресе|бір|екі|үш|төрт|бес|один|одну|два|две|три|четыре|пять|сколько|қанша|канша|стоит|цена|баға|бағасы|тг|тенге|теңге|пожалуйста)$/iu;
+const CATALOG_DECISION_NOISE_RE = /^(?:а|ал|и|және|мен|я|мы|вы|но|бірақ|хоч\p{L}*|возьм\p{L}*|беру|закаж\p{L}*|заказ\p{L}*|дай(?:те)?|нуж\p{L}*|мне|нам|маған|бізге|тогда|онда|керек|қажет|алғым|кел\p{L}*|алайын|аламын|тапсырыс|бер\p{L}*|жаса\p{L}*|не|нет|жоқ|жок|емес|алмай\p{L}*|қаламай\p{L}*|передумал\p{L}*|отказ\p{L}*|ничего|никак\p{L}*|особенно|әсіресе|тоже|также|ещ[её]|тағы|дағы|да|де|та|те|бір|екі|үш|төрт|бес|один|одну|два|две|три|четыре|пять|сколько|қанша|канша|стоит|цена|баға|бағасы|тг|тенге|теңге|пожалуйста)$/iu;
+const CATALOG_OPERATIONAL_MODIFIER_RE = /^(?:сейчас|қазір|казир|қәзір|навынос|самовывоз|әкету)$/iu;
+const CATALOG_OPERATIONAL_MODIFIER_PHRASES = [["с", "собой"], ["на", "вынос"], ["алып", "кету"]];
+
+function catalogOperationalModifierIndexes(words: string[]): Set<number> {
+  const indexes = new Set<number>();
+  words.forEach((word, index) => {
+    if (CATALOG_OPERATIONAL_MODIFIER_RE.test(word)) indexes.add(index);
+  });
+  for (const phrase of CATALOG_OPERATIONAL_MODIFIER_PHRASES) {
+    for (let start = 0; start + phrase.length <= words.length; start += 1) {
+      if (!phrase.every((word, offset) => words[start + offset] === word)) continue;
+      phrase.forEach((_, offset) => indexes.add(start + offset));
+    }
+  }
+  return indexes;
+}
 
 function catalogDecisionSubjectWords(clause: string): string[] {
-  return catalogSurfaceWords(clause).filter((word) => !CATALOG_DECISION_NOISE_RE.test(word));
+  const words = catalogSurfaceWords(clause);
+  const modifierIndexes = catalogOperationalModifierIndexes(words);
+  return words.filter((word, index) => !CATALOG_DECISION_NOISE_RE.test(word) && !modifierIndexes.has(index));
 }
 
 function normalizeCatalogAliasToken(value: unknown): string {
@@ -107,35 +125,44 @@ function normalizeCatalogAliasToken(value: unknown): string {
     .replace(/^(?:fanta|фанта)$/iu, "фанта");
 }
 
-function catalogWordSupported(items: any[], word: string): boolean {
+function catalogFieldSupportsWord(field: unknown, word: string): boolean {
   const wordTokens = menuLexemes(word);
   if (!wordTokens.length) return false;
-  return items.some((item) => {
-    const fields = [item?.name || item?.title || "", item?.category_name || item?.category || "",
-      item?.label || "", item?.composition || "", item?.description || ""];
-    return fields.some((field) => {
-      const fieldTokens = menuLexemes(field);
-      const aliasWords = catalogSurfaceWords(field).map(normalizeCatalogAliasToken);
-      const normalizedWord = normalizeCatalogAliasToken(word);
-      return aliasWords.includes(normalizedWord) || wordTokens.some((token) =>
-        fieldTokens.some((fieldToken) => menuLexemesRelated(token, fieldToken)));
-    });
-  });
+  const fieldTokens = menuLexemes(field);
+  const aliasWords = catalogSurfaceWords(field).map(normalizeCatalogAliasToken);
+  const normalizedWord = normalizeCatalogAliasToken(word);
+  return aliasWords.includes(normalizedWord) || wordTokens.some((token) =>
+    fieldTokens.some((fieldToken) => menuLexemesRelated(token, fieldToken)));
+}
+
+function catalogWordSupported(items: any[], word: string): boolean {
+  return items.some((item) => [item?.name || item?.title || "", item?.category_name || item?.category || "",
+    item?.label || "", item?.composition || "", item?.description || ""]
+    .some((field) => catalogFieldSupportsWord(field, word)));
+}
+
+function catalogWordSupportedByCategory(items: any[], word: string): boolean {
+  return items.some((item) => catalogFieldSupportsWord(item?.category_name || item?.category || "", word));
 }
 
 function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
   const surfaceWords = catalogSurfaceWords(clause);
   const exactItems = catalogNamedItemsInText(items, clause);
   const exactIndexes = exactCatalogItemSpanIndexes(surfaceWords, exactItems);
+  const modifierIndexes = catalogOperationalModifierIndexes(surfaceWords);
   const subjects = surfaceWords.map((word, index) => ({ word, index }))
-    .filter(({ word, index }) => !CATALOG_DECISION_NOISE_RE.test(word) && !exactIndexes.has(index));
+    .filter(({ word, index }) => !CATALOG_DECISION_NOISE_RE.test(word)
+      && !modifierIndexes.has(index) && !exactIndexes.has(index));
   const supportedIndexes = surfaceWords.map((word, index) => ({ word, index }))
     .filter(({ word }) => catalogWordSupported(items, word)).map(({ index }) => index);
   const firstSupportedIndex = Math.min(Number.POSITIVE_INFINITY, ...supportedIndexes);
   const unresolvedWords = subjects.filter(({ word, index }) =>
     !(/^\d+$/u.test(word) && index < firstSupportedIndex));
   if (unresolvedWords.some(({ word }) => /\d/u.test(word) || /^[a-z]{1,3}$/iu.test(word))) return true;
-  if (exactItems.length) return unresolvedWords.some(({ word }) => !catalogWordSupported(items, word));
+  // Once a concrete SKU owns its span, leftover words may describe only an
+  // independently known category or an operational modifier. A token borrowed
+  // from another item's name/description cannot silently extend this SKU.
+  if (exactItems.length) return unresolvedWords.some(({ word }) => !catalogWordSupportedByCategory(items, word));
   const supported = unresolvedWords.filter(({ word }) => catalogWordSupported(items, word));
   return supported.length > 0 && supported.length < unresolvedWords.length;
 }
@@ -217,10 +244,23 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
         && menuLexemes(word).some((stem) =>
           tokens.some((token) => menuLexemesRelated(stem, token))));
     });
-    // A singular category word inside an exact item belongs to that SKU. A
-    // plural/collective label still means the category, and a separate category
-    // occurrence outside the chosen item span remains independently actionable.
-    for (const key of pluralMentionedCategoryKeys) keys.add(key);
+    // A category token inside a multiword SKU belongs to that SKU. Preserve
+    // category meaning only when it appears outside the exact span, or when a
+    // one-token item is itself indistinguishable from its plural category label.
+    const ambiguousSingleTokenCategories = [...pluralMentionedCategoryKeys].filter((key) => {
+      const categoryTokens = categoryTokensByKey.get(key) || [];
+      return exactItems.some((item) => {
+        const itemWords = catalogSurfaceWords(item?.name || item?.title || "");
+        const itemCategoryTokens = menuLexemes(item?.category_name || item?.category || "");
+        if (itemWords.length !== 1 || itemCategoryTokens.join("|") !== categoryTokens.join("|")) return false;
+        const categoryWords = catalogSurfaceWords(item?.category_name || item?.category || "");
+        return surfaceWords.some((word, index) => exactItemSpanIndexes.has(index)
+          && looksLikePluralCatalogLabel(word)
+          && menuLexemesSameIdentity(itemWords[0], word)
+          && (word !== itemWords[0] || categoryWords.includes(word)));
+      });
+    });
+    for (const key of ambiguousSingleTokenCategories) keys.add(key);
     for (const key of independentlyMentionedCategories) keys.add(key);
     return keys;
   }
