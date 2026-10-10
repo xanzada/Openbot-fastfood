@@ -1931,22 +1931,24 @@ function blockedCatalogOffers(text: string, ctx: FastFoodContext): { text: strin
       || menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked));
   if (!blocked.length) return { text, changed: false };
   const blockedNames = blocked.map((item: any) => String(item.name).trim());
+  const blockedKeys = new Set(blockedNames.map(menuClaimKey));
   const blockedOfferCueRe = /доступ\p{L}*|қолжетімді|(?<!\p{L})есть(?!\p{L})|(?<!\p{L})бар(?!\p{L})|мәзірде\s+бар|рекоменд|совет\p{L}*|ұсынам|кеңес\p{L}*|вариант|попроб\p{L}*|можно\s+(?:взять|выбрать|заказать)|возьм\p{L}*|выбер\p{L}*|закаж\p{L}*|алуға\s+болады|алуга\s+болады|алып\s+көр|сынап\s+көр|таңда\p{L}*|танда\p{L}*/iu;
+  const reportedQuoteRe = /(?:цитата|вы\s+(?:написали|сказали)|сіз\s+(?:жаздыңыз|айттыңыз)|(?:клиент|оператор|администратор|менеджер|курьер|қонақ|сіз|ол)[^.!?\n;]{0,40}(?:написал|написала|сказал|сказала|спросил|спросила|сообщил|сообщила|ответил|ответила|передал|передала|жазды|айтты|сұрады|деді))/iu;
   // Quote masking protects historical/customer speech in every fact validator.
   // Unmask only an exact blocked product name inside this current positive offer;
   // reported speech and a larger quoted sentence stay protected.
   const offerAwareText = text.replace(/«([^»]*)»|“([^”]*)”|"([^"]*)"|‘([^’]*)’|'([^']*)'/gu,
     (full, angle, curly, doubleQuoted, singleCurly, singleQuoted, offset, source) => {
       const inner = String(angle ?? curly ?? doubleQuoted ?? singleCurly ?? singleQuoted ?? "").trim();
-      if (!catalogNameMentions(inner, blockedNames).length) return full;
+      if (!blockedKeys.has(menuClaimKey(inner))) return full;
       const before = source.slice(0, offset);
       const sentenceStart = Math.max(before.lastIndexOf("."), before.lastIndexOf("!"), before.lastIndexOf("?"), before.lastIndexOf("\n"), before.lastIndexOf(";")) + 1;
       const after = source.slice(offset + full.length);
       const boundary = after.search(/[.!?\n;]/u);
       const sentenceEnd = boundary === -1 ? source.length : offset + full.length + boundary + 1;
       const sentence = source.slice(sentenceStart, sentenceEnd);
-      if (/(?:клиент|қонақ|клиенттің)[^.!?]{0,40}(?:написал|сказал|спросил|сообщил|жазды|айтты|сұрады)/iu.test(sentence)) return full;
-      return blockedOfferCueRe.test(sentence) ? inner : full;
+      if (reportedQuoteRe.test(sentence)) return full;
+      return blockedOfferCueRe.test(sentence) || PRICE_CLAIM_RE.test(sentence) ? inner : full;
     });
   const removed = new Set<string>();
   const rewritten = rewriteCurrentFactClauses(offerAwareText, (clause) => {
@@ -2029,8 +2031,12 @@ function isCatalogOrderSelectionQuestion(clause: string, ctx: FastFoodContext): 
 }
 
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
-  const result = validateFinalTextCore(...args);
+  // Remove a positively offered blocked item before the generic price guard can
+  // collapse the whole answer into an unsupported-price fallback.
+  const preBlockedOffer = blockedCatalogOffers(args[0], args[1]);
+  const result = validateFinalTextCore(preBlockedOffer.text, args[1], args[2]);
   const warnings = [...result.warnings];
+  if (preBlockedOffer.changed) warnings.push("blocked_catalog_offer_removed");
   const scrollUp = stripLinkScrollUpSentences(result.text, args[1]);
   if (scrollUp.changed) warnings.push(scrollUp.changed);
   // A link RESEND keeps the owner's own phrasing «Әрине, мінекей сілтеме, мархабат!» /

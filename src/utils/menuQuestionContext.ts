@@ -164,21 +164,26 @@ export function menuLexemesRelated(left: unknown, right: unknown): boolean {
 export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[], value: unknown): T[] {
   // Catalog names may contain one-letter size codes, alphanumeric variants or
   // short numeric ids. Exact identity therefore retains every name token.
-  const identityLexemes = (input: unknown) => (fold(unquoted(input)).match(/[\p{L}\p{N}-]+/gu) || [])
+  const identityLexemes = (input: unknown) => (fold(input).slice(0, MAX_MENU_CONTEXT_TEXT).match(/[\p{L}\p{N}-]+/gu) || [])
     .map(menuLexemeStem).filter(Boolean);
   const words = identityLexemes(value);
   if (!words.length) return [];
-  const matches: Array<{ item: T; key: string; total: number; spans: Array<[number, number]> }> = [];
+  type CatalogSpan = { start: number; end: number; strict: boolean };
+  const matches: Array<{ item: T; key: string; total: number; spans: CatalogSpan[] }> = [];
   const seen = new Set<string>();
   for (const item of items) {
     const name = String(item?.name || item?.title || "").trim();
     const key = fold(name);
     const tokens = identityLexemes(name);
     if (!name || !tokens.length || seen.has(key)) continue;
-    const spans: Array<[number, number]> = [];
+    const spans: CatalogSpan[] = [];
     for (let start = 0; start + tokens.length <= words.length; start += 1) {
       if (tokens.every((token, offset) => menuLexemesSameIdentity(token, words[start + offset]))) {
-        spans.push([start, start + tokens.length - 1]);
+        spans.push({
+          start,
+          end: start + tokens.length - 1,
+          strict: tokens.every((token, offset) => token === words[start + offset]),
+        });
       }
     }
     if (spans.length) {
@@ -186,9 +191,18 @@ export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[
       matches.push({ item, key, total: tokens.length, spans });
     }
   }
-  return matches.filter((match) => match.spans.some(([start, end]) =>
-    !matches.some((other) => other !== match && other.total > match.total
-      && other.spans.some(([outerStart, outerEnd]) => outerStart <= start && outerEnd >= end))))
+  // When one text span exactly identifies a catalog SKU, discard sibling
+  // matches that exist only through the narrow case-vowel fallback. This keeps
+  // inflections such as Кола/Колу while distinguishing real Моко/Мока SKUs.
+  const preferred = matches.map((match) => ({
+    ...match,
+    spans: match.spans.filter((span) => span.strict || !matches.some((other) =>
+      other !== match && other.spans.some((candidate) => candidate.strict
+        && candidate.start === span.start && candidate.end === span.end))),
+  })).filter((match) => match.spans.length);
+  return preferred.filter((match) => match.spans.some(({ start, end }) =>
+    !preferred.some((other) => other !== match && other.total > match.total
+      && other.spans.some(({ start: outerStart, end: outerEnd }) => outerStart <= start && outerEnd >= end))))
     .map((match) => match.item);
 }
 

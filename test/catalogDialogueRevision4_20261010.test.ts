@@ -289,7 +289,7 @@ test("Kazakh explicit wait question requires a fresh kitchen read before link",(
 test("price-free offers of unavailable or note-blocked products are removed",()=>{
  const blocked={name:"Пепперони",category_name:"Пиццы",price:2500,available:false};
  const alternative={name:"Маргарита",category_name:"Пиццы",price:2100,available:true};
- for(const draft of ["Попробуйте Пепперони.","Можно взять Пепперони.","Советую Пепперони.","Пепперони алуға болады.","Советую «Пепперони».",'Можно взять "Пепперони".']){
+ for(const draft of ["Попробуйте Пепперони.","Можно взять Пепперони.","Советую Пепперони.","Пепперони алуға болады.","Советую «Пепперони».",'Можно взять "Пепперони".',"«Пепперони» — 2300 тг."]){
   const c=ctx("Какие пиццы есть?",{
    menuSnapshot:{items:[...items,blocked,alternative],source:"live"},
    menuGrounding:{menu_lookup:"live",lookup_query:"пиццы",category_browse:true,items:[alternative],unavailable_now:[blocked],totalMatched:1},
@@ -304,7 +304,7 @@ test("price-free offers of unavailable or note-blocked products are removed",()=
   menuSnapshot:{items:[...items,blocked,alternative],source:"live"},
   menuGrounding:{menu_lookup:"live",items:[alternative],unavailable_now:[blocked]},activeShiftNotes:[],
  });
- for(const quoted of ["Вчера советовали «Пепперони».","Клиент написал: «Советую Пепперони»."]){
+ for(const quoted of ["Вчера советовали «Пепперони».","Клиент написал: «Советую Пепперони».","Оператор сказал: «Пепперони есть».","Вы написали: «Советую Пепперони».","Цитата: «Советую Пепперони»."]){
   assert.equal(validateFinalText(quoted,protectedCtx,{toolsCalled:["searchMenu"]}).text,quoted);
  }
 });
@@ -405,6 +405,9 @@ test("semantic category aliases never become exact SKU identity",async()=>{
   ["Сыр","Сырники","Хочу Сыр."],
   ["Пицца XL","Пицца L","Хочу Пицца XL."],
   ["Набор A1","Набор B2","Хочу Набор A1."],
+  ["Моко","Мока","Хочу Моко."],
+  ["Сет «A1»","Сет «A2»","Хочу Сет A1."],
+  ["Пицца «Орбита»","Пицца «Вектор»","Хочу Пицца Орбита."],
  ] as const){
   const live=[
    {name:blockedName,category_name:"Основное",price:1500,available:false},
