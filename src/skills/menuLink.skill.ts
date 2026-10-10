@@ -1,6 +1,7 @@
-import { hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
+import { activeOrderQuestionKind, hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
 import { isBroadMenuCategoryBrowse } from "../utils/menuQuestionContext.js";
 import { menuLinkDecisionForTurn } from "../utils/magicLink.js";
+import { isCurrentPaymentDetailsIntent } from "../utils/paymentIntent.js";
 import { complaintHasActionableDetail, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 export { hasDirectOrderIntent } from "../utils/orderIntent.js";
 
@@ -95,8 +96,9 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // Keep the skill's authorization identical to the planner: a grounded
       // category consultation is a request to browse the self-ordering menu.
       const menuLinkDecision = menuLinkDecisionForTurn(text);
-      const categoryConsultation = menuLinkDecision !== "deny" && menuLinkDecision !== "text_only" && !immediateServiceIncident && isBroadMenuCategoryBrowse(ctx);
-      if (immediateServiceIncident || menuLinkDecision === "deny"
+      const paymentDetailsIntent = isCurrentPaymentDetailsIntent(text, activeOrderQuestionKind(text, ctx.activeOrder));
+      const categoryConsultation = menuLinkDecision !== "deny" && menuLinkDecision !== "text_only" && !immediateServiceIncident && !paymentDetailsIntent && isBroadMenuCategoryBrowse(ctx);
+      if (immediateServiceIncident || paymentDetailsIntent || menuLinkDecision === "deny"
         || !hasCustomerCheckoutIntent(text) && !consentContinuation && !categoryConsultation) {
         ctx.magicLinkGranted = false;
         return { allowed: false, link: null, reason: "link_not_requested", message: null,

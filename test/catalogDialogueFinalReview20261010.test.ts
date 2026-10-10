@@ -92,8 +92,9 @@ test("numeric and qualitative category budgets cannot be overwritten by broad en
     assert.ok(result.warnings.includes("budget_alternatives_grounded"));
   }
 
-  const prior = { schema: "SHOPPING_SESSION_V1", tenant: "final-review-fixture", customerScope: "ignored-by-test", startedAt: Date.now(), revision: 1, budget: 2500, avoidMeat: false, uncertainBudget: false, expiresAt: Date.now() + 60_000 };
-  const qualitative = validateFinalText("Римская Альфа — 2100 тг; Римская Бета — 2400 тг.", ctx("Какие пиццы подешевле?", { shoppingConstraints: prior }), { toolsCalled: ["searchMenu"] });
+  const qualitative = validateFinalText("Римская Альфа — 2100 тг; Римская Бета — 2400 тг; Римская Гамма — 2900 тг.", ctx("Какие пиццы подешевле?", { chatHistory: [{
+    role: "user", text: "Что взять на бюджет 2500 тг?", instanceId: "final-review-fixture", phone: "77000000001", createdAt: Date.now() - 1000,
+  }] }), { toolsCalled: ["searchMenu"] });
   assert.doesNotMatch(qualitative.text, /Римская Гамма|2900/u);
 });
 
@@ -162,7 +163,7 @@ test("operator notes and live sold-out state override stale menu prices at the f
     { name: "Пепперони", category_name: "Пиццы", price: 2300, available: false },
     { name: "Сырная", category_name: "Пиццы", price: 2400, available: true },
   ];
-  const grounding = { category_browse: true, menu_lookup: "live", totalMatched: 1, items: [all[2]], sold_out_now: ["Пепперони"], unavailable_now: ["Пицца Маргарита"] };
+  const grounding = { category_browse: true, menu_lookup: "live", totalMatched: 1, items: [all[2]], sold_out_now: ["Пепперони"], unavailable_now: [] };
   const base = { menuSnapshot: { items: all, source: "live" }, menuGrounding: grounding, activeShiftNotes: [{ text: "Пицца Маргарита жоқ", createdAt: Date.now() }] };
   for (const [language, raw, unavailable] of [
     ["ru", "Пицца Маргарита — 2100 тг.", /недоступ/iu],

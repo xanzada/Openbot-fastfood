@@ -5,6 +5,7 @@ import { complaintHasActionableDetail, isLikelyComplaintText, isCurrentComplaint
 import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
 import { isMenuBudgetInquiry } from "../utils/menuBudget.js";
+import { isCurrentPaymentDetailsIntent } from "../utils/paymentIntent.js";
 import { getKitchenCheckoutFingerprint } from "../services/redis.service.js";
 import { menuLinkDecisionForTurn, wantsMenuAsText } from "../utils/magicLink.js";
 import { isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, isMenuCategoryConsultation } from "../utils/menuQuestionContext.js";
@@ -50,10 +51,6 @@ const DIRECT_MENU_LINK_RE =
 // answer-before-link swap below leaves the pin alone.
 const ORDER_ACTION_RE =
   /(сілтеме|ссылк\p{L}*|link|линк|мәзір(?:ді|\s+сілтемесін)\s*(?:жібер|бер|аш)|меню\s*(?:пришли|скинь|дай|открой|покажи)|тапсырыс\s*(?:бер|берей|берем|жасай|жасас|ет|қыл)|заказ\s*(?:бер|берей|берем|жасай|хочу|сдел|оформ)|заказать|оформить|корзин|себет|жалғастыр|продолж)/iu;
-const PAYMENT_DETAILS_RE =
-  /(реквизит|kaspi|каспи|halyk|халық|оплат\p{L}*|төлем|аудар\p{L}*|перевод).*(?:қалай|қайда|как|куда|номер|счет|шот|сілтеме|ссылка)?/iu;
-const RECEIPT_EVENT_RE =
-  /(чек(?:ті|ті\s+жібер| отправ| скин)|receipt|түбірте[кг]|квитанц|ақшаны\s+аудар|деньги\s+перев[её]л)/iu;
 export const BUSINESS_INFO_RE =
   /(мекен-?жай|адрес|қайда\s*(?:орналас|тұр)|қай\s*жерде|орналасқан|где\s*(?:находит|вы)|жұмыс\s*уақыт|жұмыс\s*істей|график|режим\s*работ|до\s*скольк|сколько.{0,30}(?:работ|открыт)|сағат\s*нешеге|телефон|номер\s*(?:рестора|заведен)|қалай\s*табам|бүгін\s*ашық|сегодня\s*открыт|түнде\s*жұмыс|работа\p{L}*\s*ночью)/iu;
 
@@ -99,7 +96,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   const plan: AgentToolPlan = { requiredTools: [], reason: [] };
   const immediateServiceIncident = isExplicitHumanOperatorRequest(text) || isExplicitCourierContactRequest(text) || isCurrentComplaintRequest(text) || (isLikelyComplaintText(text) && complaintHasActionableDetail(text));
   const orderQuestion = activeOrderQuestionKind(text, ctx.activeOrder);
-  const paymentDetailsIntent = orderQuestion !== "payment_confirmation" && intentMatches(PAYMENT_DETAILS_RE, text) && !intentMatches(RECEIPT_EVENT_RE, text);
+  const paymentDetailsIntent = isCurrentPaymentDetailsIntent(text, orderQuestion);
   // hardRealtimeContext is ALWAYS truthy and carries neither is_accepting_orders nor
   // within_work_hours - and classifyKitchenSalesPolicy defaults BOTH to true. So a
   // closed, emergency-stopped or off-hours kitchen was classified "normal" here,

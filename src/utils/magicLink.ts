@@ -149,11 +149,16 @@ export type MenuLinkTurnDecision = "allow" | "deny" | "text_only" | "unspecified
  * in the same message supersedes an earlier instruction; quoted reports do not.
  */
 export function menuLinkDecisionForTurn(text = ""): MenuLinkTurnDecision {
-  const value = normalizeCheckoutRequestSpelling(text).slice(0, 4096)
+  const raw = String(text || "");
+  const oversized = raw.length > 4096;
+  // Intent is bounded before quote/spelling normalization. For oversized input,
+  // keep both chronological edges so a last correction remains authoritative.
+  const bounded = oversized ? raw.slice(0, 2048) + "\n" + raw.slice(-2048) : raw;
+  const value = normalizeCheckoutRequestSpelling(bounded)
     .replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "").toLowerCase();
   const textOnly = wantsMenuAsText(value);
   const topic = /(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url|меню|мәзір\p{L}*|мазір\p{L}*|каталог\p{L}*|корзин\p{L}*|себет\p{L}*)/iu;
-  if (!topic.test(value)) return "unspecified";
+  if (!topic.test(value)) return oversized ? "deny" : "unspecified";
   let decision: MenuLinkTurnDecision = textOnly ? "text_only" : "unspecified";
   for (const clause of value.split(/(?<=[.!?;,\n])|[—–]|(?<!\p{L})(?:но|бірақ|хотя)(?!\p{L})/iu)) {
     const explicitUrlAction = /(?:(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?)[^.!?]{0,30}(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)|(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)[^.!?]{0,30}(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?))/iu.test(clause);
@@ -163,11 +168,13 @@ export function menuLinkDecisionForTurn(text = ""): MenuLinkTurnDecision {
     if (/(?:отправил\p{L}*|прислал\p{L}*|скинул\p{L}*|показал\p{L}*|жіберді\p{L}*|көрсетті\p{L}*)/iu.test(clause)) continue;
     const action = /(?<!\p{L})(?:пришл(?:и|ите)|присылай(?:те)?|отправ(?:ь|ьте)|скинь(?:те)?|покаж(?:и|ите)|откро(?:й|йте)|дай(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?|көрсет(?:іңіз|ші)?|корсет(?:иниз|іңіз|ші)?|аш(?:ыңыз|ып\s*беріңіз|шы)?|бер(?:іңіз|ші)?)(?!\p{L})/iu;
     const localTopic = topic.test(clause);
-    const bareCorrection = /^\s*(?:(?:нет|жоқ|жок|хотя|бірақ|но)[,\s-]*)*(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|покаж(?:и|ите)|откро(?:й|йте)|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?|көрсет(?:іңіз|ші)?|корсет(?:иниз|іңіз|ші)?|аш(?:ыңыз|шы)?|бер(?:іңіз|ші)?)[.!?\s]*$/iu.test(clause);
+    const bareCorrection = /^\s*(?:(?:нет|жоқ|жок|хотя|бірақ|но)[,\s-]*)*(?:(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|покаж(?:и|ите)|откро(?:й|йте))\s*(?:е[её]|его|их)?|(?:оны|оны да)?\s*(?:жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?)|(?:жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?|көрсет(?:іңіз|ші)?|корсет(?:иниз|іңіз|ші)?|аш(?:ыңыз|шы)?|бер(?:іңіз|ші)?))[.!?\s]*$/iu.test(clause);
     const needed = /(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)[^.!?]{0,24}(?:керек|қажет|нуж\p{L}*)|(?:керек|қажет|нуж\p{L}*)[^.!?]{0,24}(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)/iu.test(clause);
     if (localTopic && action.test(clause) || bareCorrection || needed) decision = "allow";
   }
-  return decision;
+  // An oversized implicit browse has no trustworthy complete current-turn
+  // decision. Fail closed; an explicit head/tail action above remains usable.
+  return oversized && decision === "unspecified" ? "deny" : decision;
 }
 
 export function hasExplicitMenuLinkIntent(text: string): boolean {

@@ -1,10 +1,11 @@
 import {isMenuAttributeVerificationQuestion, customerMenuRelationSubject, menuLexemesRelated} from "../utils/menuQuestionContext.js";
 import {shoppingConstraintsForContext, eligibleShoppingItems, isShoppingDecision, shoppingBasketQuote, type ShoppingItem} from "../services/shoppingConstraints.service.js";
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
-import {detectKitchenConsentAnswer} from "../services/kitchenPolicy.service.js";
+import {classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer} from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
-import { getMenuBudgetInquiry } from "../utils/menuBudget.js";
+import { getMenuBudgetInquiry, isMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { activeOrderQuestionKind, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
+import { complaintHasActionableDetail, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 import { menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
 import { guardCheckoutSelection, hasCatalogProductMention, hasCatalogSafetyAssertion } from "./checkoutSelectionGuard.js";
 
@@ -1657,8 +1658,10 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   if (!snapshot || !Array.isArray(snapshot.items) || snapshot.source === "menu_unavailable"
     || grounding?.menu_lookup === "unavailable" || grounding?.error
     || (!grounding && !toolsCalled.includes("searchMenu"))) return unknown;
+  const groundedCategoryItems = grounding?.category_browse && Array.isArray(grounding.items) && grounding.items.length
+    ? grounding.items : snapshot.items;
   const vocabulary = menuVocabulary(snapshot.items);
-  const priced = eligibleShoppingItems(ctx, snapshot.items).filter((item: any) => item && item.available !== false
+  const priced = eligibleShoppingItems(ctx, groundedCategoryItems).filter((item: any) => item && item.available !== false
     && typeof item.name === "string" && item.name.trim()
     && !menuItemBlockedByNotes(ctx.activeShiftNotes || [], item, vocabulary).blocked)
     .map((item: any) => ({item, price: typeof item.price === "number" ? item.price
@@ -1833,38 +1836,120 @@ function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string 
   return result;
 }
 
+function catalogNameMentions(text: string, names: string[]): Array<{ key: string; start: number; end: number }> {
+  const hits: Array<{ key: string; start: number; end: number }> = [];
+  for (const rawName of names) {
+    const name = String(rawName || "").trim();
+    if (!name) continue;
+    const pattern = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/gu, "\\s+");
+    for (const match of text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, "giu"))) {
+      hits.push({ key: menuClaimKey(name), start: match.index!, end: match.index! + match[0].length });
+    }
+  }
+  hits.sort((left, right) => (right.end - right.start) - (left.end - left.start) || left.start - right.start);
+  const accepted: typeof hits = [];
+  for (const hit of hits) {
+    if (accepted.some((other) => hit.start < other.end && hit.end > other.start)) continue;
+    accepted.push(hit);
+  }
+  return accepted.sort((left, right) => left.start - right.start);
+}
+
+function replaceCategoryListingClauses(text: string, names: string[], enumeration: string): string {
+  const parts = String(text || "").split(/(?<=[.!?])\s+|\n+/u);
+  const kept = parts.filter((part) => {
+    if (!catalogNameMentions(part, names).length) return true;
+    return /недоступ\p{L}*|нет\s+в\s+наличии|қолжетімсіз|қолжетімді\s+емес|жо[қк]|закрыт\p{L}*|жабық|ожидан|күту|оператор|жалоб|шағым|реквизит|оплат|төлем|график|жұмыс\s+уақыт|\?/iu.test(part);
+  });
+  return [...kept.map((part) => part.trim()).filter(Boolean), enumeration].join(" ").trim();
+}
+
+function blockedCatalogOffers(text: string, ctx: FastFoodContext): { text: string; changed: boolean } {
+  const snapshot = ctx.menuSnapshot;
+  const grounding = ctx.menuGrounding as any;
+  if (!snapshot || snapshot.source === "menu_unavailable" || grounding?.menu_lookup === "unavailable"
+    || grounding?.error || !Array.isArray(snapshot.items) || !Array.isArray(ctx.activeShiftNotes)) {
+    return { text, changed: false };
+  }
+  const vocabulary = menuVocabulary(snapshot.items);
+  const externallyBlocked = new Set(
+    [...(grounding?.unavailable_now || []), ...(grounding?.sold_out_now || [])]
+      .map((entry: any) => menuClaimKey(entry?.name ?? entry)).filter(Boolean),
+  );
+  const blocked = snapshot.items.filter((item: any) => item && typeof item.name === "string" && item.name.trim()
+    && (item.available === false || externallyBlocked.has(menuClaimKey(item.name))
+      || menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked));
+  if (!blocked.length) return { text, changed: false };
+  const blockedNames = blocked.map((item: any) => String(item.name).trim());
+  const removed = new Set<string>();
+  const rewritten = rewriteCurrentFactClauses(text, (clause) => {
+    if (nonCurrentFactAssertion(clause) || /[«»“”"]|\?\s*$/u.test(clause)
+      || /недоступ\p{L}*|нет\s+в\s+наличии|қолжетімсіз|қолжетімді\s+емес|жо[қк]/iu.test(clause)) return null;
+    const mentions = catalogNameMentions(clause, blockedNames);
+    if (!mentions.length || !PRICE_CLAIM_RE.test(clause)
+      && !/доступ\p{L}*|қолжетімді|есть\s+в\s+меню|мәзірде\s+бар|рекоменд|ұсынам|вариант/iu.test(clause)) return null;
+    for (const mention of mentions) removed.add(mention.key);
+    return "";
+  });
+  if (!rewritten.changed) return { text, changed: false };
+  const affected = blockedNames.filter((name) => removed.has(menuClaimKey(name)));
+  const allowed = (Array.isArray(grounding?.items) ? grounding.items : [])
+    .filter((item: any) => item?.available !== false && typeof item?.name === "string" && item.name.trim()
+      && !externallyBlocked.has(menuClaimKey(item.name))
+      && !menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked);
+  const alternative = allowed[0];
+  const unavailable = ctx.language === "kk"
+    ? `Қазір қолжетімсіз: ${affected.join("; ")}.`
+    : `Сейчас недоступно: ${affected.join("; ")}.`;
+  const alternativeText = alternative
+    ? (ctx.language === "kk" ? `Қолжетімді балама: ${alternative.name}${Number.isFinite(Number(alternative.price)) ? ` — ${Number(alternative.price)} тг` : ""}.`
+      : `Доступная альтернатива: ${alternative.name}${Number.isFinite(Number(alternative.price)) ? ` — ${Number(alternative.price)} тг` : ""}.`)
+    : "";
+  return { text: [unavailable, alternativeText, rewritten.text].filter(Boolean).join(" ").trim(), changed: true };
+}
+
 function groundedCategoryEnumeration(text: string, ctx: FastFoodContext): string | null {
   const grounding = ctx.menuGrounding as any;
-  if (!grounding?.category_browse || grounding.menu_lookup === "unavailable" || grounding.error) return null;
-  const items = (Array.isArray(grounding.items) ? grounding.items : [])
-    .filter((item: any) => item?.available !== false && typeof item?.name === "string" && item.name.trim())
-    .map((item: any) => ({
-      name: String(item.name).trim(),
-      price: typeof item.price === "number" ? item.price
-        : typeof item.price === "string" && /^\d+(?:[.,]\d+)?$/.test(item.price.trim()) ? Number(item.price.replace(",", ".")) : null,
-    }));
+  if (!grounding?.category_browse || grounding.menu_lookup === "unavailable" || grounding.error
+    || isMenuBudgetInquiry(ctx.text)) return null;
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext, ctx.activeShiftNotes);
+  if (policy.blocksAllSales && policy.mode !== "off_hours"
+    || policy.requiresConsent && ctx.kitchenCheckoutFingerprint !== policy.fingerprint) return null;
+  const current = String(ctx.text || "");
+  const immediateServiceIncident = isExplicitHumanOperatorRequest(current) || isExplicitCourierContactRequest(current)
+    || isCurrentComplaintRequest(current) || isLikelyComplaintText(current) && complaintHasActionableDetail(current);
+  if (immediateServiceIncident) return null;
+  const rawItems = (Array.isArray(grounding.items) ? grounding.items : [])
+    .filter((item: any) => item?.available !== false && typeof item?.name === "string" && item.name.trim());
+  const byName = new Map<string, { name: string; price: number | null }>();
+  for (const item of rawItems) {
+    const name = String(item.name).trim();
+    const key = menuClaimKey(name);
+    if (!key || byName.has(key)) continue;
+    const price = typeof item.price === "number" ? item.price
+      : typeof item.price === "string" && /^\d+(?:[.,]\d+)?$/.test(item.price.trim()) ? Number(item.price.replace(",", ".")) : null;
+    byName.set(key, { name, price });
+  }
+  const items = [...byName.values()];
   if (items.length < 2) return null;
-  const total = Math.max(items.length, Number(grounding.totalMatched) || items.length);
+  const duplicateDelta = Math.max(0, rawItems.length - items.length);
+  const total = Math.max(items.length, (Number(grounding.totalMatched) || rawItems.length) - duplicateDelta);
   const targetCount = items.length <= 8 ? items.length : Math.min(5, items.length);
-  const normalized = text.toLocaleLowerCase();
-  const covered = items.filter((item: any) => normalized.includes(item.name.toLocaleLowerCase())).length;
+  const covered = new Set(catalogNameMentions(text, items.map((item) => item.name)).map((hit) => hit.key)).size;
   const shownRemaining = Math.max(0, total - targetCount);
-  const truthPresent = shownRemaining === 0 || new RegExp(`(?<!\d)${shownRemaining}(?!\d)`, "u").test(text);
+  const truthPresent = shownRemaining === 0 || new RegExp(`(?<!\\d)${shownRemaining}(?!\\d)`, "u").test(text);
   if (covered >= targetCount && (items.length > 8 ? truthPresent : covered === items.length)) return null;
 
   const sample = items.slice(0, targetCount);
-  const rendered = sample.map((item: any) => item.price !== null ? `${item.name} — ${item.price} тг` : item.name).join("; ");
+  const rendered = sample.map((item) => item.price !== null ? `${item.name} — ${item.price} тг` : item.name).join("; ");
   const remaining = Math.max(0, total - sample.length);
-  if (ctx.language === "kk") {
-    const tail = remaining > 0
-      ? (ctx.magicLinkGranted ? `Тағы ${remaining} нұсқа жіберілген мәзір сілтемесінде бар.` : `Тағы ${remaining} нұсқа бар.`)
-      : "";
-    return [rendered + ".", tail].filter(Boolean).join(" ");
-  }
   const tail = remaining > 0
-    ? (ctx.magicLinkGranted ? `Ещё ${remaining} вариантов есть в отправленной ссылке на меню.` : `Есть ещё ${remaining} вариантов.`)
+    ? ctx.language === "kk"
+      ? (ctx.magicLinkGranted ? `Тағы ${remaining} нұсқа жіберілген мәзір сілтемесінде бар.` : `Тағы ${remaining} нұсқа бар.`)
+      : (ctx.magicLinkGranted ? `Ещё ${remaining} вариантов есть в отправленной ссылке на меню.` : `Есть ещё ${remaining} вариантов.`)
     : "";
-  return [rendered + ".", tail].filter(Boolean).join(" ");
+  const enumeration = [rendered + ".", tail].filter(Boolean).join(" ");
+  return replaceCategoryListingClauses(text, items.map((item) => item.name), enumeration);
 }
 
 const ORDER_TAKING_COLLECTION_QUESTION_RE = /^(?:(?:қай|қандай)\s+мекенжайға\s+(?:(?:тапсырыс(?:ты)?\s+)?жеткіз\p{L}*(?:\s+керек)?|тапсырыс\s+бересіз)|(?:куда|на\s+какой\s+адрес)\s+(?:вам\s+)?доставить(?:\s+заказ)?|сколько\s+(?:штук|порций|единиц)\s+(?:вам\s+)?(?:нужно|нужны)|неше\s+(?:дана|порция)\s+(?:сізге\s+)?(?:керек|аласыз)|(?:как|каким\s+способом)\s+(?:вы\s+)?будете\s+оплачивать|қалай\s+төлейсіз)\s*\?$/iu;
@@ -1907,7 +1992,10 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
     finalText = `${safetyGuaranteeDenialText(args[1])} ${finalText}`.trim();
     warnings.push("missing_allergy_guarantee_denial_added");
   }
-  const categoryEnumeration = groundedCategoryEnumeration(finalText, args[1]);
+  const blockedOffer = blockedCatalogOffers(finalText, args[1]);
+  if (blockedOffer.changed) warnings.push("blocked_catalog_offer_removed");
+  finalText = blockedOffer.text;
+  const categoryEnumeration = budgetReply === null ? groundedCategoryEnumeration(finalText, args[1]) : null;
   if (categoryEnumeration !== null) {
     finalText = categoryEnumeration;
     warnings.push("category_enumeration_grounded");

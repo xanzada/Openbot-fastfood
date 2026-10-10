@@ -2,6 +2,8 @@ import { foldIntentText } from "./intentText.js";
 
 const AMOUNT_RE = /(?<![\p{L}\p{N}+\-.,])([+\-]?\s*(?:(?:\d+|бир|еки|уш|торт|бес|алты|жети|сегиз|тогыз|он|жиырма|отыз|кырык|елу|алпыс|жетпис|сексен|токсан|жуз|мын|миллион|нол|жарым|жарты|минус|плюс|или|немесе)\s+)*(?:\d+|бир|еки|уш|торт|бес|алты|жети|сегиз|тогыз|он|жиырма|отыз|кырык|елу|алпыс|жетпис|сексен|токсан|жуз|мын|миллион|нол|жарым|жарты|минус|плюс|или|немесе))\s*(?:тенге(?:ге|м|мен|лик)?|тг|kzt|₸)(?![\p{L}\p{N}])/giu;
 const CURRENCY_RE = /(?<!\p{L})(?:тенге(?:ге|м|мен|лик)?|тг|kzt|₸)(?!\p{L})/iu;
+const PRICE_CEILING_RE = /(?:(?<!\p{L})(?:до|не\s+дороже)\s*(\d{1,7})(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])(\d{1,7})\s*(?:тенге(?:ге|м|мен|лик)?|тг|kzt|₸)?\s*(?:дейин|аспайтын)(?!\p{L}))/giu;
+const QUALITATIVE_BUDGET_RE = /(?<!\p{L})(?:подешевле|дешевле|недорог\p{L}*|бюджетн\p{L}*|арзанырак|арзандау|арзан)(?!\p{L})/iu;
 const EXPLORATION_RE = /(?:не\s*(?:аламын|алсам|алуга|жеуге|усынасыз|бар|келеди)|кандай[^.!?]{0,30}(?:алсам|алуга|аламан)|что(?:\s+\p{L}+){0,3}\s*(?:взять|купить|выбрать|поесть|посоветуете)|на\s+что\s+хватит|что\s+посоветуете)/iu;
 const HUNGER_RE = /(?:карным[^.!?]{0,30}аш|голод(?:ен|на|ный|ная)|студент)/iu;
 const FOOD_RE = /(?:донер|пицц|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]|цезар|комбо)/iu;
@@ -63,13 +65,19 @@ function currentBudgetClauses(text: string): string[] {
     && !/(?:не\s+(?:хочу|буду)|алмай|бар\s*ма|если|можно|могу)/iu.test(clause))) return [];
   const exploratory = EXPLORATION_RE.test(value);
   const hungry = HUNGER_RE.test(value);
-  return clauses.filter(clause => CURRENCY_RE.test(clause) && !MONEY_LEG_RE.test(clause) && !DENIED_RE.test(clause)
-    && (exploratory || hungry || /бюджет/iu.test(clause)));
+  return clauses.filter(clause => {
+    PRICE_CEILING_RE.lastIndex = 0;
+    const ceiling = PRICE_CEILING_RE.test(clause);
+    PRICE_CEILING_RE.lastIndex = 0;
+    return (CURRENCY_RE.test(clause) || ceiling) && !MONEY_LEG_RE.test(clause) && !DENIED_RE.test(clause)
+      && (exploratory || hungry || /бюджет/iu.test(clause) || ceiling && FOOD_RE.test(clause));
+  });
 }
 
 /** Inquiry kind is independent of whether its stated amount supports deterministic advice. */
 export function isMenuBudgetInquiry(text: string): boolean {
-  return currentBudgetClauses(text).length > 0;
+  const visible = foldIntentText(String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, ""));
+  return currentBudgetClauses(text).length > 0 || QUALITATIVE_BUDGET_RE.test(visible);
 }
 
 /** Current exploratory food budget only. Integer KZT (1..1,000,000), no quoted facts.
@@ -85,6 +93,13 @@ export function getMenuBudgetInquiry(text: string): number | null {
       if (amount === null) return null;
       amounts.add(amount);
     }
+    PRICE_CEILING_RE.lastIndex = 0;
+    for (const match of clause.matchAll(PRICE_CEILING_RE)) {
+      const amount = amountFromTokens(match[1] || match[2] || "");
+      if (amount === null) return null;
+      amounts.add(amount);
+    }
+    PRICE_CEILING_RE.lastIndex = 0;
   }
   return amounts.size === 1 ? [...amounts][0] : null;
 }

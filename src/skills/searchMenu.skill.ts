@@ -41,16 +41,29 @@ export function menuQueryForTurn(text: string, ctx?: FastFoodContext) {
     .filter((word) => !QUERY_FILLERS.has(word)).join(" ").slice(0, 80);
 }
 
-function tokenForms(token: string, haystack: string): string[] {
-  const forms = new Set([token, menuLexemeStem(token)]);
-  for (const [kazakh, stem] of KAZAKH_MENU_WORDS) if (token.startsWith(kazakh)) forms.add(stem);
-  for (const word of haystack.split(/[^\p{L}\d-]+/u)) {
-    if (word.length >= 4 && menuLexemesRelated(token, word)) {
-      forms.add(word);
-      forms.add(menuLexemeStem(word));
-    }
-  }
-  return [...forms].filter((form) => form.length >= 3);
+function fieldWords(value: string): string[] {
+  return normalizeText(value).match(/[\p{L}\d]+/gu) || [];
+}
+
+function mappedMenuStems(token: string): string[] {
+  const mapped: string[] = [];
+  for (const [source, target] of KAZAKH_MENU_WORDS) if (token.startsWith(source)) mapped.push(target);
+  return mapped;
+}
+
+function menuTokenMatches(queryToken: string, catalogWord: string): boolean {
+  if (!queryToken || !catalogWord) return false;
+  if (menuLexemesRelated(queryToken, catalogWord)) return true;
+  return mappedMenuStems(queryToken).some((stem) =>
+    catalogWord === stem || catalogWord.startsWith(stem) || menuLexemeStem(catalogWord) === stem);
+}
+
+function fieldMatchesToken(field: string, token: string): boolean {
+  return fieldWords(field).some((word) => menuTokenMatches(token, word));
+}
+
+function fieldCoversQuery(field: string, tokens: string[]): boolean {
+  return tokens.length > 0 && tokens.every((token) => fieldMatchesToken(field, token));
 }
 
 function scoreMenuItem(item: Record<string, any>, tokens: string[], query: string) {
@@ -59,19 +72,19 @@ function scoreMenuItem(item: Record<string, any>, tokens: string[], query: strin
   const label = normalizeText(item.label);
   const description = normalizeText(item.description);
   const composition = normalizeText(item.composition);
-  const haystack = [name, category, label, description, composition].filter(Boolean).join(" ");
+  const body = [description, composition].filter(Boolean).join(" ");
 
   let score = 0;
   if (name === query) score += 100;
-  if (name.includes(query)) score += 50;
-  if (category.includes(query)) score += 30;
-  if (label.includes(query)) score += 20;
-  for (const token of tokens.flatMap((raw) => (raw ? tokenForms(raw, haystack) : []))) {
-    if (name.includes(token)) score += 12;
-    if (category.includes(token)) score += 8;
-    if (description.includes(token)) score += 4;
-    if (composition.includes(token)) score += 4;
-    if (haystack.includes(token)) score += 2;
+  if (fieldCoversQuery(name, tokens)) score += 50;
+  if (fieldCoversQuery(category, tokens)) score += 30;
+  if (fieldCoversQuery(label, tokens)) score += 20;
+  for (const token of tokens) {
+    if (fieldMatchesToken(name, token)) score += 12;
+    if (fieldMatchesToken(category, token)) score += 8;
+    if (fieldMatchesToken(description, token)) score += 4;
+    if (fieldMatchesToken(composition, token)) score += 4;
+    if (fieldMatchesToken(body, token)) score += 2;
   }
   return score;
 }
@@ -114,7 +127,7 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
     .filter((entry) => {
       const itemCategory = normalizeText(entry.item.category_name || entry.item.category);
       const categoryMatches = !normalizedCategory || categoryTokens.every((token) =>
-        tokenForms(token, itemCategory).some((form) => itemCategory.includes(form)));
+        fieldMatchesToken(itemCategory, token));
       return categoryMatches && (!normalizedQuery || entry.score > 0);
     })
     .sort((left, right) => right.score - left.score || Number(left.item.price || 0) - Number(right.item.price || 0))
@@ -128,9 +141,9 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
       // nothing, when the right answer is to offer the dish that contains it.
       const ingredientMatch = Boolean(
         normalizedQuery
-        && !tokens.some((token) => tokenForms(token, name).some((form) => name.includes(form)))
-        && !tokens.some((token) => tokenForms(token, category).some((form) => category.includes(form)))
-        && tokens.some((token) => tokenForms(token, body).some((form) => body.includes(form)))
+        && !tokens.some((token) => fieldMatchesToken(name, token))
+        && !tokens.some((token) => fieldMatchesToken(category, token))
+        && tokens.some((token) => fieldMatchesToken(body, token))
       );
       return {
         name: entry.item.name,
