@@ -135,10 +135,19 @@ function catalogFieldSupportsWord(field: unknown, word: string): boolean {
     fieldTokens.some((fieldToken) => menuLexemesRelated(token, fieldToken)));
 }
 
+function catalogItemFields(item: any): unknown[] {
+  return [item?.name || item?.title || "", item?.category_name || item?.category || "",
+    item?.label || "", item?.composition || "", item?.description || ""];
+}
+
 function catalogWordSupported(items: any[], word: string): boolean {
-  return items.some((item) => [item?.name || item?.title || "", item?.category_name || item?.category || "",
-    item?.label || "", item?.composition || "", item?.description || ""]
+  return items.some((item) => catalogItemFields(item)
     .some((field) => catalogFieldSupportsWord(field, word)));
+}
+
+function catalogItemSupportsWords(item: any, words: string[]): boolean {
+  const fields = catalogItemFields(item);
+  return words.every((word) => fields.some((field) => catalogFieldSupportsWord(field, word)));
 }
 
 function catalogWordSupportedByCategory(items: any[], word: string): boolean {
@@ -156,15 +165,31 @@ function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
   const supportedIndexes = surfaceWords.map((word, index) => ({ word, index }))
     .filter(({ word }) => catalogWordSupported(items, word)).map(({ index }) => index);
   const firstSupportedIndex = Math.min(Number.POSITIVE_INFINITY, ...supportedIndexes);
+  const exactQuantityIndexes = new Set(surfaceWords.map((word, index) => ({ word, index }))
+    .filter(({ word, index }) => /^\d+$/u.test(word) && exactIndexes.has(index + 1))
+    .map(({ index }) => index));
   const unresolvedWords = subjects.filter(({ word, index }) =>
-    !(/^\d+$/u.test(word) && index < firstSupportedIndex));
+    !(/^\d+$/u.test(word) && (index < firstSupportedIndex || exactQuantityIndexes.has(index))));
   if (unresolvedWords.some(({ word }) => /\d/u.test(word) || /^[a-z]{1,3}$/iu.test(word))) return true;
   // Once a concrete SKU owns its span, leftover words may describe only an
   // independently known category or an operational modifier. A token borrowed
   // from another item's name/description cannot silently extend this SKU.
   if (exactItems.length) return unresolvedWords.some(({ word }) => !catalogWordSupportedByCategory(items, word));
-  const supported = unresolvedWords.filter(({ word }) => catalogWordSupported(items, word));
-  return supported.length > 0 && supported.length < unresolvedWords.length;
+  // Without an exact SKU, keep adjacent catalog words bound to one catalog
+  // record. Conjunctions and commas form independent choices, so "doners and
+  // drinks" remains valid while "Doner Comet" cannot borrow Comet from pie.
+  const groups = clause.split(/,\s*|\s+(?:и|және|мен)\s+/iu);
+  return groups.some((group) => {
+    const groupWords = catalogDecisionSubjectWords(group);
+    const firstCatalogIndex = groupWords.findIndex((word) => catalogWordSupported(items, word));
+    const relevant = groupWords.filter((word, index) =>
+      !(/^\d+$/u.test(word) && firstCatalogIndex >= 0 && index < firstCatalogIndex));
+    if (relevant.some((word) => /\d/u.test(word) || /^[a-z]{1,3}$/iu.test(word))) return true;
+    const supported = relevant.filter((word) => catalogWordSupported(items, word));
+    if (!supported.length) return false;
+    if (supported.length < relevant.length) return true;
+    return !items.some((item) => catalogItemSupportsWords(item, relevant));
+  });
 }
 
 function looksLikePluralCatalogLabel(value: unknown): boolean {

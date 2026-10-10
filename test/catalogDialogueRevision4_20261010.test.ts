@@ -466,20 +466,30 @@ test("a later category or general refusal clears earlier grounded checkout choic
  assert.equal(currentGroundedCatalogCheckoutDecision(exactSiblingSuffix),false);
  assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(exactSiblingSuffix,initialExactSiblingSuffix).requiredTools.includes("sendMenuLink"));
  assert.equal((await createSendMenuLinkSkill(exactSiblingSuffix).execute({reason:"cross-SKU suffix"}) as any).allowed,false);
- const bothKnown=ctx("Хочу Пицца Вектор и Пицца Милана.",{menuSnapshot:{items:namedPizzas,source:"preview"}});
- await groundMenuTurn(bothKnown,(async()=>({items:namedPizzas,source:"live"})) as any);
- assert.equal(currentGroundedCatalogCheckoutDecision(bothKnown),true);
+ for(const text of ["Хочу Пицца Вектор и Пицца Милана.","Хочу 2 Пицца Вектор и 1 Пицца Милана."]){
+  const bothKnown=ctx(text,{menuSnapshot:{items:namedPizzas,source:"preview"}});
+  const initialBothKnown=policy.resolveAgentToolPlan(bothKnown);
+  await groundMenuTurn(bothKnown,(async()=>({items:namedPizzas,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(bothKnown),true,text);
+  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(bothKnown,initialBothKnown).requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(bothKnown).execute({reason:"multiple exact choices"}) as any).allowed,true,text);
+ }
  const crossSkuCatalog=[
   {name:"Донер",category_name:"Донеры",price:1800,available:true},
   {name:"Салат Комета",category_name:"Салаты",price:1600,available:true},
  ];
- for(const text of ["Хочу Донер Комета.","Донер не хочу. Хочу Донер Комета."]){
-  const crossSkuSuffix=ctx(text,{menuSnapshot:{items:crossSkuCatalog,source:"preview"}});
-  const initialCrossSkuSuffix=policy.resolveAgentToolPlan(crossSkuSuffix);
-  await groundMenuTurn(crossSkuSuffix,(async()=>({items:crossSkuCatalog,source:"live"})) as any);
-  assert.equal(currentGroundedCatalogCheckoutDecision(crossSkuSuffix),false,text);
-  assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(crossSkuSuffix,initialCrossSkuSuffix).requiredTools.includes("sendMenuLink"),text);
-  assert.equal((await createSendMenuLinkSkill(crossSkuSuffix).execute({reason:"cross-category suffix"}) as any).allowed,false,text);
+ for(const catalog of [
+  crossSkuCatalog,
+  [{name:"Донер куриный",category_name:"Донеры",price:1800,available:true},{name:"Пирог Комета",category_name:"Выпечка",price:1600,available:true}],
+ ]){
+  for(const text of ["Хочу Донер Комета.","Донер не хочу. Хочу Донер Комета."]){
+   const crossSkuSuffix=ctx(text,{menuSnapshot:{items:catalog,source:"preview"}});
+   const initialCrossSkuSuffix=policy.resolveAgentToolPlan(crossSkuSuffix);
+   await groundMenuTurn(crossSkuSuffix,(async()=>({items:catalog,source:"live"})) as any);
+   assert.equal(currentGroundedCatalogCheckoutDecision(crossSkuSuffix),false,text);
+   assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(crossSkuSuffix,initialCrossSkuSuffix).requiredTools.includes("sendMenuLink"),text);
+   assert.equal((await createSendMenuLinkSkill(crossSkuSuffix).execute({reason:"cross-category suffix"}) as any).allowed,false,text);
+  }
  }
  for(const text of ["Хочу Пицца Вектор сейчас.","Хочу Пицца Вектор с собой."]){
   const ordinaryModifier=ctx(text,{menuSnapshot:{items:namedPizzas,source:"preview"}});
