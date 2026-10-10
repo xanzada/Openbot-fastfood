@@ -703,6 +703,10 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
  const exactOnly=ctx("Хочу Пицца Сыр и Ветчина.",{menuSnapshot:{items:live,source:"preview"}});
  const exactOut:any=await groundMenuTurn(exactOnly,(async()=>({items:live,source:"live"})) as any);
  assert.deepEqual(exactOut.items.map((item:any)=>item.name),["Пицца Сыр и Ветчина"]);
+ const inflectedExact=ctx("Хочу Пиццу Сыр и Ветчина.",{menuSnapshot:{items:live,source:"preview"}});
+ const inflectedOut:any=await groundMenuTurn(inflectedExact,(async()=>({items:live,source:"live"})) as any);
+ assert.deepEqual(inflectedOut.items.map((item:any)=>item.name),["Пицца Сыр и Ветчина"]);
+ assert.equal(currentGroundedCatalogCheckoutDecision(inflectedExact),true);
  for(const text of [
   "Хочу Пицца Сыр и Ветчина и Колу.",
   "Хочу Пицца Сыр и Ветчина, 1 Колу.",
@@ -712,6 +716,20 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   const out:any=await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
   assert.ok(out.items.some((item:any)=>item.name==="Пицца Сыр и Ветчина"),text);
   assert.ok(out.items.some((item:any)=>item.name==="Coca-Cola"),text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c)).requiredTools.includes("sendMenuLink"),text);
+ }
+ for(const [name,sibling,text] of [
+  ["Coca-Cola 0.5л","Coca-Cola 1л","Хочу Coca-Cola 0.5л."],
+  ["Пицца Вектор 2.0","Пицца Вектор 3.0","Хочу Пицца Вектор 2.0."],
+ ] as const){
+  const decimalMenu=[
+   {name,category_name:"Тест",price:1000,available:true},
+   {name:sibling,category_name:"Тест",price:1200,available:true},
+  ];
+  const c=ctx(text,{menuSnapshot:{items:decimalMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:decimalMenu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),[name],text);
   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
   assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c)).requiredTools.includes("sendMenuLink"),text);
  }

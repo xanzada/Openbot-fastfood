@@ -156,34 +156,50 @@ function catalogWordSupportedByCategory(items: any[], word: string): boolean {
 
 const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|мен)\s+/giu;
 
-function escapeCatalogLiteral(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+type CatalogTextSpan = { start: number; end: number };
 
-function exactCatalogLiteralSpans(items: any[], value: string): Array<{ start: number; end: number }> {
-  const spans: Array<{ start: number; end: number }> = [];
+function exactCatalogProtectedSpans(items: any[], value: string): CatalogTextSpan[] {
+  const wordSpans = [...value.matchAll(/[\p{L}\p{N}-]+/gu)].map((match) => ({
+    word: match[0].toLocaleLowerCase("ru-RU"),
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+  const spans: CatalogTextSpan[] = [];
   for (const item of catalogNamedItemsInText(items, value)) {
-    const name = String(item?.name || item?.title || "").trim();
-    if (!name) continue;
-    const pattern = name.split(/\s+/u).map(escapeCatalogLiteral).join("\\s+");
-    for (const match of value.matchAll(new RegExp(pattern, "giu"))) {
-      const start = match.index ?? 0;
-      spans.push({ start, end: start + match[0].length });
+    const itemWords = catalogSurfaceWords(item?.name || item?.title || "");
+    if (!itemWords.length) continue;
+    const matches: Array<{ start: number; strict: boolean }> = [];
+    for (let start = 0; start + itemWords.length <= wordSpans.length; start += 1) {
+      const candidate = wordSpans.slice(start, start + itemWords.length).map((entry) => entry.word);
+      if (itemWords.every((word, offset) => menuLexemesSameIdentity(word, candidate[offset]))) {
+        matches.push({ start, strict: itemWords.every((word, offset) => word === candidate[offset]) });
+      }
+    }
+    const selected = matches.some((match) => match.strict)
+      ? matches.filter((match) => match.strict)
+      : matches;
+    for (const match of selected) {
+      spans.push({
+        start: wordSpans[match.start].start,
+        end: wordSpans[match.start + itemWords.length - 1].end,
+      });
     }
   }
   return spans;
 }
 
-/** Split independent catalog choices while keeping separators inside an exact SKU name protected. */
-export function catalogIndependentChoiceGroups(items: any[], value: unknown): string[] {
+function splitCatalogTextOutsideExactSpans(items: any[], value: unknown, separator: RegExp): string[] {
   const source = String(value || "");
-  const protectedSpans = exactCatalogLiteralSpans(items, source);
+  const protectedSpans = exactCatalogProtectedSpans(items, source);
   const groups: string[] = [];
   let cursor = 0;
-  for (const match of source.matchAll(CATALOG_CHOICE_SEPARATOR_RE)) {
+  for (const match of source.matchAll(separator)) {
     const start = match.index ?? 0;
     const end = start + match[0].length;
-    if (protectedSpans.some((span) => start < span.end && end > span.start)) continue;
+    const protectedSeparator = protectedSpans.some((span) => match[0].length
+      ? start < span.end && end > span.start
+      : start > span.start && start < span.end);
+    if (protectedSeparator) continue;
     const group = source.slice(cursor, start).trim();
     if (group) groups.push(group);
     cursor = end;
@@ -191,6 +207,11 @@ export function catalogIndependentChoiceGroups(items: any[], value: unknown): st
   const tail = source.slice(cursor).trim();
   if (tail) groups.push(tail);
   return groups.length ? groups : [source.trim()].filter(Boolean);
+}
+
+/** Split independent catalog choices while keeping separators inside an exact SKU name protected. */
+export function catalogIndependentChoiceGroups(items: any[], value: unknown): string[] {
+  return splitCatalogTextOutsideExactSpans(items, value, CATALOG_CHOICE_SEPARATOR_RE);
 }
 
 function hasUnresolvedCatalogVariant(items: any[], clause: string, requireCatalogSubject = false): boolean {
@@ -375,7 +396,8 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   const visible = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
   const decisions = new Map<string, boolean>();
   let saw = false;
-  const clauses = visible.split(/(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу))/iu);
+  const clauses = splitCatalogTextOutsideExactSpans(catalog, visible,
+    /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу))/giu);
   const refusalRe = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
