@@ -158,7 +158,7 @@ function catalogWordSupportedByCategory(items: any[], word: string): boolean {
 const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|мен)\s+/giu;
 const CATALOG_DECISION_CLAUSE_SEPARATOR_RE = /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})/giu;
 const CATALOG_DECISION_PART_REFUSAL_RE = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
-const CATALOG_DECISION_PART_SELECTION_RE = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|маған|алайын|аламын|тапсырыс\s*(?:бер|жаса)|(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L})/iu;
+const CATALOG_DECISION_PART_SELECTION_RE = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса)|(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L})/iu;
 
 type CatalogTextSpan = { start: number; end: number };
 
@@ -334,6 +334,7 @@ function catalogDecisionClauses(items: any[], value: unknown): string[] {
     if (!modes.slice(1).some(Boolean)) return [clause];
     let inherited: "selected" | "refused" | null = null;
     return commaParts.map((part, index) => {
+      if (/^(?:нет|жоқ|жок)[.!\s]*$/iu.test(part)) { inherited = null; return part; }
       if (modes[index]) { inherited = modes[index]; return part; }
       if (inherited === "selected") return `хочу ${part}`;
       if (inherited === "refused") return `не хочу ${part}`;

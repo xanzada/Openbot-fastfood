@@ -906,6 +906,32 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
   assert.equal((await createSendMenuLinkSkill(c).execute({reason:"inherited comma selection"}) as any).allowed,false,text);
  }
+ for(const text of [
+  "Мне Айран, Пирог Комета, Моко не хочу.",
+  "Тогда Айран, Пирог Комета, Моко не хочу.",
+  "Айран керек, Пирог Комета, Моко керек емес.",
+  "Айран алғым келеді, Пирог Комета, Моко керек емес.",
+  "Онда Айран, Пирог Комета, Моко керек емес.",
+ ]){
+  const menu=[
+   {name:"Айран",category_name:"Напитки",price:500,available:true},
+   {name:"Моко",category_name:"Напитки",price:600,available:true},
+   {name:"Пирог Вектор",category_name:"Пироги",price:1800,available:true},
+  ];
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"all inherited selection cues"}) as any).allowed,false,text);
+ }
+ for(const text of [
+  "Хочу Альфа Бета Гамма, нет, хочу Айран.",
+  "Альфа Бета Гамма алайын, жоқ, Айран алайын.",
+ ]){
+  const c=ctx(text,{menuSnapshot:{items:subjectOverlapMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:subjectOverlapMenu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+ }
  const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
  const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
  assert.deepEqual(explicitMixedOut.items.map((item:any)=>item.name),["Айран","Моко"]);
