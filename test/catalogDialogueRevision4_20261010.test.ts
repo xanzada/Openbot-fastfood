@@ -961,6 +961,44 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
    assert.equal((await createSendMenuLinkSkill(c).execute({reason:"comma control boundary"}) as any).allowed,true,text);
   }
  }
+ for(const text of [
+  "Хочу Айран, большое спасибо.",
+  "Хочу Айран, спасибо большое.",
+  "Айран алайын, көп рақмет.",
+  "Айран алайын, рақмет көп.",
+ ]){
+  const menu=[{name:"Айран",category_name:"Напитки",price:500,available:true}];
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"multiword courtesy"}) as any).allowed,true,text);
+ }
+ for(const text of [
+  "Хочу Айран, нет.",
+  "Хочу Айран. Нет.",
+  "Айран алайын, жоқ.",
+  "Айран алайын. Жоқ.",
+ ]){
+  const menu=[{name:"Айран",category_name:"Напитки",price:500,available:true}];
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"terminal reset"}) as any).allowed,false,text);
+ }
+ {
+  const menu=[
+   {name:"Айран",category_name:"Напитки",price:500,available:true},
+   {name:"Моко",category_name:"Напитки",price:600,available:true},
+  ];
+  const c=ctx("Хочу Айран, нет, хочу Моко.",{
+   menuSnapshot:{items:menu,source:"preview"},
+   activeShiftNotes:[{id:"blocked-moko",text:"Моко жоқ",active:true,is_active:true,createdAt:Date.now()}],
+  });
+  const out:any=await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"]);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"reset before blocked replacement"}) as any).allowed,false);
+ }
  const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
  const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
  assert.deepEqual(explicitMixedOut.items.map((item:any)=>item.name),["Айран","Моко"]);

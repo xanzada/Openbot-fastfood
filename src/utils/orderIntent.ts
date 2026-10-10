@@ -159,7 +159,12 @@ const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|м
 const CATALOG_DECISION_CLAUSE_SEPARATOR_RE = /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})/giu;
 const CATALOG_DECISION_PART_REFUSAL_RE = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
 const CATALOG_DECISION_PART_SELECTION_RE = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса)|(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L})/iu;
-const CATALOG_DECISION_CONTROL_PART_RE = /^(?:нет|жоқ|жок|пожалуйста|спасибо|рақмет|рахмет)[.!\s]*$/iu;
+const CATALOG_DECISION_RESET_PART_RE = /^(?:нет|жоқ|жок)[.!\s]*$/iu;
+const CATALOG_DECISION_COURTESY_PART_RE = /^(?:пожалуйста|(?:большое\s+)?спасибо(?:\s+большое)?|(?:көп\s+)?(?:рақмет|рахмет)(?:\s+көп)?)[.!\s]*$/iu;
+
+function catalogDecisionIsControlPart(value: string): boolean {
+  return CATALOG_DECISION_RESET_PART_RE.test(value) || CATALOG_DECISION_COURTESY_PART_RE.test(value);
+}
 
 type CatalogTextSpan = { start: number; end: number };
 
@@ -243,7 +248,11 @@ export function catalogRequestHasActiveAmbiguousOverlap(items: any[], value: unk
   for (const raw of clauses) {
     const clause = raw.trim();
     if (!clause) continue;
-    if (/^(?:нет|жоқ|жок)[.!\s]*$/iu.test(clause)) { resetNextSelection = true; continue; }
+    if (CATALOG_DECISION_RESET_PART_RE.test(clause)) {
+      active.clear();
+      resetNextSelection = true;
+      continue;
+    }
     if (/(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
     if (generalRefusalRe.test(clause)) { active.clear(); resetNextSelection = false; continue; }
     const refused = refusalRe.test(clause);
@@ -333,11 +342,11 @@ function catalogDecisionClauses(items: any[], value: unknown): string[] {
       ? "refused" as const
       : CATALOG_DECISION_PART_SELECTION_RE.test(part) ? "selected" as const : null);
     if (!modes.slice(1).some(Boolean)
-      && !commaParts.slice(1).some((part) => CATALOG_DECISION_CONTROL_PART_RE.test(part))) return [clause];
+      && !commaParts.slice(1).some((part) => catalogDecisionIsControlPart(part))) return [clause];
     let inherited: "selected" | "refused" | null = null;
     return commaParts.map((part, index) => {
-      if (CATALOG_DECISION_CONTROL_PART_RE.test(part)) {
-        if (/^(?:нет|жоқ|жок)/iu.test(part)) inherited = null;
+      if (catalogDecisionIsControlPart(part)) {
+        if (CATALOG_DECISION_RESET_PART_RE.test(part)) inherited = null;
         return part;
       }
       if (modes[index]) { inherited = modes[index]; return part; }
@@ -544,6 +553,12 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   for (const raw of clauses) {
     const clause = raw.trim();
     if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
+    if (CATALOG_DECISION_RESET_PART_RE.test(clause)) {
+      decisions.clear();
+      decisions.set("grounded:query", false);
+      saw = true;
+      continue;
+    }
     const generalRefusal = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:не\s+(?:хочу|буду|нужно|надо)|қаламай\p{L}*|керек\s+емес)\s+(?:ничего|ештеңе|ештене)|(?:отмен(?:а|яю|ить)|болдырма)\s*(?:вс[её]|бәрін|барлығын)?|^(?:(?:я|мен)\s+)?(?:передумал\p{L}*|ойымнан\s+қайттым)[.!\s]*$)/iu.test(clause);
     if (generalRefusal) {
       decisions.clear();
