@@ -1,4 +1,4 @@
-import {isMenuAttributeVerificationQuestion, customerMenuRelationSubject} from "../utils/menuQuestionContext.js";
+import {isMenuAttributeVerificationQuestion, customerMenuRelationSubject, menuLexemesRelated} from "../utils/menuQuestionContext.js";
 import {shoppingConstraintsForContext, eligibleShoppingItems, isShoppingDecision, shoppingBasketQuote, type ShoppingItem} from "../services/shoppingConstraints.service.js";
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import {detectKitchenConsentAnswer} from "../services/kitchenPolicy.service.js";
@@ -1833,6 +1833,19 @@ function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string 
   return result;
 }
 
+function isCatalogOrderSelectionQuestion(clause: string, ctx: FastFoodContext): boolean {
+  if (!/\?\s*$/u.test(clause)
+    || !/(?:аласыз|қалайсыз|таңдайсыз|тапсырыс\s+бересіз|будете\s+заказывать|выберете|хотите\s+заказать)/iu.test(clause)) return false;
+  const catalogWords = (Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [])
+    .flatMap((item: any) => [
+      ...String(item?.name || item?.title || "").match(/[\p{L}\p{N}-]{3,}/gu) || [],
+      ...String(item?.category_name || item?.category || "").match(/[\p{L}\p{N}-]{3,}/gu) || [],
+    ]);
+  const answerWords = clause.match(/[\p{L}\p{N}-]{3,}/gu) || [];
+  return catalogWords.some((catalogWord) =>
+    answerWords.some((answerWord) => menuLexemesRelated(catalogWord, answerWord)));
+}
+
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
   const result = validateFinalTextCore(...args);
   const warnings = [...result.warnings];
@@ -1876,7 +1889,8 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
     warnings.push("repeated_generic_closing_removed");
   }
   const withoutMenuSelection = rewriteCurrentFactClauses(finalText, (clause) =>
-    /^(?:что\s+(?:вас\s+интересует|(?:вы\s+)?(?:выберете|хотите\s+выбрать)|вам\s+больше\s+нравится)|какое\s+(?:блюдо|напиток)(?:\s+или\s+(?:блюдо|напиток))?\s+вас\s+интересует|не\s+қызықтырады|қайсысын\s+(?:қалайсыз|таңдайсыз)|қайсысы\s+көңіліңізден\s+шығады)\s*\?$/iu.test(clause.trim()) ? "" : null);
+    (/^(?:что\s+(?:вас\s+интересует|(?:вы\s+)?(?:выберете|хотите\s+выбрать)|вам\s+больше\s+нравится)|какое\s+(?:блюдо|напиток)(?:\s+или\s+(?:блюдо|напиток))?\s+вас\s+интересует|какую?\s+(?:из\s+них\s+)?(?:вы\s+)?будете\s+заказывать|не\s+қызықтырады|[^?]{0,80}қайсы\p{L}*\s+(?:аласыз|қалайсыз|таңдайсыз|тапсырыс\s+бересіз)|қай\s+түрін\s+таңдайсыз|қайсысы\s+көңіліңізден\s+шығады)\s*\?$/iu.test(clause.trim())
+      || isCatalogOrderSelectionQuestion(clause, args[1])) ? "" : null);
   if (withoutMenuSelection.changed) {
     finalText = withoutMenuSelection.text || (args[1].language === "kk"
       ? "Тапсырысты мәзір сілтемесі арқылы рәсімдей аласыз."

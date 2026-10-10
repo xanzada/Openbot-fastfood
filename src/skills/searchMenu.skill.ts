@@ -1,6 +1,6 @@
 import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { customerCompositionSubject, customerMenuRelationSubject, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion } from "../utils/menuQuestionContext.js";
+import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemesRelated } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -35,19 +35,22 @@ const QUERY_FILLERS = new Set([
 
 export function menuQueryForTurn(text: string, ctx?: FastFoodContext) {
   const relation=ctx?customerMenuRelationSubject(ctx):null;
-  const queryText = relation ? relation.subject || "" : ctx && isContextualCompositionQuestion(text) ? customerCompositionSubject(ctx) || "" : text;
-  return (normalizeText(queryText).match(/[\p{L}\p{N}]+/gu) || [])
+  const queryText = relation ? relation.subject || "" : ctx && isContextualCompositionQuestion(text)
+    ? customerCompositionSubject(ctx) || "" : ctx ? customerMenuTopic(ctx) || text : text;
+  return filterMenuQueryNoise(normalizeText(queryText).match(/[\p{L}\p{N}]+/gu) || [])
     .filter((word) => !QUERY_FILLERS.has(word)).join(" ").slice(0, 80);
 }
 
 function tokenForms(token: string, haystack: string): string[] {
-  const forms = [token];
-  for (const [kazakh, stem] of KAZAKH_MENU_WORDS) if (token.startsWith(kazakh)) forms.push(stem);
-  if (!haystack.includes(token)) {
-    const word = haystack.split(/[^\p{L}\d]+/u).find((candidate) => candidate.length >= 4 && token.startsWith(candidate));
-    if (word) forms.push(word);
+  const forms = new Set([token, menuLexemeStem(token)]);
+  for (const [kazakh, stem] of KAZAKH_MENU_WORDS) if (token.startsWith(kazakh)) forms.add(stem);
+  for (const word of haystack.split(/[^\p{L}\d-]+/u)) {
+    if (word.length >= 4 && menuLexemesRelated(token, word)) {
+      forms.add(word);
+      forms.add(menuLexemeStem(word));
+    }
   }
-  return forms;
+  return [...forms].filter((form) => form.length >= 3);
 }
 
 function scoreMenuItem(item: Record<string, any>, tokens: string[], query: string) {
@@ -99,6 +102,7 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
   const normalizedQuery = normalizeText(query);
   const normalizedCategory = normalizeText(category);
   const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  const categoryTokens = normalizedCategory.split(/\s+/).filter(Boolean);
   // The 50 that used to be hard-wired here was not only a page size: the skill
   // asked for 50 to learn how many matches exist, so a category with 120 dishes
   // reported exactly 50 matches and no next page. The model then answered "that
@@ -109,7 +113,9 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
     .map((item) => ({ item, score: scoreMenuItem(item, tokens, normalizedQuery) }))
     .filter((entry) => {
       const itemCategory = normalizeText(entry.item.category_name || entry.item.category);
-      return (!normalizedCategory || itemCategory.includes(normalizedCategory)) && (!normalizedQuery || entry.score > 0);
+      const categoryMatches = !normalizedCategory || categoryTokens.every((token) =>
+        tokenForms(token, itemCategory).some((form) => itemCategory.includes(form)));
+      return categoryMatches && (!normalizedQuery || entry.score > 0);
     })
     .sort((left, right) => right.score - left.score || Number(left.item.price || 0) - Number(right.item.price || 0))
     .slice(0, max)
@@ -121,7 +127,10 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
       // flag the model reads a hit it cannot explain and tells the guest we have
       // nothing, when the right answer is to offer the dish that contains it.
       const ingredientMatch = Boolean(
-        normalizedQuery && !name.includes(normalizedQuery) && !category.includes(normalizedQuery) && body.includes(normalizedQuery)
+        normalizedQuery
+        && !tokens.some((token) => tokenForms(token, name).some((form) => name.includes(form)))
+        && !tokens.some((token) => tokenForms(token, category).some((form) => category.includes(form)))
+        && tokens.some((token) => tokenForms(token, body).some((form) => body.includes(form)))
       );
       return {
         name: entry.item.name,

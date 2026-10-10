@@ -7,7 +7,7 @@ import { intentMatches } from "../utils/intentText.js";
 import { isMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { getKitchenCheckoutFingerprint } from "../services/redis.service.js";
 import { wantsMenuAsText } from "../utils/magicLink.js";
-import { isContextualCompositionQuestion, isMenuAttributeVerificationQuestion } from "../utils/menuQuestionContext.js";
+import { isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, isMenuCategoryConsultation } from "../utils/menuQuestionContext.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -149,9 +149,10 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     word === name || (name.length >= 4 && word.startsWith(name))));
    const currentCatalogRequest=intentMatches(/(?:какое|какие)\s+(?:блюдо|блюда|вариант\p{L}*)[^.!?]{0,45}(?:вместо|взамен)|(?:покаж\p{L}*|пришл\p{L}*|отправ\p{L}*)\s+(?:актуальн\p{L}*|текущ\p{L}*|свеж\p{L}*)\s+меню/iu,text)
      &&!/(?:не\s+(?:присылай|пришл|отправ|показы)|не\s+нуж)/iu.test(text);
-   const menuLookup = currentCatalogRequest || isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+   const categoryConsultation = isMenuCategoryConsultation(ctx);
+   const menuLookup = categoryConsultation || currentCatalogRequest || isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
-    && (hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
+    && (categoryConsultation || hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }
 

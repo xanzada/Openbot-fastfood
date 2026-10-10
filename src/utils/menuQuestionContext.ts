@@ -67,3 +67,115 @@ export function customerMenuRelationSubject(ctx:FastFoodContext):{subject:string
  }
  return unknown;
 }
+
+const MENU_TOPIC_STOP_WORDS = new Set([
+  "а", "ал", "и", "да", "тағы", "еще", "ещё", "басқа", "другие", "другой", "другое",
+  "бар", "ма", "ме", "ба", "бе", "есть", "ли", "у", "вас", "сіздерде", "сыздерде",
+  "какие", "какой", "қандай", "что", "хочу", "хотим", "посмотреть", "покажите", "көрсетіңіз",
+  "меню", "мәзір", "мне", "маған", "нужен", "нужна", "нужно", "керек",
+]);
+const MENU_QUERY_NOISE = new Set([
+  ...MENU_TOPIC_STOP_WORDS,
+  "спасибо", "рахмет", "ок", "ладно", "жақсы", "жарайды", "понятно", "түсінікті",
+]);
+const MENU_FOLLOW_UP_NOISE = new Set([
+  "а", "ал", "и", "да", "тағы", "еще", "ещё", "басқа", "другие", "другой", "другое",
+]);
+const ALTERNATIVE_FOLLOW_UP_RE = /^(?:(?:а|и|ал)\s+)?(?:(?:есть|бар)\s+)?(?:(?:другие|другой|другое)(?:\s+(?:варианты|варианттары))?|(?:еще|ещё)(?:\s+(?:что-нибудь|варианты?))?|тағы(?:\s+да)?|басқа(?:\s+(?:не|бірдеңе|нұсқалар))?)[?.!\s]*$/iu;
+const INFLECTION_SUFFIXES = [
+  "ларыңыз", "леріңіз", "дарыңыз", "деріңіз", "тарыңыз", "теріңіз",
+  "лар", "лер", "дар", "дер", "тар", "тер",
+  "иями", "ами", "ями", "ого", "ему", "ими", "ыми",
+  "ая", "яя", "ое", "ее", "ые", "ие", "ой", "ей",
+  "ов", "ев", "ом", "ем", "ам", "ям", "ах", "ях",
+  "ның", "нің", "дың", "дің", "тың", "тің", "ны", "ні", "ға", "ге", "қа", "ке",
+  "ды", "ді", "ты", "ті", "да", "де", "та", "те",
+  "а", "я", "ы", "и", "е", "у", "ю",
+].sort((left, right) => right.length - left.length);
+
+export function menuLexemeStem(value: unknown): string {
+  let word = fold(value).replace(/[^\p{L}\p{N}-]+/gu, "").replace(/^-+|-+$/g, "");
+  let changed = true;
+  while (changed && word.length >= 5) {
+    changed = false;
+    for (const suffix of INFLECTION_SUFFIXES) {
+      if (word.endsWith(suffix) && word.length - suffix.length >= 4) {
+        word = word.slice(0, -suffix.length);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return word;
+}
+
+export function menuLexemes(value: unknown): string[] {
+  return (fold(unquoted(value)).match(/[\p{L}\p{N}-]{3,}/gu) || []).map(menuLexemeStem).filter(Boolean);
+}
+
+export function menuLexemesRelated(left: unknown, right: unknown): boolean {
+  const a = menuLexemeStem(left);
+  const b = menuLexemeStem(right);
+  return Boolean(a && b && (a === b || a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a))));
+}
+
+function visibleWords(value: unknown): string[] {
+  return fold(unquoted(value)).match(/[\p{L}\p{N}-]{2,}/gu) || [];
+}
+
+function catalogTopicInText(items: any[], value: unknown, allowItemName = false): string | null {
+  const words = visibleWords(value).filter((word) => !MENU_TOPIC_STOP_WORDS.has(word));
+  if (!words.length) return null;
+  const categories = [...new Set(items.map((item) => String(item?.category_name || item?.category || "").trim()).filter(Boolean))];
+  const categoryHits = words.filter((word) => categories.some((category) =>
+    visibleWords(category).some((categoryWord) => menuLexemesRelated(word, categoryWord))));
+  if (categoryHits.length) return [...new Set(categoryHits)].join(" ");
+
+  if (!allowItemName) return null;
+  const matchingCategories = [...new Set(items.filter((item) => {
+    const nameWords = visibleWords(item?.name || item?.title);
+    return words.some((word) => nameWords.some((nameWord) => menuLexemesRelated(word, nameWord)));
+  }).map((item) => String(item?.category_name || item?.category || "").trim()).filter(Boolean))];
+  return matchingCategories.length === 1 ? matchingCategories[0] : null;
+}
+
+export function isAlternativeMenuFollowUp(value: unknown): boolean {
+  return ALTERNATIVE_FOLLOW_UP_RE.test(fold(unquoted(value)));
+}
+
+/**
+ * Resolves only a catalog-derived topic. A current category always wins; bare
+ * alternative follow-ups may look back through fresh, tenant-scoped customer
+ * turns. Assistant prose is never evidence for the customer's topic.
+ */
+export function customerMenuTopic(ctx: FastFoodContext): string | null {
+  const items = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  const current = fold(unquoted(ctx.text));
+  const currentTopic = catalogTopicInText(items, current);
+  if (currentTopic) return currentTopic;
+  if (!isAlternativeMenuFollowUp(current)) return null;
+
+  const now = Date.now();
+  for (const row of (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-12).reverse()) {
+    if (!row || row.role !== "user") continue;
+    const text = fold(unquoted(row.text ?? row.content ?? row.body ?? ""));
+    if (!text || text === current) continue;
+    if (row.instanceId && row.instanceId !== ctx.instanceId || row.instance_id && row.instance_id !== ctx.instanceId) return null;
+    if (row.phone && String(row.phone).replace(/\D/g, "") !== String(ctx.phone).replace(/\D/g, "")) return null;
+    const raw = row.createdAt ?? row.timestamp;
+    const at = typeof raw === "number" ? raw : Date.parse(String(raw || ""));
+    if (!Number.isFinite(at) || at > now || at <= now - 30 * 60_000) return null;
+    if (NEUTRAL_ACK_RE.test(text)) continue;
+    return catalogTopicInText(items, text, true);
+  }
+  return null;
+}
+
+export function isMenuCategoryConsultation(ctx: FastFoodContext): boolean {
+  return Boolean(customerMenuTopic(ctx));
+}
+
+export function filterMenuQueryNoise(words: string[]): string[] {
+  if (words.length && words.every((word) => MENU_QUERY_NOISE.has(word))) return [];
+  return words.filter((word) => !MENU_FOLLOW_UP_NOISE.has(word));
+}

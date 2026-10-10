@@ -109,6 +109,7 @@ test("category consultation plans grounded search then self-ordering link and re
 
 test("morphology lookup still applies note and sold-out barriers before alternatives", async () => {
   const c = ctx("пиццу", {
+    menuGrounding: undefined,
     activeShiftNotes: [{ id: "fixture-note", text: "Маргарита Романа нет" }],
   });
   const live = [...menu, { name: "Северная большая", category_name: "Пиццы", price: 2500, available: false }];
@@ -124,17 +125,18 @@ test("order-taking selection questions are removed in both languages", () => {
   for (const [language, raw] of [
     ["kk", "Пиццалардың қайсысын аласыз?"],
     ["kk", "Қай пиццаға тапсырыс бересіз?"],
+    ["kk", "Қай пиццаны аласыз?"],
     ["kk", "Қай түрін таңдайсыз?"],
     ["ru", "Какую из них будете заказывать?"],
   ]) {
     const result = validateFinalText(raw, ctx("Какие пиццы у вас есть?", { language }), { toolsCalled: ["searchMenu", "sendMenuLink"] });
-    assert.doesNotMatch(result.text, /қайсысын аласыз|тапсырыс бересіз|түрін таңдайсыз|будете заказывать/iu);
+    assert.doesNotMatch(result.text, /қайсысын аласыз|пиццаны аласыз|тапсырыс бересіз|түрін таңдайсыз|будете заказывать/iu);
     assert.ok(result.warnings.includes("menu_selection_question_removed"));
   }
 });
 
 test("necessary operational and safety clarifications remain available", () => {
-  for (const raw of ["Қай мекенжайға жеткізу керек?", "Аллергияңыз бар ма?", "Қай мөлшерді тексерейін?"]) {
+  for (const raw of ["Қай мекенжайға жеткізу керек?", "Қай мекенжайға тапсырыс бересіз?", "Аллергияңыз бар ма?", "Қай мөлшерді тексерейін?"]) {
     assert.equal(validateFinalText(raw, ctx("Маған ақпарат керек", { language: "kk" }), { toolsCalled: [] }).text, raw);
   }
 });
