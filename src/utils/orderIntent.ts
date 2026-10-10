@@ -94,7 +94,7 @@ function catalogSurfaceWords(value: unknown): string[] {
     .match(/[\p{L}\p{N}-]+/gu) || [];
 }
 
-const CATALOG_DECISION_NOISE_RE = /^(?:а|ал|и|және|мен|я|мы|вы|но|бірақ|хоч\p{L}*|возьм\p{L}*|беру|закаж\p{L}*|заказ\p{L}*|дай(?:те)?|нуж\p{L}*|мне|нам|маған|бізге|тогда|онда|керек|қажет|алғым|кел\p{L}*|алайын|аламын|тапсырыс|бер\p{L}*|жаса\p{L}*|не|нет|жоқ|жок|емес|алмай\p{L}*|қаламай\p{L}*|передумал\p{L}*|отказ\p{L}*|ничего|никак\p{L}*|особенно|әсіресе|тоже|также|ещ[её]|тағы|дағы|да|де|та|те|бір|екі|үш|төрт|бес|один|одну|два|две|три|четыре|пять|сколько|қанша|канша|стоит|цена|баға|бағасы|тг|тенге|теңге|пожалуйста)$/iu;
+const CATALOG_DECISION_NOISE_RE = /^(?:а|ал|и|және|мен|я|мы|вы|но|бірақ|хоч\p{L}*|возьм\p{L}*|взять|беру|закаж\p{L}*|заказ\p{L}*|дай(?:те)?|нуж\p{L}*|мне|нам|маған|бізге|тогда|онда|керек|қажет|алғым|кел\p{L}*|алайын|аламын|тапсырыс|бер\p{L}*|жаса\p{L}*|не|нет|жоқ|жок|емес|алмай\p{L}*|қаламай\p{L}*|передумал\p{L}*|отказ\p{L}*|ничего|никак\p{L}*|особенно|әсіресе|тоже|также|ещ[её]|тағы|дағы|да|де|та|те|бір|екі|үш|төрт|бес|один|одну|два|две|три|четыре|пять|сколько|қанша|канша|стоит|цена|баға|бағасы|тг|тенге|теңге|пожалуйста)$/iu;
 const CATALOG_OPERATIONAL_MODIFIER_RE = /^(?:сейчас|қазір|казир|қәзір|навынос|самовывоз|әкету)$/iu;
 const CATALOG_OPERATIONAL_MODIFIER_PHRASES = [["с", "собой"], ["на", "вынос"], ["алып", "кету"]];
 
@@ -159,6 +159,7 @@ const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|м
 const CATALOG_DECISION_CLAUSE_SEPARATOR_RE = /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})/giu;
 const CATALOG_DECISION_PART_REFUSAL_RE = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
 const CATALOG_DECISION_PART_SELECTION_RE = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса)|(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L})/iu;
+const CATALOG_DECISION_CONTROL_PART_RE = /^(?:нет|жоқ|жок|пожалуйста|спасибо|рақмет|рахмет)[.!\s]*$/iu;
 
 type CatalogTextSpan = { start: number; end: number };
 
@@ -331,10 +332,14 @@ function catalogDecisionClauses(items: any[], value: unknown): string[] {
     const modes = commaParts.map((part) => CATALOG_DECISION_PART_REFUSAL_RE.test(part)
       ? "refused" as const
       : CATALOG_DECISION_PART_SELECTION_RE.test(part) ? "selected" as const : null);
-    if (!modes.slice(1).some(Boolean)) return [clause];
+    if (!modes.slice(1).some(Boolean)
+      && !commaParts.slice(1).some((part) => CATALOG_DECISION_CONTROL_PART_RE.test(part))) return [clause];
     let inherited: "selected" | "refused" | null = null;
     return commaParts.map((part, index) => {
-      if (/^(?:нет|жоқ|жок)[.!\s]*$/iu.test(part)) { inherited = null; return part; }
+      if (CATALOG_DECISION_CONTROL_PART_RE.test(part)) {
+        if (/^(?:нет|жоқ|жок)/iu.test(part)) inherited = null;
+        return part;
+      }
       if (modes[index]) { inherited = modes[index]; return part; }
       if (inherited === "selected") return `хочу ${part}`;
       if (inherited === "refused") return `не хочу ${part}`;

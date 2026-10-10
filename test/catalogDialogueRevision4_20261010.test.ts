@@ -932,6 +932,35 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
  }
+ for(const text of [
+  "Хочу Айран, пожалуйста, Моко не хочу.",
+  "Хочу Айран, спасибо, Моко не хочу.",
+  "Айран алайын, рақмет, Моко керек емес.",
+ ]){
+  const menu=mixedAmbiguousMenu.filter((item)=>item.name!=="Мока");
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"comma courtesy"}) as any).allowed,true,text);
+ }
+ {
+  const menu=[
+   {name:"Альфа Бета",category_name:"Выпечка",price:1000,available:true},
+   {name:"Бета Гамма",category_name:"Выпечка",price:1200,available:true},
+   {name:"Айран",category_name:"Напитки",price:500,available:true},
+  ];
+  for(const text of [
+   "Хочу Альфа Бета Гамма, нет!, Хочу Айран.",
+   "Альфа Бета Гамма алайын, жоқ!, Айран алайын.",
+   "Пирог Орбита не хочу, Хочу взять Айран.",
+  ]){
+   const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+   const out:any=await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+   assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
+   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+   assert.equal((await createSendMenuLinkSkill(c).execute({reason:"comma control boundary"}) as any).allowed,true,text);
+  }
+ }
  const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
  const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
  assert.deepEqual(explicitMixedOut.items.map((item:any)=>item.name),["Айран","Моко"]);
