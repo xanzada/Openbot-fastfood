@@ -25,7 +25,7 @@ const ctx = (text: string, language: "kk" | "ru" = "kk", extra: Record<string, u
   ({ text, language, instanceId: "t", phone: "77000000000", menuSnapshot: { items }, activeOrder: null, ...extra }) as any;
 
 // Live 2026-10-04: «пицца қаншадан?» + model timeout = red high-urgency SOS about nothing.
-test("a price question during a model outage is answered from the menu, with no SOS", async () => {
+test("a price question during a model outage is answered from the current menu and link, with no SOS", async () => {
   routed.length = 0;
   const c = ctx("Ассалаумағалейкум брат, пицца керек еді, пицца, пицца қаншадан?");
   const reply = await answerAgentFailure(c, new Error("TEXT_MODEL_TIMEOUT:gemini:20000ms"), route("operator_case_created"), linkOk);
@@ -33,8 +33,8 @@ test("a price question during a model outage is answered from the menu, with no 
   assert.match(reply, /Пицца Маргарита — 2500 ₸/);
   assert.match(reply, /Пицца Пепперони — 2900 ₸/);
   assert.doesNotMatch(reply, /4 сезона/, "sold-out dishes are not offered");
-  assert.doesNotMatch(reply, /сілтемеде/);
-  assert.notEqual(c.magicLinkGranted, true);
+  assert.match(reply, /сілтемесін.*төменге/);
+  assert.equal(c.magicLinkGranted, true);
   assert.doesNotMatch(reply, /Оператор/);
 });
 
