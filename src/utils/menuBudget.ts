@@ -61,7 +61,8 @@ function currentBudgetClauses(text: string): string[] {
     // Having this amount and "no other money" is not a denial of the stated budget.
     .replace(/(?<!\p{L})баска(?:\s+акшам?)?\s+жок(?!\p{L})/giu, "");
   // Mask unsupported decimal amounts, preserving inquiry kind before punctuation splitting.
-  const clauses = budgetText.replace(/\d+[.,]\d+(\s*(?:тенге(?:ге|м)?|тг|kzt|₸))(?!\p{L})/giu, (_match, currency) => "unsupported_amount " + currency)
+  const clauses = budgetText.replace(/\d+[.,]\d+(?!\p{L})(\s*(?:тенге(?:ге|м)?|тг|kzt|₸))?/giu,
+    (_match, currency = "") => "unsupported_amount " + currency)
     .split(/[.!?;,\n]+|(?<!\p{L})(?:но|бирак)(?!\p{L})/iu);
   const exploratory = EXPLORATION_RE.test(value);
   const hungry = HUNGER_RE.test(value);
@@ -72,7 +73,8 @@ function currentBudgetClauses(text: string): string[] {
       && !EXPLORATION_RE.test(clause)
       && !/(?:не\s+(?:хочу|буду)|алмай|бар\s*ма|если|можно|могу)/iu.test(clause)) return false;
     PRICE_CEILING_RE.lastIndex = 0;
-    const ceiling = PRICE_CEILING_RE.test(clause);
+    const unsupportedCeiling = /(?:(?<!\p{L})(?:до|не\s+дороже)\s*unsupported_amount|unsupported_amount\s*(?:тенге(?:ге|м|мен|лик)?|тг|kzt|₸)?\s*(?:дейин|аспайтын))(?!\p{L})/iu.test(clause);
+    const ceiling = PRICE_CEILING_RE.test(clause) || unsupportedCeiling;
     PRICE_CEILING_RE.lastIndex = 0;
     const categoryBrowse = CATEGORY_BROWSE_RE.test(clause);
     // A ceiling attached to an ordinary lexical subject is a catalog budget

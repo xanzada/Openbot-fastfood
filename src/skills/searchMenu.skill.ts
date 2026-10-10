@@ -88,6 +88,23 @@ function exactCatalogCategory(items: Record<string, any>[], topic: unknown): str
   return exact[0];
 }
 
+function mostSpecificNamedMenuItem(items: Record<string, any>[], query: string): Record<string, any> | null {
+  const queryTokens = [...new Set(menuLexemes(query))];
+  if (!queryTokens.length) return null;
+  const complete = new Map<string, { item: Record<string, any>; specificity: number }>();
+  for (const item of items) {
+    const name = String(item?.name || item?.title || "").trim();
+    const nameTokens = [...new Set(menuLexemes(name))];
+    if (!name || !nameTokens.length || !nameTokens.every((token) =>
+      queryTokens.some((candidate) => menuLexemesRelated(token, candidate)))) continue;
+    complete.set(normalizeText(name), { item, specificity: nameTokens.length });
+  }
+  if (!complete.size) return null;
+  const greatestSpecificity = Math.max(...[...complete.values()].map((entry) => entry.specificity));
+  const best = [...complete.values()].filter((entry) => entry.specificity === greatestSpecificity);
+  return best.length === 1 ? best[0].item : null;
+}
+
 function scoreMenuItem(item: Record<string, any>, tokens: string[], query: string) {
   const name = normalizeText(item.name || item.title);
   const category = normalizeText(item.category_name || item.category);
@@ -281,7 +298,22 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       // the real number of matches, or the page and the total agree and nothing
       // tells the model that more of the menu exists.
       const broadCategoryBrowse = isBroadMenuCategoryBrowse(ctx);
+      // Resolve an exact SKU from the customer's full phrase. `query` may already
+      // have collapsed to a live category ("Донер"), which must not hide a longer
+      // named item in "Донер комбо құрамы қандай?". Broad category browsing stays
+      // unfiltered so a category can never collapse to one same-named product.
+      const specificNameSource = relation?.subject
+        || (isContextualCompositionQuestion(ctx.text) ? customerCompositionSubject(ctx) : null)
+        || ctx.text
+        || query;
+      const requestedSpecificItem = !broadCategoryBrowse && query
+        ? mostSpecificNamedMenuItem(items, String(specificNameSource || query))
+        : null;
       let allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
+      if (requestedSpecificItem) {
+        const requestedKey = normalizeText(requestedSpecificItem.name || requestedSpecificItem.title);
+        allMatches = allMatches.filter((item: any) => normalizeText(item?.name || item?.title) === requestedKey);
+      }
       if (broadCategoryBrowse && isAlternativeMenuFollowUp(ctx.text)) {
         // Assistant prose is never a fact source. It is used only as a display hint:
         // an exact name must also exist in this freshly filtered live result.
@@ -323,8 +355,11 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       const requestedFromFull = query
         ? selectPublicMenuItems(items, query, "", items.length || 1)
         : [];
-      const requestedExact = requestedFromFull.find((item: any) => item.match_kind === "exact_name")
-        || (requestedFromFull.length === 1 ? requestedFromFull[0] : null);
+      const requestedExact = requestedSpecificItem
+        ? { name: requestedSpecificItem.name || requestedSpecificItem.title,
+            category: requestedSpecificItem.category_name || requestedSpecificItem.category || "" }
+        : requestedFromFull.find((item: any) => item.match_kind === "exact_name")
+          || (requestedFromFull.length === 1 ? requestedFromFull[0] : null);
       const alternativeCategory = category
         || (matches.length === 0 ? String(requestedExact?.category || "").trim() : "");
       const safeAlternatives = !verification && matches.length === 0 && allowedItems.length && alternativeCategory

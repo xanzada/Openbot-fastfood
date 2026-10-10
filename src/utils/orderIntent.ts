@@ -91,7 +91,7 @@ export function hasDirectOrderIntent(text = ""): boolean {
 
 function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   const words = menuLexemes(clause);
-  const itemMatches: Array<{ key: string; matched: number; total: number }> = [];
+  const itemMatches: Array<{ key: string; matched: number; total: number; spans: Array<[number, number]> }> = [];
   const categoryKeys = new Set<string>();
   for (const item of items) {
     const name = String(item?.name || item?.title || "").trim();
@@ -100,10 +100,17 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
     const categoryTokens = menuLexemes(category);
     const matched = nameTokens.filter((token) =>
       words.some((word) => menuLexemesRelated(token, word))).length;
+    const spans: Array<[number, number]> = [];
+    for (let start = 0; nameTokens.length && start + nameTokens.length <= words.length; start += 1) {
+      if (nameTokens.every((token, offset) => menuLexemesRelated(token, words[start + offset]))) {
+        spans.push([start, start + nameTokens.length - 1]);
+      }
+    }
     if (name && matched) itemMatches.push({
       key: "item:" + name.toLocaleLowerCase("ru-RU"),
       matched,
       total: nameTokens.length,
+      spans,
     });
     if (categoryTokens.length && categoryTokens.every((token) =>
       words.some((word) => menuLexemesRelated(token, word)))) {
@@ -111,15 +118,15 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
     }
   }
 
-  // A complete, more-specific live product name wins over siblings that share
-  // only a generic word (for example a category noun). Otherwise a sold-out or
-  // note-blocked exact SKU could borrow checkout permission from an available
-  // sibling. Bare category queries remain broad because no multi-token product
-  // name is complete and all equally specific matches stay eligible.
-  const complete = itemMatches.filter((match) => match.total > 0 && match.matched === match.total);
+  // A longer complete live name suppresses a shorter name only when their text
+  // spans overlap. Independent choices of different lengths ("Айран и Пирог
+  // Орбита") must both survive; a global longest-name winner loses the first one.
+  const complete = itemMatches.filter((match) => match.spans.length > 0);
   if (complete.length) {
-    const greatestSpecificity = Math.max(...complete.map((match) => match.total));
-    return new Set(complete.filter((match) => match.total === greatestSpecificity).map((match) => match.key));
+    const independent = complete.filter((match) => match.spans.some(([start, end]) =>
+      !complete.some((other) => other !== match && other.total > match.total
+        && other.spans.some(([outerStart, outerEnd]) => outerStart <= start && outerEnd >= end))));
+    return new Set(independent.map((match) => match.key));
   }
 
   const keys = new Set<string>();
@@ -147,6 +154,16 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
     const categoryTokens = menuLexemes(category);
     if (categoryTokens.length) allowedKeys.add("category:" + categoryTokens.join("|"));
   }
+  const categoryMembers = new Map<string, Set<string>>();
+  for (const item of catalog) {
+    const name = String(item?.name || item?.title || "").trim();
+    const categoryTokens = menuLexemes(item?.category_name || item?.category || "");
+    if (!name || !categoryTokens.length) continue;
+    const categoryKey = "category:" + categoryTokens.join("|");
+    const members = categoryMembers.get(categoryKey) || new Set<string>();
+    members.add("item:" + name.toLocaleLowerCase("ru-RU"));
+    categoryMembers.set(categoryKey, members);
+  }
   const lookupTokens = menuLexemes(grounding.lookup_query || "");
   if (allowed.length) allowedKeys.add("grounded:query");
   const visible = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
@@ -156,6 +173,13 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   for (const raw of clauses) {
     const clause = raw.trim();
     if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
+    const generalRefusal = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:отмен(?:а|яю|ить)|болдырма)\s*(?:вс[её]|бәрін|барлығын)?)/iu.test(clause);
+    if (generalRefusal) {
+      decisions.clear();
+      decisions.set("grounded:query", false);
+      saw = true;
+      continue;
+    }
     const subjects = catalogChoiceSubjects(catalog, clause);
     const clauseWords = menuLexemes(clause);
     if (!subjects.size && lookupTokens.length && (allowed.length <= 1 || lookupTokens.some((token) =>
@@ -172,7 +196,12 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
     );
     if (!refused && !selected) continue;
     saw = true;
-    for (const subject of subjects) decisions.set(subject, selected && allowedKeys.has(subject));
+    for (const subject of subjects) {
+      decisions.set(subject, selected && allowedKeys.has(subject));
+      if (!selected && subject.startsWith("category:")) {
+        for (const member of categoryMembers.get(subject) || []) decisions.set(member, false);
+      }
+    }
   }
   return saw ? [...decisions.values()].some(Boolean) : null;
 }

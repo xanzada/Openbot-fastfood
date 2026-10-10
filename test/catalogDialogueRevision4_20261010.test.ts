@@ -12,6 +12,7 @@ const {validateFinalText}=await import("../src/agent/finalValidator.js");
 const budget=await import("../src/utils/menuBudget.js");
 const {isCurrentPaymentDetailsIntent}=await import("../src/utils/paymentIntent.js");
 const {menuLinkDecisionForTurn}=await import("../src/utils/magicLink.js");
+const {currentGroundedCatalogCheckoutDecision}=await import("../src/utils/orderIntent.js");
 const {redisClient}=await import("../src/services/redis.service.js");
 test.after(()=>{if(redisClient.isOpen)redisClient.destroy();});
 
@@ -255,6 +256,23 @@ test("an unavailable or note-blocked exact SKU cannot select an available siblin
  }
 });
 
+test("a fresh operator note alone blocks an otherwise available exact SKU",async()=>{
+ const live=[
+  {name:"Пирог Орбита",category_name:"Пироги",price:1800,available:true},
+  {name:"Пирог Вектор",category_name:"Пироги",price:1700,available:true},
+ ];
+ const c=ctx("Хочу Пирог Орбита.",{
+  menuSnapshot:{items:live,source:"live"},
+  activeShiftNotes:[{id:"blocked",text:"Пирог Орбита жоқ",active:true,is_active:true,createdAt:Date.now()}],
+ });
+ const out:any=await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+ assert.equal(out.items.length,0);
+ assert.ok(out.safe_alternatives?.some((item:any)=>item.name==="Пирог Вектор"));
+ const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c));
+ assert.ok(!refreshed.requiredTools.includes("sendMenuLink"));
+ assert.equal((await createSendMenuLinkSkill(c).execute({reason:"note-blocked exact SKU"}) as any).allowed,false);
+});
+
 test("a corrected unseen arbitrary SKU is admitted to live grounding",()=>{
  const c=ctx("Не хочу кибины. Нет, хочу кибины.",{menuSnapshot:{items:items.slice(0,3),source:"preview"}});
  const initial=policy.resolveAgentToolPlan(c);
@@ -266,4 +284,73 @@ test("Kazakh explicit wait question requires a fresh kitchen read before link",(
  const c=ctx("Қандай пиццалар бар және қанша күту керек?",{language:"kk"});
  const plan=policy.resolveAgentToolPlan(c);
  assert.deepEqual(plan.requiredTools.slice(0,3),["searchMenu","getKitchenStatus","sendMenuLink"]);
+});
+
+test("price-free offers of unavailable or note-blocked products are removed",()=>{
+ const blocked={name:"Пепперони",category_name:"Пиццы",price:2500,available:false};
+ const alternative={name:"Маргарита",category_name:"Пиццы",price:2100,available:true};
+ for(const draft of ["Попробуйте Пепперони.","Можно взять Пепперони."]){
+  const c=ctx("Какие пиццы есть?",{
+   menuSnapshot:{items:[...items,blocked,alternative],source:"live"},
+   menuGrounding:{menu_lookup:"live",lookup_query:"пиццы",category_browse:true,items:[alternative],unavailable_now:[blocked],totalMatched:1},
+   activeShiftNotes:[],
+  });
+  const result=validateFinalText(draft,c,{toolsCalled:["searchMenu"]});
+  assert.doesNotMatch(result.text,/Попробуйте|Можно взять/u,draft);
+  assert.match(result.text,/недоступно:\s*Пепперони/iu,draft);
+  assert.match(result.text,/Маргарита/u,draft);
+ }
+});
+
+test("a new ambiguous numeric budget marks prior budget uncertain while qualitative followups retain it",async()=>{
+ const {reduceShoppingConstraints}=await import("../src/services/shoppingConstraints.service.js");
+ const prior=reduceShoppingConstraints(ctx("Какие салаты до 5000?"),null);
+ assert.equal(prior.budget,5000);
+ assert.equal(prior.uncertainBudget,false);
+ const ambiguous=reduceShoppingConstraints(ctx("Что взять на 2000 или 3000 тенге?"),prior);
+ assert.equal(ambiguous.budget,5000);
+ assert.equal(ambiguous.uncertainBudget,true);
+ const ambiguousQualitative=reduceShoppingConstraints(ctx("Подешевле на 2000 или 3000 тенге?"),prior);
+ assert.equal(ambiguousQualitative.budget,5000);
+ assert.equal(ambiguousQualitative.uncertainBudget,true);
+ const qualitative=reduceShoppingConstraints(ctx("Салаты подешевле"),prior);
+ assert.equal(qualitative.budget,5000);
+ assert.equal(qualitative.uncertainBudget,false);
+});
+
+test("an exact blocked multiword SKU cannot retrieve a cross-category sibling sharing one token",async()=>{
+ const live=[
+  {name:"Лимонад Орбита",category_name:"Напитки",price:900,available:false},
+  {name:"Лимонад Цитрус",category_name:"Напитки",price:850,available:true},
+  {name:"Комбо Орбита",category_name:"Комбо",price:3100,available:true},
+ ];
+ const c=ctx("Хочу Лимонад Орбита",{menuSnapshot:{items:live,source:"live"}});
+ const out:any=await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+ assert.equal(out.items.length,0);
+ assert.ok(out.safe_alternatives?.length>0);
+ assert.ok(out.safe_alternatives.every((item:any)=>item.category==="Напитки"));
+ assert.ok(!out.eligible_choices?.some((item:any)=>item.name==="Комбо Орбита"));
+});
+
+
+test("grounded checkout keeps independent SKUs while a longer overlapping SKU wins only its own span",()=>{
+ const live=[
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+  {name:"Пирог Орбита",category_name:"Выпечка",price:1500,available:false},
+ ];
+ const grounded={lookup_query:"айран пирог орбита",items:[live[0]]};
+ assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Хочу Айран и Пирог Орбита.",{menuSnapshot:{items:live,source:"live"},menuGrounding:grounded})),true);
+ assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Хочу Айран. Не хочу Айран и Пирог Орбита.",{menuSnapshot:{items:live,source:"live"},menuGrounding:grounded})),false);
+});
+
+test("a later category or general refusal clears earlier grounded checkout choices",()=>{
+ const live=[
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+  {name:"Лимонад",category_name:"Напитки",price:700,available:true},
+ ];
+ const grounded={lookup_query:"айран лимонад",items:live};
+ const decision=(text:string)=>currentGroundedCatalogCheckoutDecision(ctx(text,{menuSnapshot:{items:live,source:"live"},menuGrounding:grounded}));
+ assert.equal(decision("Хочу Айран. Не хочу напитки."),false);
+ assert.equal(decision("Хочу Айран. Передумал, ничего не хочу."),false);
+ assert.equal(decision("Не хочу напитки. Хочу Айран."),true);
 });

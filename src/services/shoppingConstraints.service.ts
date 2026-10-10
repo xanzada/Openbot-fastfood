@@ -37,8 +37,9 @@ export function reduceShoppingConstraints(ctx:FastFoodContext,previous:unknown,n
  const budgetClause=text.split(/[.!?;\n]/u).find(clause=>/бюджет/iu.test(clause)&&/(?:увелич|подня|повыс|теперь|до\s+\d|котер|енди)/iu.test(foldIntentText(clause)));
  const ownedMoney=/(?:у\s+меня|менде|тенгем)(?!\p{L})/iu.test(folded)&&!/(?:заказ|тапсырыс|оплат|толем|чек|стоим|сумма)/iu.test(folded);
  const amount=budgetClause?getMenuBudgetInquiry("бюджет "+budgetClause):getMenuBudgetInquiry(ownedMoney?"бюджет "+text:text);
+ const explicitAmountMention=/\d|(?<!\p{L})(?:тенге\p{L}*|тг|kzt|₸|мың|миллион)(?!\p{L})/iu.test(folded);
  if(amount!==null){s.budget=amount;s.uncertainBudget=false;}
- else if((isMenuBudgetInquiry(text)||budgetClause)&&!isQualitativeMenuBudgetInquiry(text)&&s.budget===null){s.uncertainBudget=true;}
+ else if((isMenuBudgetInquiry(text)||budgetClause)&&(!isQualitativeMenuBudgetInquiry(text)||explicitAmountMention)){s.uncertainBudget=true;}
  const vegetarianRequest=/(?:^|[.!?;,]\s*)(?:я\s+вегетариан(?:ец|ка)(?!\p{L})|(?:(?:я|мне)\s+)?(?:хочу|нужно|нужны|дайте|предложите|посоветуйте)\s+вегетарианск(?:ое|ую|ие|ий)(?!\p{L})|вегетарианск(?:ое|ую|ие|ий)(?!\p{L}))/iu.test(folded);
  if(vegetarianRequest||/(?:без\s+мяса|не\s+ем\s+мяс|мясо\s+не\s+ем|(?<!\p{L})етсиз(?!\p{L})|ет\s+жемей)/iu.test(folded))s.avoidMeat=true;
  if(/(?:можно\s+с\s+мясом|мясо\s+(?:теперь\s+)?можно|теперь\s+ем\s+мяс|ет\s+жеймин|етти\s+болады)/iu.test(folded))s.avoidMeat=false;

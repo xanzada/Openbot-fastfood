@@ -44,7 +44,7 @@ test("current budget signature does not consult prior assistant facts",()=>{
 });
 test("unsupported amount remains inquiry kind without a numeric advice amount",async()=>{
  const {isMenuBudgetInquiry}=await import("../src/utils/menuBudget.js");
- for(const text of ["1000001 теңгеге не аламын?","0 теңгеге не аламын?","2000.50 теңгеге не аламын?","2000,50 теңгеге не аламын?"]){
+ for(const text of ["1000001 теңгеге не аламын?","0 теңгеге не аламын?","2000.50 теңгеге не аламын?","2000,50 теңгеге не аламын?","Салаты до 2500.50","Салаты до 2500,50"]){
   assert.equal(isMenuBudgetInquiry(text),true);assert.equal(getMenuBudgetInquiry(text),null);
  }
  assert.equal(isMenuBudgetInquiry("1000001 теңгеге не аламын? Бірақ екі донер аламын"),true);
