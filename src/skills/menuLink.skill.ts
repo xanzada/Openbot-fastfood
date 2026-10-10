@@ -1,4 +1,6 @@
 import { hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
+import { isMenuCategoryConsultation } from "../utils/menuQuestionContext.js";
+import { complaintHasActionableDetail, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 export { hasDirectOrderIntent } from "../utils/orderIntent.js";
 
 import { createTool } from "@voltagent/core";
@@ -87,7 +89,12 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       const acceptedFingerprint = await getKitchenCheckoutFingerprint(ctx.instanceId, ctx.phone).catch(() => null);
       const consentAccepted = acceptedFingerprint === policy.fingerprint;
       const consentContinuation = consentAccepted && ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes";
-      if (!hasCustomerCheckoutIntent(text) && !consentContinuation) {
+      const immediateServiceIncident = isExplicitHumanOperatorRequest(text) || isExplicitCourierContactRequest(text)
+        || isCurrentComplaintRequest(text) || isLikelyComplaintText(text) && complaintHasActionableDetail(text);
+      // Keep the skill's authorization identical to the planner: a grounded
+      // category consultation is a request to browse the self-ordering menu.
+      const categoryConsultation = !immediateServiceIncident && isMenuCategoryConsultation(ctx);
+      if (!hasCustomerCheckoutIntent(text) && !consentContinuation && !categoryConsultation) {
         ctx.magicLinkGranted = false;
         return { allowed: false, link: null, reason: "link_not_requested", message: null,
           note: "Answer the customer's question. No current checkout/link request exists; do not promise or point to a link." };

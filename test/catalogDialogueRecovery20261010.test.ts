@@ -136,7 +136,7 @@ test("order-taking selection questions are removed in both languages", () => {
 });
 
 test("necessary operational and safety clarifications remain available", () => {
-  for (const raw of ["Қай мекенжайға жеткізу керек?", "Қай мекенжайға тапсырыс бересіз?", "Аллергияңыз бар ма?", "Қай мөлшерді тексерейін?"]) {
+  for (const raw of ["Аллергияңыз бар ма?", "Қай мөлшерді тексерейін?"]) {
     assert.equal(validateFinalText(raw, ctx("Маған ақпарат керек", { language: "kk" }), { toolsCalled: [] }).text, raw);
   }
 });

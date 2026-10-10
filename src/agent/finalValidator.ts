@@ -1833,6 +1833,8 @@ function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string 
   return result;
 }
 
+const ORDER_TAKING_COLLECTION_QUESTION_RE = /^(?:(?:қай|қандай)\s+мекенжайға\s+(?:(?:тапсырыс(?:ты)?\s+)?жеткіз\p{L}*(?:\s+керек)?|тапсырыс\s+бересіз)|(?:куда|на\s+какой\s+адрес)\s+(?:вам\s+)?доставить(?:\s+заказ)?|сколько\s+(?:штук|порций|единиц)\s+(?:вам\s+)?(?:нужно|нужны)|неше\s+(?:дана|порция)\s+(?:сізге\s+)?(?:керек|аласыз)|(?:как|каким\s+способом)\s+(?:вы\s+)?будете\s+оплачивать|қалай\s+төлейсіз)\s*\?$/iu;
+
 function isCatalogOrderSelectionQuestion(clause: string, ctx: FastFoodContext): boolean {
   if (!/\?\s*$/u.test(clause)
     || !/(?:аласыз|қалайсыз|таңдайсыз|тапсырыс\s+бересіз|будете\s+заказывать|выберете|хотите\s+заказать)/iu.test(clause)) return false;
@@ -1889,7 +1891,8 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
     warnings.push("repeated_generic_closing_removed");
   }
   const withoutMenuSelection = rewriteCurrentFactClauses(finalText, (clause) =>
-    (/^(?:что\s+(?:вас\s+интересует|(?:вы\s+)?(?:выберете|хотите\s+выбрать)|вам\s+больше\s+нравится)|какое\s+(?:блюдо|напиток)(?:\s+или\s+(?:блюдо|напиток))?\s+вас\s+интересует|какую?\s+(?:из\s+них\s+)?(?:вы\s+)?будете\s+заказывать|не\s+қызықтырады|[^?]{0,80}қайсы\p{L}*\s+(?:аласыз|қалайсыз|таңдайсыз|тапсырыс\s+бересіз)|қай\s+түрін\s+таңдайсыз|қайсысы\s+көңіліңізден\s+шығады)\s*\?$/iu.test(clause.trim())
+    (/^(?:что\s+(?:вас\s+интересует|(?:вы\s+)?(?:выберете|хотите\s+выбрать)|вам\s+больше\s+нравится)|(?:а\s+)?какая\s+вам\s+больше\s+нравится|какое\s+(?:блюдо|напиток)(?:\s+или\s+(?:блюдо|напиток))?\s+вас\s+интересует|какую?\s+(?:из\s+них\s+)?(?:вы\s+)?будете\s+заказывать|куда\s+доставить\s+заказ|сколько\s+(?:штук|порций|единиц)\s+(?:вам\s+)?(?:нужно|нужны)|как\s+(?:вы\s+)?будете\s+оплачивать|не\s+қызықтырады|(?:сізге\s+)?қайсысы\s+ұнайды|қай\s+мекенжайға\s+тапсырыс\s+бересіз|[^?]{0,80}қайсы\p{L}*\s+(?:аласыз|қалайсыз|таңдайсыз|тапсырыс\s+бересіз)|қай\s+түрін\s+таңдайсыз|қайсысы\s+көңіліңізден\s+шығады)\s*\?$/iu.test(clause.trim())
+      || ORDER_TAKING_COLLECTION_QUESTION_RE.test(clause.trim())
       || isCatalogOrderSelectionQuestion(clause, args[1])) ? "" : null);
   if (withoutMenuSelection.changed) {
     finalText = withoutMenuSelection.text || (args[1].language === "kk"
