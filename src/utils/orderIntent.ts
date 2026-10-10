@@ -1,7 +1,7 @@
 import { intentMatches } from "./intentText.js";
 import { menuLinkDecisionForTurn, normalizeCheckoutRequestSpelling, wantsMenuAsText } from "./magicLink.js";
 import { isMenuBudgetInquiry } from "./menuBudget.js";
-import { catalogNamedItemsInText, menuLexemes, menuLexemesRelated, menuLexemesSameIdentity } from "./menuQuestionContext.js";
+import { menuLexemes, menuLexemesRelated, menuLexemesSameIdentity } from "./menuQuestionContext.js";
 import type { FastFoodContext } from "../context/types.js";
 
 export const DIRECT_ORDER_INTENT_RE =
@@ -131,8 +131,9 @@ function catalogFieldSupportsWord(field: unknown, word: string): boolean {
   const fieldTokens = menuLexemes(field);
   const aliasWords = catalogSurfaceWords(field).map(normalizeCatalogAliasToken);
   const normalizedWord = normalizeCatalogAliasToken(word);
-  return aliasWords.includes(normalizedWord) || wordTokens.some((token) =>
-    fieldTokens.some((fieldToken) => menuLexemesRelated(token, fieldToken)));
+  return aliasWords.includes(normalizedWord)
+    || aliasWords.some((fieldWord) => catalogProtectedWordsSameIdentity(fieldWord, normalizedWord))
+    || wordTokens.some((token) => fieldTokens.some((fieldToken) => menuLexemesRelated(token, fieldToken)));
 }
 
 function catalogItemFields(item: any): unknown[] {
@@ -158,6 +159,32 @@ const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|м
 
 type CatalogTextSpan = { start: number; end: number };
 
+function catalogProtectedWordsSameIdentity(left: string, right: string): boolean {
+  if (menuLexemesSameIdentity(left, right)) return true;
+  const pair = [left, right].map((word) => word.toLocaleLowerCase("ru-RU")).sort((a, b) => a.length - b.length);
+  return pair[0].length >= 3 && pair[1].startsWith(pair[0])
+    && /^[аяуюыие]$/u.test(pair[1].slice(pair[0].length));
+}
+
+export function catalogResolvedItemsInText(items: any[], value: unknown): any[] {
+  const words = catalogSurfaceWords(value);
+  const matches: Array<{ item: any; start: number; end: number; strict: boolean }> = [];
+  for (const item of items) {
+    const itemWords = catalogSurfaceWords(item?.name || item?.title || "");
+    if (!itemWords.length) continue;
+    for (let start = 0; start + itemWords.length <= words.length; start += 1) {
+      const candidate = words.slice(start, start + itemWords.length);
+      if (!itemWords.every((word, offset) => catalogProtectedWordsSameIdentity(word, candidate[offset]))) continue;
+      matches.push({ item, start, end: start + itemWords.length,
+        strict: itemWords.every((word, offset) => word === candidate[offset]) });
+    }
+  }
+  const strictMatches = matches.filter((match) => match.strict);
+  const selected = matches.filter((match) => match.strict || !strictMatches.some((strict) =>
+    match.start < strict.end && match.end > strict.start));
+  return [...new Set(selected.map((match) => match.item))];
+}
+
 function exactCatalogProtectedSpans(items: any[], value: string): CatalogTextSpan[] {
   const wordSpans = [...value.matchAll(/[\p{L}\p{N}-]+/gu)].map((match) => ({
     word: match[0].toLocaleLowerCase("ru-RU"),
@@ -165,19 +192,19 @@ function exactCatalogProtectedSpans(items: any[], value: string): CatalogTextSpa
     end: (match.index ?? 0) + match[0].length,
   }));
   const spans: CatalogTextSpan[] = [];
-  for (const item of catalogNamedItemsInText(items, value)) {
+  for (const item of items) {
     const itemWords = catalogSurfaceWords(item?.name || item?.title || "");
     if (!itemWords.length) continue;
     const matches: Array<{ start: number; strict: boolean }> = [];
     for (let start = 0; start + itemWords.length <= wordSpans.length; start += 1) {
       const candidate = wordSpans.slice(start, start + itemWords.length).map((entry) => entry.word);
-      if (itemWords.every((word, offset) => menuLexemesSameIdentity(word, candidate[offset]))) {
+      if (itemWords.every((word, offset) => catalogProtectedWordsSameIdentity(word, candidate[offset]))) {
         matches.push({ start, strict: itemWords.every((word, offset) => word === candidate[offset]) });
       }
     }
-    const selected = matches.some((match) => match.strict)
-      ? matches.filter((match) => match.strict)
-      : matches;
+    const strictMatches = matches.filter((match) => match.strict);
+    const selected = matches.filter((match) => match.strict || !strictMatches.some((strict) =>
+      match.start < strict.start + itemWords.length && match.start + itemWords.length > strict.start));
     for (const match of selected) {
       spans.push({
         start: wordSpans[match.start].start,
@@ -216,7 +243,7 @@ export function catalogIndependentChoiceGroups(items: any[], value: unknown): st
 
 function hasUnresolvedCatalogVariant(items: any[], clause: string, requireCatalogSubject = false): boolean {
   const surfaceWords = catalogSurfaceWords(clause);
-  const exactItems = catalogNamedItemsInText(items, clause);
+  const exactItems = catalogResolvedItemsInText(items, clause);
   const independentGroups = catalogIndependentChoiceGroups(items, clause);
   if (independentGroups.length > 1) {
     return independentGroups.some((group) => hasUnresolvedCatalogVariant(items, group, true));
@@ -272,13 +299,13 @@ function exactCatalogItemSpanIndexes(surfaceWords: string[], exactItems: any[]):
     const spans: Array<{ start: number; strict: boolean }> = [];
     for (let start = 0; start + itemWords.length <= surfaceWords.length; start += 1) {
       const candidate = surfaceWords.slice(start, start + itemWords.length);
-      if (itemWords.every((word, offset) => menuLexemesSameIdentity(word, candidate[offset]))) {
+      if (itemWords.every((word, offset) => catalogProtectedWordsSameIdentity(word, candidate[offset]))) {
         spans.push({ start, strict: itemWords.every((word, offset) => word === candidate[offset]) });
       }
     }
-    const selected = spans.some((span) => span.strict)
-      ? spans.filter((span) => span.strict)
-      : spans;
+    const strictSpans = spans.filter((span) => span.strict);
+    const selected = spans.filter((span) => span.strict || !strictSpans.some((strict) =>
+      span.start < strict.start + itemWords.length && span.start + itemWords.length > strict.start));
     for (const span of selected) {
       for (let offset = 0; offset < itemWords.length; offset += 1) indexes.add(span.start + offset);
     }
@@ -287,7 +314,7 @@ function exactCatalogItemSpanIndexes(surfaceWords: string[], exactItems: any[]):
 }
 
 function groundedClauseHasCatalogCoverage(items: any[], clause: string, grounding: any): boolean {
-  if (catalogNamedItemsInText(items, clause).length) return true;
+  if (catalogResolvedItemsInText(items, clause).length) return true;
   if (hasUnresolvedCatalogVariant(items, clause)) return false;
   const subjectWords = catalogDecisionSubjectWords(clause).filter((word) => !/^\d+$/u.test(word));
   if (subjectWords.length && subjectWords.every((word) => catalogWordSupported(items, word))) return true;
@@ -324,7 +351,7 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   // Use the same span-aware exact-name resolver as live search. A literal item
   // wins over its category; an inflected/plural category mention may otherwise
   // match a short same-root SKU and must keep the category refusal visible.
-  const exactItems = catalogNamedItemsInText(items, clause);
+  const exactItems = catalogResolvedItemsInText(items, clause);
   if (exactItems.length) {
     if (hasUnresolvedCatalogVariant(items, clause)) return new Set();
     const keys = new Set(exactItems.map((item) =>

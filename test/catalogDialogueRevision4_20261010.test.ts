@@ -708,6 +708,21 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
  assert.deepEqual(inflectedOut.items.map((item:any)=>item.name),["Пицца Сыр и Ветчина"]);
  assert.equal(currentGroundedCatalogCheckoutDecision(inflectedExact),true);
  for(const text of [
+  "Хочу Пицца Сыр и Ветчина. Хочу Пиццу Сыр и Ветчина.",
+  "Хочу Пиццу Сыр и Ветчина. Хочу Пицца Сыр и Ветчина.",
+  "Хочу Пицца Сыр и Ветчина и Пиццу Сыр и Ветчина.",
+ ]){
+  const repeated=ctx(text,{menuSnapshot:{items:live,source:"preview"}});
+  const repeatedOut:any=await groundMenuTurn(repeated,(async()=>({items:live,source:"live"})) as any);
+  assert.deepEqual(repeatedOut.items.map((item:any)=>item.name),["Пицца Сыр и Ветчина"],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(repeated),true,text);
+ }
+ const refusalContext=ctx("Хочу Пицца Грибная. Не хочу Пицца Сыр и Ветчина и Пиццу Сыр и Ветчина.",{
+  menuSnapshot:{items:live,source:"live"},
+  menuGrounding:{lookup_query:"пицца",items:live.filter((item)=>item.name==="Пицца Грибная")},
+ });
+ assert.equal(currentGroundedCatalogCheckoutDecision(refusalContext),true);
+ for(const text of [
   "Хочу Пицца Сыр и Ветчина и Колу.",
   "Хочу Пицца Сыр и Ветчина, 1 Колу.",
   "Хочу 2 Пицца Сыр и Ветчина. 1 Колу.",
@@ -732,6 +747,21 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.deepEqual(out.items.map((item:any)=>item.name),[name],text);
   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
   assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c)).requiredTools.includes("sendMenuLink"),text);
+ }
+ const decimalMorphMenu=[
+  {name:"Сет 1.5",category_name:"Сеты",price:1600,available:true},
+  {name:"Coca-Cola",category_name:"Напитки",price:500,available:true},
+ ];
+ for(const [text,expected] of [
+  ["Хочу Сета 1.5.",true],
+  ["Хочу Сет 1.5. Сета 1.5 не хочу.",false],
+  ["Сет 1.5 не хочу. Хочу Сета 1.5.",true],
+ ] as const){
+  const c=ctx(text,{menuSnapshot:{items:decimalMorphMenu,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:decimalMorphMenu,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),expected,text);
+  const allowed=(await createSendMenuLinkSkill(c).execute({reason:"decimal morph decision"}) as any).allowed;
+  assert.equal(allowed,expected,text);
  }
  for(const text of ["Хочу Айран и Зефир Орбита.","Хочу Пицца Сыр и Ветчина и Небула Комета."]){
   const c=ctx(text,{menuSnapshot:{items:live,source:"preview"}});

@@ -1,11 +1,11 @@
 import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { catalogNamedItemsInText, customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
+import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { publicNoteConstraints, menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
-import { catalogIndependentChoiceGroups } from "../utils/orderIntent.js";
+import { catalogIndependentChoiceGroups, catalogResolvedItemsInText } from "../utils/orderIntent.js";
 
 function normalizeText(value: unknown) {
   return String(value || "")
@@ -276,7 +276,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         || ctx.text
         || query;
       const requestedSpecificItems = !broadCategoryBrowse && query
-        ? catalogNamedItemsInText(items, String(specificNameSource || query))
+        ? catalogResolvedItemsInText(items, String(specificNameSource || query))
         : [];
       let allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
       if (requestedSpecificItems.length) {
@@ -292,7 +292,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
             const groupQuery = menuQueryForTurn(group);
             const groupCategory = exactCatalogCategory(items, group) || undefined;
             let matches = selectPublicMenuItems(allowedItems, groupQuery, groupCategory, allowedItems.length || 1);
-            const groupSpecificItems = catalogNamedItemsInText(items, group);
+            const groupSpecificItems = catalogResolvedItemsInText(items, group);
             if (groupSpecificItems.length) {
               const groupKeys = new Set(groupSpecificItems
                 .map((item: any) => normalizeText(item?.name || item?.title)).filter(Boolean));
