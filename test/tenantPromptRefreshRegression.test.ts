@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import ts from "typescript";
 import {buildFactsPrompt} from "../src/context/buildFactsPrompt.js";
 import { mergeShiftNoteSources } from "../src/services/noteProvenance.service.js";
+import { dialogueStartFromHistory } from "../src/context/dialogueStart.js";
 function load(relative:string,modules:Record<string,unknown>,extra:Record<string,unknown>={}){
  const raw=fs.readFileSync(new URL("../src/"+relative,import.meta.url),"utf8");
  const compiled=ts.transpileModule(raw,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
@@ -24,7 +25,7 @@ function configFixture(){
  const platform=load("services/platformConfig.service.ts",modules,{Date:Clock,process:{env:{TENANTS_PLATFORM_BASE_URL:"https://fixture.invalid",TENANTS_PLATFORM_API_TOKEN:"SYNTHETIC_NON_SECRET"}}});
  return{platform,cache,advance:(ms:number)=>{now+=ms;},set:(v:any)=>{latest=v;},outage:()=>{fail=true;},calls:()=>calls};
 }
-function preload(platform:any,overrides:Record<string,unknown>={}){
+function preload(platform:any,overrides:Record<string,unknown>={},history:any[]=[]){
  const empty=async()=>null,list=async()=>[];
  const modules:any={
   "node:crypto":crypto,"../utils/envNumber.js":{envNumber:(_v:any,fallback:number)=>fallback},
@@ -33,7 +34,7 @@ function preload(platform:any,overrides:Record<string,unknown>={}){
   "../services/dle.service.js":{normalizePhone:(x:string)=>x.replace(/\D/g,""),getRuntimeStatus:empty,getOrderStatus:empty,getMenuContext:empty},
   "../services/alemiApi.service.js":{issueCustomerAccessLink:async()=>{throw Error("CUSTOMER_EFFECT_FORBIDDEN");},upsertCustomerLead:async()=>{throw Error("CUSTOMER_EFFECT_FORBIDDEN");}},
   "../services/platformConfig.service.js":{getRestaurantConfig:platform.getRestaurantConfig,getShporContext:list},
-  "../services/redis.service.js":{connectRedis:async()=>true,getUserLang:empty,getSiteLanguageHint:empty,getChatHistory:list,getActiveShiftNotes:list,getMagicLinkSentAt:async()=>0,getDeletedShiftNoteIds:async()=>new Set(),withoutDeletedNotes:(x:any)=>x,replaceUserLang:empty,saveUserLang:empty},
+  "../services/redis.service.js":{connectRedis:async()=>true,getUserLang:empty,getSiteLanguageHint:empty,getChatHistory:async()=>history,getActiveShiftNotes:list,getMagicLinkSentAt:async()=>0,getDeletedShiftNoteIds:async()=>new Set(),withoutDeletedNotes:(x:any)=>x,replaceUserLang:empty,saveUserLang:empty},
   "../services/customerMemory.service.js":{getCustomerProfile:empty,getConversationSummary:empty,getTurnTrace:empty},
   "../services/goalTracker.service.js":{getActiveGoal:empty},
   "../services/customerOrder.service.js":{orderMentionedByItems:()=>null,pickConversationOrder:()=>null},
@@ -42,11 +43,20 @@ function preload(platform:any,overrides:Record<string,unknown>={}){
   "../services/complaintRouting.service.js":{isLikelyComplaintText:()=>false,isLikelyOperatorRequestText:()=>false},
   "../utils/linkRecency.js":{isMagicLinkRecent:()=>false},
   "../services/languagePolicy.service.js":{resolvePriorConversationLanguage:()=>({language:null,source:"none"}),resolveOrganicLanguage:()=>({language:"ru",source:"fallback"}),shouldSwitchLockedLanguage:()=>false,textCarriesDecisiveLanguageSignal:()=>false,unclassifiedTextIsDecisive:()=>false,instantLanguageDecision:()=>null},
-  "../services/workHours.service.js":{evaluateWorkHours:()=>({configured:false,withinWorkHours:true})}
+  "../services/workHours.service.js":{evaluateWorkHours:()=>({configured:false,withinWorkHours:true})},
+  "./dialogueStart.js":{dialogueStartFromHistory},
  };return load("context/preloadContext.ts",{...modules,...overrides}).preloadContext;
 }
 const incoming={instanceId:"alpha",phone:"77000000001",text:"ок"};
 const readFacts=(ctx:any)=>JSON.parse(buildFactsPrompt(ctx).split("FACTS_CONTEXT_START\n")[1].split("\nFACTS_CONTEXT_END")[0]);
+test("preload dialogue start follows current tenant history",async()=>{
+ const platform={getRestaurantConfig:async()=>({domain:"fixture.invalid"})};
+ const empty=await preload(platform,{},[])(incoming);
+ assert.equal(empty.dialogueStart,true);
+ const current=await preload(platform,{},[{role:"assistant",text:"Сәлем!",instanceId:"alpha"}])(incoming);
+ assert.equal(current.dialogueStart,false);
+});
+
 test("authoritative empty prompt survives warm normal-control refresh and actual context preload",async()=>{
  const f=configFixture(),hydrate=preload(f.platform);assert.equal((await hydrate(incoming)).config.system_prompt,"OLD_CUSTOM_SENTINEL");assert.equal(f.calls(),1);
  f.set({instance_id:"alpha",prompt_mode:"shared",system_prompt:"",bot_enabled:true,updated_at:"v2"});

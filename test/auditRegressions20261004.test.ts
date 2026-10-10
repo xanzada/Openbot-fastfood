@@ -143,47 +143,50 @@ test("a menu read grounds an allergen answer only when the catalog has ingredien
 
 test("a greeting is answered with a greeting: «Сәлем! 😊» is not a fragment, and the fallback greets", async () => {
   const { validateFinalText, fallbackReply } = await import("../src/agent/finalValidator.js");
-  const kk = kkCtx({ text: "Сәлем" });
+  const kk = kkCtx({ text: "Сәлем", dialogueStart: true });
   const short = validateFinalText("Сәлем! 😊", kk, { toolsCalled: [] } as any);
   assert.equal(short.text, "Сәлем! 😊");
   assert.ok(!short.warnings.includes("truncated_model_output"));
   const broken = validateFinalText("Өкі", kk, { toolsCalled: [] } as any);
-  assert.equal(broken.text, "Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз.");
-  assert.equal(fallbackReply({ ...kk, language: "ru", text: "Привет" } as any), "Привет! 😊 Я на связи — напишите, чем помочь.");
-  assert.equal(fallbackReply({ ...kk, language: "ru", text: "ок" } as any), "Здравствуйте! 😊 Я на связи — напишите, чем помочь.");
+  assert.equal(broken.text, "Сәлем! 😊 Сұрағыңызды жаза беріңіз.");
+  assert.equal(fallbackReply({ ...kk, language: "ru", text: "Привет" } as any), "Привет! 😊 Напишите ваш вопрос.");
+  assert.equal(fallbackReply({ ...kk, language: "ru", text: "ок" } as any), "Здравствуйте! 😊 Напишите ваш вопрос.");
   const midDialog = kkCtx({ text: "иә", chatHistory: [{ role: "user", text: "Сәлем" }, { role: "assistant", text: "Сәлем! 😊" }] });
-  assert.equal(fallbackReply(midDialog), "Осындамын — не көмек керек, жаза беріңіз.", "no re-greeting mid-dialog");
+  assert.equal(fallbackReply(midDialog), "Сұрағыңызды жаза беріңіз.", "no re-greeting mid-dialog");
   const { readFile } = await import("node:fs/promises");
   const prompt = await readFile(new URL("../src/agent/instructions.ts", import.meta.url), "utf8");
-  assert.match(prompt, /Good: «Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз\.»/);
+  assert.match(prompt, /Good: «Сәлем! 😊 Сұрағыңызды жаза беріңіз\.»/);
 });
 
 test("every greeting form is answered in the guest's own form, without stamps (live calibration 2026-10-04)", async () => {
   const { validateFinalText } = await import("../src/agent/finalValidator.js");
   const { readGuestGreeting } = await import("../src/agent/greeting.js");
-  const v = (text: string, reply: string, language = "kk") => validateFinalText(reply, kkCtx({ text, language }), { toolsCalled: [] } as any);
+  const v = (text: string, reply: string, language = "kk") => validateFinalText(reply, kkCtx({ text, language, dialogueStart: true }), { toolsCalled: [] } as any);
   // live: «Сәлем», «Салам», «Сәлеметсіз бе» all got «Қайырлы күн!» from the time-of-day hint
-  assert.equal(v("Сәлем", "Қайырлы күн! 😊 Осындамын — не көмек керек, жаза беріңіз.").text, "Сәлем! 😊 Осындамын — не көмек керек, жаза беріңіз.");
-  assert.equal(v("Салам", "Қайырлы күн! 😊 Осындамын — не көмек керек, жаза беріңіз.").text, "Салам! 😊 Осындамын — не көмек керек, жаза беріңіз.");
-  assert.equal(v("Сәлеметсіз бе", "Қайырлы күн! 😊 Осындамын — не көмек керек, жаза беріңіз.").text, "Сәлеметсіз бе! 😊 Осындамын — не көмек керек, жаза беріңіз.");
-  assert.equal(v("Қайырлы күн", "Қайырлы күн! 😊 Осындамын — не көмек керек, жаза беріңіз.").text, "Қайырлы күн! 😊 Осындамын — не көмек керек, жаза беріңіз.");
+  assert.equal(v("Сәлем", "Қайырлы күн! 😊 Сұрағыңызды жаза беріңіз.").text, "Сәлем! 😊 Сұрағыңызды жаза беріңіз.");
+  assert.equal(v("Салам", "Қайырлы күн! 😊 Сұрағыңызды жаза беріңіз.").text, "Салам! 😊 Сұрағыңызды жаза беріңіз.");
+  assert.equal(v("Сәлеметсіз бе", "Қайырлы күн! 😊 Сұрағыңызды жаза беріңіз.").text, "Сәлеметсіз бе! 😊 Сұрағыңызды жаза беріңіз.");
+  assert.equal(v("Қайырлы күн", "Қайырлы күн! 😊 Сұрағыңызды жаза беріңіз.").text, "Қайырлы күн! 😊 Сұрағыңызды жаза беріңіз.");
   assert.match(v("Ассалаумағалейкум", "Уағалейкум әссалам! Қайырлы күн, не аламыз? 😊").text, /^Уағалейкум/);
   // live: «Здравствуйте» -> «Добрый день! 😊 Чем могу помочь?»
-  assert.equal(v("Здравствуйте", "Добрый день! 😊 Чем могу помочь?", "ru").text, "Здравствуйте! 😊 Я на связи — напишите, чем помочь.");
-  assert.equal(v("Здравствуйте", "Добрый день! 😊 Рад быть на связи — напишите, чем могу помочь.", "ru").text, "Здравствуйте! 😊 Я на связи — напишите, чем помочь.");
-  assert.equal(v("Добрый день", "Добрый день! 😊 Я на связи — напишите, чем помочь.", "ru").text, "Добрый день! 😊 Я на связи — напишите, чем помочь.");
+  assert.equal(v("Здравствуйте", "Добрый день! 😊 Чем могу помочь?", "ru").text, "Здравствуйте! 😊 Напишите ваш вопрос.");
+  assert.equal(v("Здравствуйте", "Добрый день! 😊 Рад быть на связи — напишите, чем могу помочь.", "ru").text, "Здравствуйте! 😊 Напишите ваш вопрос.");
+  assert.equal(v("Добрый день", "Добрый день! 😊 Напишите ваш вопрос.", "ru").text, "Добрый день! 😊 Напишите ваш вопрос.");
   assert.equal(v("Привет", "Добрый день! На связи — напишите, чем помочь.", "ru").text, "Привет! На связи — напишите, чем помочь.");
-  assert.equal(v("Приветствую", "Добрый день! 😊 Я на связи — напишите, чем помочь.", "ru").text, "Приветствую! 😊 Я на связи — напишите, чем помочь.");
+  assert.equal(v("Приветствую", "Добрый день! 😊 Напишите ваш вопрос.", "ru").text, "Приветствую! 😊 Напишите ваш вопрос.");
   // a check-in is answered, not echoed
   const checkIn = "Қайырлы күн! Бәрі жақсы, жұмыс істеп тұрмыз — сізге не дайындап берейік?";
-  assert.equal(v("Нестеватсындар?", checkIn).text, checkIn);
+  assert.equal(v("Нестеватсындар?", checkIn).text, "Сәлем! Бәрі жақсы, жұмыс істеп тұрмыз — сізге не дайындап берейік?");
   assert.equal(readGuestGreeting("Нестеватсындар?")?.kind, "check_in");
   // a greeting with a real request is not touched: the answer matters more than the form
   const order = "Қайырлы күн! Иә, жеткізу бар.";
-  assert.equal(v("Сәлем, жеткізу бар ма?", order).text, order);
+  assert.equal(v("Сәлем, жеткізу бар ма?", order).text, "Сәлем! Иә, жеткізу бар.");
   assert.equal(readGuestGreeting("Сәлем, жеткізу бар ма?")?.pure, false);
   // mid-dialog non-greeting text is never re-greeted
-  assert.equal(v("иә", "Жақсы, жібердім.").text, "Жақсы, жібердім.");
+  assert.equal(validateFinalText("Жақсы, жібердім.", kkCtx({
+    text: "иә",
+    chatHistory: [{ role: "assistant", text: "Сәлем!" }],
+  }), { toolsCalled: [] } as any).text, "Жақсы, жібердім.");
   for (const g of ["Сәлем", "Сәлеметсіз бе", "Қайырлы күн", "Ассалаумағалейкум", "Здравствуйте", "Добрый день", "Салам", "Привет", "Приветствую", "Нестеватсындар?", "салеметсиз бе", "Салем!", "привет всем"]) {
     assert.ok(readGuestGreeting(g)?.pure, `pure greeting: ${g}`);
   }

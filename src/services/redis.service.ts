@@ -1038,6 +1038,39 @@ export async function hasReceiptSeen(instanceId: string, orderId: string): Promi
   }
 }
 
+export type OrderCancellationEvidence = {
+  available: boolean;
+  receiptSeen: boolean;
+  notifyCursor: { rank: number; status: string } | null;
+};
+
+/** Strict read for cancellation wording: read failure stays unknown, never false. */
+export async function getOrderCancellationEvidence(
+  instanceId: string,
+  orderId: string,
+): Promise<OrderCancellationEvidence> {
+  const unavailable: OrderCancellationEvidence = { available: false, receiptSeen: false, notifyCursor: null };
+  const cleanOrderId = String(orderId || "").trim();
+  if (!instanceId || !cleanOrderId) return unavailable;
+  try {
+    await connectRedis();
+    const [receiptRaw, cursorRaw] = await redisClient.mGet([
+      receiptSeenKey(instanceId, cleanOrderId),
+      orderNotifyCursorKey(instanceId, cleanOrderId),
+    ]);
+    let notifyCursor: { rank: number; status: string } | null = null;
+    if (cursorRaw) {
+      const parsed = JSON.parse(String(cursorRaw));
+      const rank = Number(parsed?.rank);
+      if (!Number.isFinite(rank)) return unavailable;
+      notifyCursor = { rank, status: String(parsed?.status || "") };
+    }
+    return { available: true, receiptSeen: Boolean(receiptRaw), notifyCursor };
+  } catch {
+    return unavailable;
+  }
+}
+
 // Photo evidence must not outlive its case, and it must not die before it either.
 // whatspro stores every inbound media on arrival (chatwoot:media:{instance}:{messageId})
 // and the operator panel renders it from the chat, but that copy lives

@@ -11,6 +11,7 @@ import {
   refreshAfterShiftNoteSaved,
   getKitchenStatus,
   getOrderNotifyCursor,
+  getOrderCancellationEvidence,
   getOrderPhone,
   getPhoneByOrderScan,
   getSiteLanguageHint,
@@ -36,7 +37,7 @@ import {
   type SiteNotificationClaim,
 } from "../services/redis.service.js";
 import { notifyDeveloperSystemFailure } from "../services/developerNotify.service.js";
-import { humanizeCancellationReason } from "../services/operatorVoice.service.js";
+import { buildCancellationNotice, decideCancellationNotice } from "../services/cancellationNotice.service.js";
 import { sendWhatsProMessage } from "../transport/whatspro.client.js";
 import { auditDecision, auditError, auditOutbound, auditProcessing } from "../services/auditLogger.service.js";
 import { normalizeSiteLanguage, resolveSiteOutboundLanguage } from "../services/languagePolicy.service.js";
@@ -1216,19 +1217,38 @@ export async function handleKanbanWebhook(req: Request, res: Response): Promise<
       }
     }
     if (action === "order_rejected") {
-      auditDecision("Building order_rejected WhatsApp template", { orderId, action, instance, lang });
-      // The operator's cancel note reaches the guest only after a human-sounding
-      // rewrite: the bot speaks as the restaurant itself - never "оператор жазды".
-      // The AI keeps the internal understanding without exposing it. Falls back
-      // to the plain template when the rewrite is unavailable.
-      const humanReason = await humanizeCancellationReason(String(body.reason || ""), lang).catch(() => "");
-      if (humanReason) {
-        textMessage = lang === "ru"
-          ? `❌ ${humanReason}\n\nЕсли есть вопросы - просто напишите в этот чат, помогу.`
-          : `❌ ${humanReason}\n\nСұрағыңыз болса, осы чатқа жазыңыз - көмектесуге дайынмын.`;
-      } else {
-        textMessage = buildLegacyRejectedMessage(body, lang);
-      }
+      const cancellationReason = String(body.reason || "");
+      const cancellationReasonCode = cleanInline(
+        body.cancellation_reason_code || body.cancellation_code || body.cancel_code || body.reason_code || "",
+        80,
+      );
+      // Both lookups are tenant + order scoped. Neither fact proves a cause by
+      // itself; the pure decision function accepts a cause only when its facts agree.
+      const cancellationEvidence = await getOrderCancellationEvidence(instance, orderId);
+      const receiptSeen = cancellationEvidence.receiptSeen;
+      const notifyCursor = cancellationEvidence.notifyCursor;
+      const cancellation = decideCancellationNotice({
+        reason: cancellationReason,
+        reasonCode: cancellationReasonCode,
+        receiptSeen,
+        notifyCursor,
+        evidenceAvailable: cancellationEvidence.available,
+      });
+      auditDecision("Building order_rejected WhatsApp template", {
+        orderId,
+        action,
+        instance,
+        lang,
+        cancellationKind: cancellation.kind,
+        cancellationEvidence: cancellation.evidence,
+        receiptSeen,
+        cancellationEvidenceAvailable: cancellationEvidence.available,
+        previousStatus: notifyCursor?.status || "",
+      });
+
+      // The structured decision chooses the cause; operator-controlled text is
+      // never echoed or sent to an LLM. Customer wording stays deterministic.
+      textMessage = buildCancellationNotice(cancellation.kind, lang);
     }
     let effectiveStatus = "";
     if (action === "status_changed") {

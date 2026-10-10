@@ -425,29 +425,47 @@ export function startWhatsProOutboxWorker() {
   return outboxTimer;
 }
 
-export async function sendWhatsProPresence(payload: { instanceId: string; phone: string }) {
-  const transport = await resolveWhatsProTransport(payload.instanceId);
+type PresenceDeps = {
+  resolveTransport?: typeof resolveWhatsProTransport;
+  post?: typeof axios.post;
+};
+
+export async function sendWhatsProPresence(
+  payload: { instanceId: string; phone: string },
+  signal?: AbortSignal,
+  deps: PresenceDeps = {},
+) {
+  const transport = await (deps.resolveTransport || resolveWhatsProTransport)(payload.instanceId);
+  // Config lookup may finish after the typing controller's overall deadline.
+  // Never let that late result create a new presence request.
+  if (signal?.aborted) return { skipped: true, reason: "presence_aborted" };
   const url = endpointFromTransport(transport.presenceUrl, transport.baseUrl, "/api/presence");
   if (!url) return { skipped: true, reason: "tenant whatspro_presence_url/whatspro_base_url is not configured" };
   if (!transport.apiToken) return { skipped: true, reason: "tenant whatspro_api_token is not configured" };
 
   try {
-    const response = await axios.post(
+    const response = await (deps.post || axios.post)(
       url,
       {
         instanceId: payload.instanceId,
         phone: payload.phone,
         state: "composing",
       },
-      { timeout: 3000, headers: whatsproHeaders(transport.apiToken, payload.instanceId) }
+      {
+        timeout: envNumber(process.env.OPENBOT_PRESENCE_TIMEOUT_MS, 1200, { min: 300, max: 3000 }),
+        headers: whatsproHeaders(transport.apiToken, payload.instanceId),
+        signal,
+      }
     );
     return response.data;
   } catch (error: any) {
+    if (signal?.aborted || error?.code === "ERR_CANCELED" || error?.name === "AbortError") {
+      return { skipped: true, reason: "presence_aborted" };
+    }
     auditError("WhatsPro presence skipped", error, {
       failedStep: "whatspro_presence",
       host: hostFromUrl(url),
       instance: payload.instanceId,
-      phone: payload.phone,
       maskedPhone: maskPhone(payload.phone),
       status: error?.response?.status || "-",
       response: error?.response?.data,
@@ -457,19 +475,64 @@ export async function sendWhatsProPresence(payload: { instanceId: string; phone:
   }
 }
 
-export function startWhatsProTyping(payload: { instanceId: string; phone: string }) {
+type TypingDeps = {
+  sendPresence?: (payload: { instanceId: string; phone: string }, signal?: AbortSignal) => Promise<unknown>;
+  schedule?: typeof setInterval;
+  cancel?: typeof clearInterval;
+  initialDeadlineMs?: number;
+  refreshDeadlineMs?: number;
+};
+
+export async function startWhatsProTyping(
+  payload: { instanceId: string; phone: string },
+  deps: TypingDeps = {},
+) {
   let stopped = false;
-  const pulse = () => {
-    if (!stopped) void sendWhatsProPresence(payload).catch(() => undefined);
+  const inFlight = new Set<AbortController>();
+  const sendPresence = deps.sendPresence || sendWhatsProPresence;
+  const pulse = async (deadlineMs = 0) => {
+    // One presence request at a time. A slow config lookup must not accumulate
+    // another refresh every three seconds.
+    if (stopped || inFlight.size > 0) return;
+    const controller = new AbortController();
+    inFlight.add(controller);
+    const request = Promise.resolve(sendPresence(payload, controller.signal))
+      .catch(() => undefined)
+      .finally(() => { inFlight.delete(controller); });
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+    try {
+      if (!deadlineMs) {
+        await request;
+        return;
+      }
+      await Promise.race([
+        request,
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(() => {
+            controller.abort();
+            resolve();
+          }, deadlineMs);
+        }),
+      ]);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+    }
   };
-  pulse();
-  // WhatsApp presence expires after a few seconds; 3s keeps "typing..." alive
-  // through the whole turn (buffer + think + generation + send).
-  const timer = setInterval(pulse, 3000);
+  // This deadline covers config resolution and the HTTP call together. A slow
+  // tenant platform cannot hold the customer's answer path open.
+  const initialDeadlineMs = deps.initialDeadlineMs
+    ?? envNumber(process.env.OPENBOT_INITIAL_PRESENCE_WAIT_MS, 900, { min: 100, max: 1500 });
+  await pulse(initialDeadlineMs);
+  const refreshDeadlineMs = deps.refreshDeadlineMs
+    ?? envNumber(process.env.OPENBOT_REFRESH_PRESENCE_WAIT_MS, 1200, { min: 300, max: 3000 });
+  const schedule = deps.schedule || setInterval;
+  const timer = schedule(() => { void pulse(refreshDeadlineMs); }, 3000);
   timer.unref?.();
   return () => {
     stopped = true;
-    clearInterval(timer);
+    for (const controller of inFlight) controller.abort();
+    inFlight.clear();
+    (deps.cancel || clearInterval)(timer);
   };
 }
 

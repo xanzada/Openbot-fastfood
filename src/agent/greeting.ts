@@ -75,8 +75,8 @@ export function readGuestGreeting(text: string): GuestGreeting | null {
 
 const DEFAULT_GREETING: Record<Lang, string> = { kk: "Сәлем!", ru: "Здравствуйте!" };
 const INVITE: Record<Lang, string> = {
-  kk: "Осындамын — не көмек керек, жаза беріңіз.",
-  ru: "Я на связи — напишите, чем помочь.",
+  kk: "Сұрағыңызды жаза беріңіз.",
+  ru: "Напишите ваш вопрос.",
 };
 
 function lang(ctx: FastFoodContext): Lang {
@@ -99,11 +99,13 @@ export function greetingReply(ctx: FastFoodContext): string {
  * Fallback when the model's text could not be used. Greets when the guest greeted or
  * the bot has not spoken yet; mid-dialog it does not re-greet.
  */
-export function fallbackReply(ctx: FastFoodContext) {
+export function hasBotSpoken(ctx: FastFoodContext): boolean {
   const history = Array.isArray(ctx.chatHistory) ? ctx.chatHistory : [];
-  const botSpoke = history.some((entry: any) => ["assistant", "model", "bot"].includes(String(entry?.role || "")));
-  const greeted = Boolean(readGuestGreeting(String(ctx.text || "")));
-  return greeted || !botSpoke ? greetingReply(ctx) : INVITE[lang(ctx)];
+  return history.some((entry: any) => ["assistant", "model", "bot", "operator"].includes(String(entry?.role || "")));
+}
+
+export function fallbackReply(ctx: FastFoodContext) {
+  return hasBotSpoken(ctx) ? INVITE[lang(ctx)] : greetingReply(ctx);
 }
 
 // Robotic service stamps that make a greeting sound like a call-centre IVR.
@@ -112,28 +114,56 @@ const STAMP_RE =
 
 // Any greeting the model might open with, to be swapped for the mirrored one.
 const OPENER_RE =
-  /^\s*(?:с[әа]леметсіз\s+бе|с[әа]лем(?:етсіз)?|салам|уа?ғалейкум\s+[аә]сс?[аә]л[аә]м|ва\s+алейкум\s+ассалам|қайырлы\s+(?:таң|күн|кеш)|здравствуйте|добр(?:ый|ое)\s+(?:день|вечер|утро)|приветствую|привет)(?:\s*[!,.])?/iu;
+  /^\s*(?:с[әа]леметсіз\s+бе|с[әа]лем(?:етсіз)?|салам|уа?ғалейкум\s+[аә]сс?[аә]л[аә]м|ва\s+алейкум\s+ассалам|қайырлы\s+(?:таң|күн|кеш)|здравствуйте|добр(?:ый|ое)\s+(?:день|вечер|утро)|приветствую|привет)(?=\s|[!,.]|$)(?:\s*[!,.])?/iu;
+
+function startsWithCatalogItem(text: string, ctx: FastFoodContext): boolean {
+  const folded = String(text || "").trimStart().toLocaleLowerCase();
+  const items = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  return items.some((item: any) => {
+    const name = String(item?.name || item?.title || "").trim().toLocaleLowerCase();
+    if (!name || !folded.startsWith(name)) return false;
+    const next = folded.slice(name.length, name.length + 1);
+    return !next || /[\s—–,:;.!?()\-]/u.test(next);
+  });
+}
 
 /**
  * Only for a turn that is nothing but a greeting: the reply opens with the guest's own
  * greeting (when it opens with one) and carries no robotic stamp. Anything else passes through untouched.
  */
 export function alignGreetingReply(text: string, ctx: FastFoodContext): { text: string; changed: string | null } {
+  if (!text) return { text, changed: null };
   const guest = readGuestGreeting(String(ctx.text || ""));
-  if (!guest?.pure || !text) return { text, changed: null };
-  if (STAMP_RE.test(text)) return { text: greetingReply(ctx), changed: "greeting_stamp_replaced" };
-  // «Нестеватсындар?» is answered, not echoed.
-  if (guest.kind === "check_in") return { text, changed: null };
+  const opener = startsWithCatalogItem(text, ctx) ? null : text.match(OPENER_RE);
+
+  // Dialogue state, not the current wording, decides whether a greeting belongs.
+  // This also strips a model's habitual greeting on every later turn.
+  if (hasBotSpoken(ctx)) {
+    if (!opener || startsWithCatalogItem(text, ctx)) return { text, changed: null };
+    const rest = text.slice(opener[0].length).replace(/^\s+/, "").trim();
+    return {
+      text: rest || INVITE[lang(ctx)],
+      changed: "repeated_greeting_removed",
+    };
+  }
+
+  // Only production context preload may declare a first reply. Pure greetings
+  // use the separately gated route fast lane; unmarked validator/service calls
+  // must retain their established output.
+  if (ctx.dialogueStart !== true) return { text, changed: null };
+  if (guest?.pure && STAMP_RE.test(text)) {
+    return { text: greetingReply(ctx), changed: "greeting_stamp_replaced" };
+  }
+  if (!String(ctx.text || "").trim()) return { text, changed: null };
+
   const want = greetingFor(ctx);
-  const opener = text.match(OPENER_RE);
   if (opener) {
     if (fold(opener[0]) === fold(want)) return { text, changed: null };
     const rest = text.slice(opener[0].length).replace(/^\s+/, "");
     return { text: `${want} ${rest}`.trim(), changed: "greeting_mirrored" };
   }
-  // A reply that does not open with a greeting is left as the model wrote it: the prompt
-  // asks for the greeting, and gluing one onto arbitrary text reads worse than none.
-  return { text, changed: null };
+
+  return { text: `${want} ${text}`.trim(), changed: "initial_greeting_added" };
 }
 
 // «Конечно, отправил ссылку повторно» (owner's phone, 2026-10-04): the prompt bans these

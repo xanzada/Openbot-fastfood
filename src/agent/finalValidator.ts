@@ -2019,7 +2019,7 @@ const ORDER_TAKING_COLLECTION_QUESTION_RE = /^(?:(?:қай|қандай)\s+ме�
 
 function isCatalogOrderSelectionQuestion(clause: string, ctx: FastFoodContext): boolean {
   if (!/\?\s*$/u.test(clause)
-    || !/(?:аласыз|қалайсыз|таңдайсыз|тапсырыс\s+бересіз|будете\s+заказывать|выберете|хотите\s+заказать)/iu.test(clause)) return false;
+    || !/(?:аласыз|алғыңыз\s+келеді|қалайсыз|таңдайсыз|таңдағыңыз\s+келеді|тапсырыс\s+бересіз|будете\s+заказывать|выберете|хотите\s+заказать)/iu.test(clause)) return false;
   const catalogWords = (Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [])
     .flatMap((item: any) => [
       ...String(item?.name || item?.title || "").match(/[\p{L}\p{N}-]{3,}/gu) || [],
@@ -2030,13 +2030,25 @@ function isCatalogOrderSelectionQuestion(clause: string, ctx: FastFoodContext): 
     answerWords.some((answerWord) => menuLexemesRelated(catalogWord, answerWord)));
 }
 
+
+const ORDER_TAKING_STANCE_RE = /(?:тапсырыс(?:ыңызды|ты)?[^.!?]{0,50}(?:қабылдауға|орналастыруға|рәсімдеуге)\s+дайынмын|(?:мен\s+)?тапсырыс\s+беруге\s+дайынмын|готов(?:а)?\s+(?:принять|оформить|разместить)\s+(?:ваш\s+)?заказ|(?:приму|оформлю|размещу)\s+(?:ваш\s+)?заказ)/iu;
+
 export function validateFinalText(...args: Parameters<typeof validateFinalTextCore>): ReturnType<typeof validateFinalTextCore> {
   // Remove a positively offered blocked item before the generic price guard can
   // collapse the whole answer into an unsupported-price fallback.
   const preBlockedOffer = blockedCatalogOffers(args[0], args[1]);
-  const result = validateFinalTextCore(preBlockedOffer.text, args[1], args[2]);
+  const preOrderTaking = rewriteCurrentFactClauses(preBlockedOffer.text, (clause) =>
+    ORDER_TAKING_STANCE_RE.test(clause.trim()) ? "" : null);
+  const checkoutInstruction = args[1].language === "kk"
+    ? "Тапсырысты мәзір сілтемесі арқылы өзіңіз рәсімдей аласыз."
+    : "Оформить заказ можно самостоятельно по ссылке на меню.";
+  const preparedText = preOrderTaking.changed
+    ? (preOrderTaking.text || checkoutInstruction)
+    : preBlockedOffer.text;
+  const result = validateFinalTextCore(preparedText, args[1], args[2]);
   const warnings = [...result.warnings];
   if (preBlockedOffer.changed) warnings.push("blocked_catalog_offer_removed");
+  if (preOrderTaking.changed) warnings.push("order_taking_stance_removed");
   const scrollUp = stripLinkScrollUpSentences(result.text, args[1]);
   if (scrollUp.changed) warnings.push(scrollUp.changed);
   // A link RESEND keeps the owner's own phrasing «Әрине, мінекей сілтеме, мархабат!» /
@@ -2083,8 +2095,20 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
     finalText = withoutClosing;
     warnings.push("repeated_generic_closing_removed");
   }
+  const withoutOrderTaking = rewriteCurrentFactClauses(finalText, (clause) =>
+    ORDER_TAKING_STANCE_RE.test(clause.trim()) ? "" : null);
+  if (withoutOrderTaking.changed) {
+    const checkoutInstruction = args[1].language === "kk"
+      ? "Тапсырысты мәзір сілтемесі арқылы өзіңіз рәсімдей аласыз."
+      : "Оформить заказ можно самостоятельно по ссылке на меню.";
+    const remainingIsOnlyGreeting = Boolean(readGuestGreeting(withoutOrderTaking.text)?.pure);
+    finalText = withoutOrderTaking.text && !remainingIsOnlyGreeting
+      ? withoutOrderTaking.text
+      : [withoutOrderTaking.text, checkoutInstruction].filter(Boolean).join(" ");
+    warnings.push("order_taking_stance_removed");
+  }
   const withoutMenuSelection = rewriteCurrentFactClauses(finalText, (clause) =>
-    (/^(?:что\s+(?:вас\s+интересует|(?:вы\s+)?(?:выберете|хотите\s+выбрать)|вам\s+больше\s+нравится)|(?:а\s+)?какая\s+вам\s+больше\s+нравится|какое\s+(?:блюдо|напиток)(?:\s+или\s+(?:блюдо|напиток))?\s+вас\s+интересует|какую?\s+(?:из\s+них\s+)?(?:вы\s+)?будете\s+заказывать|куда\s+доставить\s+заказ|сколько\s+(?:штук|порций|единиц)\s+(?:вам\s+)?(?:нужно|нужны)|как\s+(?:вы\s+)?будете\s+оплачивать|не\s+қызықтырады|(?:сізге\s+)?қайсысы\s+ұнайды|қай\s+мекенжайға\s+тапсырыс\s+бересіз|[^?]{0,80}қайсы\p{L}*\s+(?:аласыз|қалайсыз|таңдайсыз|тапсырыс\s+бересіз)|қай\s+түрін\s+таңдайсыз|қайсысы\s+көңіліңізден\s+шығады)\s*\?$/iu.test(clause.trim())
+    (/^(?:что\s+(?:вас\s+интересует|(?:вы\s+)?(?:выберете|хотите\s+выбрать)|вам\s+больше\s+нравится)|(?:а\s+)?какая\s+вам\s+больше\s+нравится|какое\s+(?:блюдо|напиток)(?:\s+или\s+(?:блюдо|напиток))?\s+вас\s+интересует|какую?\s+(?:из\s+них\s+)?(?:вы\s+)?будете\s+заказывать|куда\s+доставить\s+заказ|сколько\s+(?:штук|порций|единиц)\s+(?:вам\s+)?(?:нужно|нужны)|как\s+(?:вы\s+)?будете\s+оплачивать|не\s+қызықтырады|(?:сізге\s+)?қайсысы\s+ұнайды|қай\s+мекенжайға\s+тапсырыс\s+бересіз|[^?]{0,80}қайсы\p{L}*\s+(?:аласыз|алғыңыз\s+келеді|қалайсыз|таңдайсыз|таңдағыңыз\s+келеді|тапсырыс\s+бересіз)|қай\s+түрін\s+таңдайсыз|қайсысы\s+көңіліңізден\s+шығады)\s*\?$/iu.test(clause.trim())
       || ORDER_TAKING_COLLECTION_QUESTION_RE.test(clause.trim())
       || isCatalogOrderSelectionQuestion(clause, args[1])) ? "" : null);
   if (withoutMenuSelection.changed) {

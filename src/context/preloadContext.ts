@@ -30,6 +30,7 @@ import { isMagicLinkRecent } from "../utils/linkRecency.js";
 import { resolveOrganicLanguage, resolvePriorConversationLanguage, shouldSwitchLockedLanguage, textCarriesDecisiveLanguageSignal, unclassifiedTextIsDecisive, instantLanguageDecision } from "../services/languagePolicy.service.js";
 import { evaluateWorkHours } from "../services/workHours.service.js";
 import type { FastFoodContext } from "./types.js";
+import { dialogueStartFromHistory } from "./dialogueStart.js";
 
 /**
  * The menu used to reach the agent only when the model happened to call
@@ -447,6 +448,7 @@ export async function preloadContext(input: InboundMessage): Promise<FastFoodCon
     hardRealtimeContext,
     activeOrder: focusedActiveOrder,
     chatHistory,
+    dialogueStart: dialogueStartFromHistory(chatHistory),
     menuSnapshot,
     activeShiftNotes,
     activeShiftNotesFingerprint,

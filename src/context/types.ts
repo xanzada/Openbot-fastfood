@@ -12,6 +12,9 @@ export interface FastFoodContext {
   hardRealtimeContext: Record<string, any>;
   activeOrder: Record<string, any> | null;
   chatHistory: any[];
+  // Set only by preloadContext after tenant-scoped history has been loaded.
+  // Validator-only fixtures omit it and retain their established behavior.
+  dialogueStart?: boolean;
   menuSnapshot: Record<string, any> | null;
   menuGrounding?: Record<string, any>;
   shoppingConstraints?: ShoppingConstraints;
