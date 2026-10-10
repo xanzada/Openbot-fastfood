@@ -100,16 +100,43 @@ function containsCatalogSurfacePhrase(words: string[], phrase: string[]): boolea
     && phrase.every((token, offset) => token === words[start + offset]));
 }
 
+function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
+  if (catalogNamedItemsInText(items, clause).length) return false;
+  return catalogSurfaceWords(clause).some((token) =>
+    /\d/u.test(token) || /^[a-z]{1,3}$/iu.test(token));
+}
+
+function looksLikePluralCatalogLabel(value: unknown): boolean {
+  return catalogSurfaceWords(value).some((word) =>
+    /(?:ы|и|ьи|лар|лер|дар|дер|тар|тер|s|es)$/iu.test(word));
+}
+
 function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   const words = menuLexemes(clause);
   const surfaceWords = catalogSurfaceWords(clause);
+  const itemMatches: Array<{ key: string; matched: number }> = [];
   const categoryKeys = new Set<string>();
+  const categoryTokensByKey = new Map<string, string[]>();
+  const pluralLiteralCategoryKeys = new Set<string>();
   for (const item of items) {
+    const name = String(item?.name || item?.title || "").trim();
     const category = String(item?.category_name || item?.category || "").trim();
+    const nameTokens = menuLexemes(name);
+    const matched = nameTokens.filter((token) =>
+      words.some((word) => menuLexemesRelated(token, word))).length;
+    if (name && matched) itemMatches.push({
+      key: "item:" + name.toLocaleLowerCase("ru-RU"),
+      matched,
+    });
     const categoryTokens = menuLexemes(category);
     if (categoryTokens.length && categoryTokens.every((token) =>
       words.some((word) => menuLexemesRelated(token, word)))) {
-      categoryKeys.add("category:" + categoryTokens.join("|"));
+      const categoryKey = "category:" + categoryTokens.join("|");
+      categoryKeys.add(categoryKey);
+      categoryTokensByKey.set(categoryKey, categoryTokens);
+      if (containsCatalogSurfacePhrase(surfaceWords, catalogSurfaceWords(category))) {
+        if (looksLikePluralCatalogLabel(category)) pluralLiteralCategoryKeys.add(categoryKey);
+      }
     }
   }
 
@@ -123,16 +150,33 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
     const hasLiteralItem = exactItems.some((item) =>
       containsCatalogSurfacePhrase(surfaceWords,
         catalogSurfaceWords(item?.name || item?.title || "")));
-    if (!hasLiteralItem) for (const key of categoryKeys) keys.add(key);
+    const literalItemWords = new Set(exactItems.flatMap((item) =>
+      catalogSurfaceWords(item?.name || item?.title || "")));
+    const independentlyMentionedCategories = [...categoryKeys].filter((key) => {
+      const tokens = categoryTokensByKey.get(key) || [];
+      return surfaceWords.some((word) => !literalItemWords.has(word)
+        && menuLexemes(word).some((stem) =>
+          tokens.some((token) => menuLexemesRelated(stem, token))));
+    });
+    if (!hasLiteralItem) {
+      for (const key of categoryKeys) keys.add(key);
+    } else {
+      // When an item and its category have the same literal label, a singular
+      // mention belongs to the exact SKU. A plural/collective label still means
+      // the category, and a separate category word is handled independently.
+      for (const key of pluralLiteralCategoryKeys) keys.add(key);
+      for (const key of independentlyMentionedCategories) keys.add(key);
+    }
     return keys;
   }
 
   // A number or short Latin size/code makes the request SKU-specific. If that
   // SKU is absent, a shared category token cannot authorize a sibling product.
-  const unresolvedVariant = surfaceWords.some((token) =>
-    /\d/u.test(token) || /^[a-z]{1,3}$/iu.test(token));
-  if (unresolvedVariant) return new Set();
-  return categoryKeys;
+  if (hasUnresolvedCatalogVariant(items, clause)) return new Set();
+  if (categoryKeys.size) return categoryKeys;
+  const greatestOverlap = Math.max(0, ...itemMatches.map((match) => match.matched));
+  return new Set(itemMatches.filter((match) => match.matched === greatestOverlap)
+    .map((match) => match.key));
 }
 
 /**
@@ -173,11 +217,14 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
   const quantitySelectionRe = /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu;
-  const actionCount = clauses.filter((raw) => {
+  const meaningfulClauseCount = clauses.filter((raw) => {
     const clause = raw.trim();
-    const refused = refusalRe.test(clause);
-    return refused || !informationalRe.test(clause)
-      && (selectionRe.test(clause) || quantitySelectionRe.test(clause));
+    if (!clause) return false;
+    const clauseWords = menuLexemes(clause.replace(/-/gu, " "));
+    const lookupOverlap = lookupTokens.some((token) =>
+      clauseWords.some((word) => menuLexemesRelated(token, word)));
+    return lookupOverlap || catalogChoiceSubjects(catalog, clause).size > 0
+      || refusalRe.test(clause) || selectionRe.test(clause) || quantitySelectionRe.test(clause);
   }).length;
   for (const raw of clauses) {
     const clause = raw.trim();
@@ -200,13 +247,12 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
     const clauseWords = menuLexemes(clause.replace(/-/gu, " "));
     const lookupOverlap = lookupTokens.length && lookupTokens.some((token) =>
       clauseWords.some((word) => menuLexemesRelated(token, word)));
-    const unresolvedVariant = /\d/u.test(clause)
-      && catalogNamedItemsInText(catalog, clause).length === 0;
+    const unresolvedVariant = hasUnresolvedCatalogVariant(catalog, clause);
     // Colloquial aliases such as Кола -> Coca-Cola may use the grounded query
     // only for a single positive choice. Refusals can still cancel that exact
     // grounding; a later unknown choice cannot borrow whole-turn query tokens.
     if (!subjects.size && lookupOverlap
-      && (refused || selected && actionCount === 1 && !unresolvedVariant)) {
+      && (refused || selected && meaningfulClauseCount === 1 && !unresolvedVariant)) {
       subjects.add("grounded:query");
     }
     if (!subjects.size) {
