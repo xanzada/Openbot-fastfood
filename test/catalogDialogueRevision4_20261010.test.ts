@@ -289,7 +289,7 @@ test("Kazakh explicit wait question requires a fresh kitchen read before link",(
 test("price-free offers of unavailable or note-blocked products are removed",()=>{
  const blocked={name:"Пепперони",category_name:"Пиццы",price:2500,available:false};
  const alternative={name:"Маргарита",category_name:"Пиццы",price:2100,available:true};
- for(const draft of ["Попробуйте Пепперони.","Можно взять Пепперони.","Советую Пепперони.","Пепперони алуға болады."]){
+ for(const draft of ["Попробуйте Пепперони.","Можно взять Пепперони.","Советую Пепперони.","Пепперони алуға болады.","Советую «Пепперони».",'Можно взять "Пепперони".']){
   const c=ctx("Какие пиццы есть?",{
    menuSnapshot:{items:[...items,blocked,alternative],source:"live"},
    menuGrounding:{menu_lookup:"live",lookup_query:"пиццы",category_browse:true,items:[alternative],unavailable_now:[blocked],totalMatched:1},
@@ -299,6 +299,13 @@ test("price-free offers of unavailable or note-blocked products are removed",()=
   assert.doesNotMatch(result.text,/Попробуйте|Можно взять/u,draft);
   assert.match(result.text,/недоступно:\s*Пепперони/iu,draft);
   assert.match(result.text,/Маргарита/u,draft);
+ }
+ const protectedCtx=ctx("Что было раньше?",{
+  menuSnapshot:{items:[...items,blocked,alternative],source:"live"},
+  menuGrounding:{menu_lookup:"live",items:[alternative],unavailable_now:[blocked]},activeShiftNotes:[],
+ });
+ for(const quoted of ["Вчера советовали «Пепперони».","Клиент написал: «Советую Пепперони»."]){
+  assert.equal(validateFinalText(quoted,protectedCtx,{toolsCalled:["searchMenu"]}).text,quoted);
  }
 });
 
@@ -387,5 +394,27 @@ test("numeric catalog identity cannot borrow permission from a numbered sibling"
    {name:allowedName,category_name:"Пиццы",price:2600,available:true},
   ];
   assert.equal(currentGroundedCatalogCheckoutDecision(ctx(text,{menuSnapshot:{items:live,source:"live"},menuGrounding:{lookup_query:text,items:[live[1]]}})),false,text);
+ }
+});
+
+
+test("semantic category aliases never become exact SKU identity",async()=>{
+ for(const [blockedName,allowedName,text] of [
+  ["Тауық","Курица","Тауық алайын."],
+  ["Ірімшік","Сыр","Ірімшік алайын."],
+  ["Сыр","Сырники","Хочу Сыр."],
+  ["Пицца XL","Пицца L","Хочу Пицца XL."],
+  ["Набор A1","Набор B2","Хочу Набор A1."],
+ ] as const){
+  const live=[
+   {name:blockedName,category_name:"Основное",price:1500,available:false},
+   {name:allowedName,category_name:"Основное",price:1600,available:true},
+  ];
+  const c=ctx(text,{menuSnapshot:{items:live,source:"live"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+  assert.equal(out.items.length,0,text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c));
+  assert.ok(!refreshed.requiredTools.includes("sendMenuLink"),text);
  }
 });

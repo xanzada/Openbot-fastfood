@@ -135,20 +135,26 @@ const MENU_SEMANTIC_STEM_GROUPS = [
 const inSemanticStemGroup = (token: string, group: string[]) => group.some((stem) =>
   token === stem || token.startsWith(stem));
 
-export function menuLexemesRelated(left: unknown, right: unknown): boolean {
+export function menuLexemesSameIdentity(left: unknown, right: unknown): boolean {
   const a = menuLexemeStem(left);
   const b = menuLexemeStem(right);
   if (!a || !b) return false;
   if (a === b) return true;
-  if (MENU_SEMANTIC_STEM_GROUPS.some((group) =>
-    inSemanticStemGroup(a, group) && inSemanticStemGroup(b, group))) return true;
   // Short Russian nouns can change only their final case vowel (кола/колу).
   // The main stemmer intentionally keeps at least four letters; compare this
-  // narrow inflection shape without introducing any catalog vocabulary.
+  // narrow inflection shape without introducing semantic catalog aliases.
   return a.length === b.length && a.length >= 4
     && a.slice(0, -1) === b.slice(0, -1)
     && /[аеёиоуыэюя]/u.test(a.at(-1) || "")
     && /[аеёиоуыэюя]/u.test(b.at(-1) || "");
+}
+
+export function menuLexemesRelated(left: unknown, right: unknown): boolean {
+  if (menuLexemesSameIdentity(left, right)) return true;
+  const a = menuLexemeStem(left);
+  const b = menuLexemeStem(right);
+  return Boolean(a && b && MENU_SEMANTIC_STEM_GROUPS.some((group) =>
+    inSemanticStemGroup(a, group) && inSemanticStemGroup(b, group)));
 }
 
 /** Exact catalog names stated in one customer phrase. A longer name suppresses
@@ -156,8 +162,9 @@ export function menuLexemesRelated(left: unknown, right: unknown): boolean {
  * Numeric tokens are kept here because `Пицца 30` and `Пицца 40` are different
  * SKUs even though ordinary semantic menu lexemes intentionally omit short ids. */
 export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[], value: unknown): T[] {
+  // Catalog names may contain one-letter size codes, alphanumeric variants or
+  // short numeric ids. Exact identity therefore retains every name token.
   const identityLexemes = (input: unknown) => (fold(unquoted(input)).match(/[\p{L}\p{N}-]+/gu) || [])
-    .filter((token) => /\p{L}/u.test(token) ? token.length >= 3 : /^\p{N}+$/u.test(token))
     .map(menuLexemeStem).filter(Boolean);
   const words = identityLexemes(value);
   if (!words.length) return [];
@@ -170,7 +177,7 @@ export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[
     if (!name || !tokens.length || seen.has(key)) continue;
     const spans: Array<[number, number]> = [];
     for (let start = 0; start + tokens.length <= words.length; start += 1) {
-      if (tokens.every((token, offset) => menuLexemesRelated(token, words[start + offset]))) {
+      if (tokens.every((token, offset) => menuLexemesSameIdentity(token, words[start + offset]))) {
         spans.push([start, start + tokens.length - 1]);
       }
     }

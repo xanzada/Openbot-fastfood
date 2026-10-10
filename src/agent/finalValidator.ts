@@ -1931,13 +1931,30 @@ function blockedCatalogOffers(text: string, ctx: FastFoodContext): { text: strin
       || menuItemBlockedByNotes(ctx.activeShiftNotes, item, vocabulary).blocked));
   if (!blocked.length) return { text, changed: false };
   const blockedNames = blocked.map((item: any) => String(item.name).trim());
+  const blockedOfferCueRe = /доступ\p{L}*|қолжетімді|(?<!\p{L})есть(?!\p{L})|(?<!\p{L})бар(?!\p{L})|мәзірде\s+бар|рекоменд|совет\p{L}*|ұсынам|кеңес\p{L}*|вариант|попроб\p{L}*|можно\s+(?:взять|выбрать|заказать)|возьм\p{L}*|выбер\p{L}*|закаж\p{L}*|алуға\s+болады|алуга\s+болады|алып\s+көр|сынап\s+көр|таңда\p{L}*|танда\p{L}*/iu;
+  // Quote masking protects historical/customer speech in every fact validator.
+  // Unmask only an exact blocked product name inside this current positive offer;
+  // reported speech and a larger quoted sentence stay protected.
+  const offerAwareText = text.replace(/«([^»]*)»|“([^”]*)”|"([^"]*)"|‘([^’]*)’|'([^']*)'/gu,
+    (full, angle, curly, doubleQuoted, singleCurly, singleQuoted, offset, source) => {
+      const inner = String(angle ?? curly ?? doubleQuoted ?? singleCurly ?? singleQuoted ?? "").trim();
+      if (!catalogNameMentions(inner, blockedNames).length) return full;
+      const before = source.slice(0, offset);
+      const sentenceStart = Math.max(before.lastIndexOf("."), before.lastIndexOf("!"), before.lastIndexOf("?"), before.lastIndexOf("\n"), before.lastIndexOf(";")) + 1;
+      const after = source.slice(offset + full.length);
+      const boundary = after.search(/[.!?\n;]/u);
+      const sentenceEnd = boundary === -1 ? source.length : offset + full.length + boundary + 1;
+      const sentence = source.slice(sentenceStart, sentenceEnd);
+      if (/(?:клиент|қонақ|клиенттің)[^.!?]{0,40}(?:написал|сказал|спросил|сообщил|жазды|айтты|сұрады)/iu.test(sentence)) return full;
+      return blockedOfferCueRe.test(sentence) ? inner : full;
+    });
   const removed = new Set<string>();
-  const rewritten = rewriteCurrentFactClauses(text, (clause) => {
+  const rewritten = rewriteCurrentFactClauses(offerAwareText, (clause) => {
     if (nonCurrentFactAssertion(clause) || /[«»“”"]|\?\s*$/u.test(clause)
       || /недоступ\p{L}*|нет\s+в\s+наличии|қолжетімсіз|қолжетімді\s+емес|жо[қк]/iu.test(clause)) return null;
     const mentions = catalogNameMentions(clause, blockedNames);
     if (!mentions.length || !PRICE_CLAIM_RE.test(clause)
-      && !/доступ\p{L}*|қолжетімді|(?<!\p{L})есть(?!\p{L})|(?<!\p{L})бар(?!\p{L})|мәзірде\s+бар|рекоменд|совет\p{L}*|ұсынам|кеңес\p{L}*|вариант|попроб\p{L}*|можно\s+(?:взять|выбрать|заказать)|возьм\p{L}*|выбер\p{L}*|закаж\p{L}*|алуға\s+болады|алуга\s+болады|алып\s+көр|сынап\s+көр|таңда\p{L}*|танда\p{L}*/iu.test(clause)) return null;
+      && !blockedOfferCueRe.test(clause)) return null;
     for (const mention of mentions) removed.add(mention.key);
     return "";
   });
