@@ -1937,7 +1937,7 @@ function blockedCatalogOffers(text: string, ctx: FastFoodContext): { text: strin
       || /недоступ\p{L}*|нет\s+в\s+наличии|қолжетімсіз|қолжетімді\s+емес|жо[қк]/iu.test(clause)) return null;
     const mentions = catalogNameMentions(clause, blockedNames);
     if (!mentions.length || !PRICE_CLAIM_RE.test(clause)
-      && !/доступ\p{L}*|қолжетімді|(?<!\p{L})есть(?!\p{L})|(?<!\p{L})бар(?!\p{L})|мәзірде\s+бар|рекоменд|ұсынам|вариант|попроб\p{L}*|можно\s+(?:взять|выбрать|заказать)|возьм\p{L}*|выбер\p{L}*|закаж\p{L}*|алып\s+көр|сынап\s+көр|таңда\p{L}*|танда\p{L}*/iu.test(clause)) return null;
+      && !/доступ\p{L}*|қолжетімді|(?<!\p{L})есть(?!\p{L})|(?<!\p{L})бар(?!\p{L})|мәзірде\s+бар|рекоменд|совет\p{L}*|ұсынам|кеңес\p{L}*|вариант|попроб\p{L}*|можно\s+(?:взять|выбрать|заказать)|возьм\p{L}*|выбер\p{L}*|закаж\p{L}*|алуға\s+болады|алуга\s+болады|алып\s+көр|сынап\s+көр|таңда\p{L}*|танда\p{L}*/iu.test(clause)) return null;
     for (const mention of mentions) removed.add(mention.key);
     return "";
   });

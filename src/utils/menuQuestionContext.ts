@@ -121,11 +121,27 @@ export function menuLexemes(value: unknown): string[] {
   return (fold(unquoted(value)).match(/[\p{L}\p{N}-]{3,}/gu) || []).map(menuLexemeStem).filter(Boolean);
 }
 
+// Shared RU/KK semantic stems for catalog categories and ingredients. Search,
+// checkout decisions and refusal handling must use one equivalence source.
+const MENU_SEMANTIC_STEM_GROUPS = [
+  ["сусын", "ішетін", "ишетин", "напит"],
+  ["тауық", "тауык", "кури"],
+  ["сиыр", "говя"],
+  ["картоп", "картоф"],
+  ["тәтті", "сладост"],
+  ["ірімшік", "сыр"],
+  ["ащы", "остр"],
+];
+const inSemanticStemGroup = (token: string, group: string[]) => group.some((stem) =>
+  token === stem || token.startsWith(stem));
+
 export function menuLexemesRelated(left: unknown, right: unknown): boolean {
   const a = menuLexemeStem(left);
   const b = menuLexemeStem(right);
   if (!a || !b) return false;
   if (a === b) return true;
+  if (MENU_SEMANTIC_STEM_GROUPS.some((group) =>
+    inSemanticStemGroup(a, group) && inSemanticStemGroup(b, group))) return true;
   // Short Russian nouns can change only their final case vowel (кола/колу).
   // The main stemmer intentionally keeps at least four letters; compare this
   // narrow inflection shape without introducing any catalog vocabulary.
@@ -133,6 +149,40 @@ export function menuLexemesRelated(left: unknown, right: unknown): boolean {
     && a.slice(0, -1) === b.slice(0, -1)
     && /[аеёиоуыэюя]/u.test(a.at(-1) || "")
     && /[аеёиоуыэюя]/u.test(b.at(-1) || "");
+}
+
+/** Exact catalog names stated in one customer phrase. A longer name suppresses
+ * a shorter one only when their spans overlap; independent products survive.
+ * Numeric tokens are kept here because `Пицца 30` and `Пицца 40` are different
+ * SKUs even though ordinary semantic menu lexemes intentionally omit short ids. */
+export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[], value: unknown): T[] {
+  const identityLexemes = (input: unknown) => (fold(unquoted(input)).match(/[\p{L}\p{N}-]+/gu) || [])
+    .filter((token) => /\p{L}/u.test(token) ? token.length >= 3 : /^\p{N}+$/u.test(token))
+    .map(menuLexemeStem).filter(Boolean);
+  const words = identityLexemes(value);
+  if (!words.length) return [];
+  const matches: Array<{ item: T; key: string; total: number; spans: Array<[number, number]> }> = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const name = String(item?.name || item?.title || "").trim();
+    const key = fold(name);
+    const tokens = identityLexemes(name);
+    if (!name || !tokens.length || seen.has(key)) continue;
+    const spans: Array<[number, number]> = [];
+    for (let start = 0; start + tokens.length <= words.length; start += 1) {
+      if (tokens.every((token, offset) => menuLexemesRelated(token, words[start + offset]))) {
+        spans.push([start, start + tokens.length - 1]);
+      }
+    }
+    if (spans.length) {
+      seen.add(key);
+      matches.push({ item, key, total: tokens.length, spans });
+    }
+  }
+  return matches.filter((match) => match.spans.some(([start, end]) =>
+    !matches.some((other) => other !== match && other.total > match.total
+      && other.spans.some(([outerStart, outerEnd]) => outerStart <= start && outerEnd >= end))))
+    .map((match) => match.item);
 }
 
 function visibleWords(value: unknown): string[] {

@@ -1,7 +1,7 @@
 import { intentMatches } from "./intentText.js";
 import { menuLinkDecisionForTurn, normalizeCheckoutRequestSpelling, wantsMenuAsText } from "./magicLink.js";
 import { isMenuBudgetInquiry } from "./menuBudget.js";
-import { menuLexemes, menuLexemesRelated } from "./menuQuestionContext.js";
+import { catalogNamedItemsInText, menuLexemes, menuLexemesRelated } from "./menuQuestionContext.js";
 import type { FastFoodContext } from "../context/types.js";
 
 export const DIRECT_ORDER_INTENT_RE =
@@ -91,7 +91,7 @@ export function hasDirectOrderIntent(text = ""): boolean {
 
 function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   const words = menuLexemes(clause);
-  const itemMatches: Array<{ key: string; matched: number; total: number; spans: Array<[number, number]> }> = [];
+  const itemMatches: Array<{ key: string; matched: number; total: number }> = [];
   const categoryKeys = new Set<string>();
   for (const item of items) {
     const name = String(item?.name || item?.title || "").trim();
@@ -100,17 +100,10 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
     const categoryTokens = menuLexemes(category);
     const matched = nameTokens.filter((token) =>
       words.some((word) => menuLexemesRelated(token, word))).length;
-    const spans: Array<[number, number]> = [];
-    for (let start = 0; nameTokens.length && start + nameTokens.length <= words.length; start += 1) {
-      if (nameTokens.every((token, offset) => menuLexemesRelated(token, words[start + offset]))) {
-        spans.push([start, start + nameTokens.length - 1]);
-      }
-    }
     if (name && matched) itemMatches.push({
       key: "item:" + name.toLocaleLowerCase("ru-RU"),
       matched,
       total: nameTokens.length,
-      spans,
     });
     if (categoryTokens.length && categoryTokens.every((token) =>
       words.some((word) => menuLexemesRelated(token, word)))) {
@@ -118,16 +111,12 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
     }
   }
 
-  // A longer complete live name suppresses a shorter name only when their text
-  // spans overlap. Independent choices of different lengths ("Айран и Пирог
-  // Орбита") must both survive; a global longest-name winner loses the first one.
-  const complete = itemMatches.filter((match) => match.spans.length > 0);
-  if (complete.length) {
-    const independent = complete.filter((match) => match.spans.some(([start, end]) =>
-      !complete.some((other) => other !== match && other.total > match.total
-        && other.spans.some(([outerStart, outerEnd]) => outerStart <= start && outerEnd >= end))));
-    return new Set(independent.map((match) => match.key));
-  }
+  // Use the same span-aware exact-name resolver as live search. This preserves
+  // independent products while preventing a shorter overlapping name or a
+  // numeric sibling from lending checkout permission to a blocked exact SKU.
+  const exactItems = catalogNamedItemsInText(items, clause);
+  if (exactItems.length) return new Set(exactItems.map((item) =>
+    "item:" + String(item?.name || item?.title || "").trim().toLocaleLowerCase("ru-RU")));
 
   const keys = new Set<string>();
   const greatestOverlap = Math.max(0, ...itemMatches.map((match) => match.matched));
@@ -173,7 +162,7 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   for (const raw of clauses) {
     const clause = raw.trim();
     if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
-    const generalRefusal = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:отмен(?:а|яю|ить)|болдырма)\s*(?:вс[её]|бәрін|барлығын)?)/iu.test(clause);
+    const generalRefusal = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:не\s+(?:хочу|буду|нужно|надо)|қаламай\p{L}*|керек\s+емес)\s+(?:ничего|ештеңе|ештене)|(?:отмен(?:а|яю|ить)|болдырма)\s*(?:вс[её]|бәрін|барлығын)?|^(?:(?:я|мен)\s+)?(?:передумал\p{L}*|ойымнан\s+қайттым)[.!\s]*$)/iu.test(clause);
     if (generalRefusal) {
       decisions.clear();
       decisions.set("grounded:query", false);

@@ -87,7 +87,8 @@ for (const phrase of phrases) {
         async () => { links++; c.magicLinkGranted = true; return true; }, (async () => ({ items: liveItems })) as any);
       assert.equal(cases, 0);
       assert.ok(reply.length > 0);
-      assert.equal(links, direct.has(phrase) || phrase === "А напитки?" ? 1 : 0, phrase);
+      // RU and KK forms of the same broad category browse have identical link behavior.
+      assert.equal(links, direct.has(phrase) || phrase === "А напитки?" || phrase === "Ішетін не бар?" ? 1 : 0, phrase);
       assert.doesNotMatch(reply, /заказ.*принят|тапсырыс.*қабылдан|TOOL_CHOICE|Gemini|OpenRouter/iu);
       assert.ok(!reply.includes("Фанта"));
     }

@@ -289,7 +289,7 @@ test("Kazakh explicit wait question requires a fresh kitchen read before link",(
 test("price-free offers of unavailable or note-blocked products are removed",()=>{
  const blocked={name:"Пепперони",category_name:"Пиццы",price:2500,available:false};
  const alternative={name:"Маргарита",category_name:"Пиццы",price:2100,available:true};
- for(const draft of ["Попробуйте Пепперони.","Можно взять Пепперони."]){
+ for(const draft of ["Попробуйте Пепперони.","Можно взять Пепперони.","Советую Пепперони.","Пепперони алуға болады."]){
   const c=ctx("Какие пиццы есть?",{
    menuSnapshot:{items:[...items,blocked,alternative],source:"live"},
    menuGrounding:{menu_lookup:"live",lookup_query:"пиццы",category_browse:true,items:[alternative],unavailable_now:[blocked],totalMatched:1},
@@ -343,7 +343,7 @@ test("grounded checkout keeps independent SKUs while a longer overlapping SKU wi
  assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Хочу Айран. Не хочу Айран и Пирог Орбита.",{menuSnapshot:{items:live,source:"live"},menuGrounding:grounded})),false);
 });
 
-test("a later category or general refusal clears earlier grounded checkout choices",()=>{
+test("a later category or general refusal clears earlier grounded checkout choices",async()=>{
  const live=[
   {name:"Айран",category_name:"Напитки",price:500,available:true},
   {name:"Лимонад",category_name:"Напитки",price:700,available:true},
@@ -351,6 +351,41 @@ test("a later category or general refusal clears earlier grounded checkout choic
  const grounded={lookup_query:"айран лимонад",items:live};
  const decision=(text:string)=>currentGroundedCatalogCheckoutDecision(ctx(text,{menuSnapshot:{items:live,source:"live"},menuGrounding:grounded}));
  assert.equal(decision("Хочу Айран. Не хочу напитки."),false);
+ assert.equal(decision("Айран алайын. Сусындар керек емес."),false);
  assert.equal(decision("Хочу Айран. Передумал, ничего не хочу."),false);
+ assert.equal(decision("Хочу Айран. Не хочу ничего."),false);
+ assert.equal(decision("Хочу Айран. Передумал."),false);
  assert.equal(decision("Не хочу напитки. Хочу Айран."),true);
+ assert.equal(decision("Передумал. Хочу Айран."),true);
+ const mixed=ctx("Айран алайын. Сусындар керек емес.",{language:"kk",menuSnapshot:{items:live,source:"live"}});
+ await groundMenuTurn(mixed,(async()=>({items:live,source:"live"})) as any);
+ const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(mixed,policy.resolveAgentToolPlan(mixed));
+ assert.ok(!refreshed.requiredTools.includes("sendMenuLink"));
+ assert.equal((await createSendMenuLinkSkill(mixed).execute({reason:"declined mixed-language category"}) as any).allowed,false);
+});
+
+
+test("live grounding preserves independent exact SKUs instead of choosing the globally longest name",async()=>{
+ const live=[
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+  {name:"Пирог Орбита",category_name:"Выпечка",price:1500,available:false},
+ ];
+ const c=ctx("Хочу Айран и Пирог Орбита.",{menuSnapshot:{items:live,source:"live"}});
+ const out:any=await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+ assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"]);
+ const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c));
+ assert.ok(refreshed.requiredTools.includes("sendMenuLink"));
+});
+
+test("numeric catalog identity cannot borrow permission from a numbered sibling",()=>{
+ for(const [blockedName,allowedName,text] of [
+  ["Пицца 30","Пицца 40","Хочу Пицца 30."],
+  ["Пицца30","Пицца40","Хочу Пицца30."],
+ ] as const){
+  const live=[
+   {name:blockedName,category_name:"Пиццы",price:2500,available:false},
+   {name:allowedName,category_name:"Пиццы",price:2600,available:true},
+  ];
+  assert.equal(currentGroundedCatalogCheckoutDecision(ctx(text,{menuSnapshot:{items:live,source:"live"},menuGrounding:{lookup_query:text,items:[live[1]]}})),false,text);
+ }
 });

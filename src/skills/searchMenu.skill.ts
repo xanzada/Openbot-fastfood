@@ -1,6 +1,6 @@
 import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
+import { catalogNamedItemsInText, customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -21,11 +21,6 @@ function normalizeText(value: unknown) {
 // any of them, so the model answered from memory and missed «Детский сок» (audit sim
 // 2026-10-04). A token also matches a catalog word it starts with, plus a few Kazakh
 // food words mapped to the Russian stem the catalog uses.
-const KAZAKH_MENU_WORDS: Array<[string, string]> = [
-  ["ішетін", "напит"], ["ишетин", "напит"], ["напит", "сусын"], ["сусын", "напит"], ["тауық", "кури"], ["тауык", "кури"], ["сиыр", "говя"],
-  ["картоп", "картоф"], ["тәтті", "сладост"], ["ірімшік", "сыр"], ["ащы", "остр"],
-];
-
 const QUERY_FILLERS = new Set([
   "бар", "ма", "ме", "ба", "бе", "не", "жоқ", "болса", "керек", "маған", "алайын", "аламын", "онда",
   "мне", "тогда", "есть", "ли", "если", "нет", "что", "какие", "у", "вас", "из", "и", "а", "два",
@@ -46,19 +41,9 @@ function fieldWords(value: string): string[] {
   return normalizeText(value).match(/[\p{L}\d]+/gu) || [];
 }
 
-function mappedMenuStems(token: string): string[] {
-  const mapped: string[] = [];
-  for (const [source, target] of KAZAKH_MENU_WORDS) if (token.startsWith(source)) mapped.push(target);
-  return mapped;
-}
-
 function menuTokenMatches(queryToken: string, catalogWord: string): boolean {
-  if (!queryToken || !catalogWord) return false;
-  if (menuLexemesRelated(queryToken, catalogWord)) return true;
-  return mappedMenuStems(queryToken).some((stem) =>
-    catalogWord === stem || catalogWord.startsWith(stem) || menuLexemeStem(catalogWord) === stem);
+  return Boolean(queryToken && catalogWord && menuLexemesRelated(queryToken, catalogWord));
 }
-
 function fieldMatchesToken(field: string, token: string): boolean {
   return fieldWords(field).some((word) => menuTokenMatches(token, word));
 }
@@ -86,23 +71,6 @@ function exactCatalogCategory(items: Record<string, any>[], topic: unknown): str
     if (related.length > 1) return null;
   }
   return exact[0];
-}
-
-function mostSpecificNamedMenuItem(items: Record<string, any>[], query: string): Record<string, any> | null {
-  const queryTokens = [...new Set(menuLexemes(query))];
-  if (!queryTokens.length) return null;
-  const complete = new Map<string, { item: Record<string, any>; specificity: number }>();
-  for (const item of items) {
-    const name = String(item?.name || item?.title || "").trim();
-    const nameTokens = [...new Set(menuLexemes(name))];
-    if (!name || !nameTokens.length || !nameTokens.every((token) =>
-      queryTokens.some((candidate) => menuLexemesRelated(token, candidate)))) continue;
-    complete.set(normalizeText(name), { item, specificity: nameTokens.length });
-  }
-  if (!complete.size) return null;
-  const greatestSpecificity = Math.max(...[...complete.values()].map((entry) => entry.specificity));
-  const best = [...complete.values()].filter((entry) => entry.specificity === greatestSpecificity);
-  return best.length === 1 ? best[0].item : null;
 }
 
 function scoreMenuItem(item: Record<string, any>, tokens: string[], query: string) {
@@ -306,13 +274,14 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         || (isContextualCompositionQuestion(ctx.text) ? customerCompositionSubject(ctx) : null)
         || ctx.text
         || query;
-      const requestedSpecificItem = !broadCategoryBrowse && query
-        ? mostSpecificNamedMenuItem(items, String(specificNameSource || query))
-        : null;
+      const requestedSpecificItems = !broadCategoryBrowse && query
+        ? catalogNamedItemsInText(items, String(specificNameSource || query))
+        : [];
       let allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
-      if (requestedSpecificItem) {
-        const requestedKey = normalizeText(requestedSpecificItem.name || requestedSpecificItem.title);
-        allMatches = allMatches.filter((item: any) => normalizeText(item?.name || item?.title) === requestedKey);
+      if (requestedSpecificItems.length) {
+        const requestedKeys = new Set(requestedSpecificItems
+          .map((item: any) => normalizeText(item?.name || item?.title)).filter(Boolean));
+        allMatches = allMatches.filter((item: any) => requestedKeys.has(normalizeText(item?.name || item?.title)));
       }
       if (broadCategoryBrowse && isAlternativeMenuFollowUp(ctx.text)) {
         // Assistant prose is never a fact source. It is used only as a display hint:
@@ -355,9 +324,11 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       const requestedFromFull = query
         ? selectPublicMenuItems(items, query, "", items.length || 1)
         : [];
-      const requestedExact = requestedSpecificItem
-        ? { name: requestedSpecificItem.name || requestedSpecificItem.title,
-            category: requestedSpecificItem.category_name || requestedSpecificItem.category || "" }
+      const requestedCategories = [...new Set(requestedSpecificItems
+        .map((item: any) => String(item?.category_name || item?.category || "").trim()).filter(Boolean))];
+      const requestedExact = requestedSpecificItems.length
+        ? { name: requestedSpecificItems[0]?.name || requestedSpecificItems[0]?.title,
+            category: requestedCategories.length === 1 ? requestedCategories[0] : "" }
         : requestedFromFull.find((item: any) => item.match_kind === "exact_name")
           || (requestedFromFull.length === 1 ? requestedFromFull[0] : null);
       const alternativeCategory = category
