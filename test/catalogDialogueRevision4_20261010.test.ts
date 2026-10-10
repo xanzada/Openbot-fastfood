@@ -554,6 +554,18 @@ test("a later category or general refusal clears earlier grounded checkout choic
  await groundMenuTurn(numericGeneric,(async()=>({items:[{name:"Донер куриный",price:1800,available:true}],source:"live"})) as any);
  assert.equal(currentGroundedCatalogCheckoutDecision(numericGeneric),true);
  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(numericGeneric,initialNumericGeneric).requiredTools.includes("sendMenuLink"));
+ const categoryQuantities=[
+  {name:"Донер куриный",category_name:"Донеры",price:1800,available:true},
+  {name:"Лимонад",category_name:"Напитки",price:700,available:true},
+ ];
+ for(const text of ["2 донера и 1 напиток.","Хочу 2 донера и 1 напиток."]){
+  const multipleCategoryQuantities=ctx(text,{menuSnapshot:{items:categoryQuantities,source:"preview"}});
+  const initialMultipleCategoryQuantities=policy.resolveAgentToolPlan(multipleCategoryQuantities);
+  await groundMenuTurn(multipleCategoryQuantities,(async()=>({items:categoryQuantities,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(multipleCategoryQuantities),true,text);
+  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(multipleCategoryQuantities,initialMultipleCategoryQuantities).requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(multipleCategoryQuantities).execute({reason:"multiple category quantities"}) as any).allowed,true,text);
+ }
  assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Донер с курицей. Не хочу донеры.",{
   menuSnapshot:{items:doners,source:"live"},
   menuGrounding:{lookup_query:"донеры",items:doners},

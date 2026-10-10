@@ -170,11 +170,13 @@ function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
     .map(({ index }) => index));
   const unresolvedWords = subjects.filter(({ word, index }) =>
     !(/^\d+$/u.test(word) && (index < firstSupportedIndex || exactQuantityIndexes.has(index))));
-  if (unresolvedWords.some(({ word }) => /\d/u.test(word) || /^[a-z]{1,3}$/iu.test(word))) return true;
   // Once a concrete SKU owns its span, leftover words may describe only an
   // independently known category or an operational modifier. A token borrowed
   // from another item's name/description cannot silently extend this SKU.
-  if (exactItems.length) return unresolvedWords.some(({ word }) => !catalogWordSupportedByCategory(items, word));
+  if (exactItems.length) {
+    if (unresolvedWords.some(({ word }) => /\d/u.test(word) || /^[a-z]{1,3}$/iu.test(word))) return true;
+    return unresolvedWords.some(({ word }) => !catalogWordSupportedByCategory(items, word));
+  }
   // Without an exact SKU, keep adjacent catalog words bound to one catalog
   // record. Conjunctions and commas form independent choices, so "doners and
   // drinks" remains valid while "Doner Comet" cannot borrow Comet from pie.
