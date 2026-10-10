@@ -80,6 +80,15 @@ function hasCurrentMenuBrowseInquiry(text: string): boolean {
   return browse;
 }
 
+function isPotentialUnseenCategoryShift(text: string): boolean {
+  const value = String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "").trim();
+  if (!value || value.length > 80) return false;
+  // This is a grammatical topic shift, not a catalog lexicon. Known service,
+  // payment, order and incident subjects stay on their dedicated routes.
+  if (!/^(?:а|ал)\s+[\p{L}-]{3,}[?.!\s]*$/iu.test(value)) return false;
+  return !/(?:достав|жеткіз|оплат|төлем|кас[пб]и|kaspi|реквизит|заказ|тапсырыс|оператор|админ|курьер|шағым|жалоб|мекенжай|адрес|график|уақыт|время|кухн|ас ?үй)/iu.test(value);
+}
+
 function add(plan: AgentToolPlan, tool: AgentToolName, reason: string) {
   if (plan.requiredTools.includes(tool)) return;
   plan.requiredTools.push(tool);
@@ -149,7 +158,10 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
    const categoryConsultation = isMenuCategoryConsultation(ctx);
    const broadCategoryBrowse = isBroadMenuCategoryBrowse(ctx);
    const menuLinkDecision = menuLinkDecisionForTurn(text);
-   const menuLookup = categoryConsultation || currentCatalogRequest || isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+   const unseenCategoryShift = !categoryConsultation && isPotentialUnseenCategoryShift(text)
+     && !paymentDetailsIntent && !orderQuestion && !immediateServiceIncident
+     && !intentMatches(BUSINESS_INFO_RE, text) && !intentMatches(KITCHEN_STATUS_RE, text);
+   const menuLookup = categoryConsultation || unseenCategoryShift || currentCatalogRequest || isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
   const checkoutIntent = hasCustomerCheckoutIntent(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && menuLinkDecision !== "deny"

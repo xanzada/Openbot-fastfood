@@ -173,15 +173,26 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
  * catalog, Redis or the agent.
  */
 export function pageMenuMatches(allMatches: Record<string, any>[], limit?: number, offset?: number) {
+  // Publicly identical rows are one choice even if the source duplicated them
+  // after the first page. Deduplicate before computing totals and offsets.
+  const seen = new Set<string>();
+  const uniqueMatches = allMatches.filter((item) => {
+    const publicName = normalizeText(item?.name || item?.title);
+    const fallback = String(item?.id || item?.sku || "").trim();
+    const key = publicName ? "name:" + publicName : fallback ? "id:" + fallback : "";
+    if (!key || seen.has(key)) return Boolean(!key);
+    seen.add(key);
+    return true;
+  });
   const requested = Math.min(50, Math.max(1, Number(limit || 50)));
   const start = Math.max(0, Number(offset || 0));
-  const items = allMatches.slice(start, start + requested);
-  const nextOffset = start + items.length < allMatches.length ? start + items.length : null;
+  const items = uniqueMatches.slice(start, start + requested);
+  const nextOffset = start + items.length < uniqueMatches.length ? start + items.length : null;
   return {
     items,
     offset: start,
     nextOffset,
-    totalMatched: allMatches.length,
+    totalMatched: uniqueMatches.length,
     returned: items.length,
     hasMore: nextOffset !== null,
     ...(nextOffset !== null

@@ -150,15 +150,19 @@ export type MenuLinkTurnDecision = "allow" | "deny" | "text_only" | "unspecified
  */
 export function menuLinkDecisionForTurn(text = ""): MenuLinkTurnDecision {
   const raw = String(text || "");
-  const oversized = raw.length > 4096;
-  // Intent is bounded before quote/spelling normalization. For oversized input,
-  // keep both chronological edges so a last correction remains authoritative.
-  const bounded = oversized ? raw.slice(0, 2048) + "\n" + raw.slice(-2048) : raw;
+  const implicitTrustMax = 4096;
+  const supportedMax = 8192;
+  const oversized = raw.length > supportedMax;
+  const implicitOversized = raw.length > implicitTrustMax;
+  // Scan every character through the supported maximum. For larger input the
+  // omitted middle cannot be ordered safely against a head decision, so only a
+  // complete explicit decision in the retained tail may grant a link.
+  const bounded = oversized ? raw.slice(-2048) : raw.slice(0, supportedMax);
   const value = normalizeCheckoutRequestSpelling(bounded)
     .replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "").toLowerCase();
   const textOnly = wantsMenuAsText(value);
   const topic = /(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url|меню|мәзір\p{L}*|мазір\p{L}*|каталог\p{L}*|корзин\p{L}*|себет\p{L}*)/iu;
-  if (!topic.test(value)) return oversized ? "deny" : "unspecified";
+  if (!topic.test(value)) return implicitOversized ? "deny" : "unspecified";
   let decision: MenuLinkTurnDecision = textOnly ? "text_only" : "unspecified";
   for (const clause of value.split(/(?<=[.!?;,\n])|[—–]|(?<!\p{L})(?:но|бірақ|хотя)(?!\p{L})/iu)) {
     const explicitUrlAction = /(?:(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?)[^.!?]{0,30}(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)|(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)[^.!?]{0,30}(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?))/iu.test(clause);
@@ -174,7 +178,7 @@ export function menuLinkDecisionForTurn(text = ""): MenuLinkTurnDecision {
   }
   // An oversized implicit browse has no trustworthy complete current-turn
   // decision. Fail closed; an explicit head/tail action above remains usable.
-  return oversized && decision === "unspecified" ? "deny" : decision;
+  return implicitOversized && decision === "unspecified" ? "deny" : decision;
 }
 
 export function hasExplicitMenuLinkIntent(text: string): boolean {

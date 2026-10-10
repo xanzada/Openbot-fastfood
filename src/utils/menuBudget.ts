@@ -6,7 +6,9 @@ const PRICE_CEILING_RE = /(?:(?<!\p{L})(?:до|не\s+дороже)\s*(\d{1,7})(
 const QUALITATIVE_BUDGET_RE = /(?<!\p{L})(?:подешевле|дешевле|недорог\p{L}*|бюджетн\p{L}*|арзанырак|арзандау|арзан)(?!\p{L})/iu;
 const EXPLORATION_RE = /(?:не\s*(?:аламын|алсам|алуга|жеуге|усынасыз|бар|келеди)|кандай[^.!?]{0,30}(?:алсам|алуга|аламан)|что(?:\s+\p{L}+){0,3}\s*(?:взять|купить|выбрать|поесть|посоветуете)|на\s+что\s+хватит|что\s+посоветуете)/iu;
 const HUNGER_RE = /(?:карным[^.!?]{0,30}аш|голод(?:ен|на|ный|ная)|студент)/iu;
-const FOOD_RE = /(?:донер|пицц|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]|цезар|комбо)/iu;
+// Category names belong to the live catalog. Recognise the grammatical shape
+// of a browse request instead of maintaining a dish dictionary here.
+const CATEGORY_BROWSE_RE = /(?<!\p{L})(?:какие|какой|какую|какое|қандай|кандай)(?:\s+[\p{L}-]{2,}){1,5}/iu;
 const FOOD_CHOICE_RE = /(?:аламын|алайын|возьму|закажу|заказываю|хочу\s+(?:заказать|взять)|тапсырыс\s*(?:берей|берем|жаса))/iu;
 const MONEY_LEG_RE = /(?:оплат|перевел|перевод|реквизит|кас[пб]и|чек|толед|толем|аудар|жеткиз|достав|курьер)/iu;
 const DENIED_RE = /(?:керек\s*емес|кажет\s*емес|жок|(?<!\p{L})не\s+(?:хочу|нуж|надо|интерес|спрашива|буду)|нет\s+(?:денег|бюджет))/iu;
@@ -61,7 +63,9 @@ function currentBudgetClauses(text: string): string[] {
   const clauses = budgetText.replace(/\d+[.,]\d+(\s*(?:тенге(?:ге|м)?|тг|kzt|₸))(?!\p{L})/giu, (_match, currency) => "unsupported_amount " + currency)
     .split(/[.!?;,\n]+|(?<!\p{L})(?:но|бирак)(?!\p{L})/iu);
   // A real food choice remains a choice even if this turn previously considered a budget.
-  if (clauses.some(clause => FOOD_RE.test(clause) && FOOD_CHOICE_RE.test(clause)
+  if (clauses.some(clause => FOOD_CHOICE_RE.test(clause)
+    && !EXPLORATION_RE.test(clause)
+    && !/^\s*(?:хочу\s+(?:заказать|взять)|закажу|заказываю|тапсырыс\s*(?:берей|берем|жаса))\s*$/iu.test(clause)
     && !/(?:не\s+(?:хочу|буду)|алмай|бар\s*ма|если|можно|могу)/iu.test(clause))) return [];
   const exploratory = EXPLORATION_RE.test(value);
   const hungry = HUNGER_RE.test(value);
@@ -69,8 +73,9 @@ function currentBudgetClauses(text: string): string[] {
     PRICE_CEILING_RE.lastIndex = 0;
     const ceiling = PRICE_CEILING_RE.test(clause);
     PRICE_CEILING_RE.lastIndex = 0;
+    const categoryBrowse = CATEGORY_BROWSE_RE.test(clause);
     return (CURRENCY_RE.test(clause) || ceiling) && !MONEY_LEG_RE.test(clause) && !DENIED_RE.test(clause)
-      && (exploratory || hungry || /бюджет/iu.test(clause) || ceiling && FOOD_RE.test(clause));
+      && (exploratory || hungry || /бюджет/iu.test(clause) || ceiling && categoryBrowse);
   });
 }
 

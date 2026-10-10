@@ -1618,7 +1618,17 @@ function isVoiceContext(ctx: FastFoodContext) {
   return Boolean(media && /audio|voice|ptt/i.test(String(media.kind || media.type || media.mimeType || "")));
 }
 
+function catalogAlternativesBlocked(ctx: FastFoodContext): boolean {
+  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext, ctx.activeShiftNotes);
+  if (policy.blocksAllSales && policy.mode !== "off_hours"
+    || policy.requiresConsent && ctx.kitchenCheckoutFingerprint !== policy.fingerprint) return true;
+  const current = String(ctx.text || "");
+  return isExplicitHumanOperatorRequest(current) || isExplicitCourierContactRequest(current)
+    || isCurrentComplaintRequest(current) || isLikelyComplaintText(current) && complaintHasActionableDetail(current);
+}
+
 function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] = [], draft = ""): string | null {
+  if (catalogAlternativesBlocked(ctx)) return null;
   const shopping = shoppingConstraintsForContext(ctx);
   const budget = shopping.budget;
   const basket = shoppingBasketQuote(ctx);
@@ -1642,7 +1652,9 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   // Generic pre-order exploration can need budget advice; specific order actions keep their own flow.
   if (isCustomerOrderStatusQuestion(current)
     || /(?:оформ\p{L}*|созда\p{L}*|измен\p{L}*|отмен\p{L}*|добав\p{L}*|удал\p{L}*)[^.!?]{0,40}(?:заказ|тапсырыс)|(?:заказ|тапсырыс)\p{L}*[^.!?]{0,40}(?:оформ|созда|измен|отмен|рәсімде|расимде|өзгерт|озгерт|болдырма|жой|жасаңыз|жасаныз|беріңіз|бериниз)/iu.test(current)) return null;
-  const drinksOnly = /(?:напит|попить|пить|сусын|ішетін|ишетин)/iu.test(current);
+  // A category preference narrows fallback snapshots when an older caller did
+  // not attach the scoped search result. Live search grounding remains primary.
+  const beveragesOnly = /(?:напит\p{L}*|попить|пить|сусын\p{L}*|ішетін|ишетин)/iu.test(current);
   const nearestUser = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-6)
     .filter((row: any) => row?.role === "user")
     .map((row: any) => String(row.content ?? row.text ?? "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, ""))
@@ -1658,10 +1670,14 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   if (!snapshot || !Array.isArray(snapshot.items) || snapshot.source === "menu_unavailable"
     || grounding?.menu_lookup === "unavailable" || grounding?.error
     || (!grounding && !toolsCalled.includes("searchMenu"))) return unknown;
-  const groundedCategoryItems = grounding?.category_browse && Array.isArray(grounding.items) && grounding.items.length
-    ? grounding.items : snapshot.items;
+  const hasScopedGrounding = toolsCalled.includes("searchMenu") && grounding && Array.isArray(grounding.items);
+  const groundedCategoryItems = hasScopedGrounding ? grounding.items
+    : grounding?.category_browse && Array.isArray(grounding.items) ? grounding.items : snapshot.items;
   const vocabulary = menuVocabulary(snapshot.items);
+  const blockedNow = new Set([...(grounding?.unavailable_now || []), ...(grounding?.sold_out_now || [])]
+    .map((entry: any) => menuClaimKey(entry?.name ?? entry)).filter(Boolean));
   const priced = eligibleShoppingItems(ctx, groundedCategoryItems).filter((item: any) => item && item.available !== false
+    && !blockedNow.has(menuClaimKey(item.name))
     && typeof item.name === "string" && item.name.trim()
     && !menuItemBlockedByNotes(ctx.activeShiftNotes || [], item, vocabulary).blocked)
     .map((item: any) => ({item, price: typeof item.price === "number" ? item.price
@@ -1673,10 +1689,11 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     ? "Құрамы туралы қазіргі деректерден етсіз лайық нұсқаны растай алмаймын."
     : "По текущим данным о составе не могу подтвердить подходящий вариант без мяса.";
   if (!priced.length) return ctx.language === "kk" ? "Қазіргі мәзірде шектеулеріңізге сай расталған нұсқа табылмады." : "В текущем меню нет подтверждённого варианта с учётом ваших ограничений.";
-  const food = (item: any) => /донер|пицц|бургер|шаурм|фри|ролл|суши|цезар|наггетс|сэндвич|еда|тағам|тамақ/iu.test(`${item.name} ${item.category_name || item.category || ""}`);
-  const choices = priced.filter(({item,price}: any) => (budget === null || price <= budget)
-    && (!drinksOnly || /напит|сусын|сок|шырын|спрайт|кола|фанта|вода|су(?:\s|$)|чай|шай|кофе/iu.test(`${item.name} ${item.category_name || item.category || ""}`)))
-    .sort((a: any, b: any) => Number(food(b.item)) - Number(food(a.item)) || b.price - a.price)
+  const choices = priced.filter(({item, price}: any) => (budget === null || price <= budget)
+    && (!beveragesOnly || /(?:напит\p{L}*|сусын\p{L}*|сок|шырын|спрайт|кола|фанта|вода|су(?:\s|$)|чай|шай|кофе)/iu.test(
+      String(item.category_name || item.category || "") + " " + String(item.name || ""),
+    )))
+    .sort((a: any, b: any) => b.price - a.price)
     .slice(0, 3);
   if (!choices.length) return ctx.language === "kk"
     ? `Бағасы расталған қолжетімді нұсқалардан ${budget} тг бюджетке сай келетінін таппадым.`
@@ -1887,7 +1904,7 @@ function blockedCatalogOffers(text: string, ctx: FastFoodContext): { text: strin
       || /недоступ\p{L}*|нет\s+в\s+наличии|қолжетімсіз|қолжетімді\s+емес|жо[қк]/iu.test(clause)) return null;
     const mentions = catalogNameMentions(clause, blockedNames);
     if (!mentions.length || !PRICE_CLAIM_RE.test(clause)
-      && !/доступ\p{L}*|қолжетімді|есть\s+в\s+меню|мәзірде\s+бар|рекоменд|ұсынам|вариант/iu.test(clause)) return null;
+      && !/доступ\p{L}*|қолжетімді|(?<!\p{L})есть(?!\p{L})|(?<!\p{L})бар(?!\p{L})|мәзірде\s+бар|рекоменд|ұсынам|вариант/iu.test(clause)) return null;
     for (const mention of mentions) removed.add(mention.key);
     return "";
   });
@@ -1912,13 +1929,7 @@ function groundedCategoryEnumeration(text: string, ctx: FastFoodContext): string
   const grounding = ctx.menuGrounding as any;
   if (!grounding?.category_browse || grounding.menu_lookup === "unavailable" || grounding.error
     || isMenuBudgetInquiry(ctx.text)) return null;
-  const policy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus || ctx.hardRealtimeContext, ctx.activeShiftNotes);
-  if (policy.blocksAllSales && policy.mode !== "off_hours"
-    || policy.requiresConsent && ctx.kitchenCheckoutFingerprint !== policy.fingerprint) return null;
-  const current = String(ctx.text || "");
-  const immediateServiceIncident = isExplicitHumanOperatorRequest(current) || isExplicitCourierContactRequest(current)
-    || isCurrentComplaintRequest(current) || isLikelyComplaintText(current) && complaintHasActionableDetail(current);
-  if (immediateServiceIncident) return null;
+  if (catalogAlternativesBlocked(ctx)) return null;
   const rawItems = (Array.isArray(grounding.items) ? grounding.items : [])
     .filter((item: any) => item?.available !== false && typeof item?.name === "string" && item.name.trim());
   const byName = new Map<string, { name: string; price: number | null }>();
