@@ -100,52 +100,39 @@ function containsCatalogSurfacePhrase(words: string[], phrase: string[]): boolea
     && phrase.every((token, offset) => token === words[start + offset]));
 }
 
-function catalogChoiceSubjects(items: any[], clause: string, includeStrictCategoriesWithExact = false): Set<string> {
+function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   const words = menuLexemes(clause);
   const surfaceWords = catalogSurfaceWords(clause);
-  const itemMatches: Array<{ key: string; matched: number; total: number }> = [];
   const categoryKeys = new Set<string>();
-  const strictCategoryKeys = new Set<string>();
   for (const item of items) {
-    const name = String(item?.name || item?.title || "").trim();
     const category = String(item?.category_name || item?.category || "").trim();
-    const nameTokens = menuLexemes(name);
     const categoryTokens = menuLexemes(category);
-    const matched = nameTokens.filter((token) =>
-      words.some((word) => menuLexemesRelated(token, word))).length;
-    if (name && matched) itemMatches.push({
-      key: "item:" + name.toLocaleLowerCase("ru-RU"),
-      matched,
-      total: nameTokens.length,
-    });
     if (categoryTokens.length && categoryTokens.every((token) =>
       words.some((word) => menuLexemesRelated(token, word)))) {
-      const categoryKey = "category:" + categoryTokens.join("|");
-      categoryKeys.add(categoryKey);
-      if (containsCatalogSurfacePhrase(surfaceWords, catalogSurfaceWords(category))) {
-        strictCategoryKeys.add(categoryKey);
-      }
+      categoryKeys.add("category:" + categoryTokens.join("|"));
     }
   }
 
-  // Use the same span-aware exact-name resolver as live search. This preserves
-  // independent products while preventing a shorter overlapping name or a
-  // numeric sibling from lending checkout permission to a blocked exact SKU.
+  // Use the same span-aware exact-name resolver as live search. A literal item
+  // wins over its category; an inflected/plural category mention may otherwise
+  // match a short same-root SKU and must keep the category refusal visible.
   const exactItems = catalogNamedItemsInText(items, clause);
   if (exactItems.length) {
     const keys = new Set(exactItems.map((item) =>
       "item:" + String(item?.name || item?.title || "").trim().toLocaleLowerCase("ru-RU")));
-    if (includeStrictCategoriesWithExact) {
-      for (const key of strictCategoryKeys) keys.add(key);
-    }
+    const hasLiteralItem = exactItems.some((item) =>
+      containsCatalogSurfacePhrase(surfaceWords,
+        catalogSurfaceWords(item?.name || item?.title || "")));
+    if (!hasLiteralItem) for (const key of categoryKeys) keys.add(key);
     return keys;
   }
 
-  const keys = new Set<string>();
-  const greatestOverlap = Math.max(0, ...itemMatches.map((match) => match.matched));
-  for (const match of itemMatches) if (match.matched === greatestOverlap) keys.add(match.key);
-  for (const key of categoryKeys) keys.add(key);
-  return keys;
+  // A number or short Latin size/code makes the request SKU-specific. If that
+  // SKU is absent, a shared category token cannot authorize a sibling product.
+  const unresolvedVariant = surfaceWords.some((token) =>
+    /\d/u.test(token) || /^[a-z]{1,3}$/iu.test(token));
+  if (unresolvedVariant) return new Set();
+  return categoryKeys;
 }
 
 /**
@@ -182,6 +169,16 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   const decisions = new Map<string, boolean>();
   let saw = false;
   const clauses = visible.split(/(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу))/iu);
+  const refusalRe = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
+  const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
+  const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
+  const quantitySelectionRe = /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu;
+  const actionCount = clauses.filter((raw) => {
+    const clause = raw.trim();
+    const refused = refusalRe.test(clause);
+    return refused || !informationalRe.test(clause)
+      && (selectionRe.test(clause) || quantitySelectionRe.test(clause));
+  }).length;
   for (const raw of clauses) {
     const clause = raw.trim();
     if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
@@ -192,25 +189,34 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
       saw = true;
       continue;
     }
-    const refused = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu.test(clause);
-    const subjects = catalogChoiceSubjects(catalog, clause, refused);
-    const clauseWords = menuLexemes(clause.replace(/-/gu, " "));
-    // A colloquial query can resolve one live item without spelling its catalog
-    // name (for example Кола -> Coca-Cola). Scope that fallback to this clause's
-    // actual lookup terms; page size alone must never authorize a later choice.
-    if (!subjects.size && lookupTokens.length && lookupTokens.some((token) =>
-      clauseWords.some((word) => menuLexemesRelated(token, word)))) {
-      subjects.add("grounded:query");
-    }
-    if (!subjects.size) continue;
+    const refused = refusalRe.test(clause);
     // A grounded item mention is still only a question when the customer asks
     // for price, composition or availability. In particular, Kazakh "қандай"
     // must not match the unbounded Russian imperative fragment "дай".
-    const informational = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu.test(clause);
-    const selected = !refused && !informational && (
-      /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu.test(clause)
-      || /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu.test(clause)
-    );
+    const informational = informationalRe.test(clause);
+    const selected = !refused && !informational
+      && (selectionRe.test(clause) || quantitySelectionRe.test(clause));
+    const subjects = catalogChoiceSubjects(catalog, clause);
+    const clauseWords = menuLexemes(clause.replace(/-/gu, " "));
+    const lookupOverlap = lookupTokens.length && lookupTokens.some((token) =>
+      clauseWords.some((word) => menuLexemesRelated(token, word)));
+    const unresolvedVariant = /\d/u.test(clause)
+      && catalogNamedItemsInText(catalog, clause).length === 0;
+    // Colloquial aliases such as Кола -> Coca-Cola may use the grounded query
+    // only for a single positive choice. Refusals can still cancel that exact
+    // grounding; a later unknown choice cannot borrow whole-turn query tokens.
+    if (!subjects.size && lookupOverlap
+      && (refused || selected && actionCount === 1 && !unresolvedVariant)) {
+      subjects.add("grounded:query");
+    }
+    if (!subjects.size) {
+      if (selected) {
+        decisions.clear();
+        decisions.set("grounded:unresolved", false);
+        saw = true;
+      }
+      continue;
+    }
     if (!refused && !selected) continue;
     saw = true;
     for (const subject of subjects) {

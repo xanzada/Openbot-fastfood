@@ -371,6 +371,32 @@ test("a later category or general refusal clears earlier grounded checkout choic
  }));
  assert.equal(singleDecision("Не хочу Айран. Хочу кибины."),false);
  assert.equal(singleDecision("Хочу Айран. Не хочу Айран. Хочу домой."),false);
+ assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Айран не хочу. Хочу Зефир Орбита.",{
+  menuSnapshot:{items:single,source:"live"},
+  menuGrounding:{lookup_query:"айран зефир орбита",items:single},
+ })),false);
+ const pizzas=[
+  {name:"Пицца 30",category_name:"Пиццы",price:1800,available:true},
+  {name:"Пицца 40",category_name:"Пиццы",price:2400,available:true},
+ ];
+ assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Хочу Пицца 50.",{
+  menuSnapshot:{items:pizzas,source:"live"},
+  menuGrounding:{lookup_query:"пицца",items:pizzas},
+ })),false);
+ assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Не хочу Пицца 30. Хочу Пицца 50.",{
+  menuSnapshot:{items:pizzas,source:"live"},
+  menuGrounding:{lookup_query:"пицца",items:pizzas},
+ })),false);
+ for(const text of ["Не хочу Айран. Хочу кибины.","Хочу Айран. Не хочу Айран. Хочу домой.","Айран не хочу. Хочу Зефир Орбита."]){
+  const actual=ctx(text);
+  await groundMenuTurn(actual,(async()=>({items:single,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(actual),false,text);
+  assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(actual,policy.resolveAgentToolPlan(actual)).requiredTools.includes("sendMenuLink"),text);
+ }
+ const unknownPizza=ctx("Хочу Пицца 50.");
+ await groundMenuTurn(unknownPizza,(async()=>({items:pizzas,source:"live"})) as any);
+ assert.equal(currentGroundedCatalogCheckoutDecision(unknownPizza),false);
+ assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(unknownPizza,policy.resolveAgentToolPlan(unknownPizza)).requiredTools.includes("sendMenuLink"));
  const burgers=[
   {name:"Бургер",category_name:"Бургеры",price:1200,available:true},
   {name:"Чизбургер",category_name:"Бургеры",price:1500,available:true},
@@ -381,6 +407,9 @@ test("a later category or general refusal clears earlier grounded checkout choic
  }));
  assert.equal(burgerDecision("Хочу Чизбургер. Не хочу бургеры."),false);
  assert.equal(burgerDecision("Хочу Чизбургер. Бургеры керек емес."),false);
+ assert.equal(burgerDecision("Хочу Чизбургер. Бургерлер керек емес."),false);
+ assert.equal(burgerDecision("Хочу Чизбургер. Не хочу никаких бургеров."),false);
+ assert.equal(burgerDecision("Хочу Чизбургер. Я не хочу бургеров."),false);
  assert.equal(burgerDecision("Хочу Чизбургер. Не хочу Бургер."),true);
  const doners=[
   {name:"Донер с курицей",category_name:"Донеры",price:1600,available:true},
