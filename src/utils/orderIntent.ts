@@ -154,9 +154,17 @@ function catalogWordSupportedByCategory(items: any[], word: string): boolean {
   return items.some((item) => catalogFieldSupportsWord(item?.category_name || item?.category || "", word));
 }
 
+const CATALOG_CHOICE_SEPARATOR_RE = /,\s*|\s+(?:и|және|мен)\s+/iu;
+
 function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
   const surfaceWords = catalogSurfaceWords(clause);
   const exactItems = catalogNamedItemsInText(items, clause);
+  const independentGroups = clause.split(CATALOG_CHOICE_SEPARATOR_RE).filter((group) => group.trim());
+  const separatorBelongsToExactName = exactItems.some((item) =>
+    CATALOG_CHOICE_SEPARATOR_RE.test(String(item?.name || item?.title || "")));
+  if (independentGroups.length > 1 && !separatorBelongsToExactName) {
+    return independentGroups.some((group) => hasUnresolvedCatalogVariant(items, group));
+  }
   const exactIndexes = exactCatalogItemSpanIndexes(surfaceWords, exactItems);
   const modifierIndexes = catalogOperationalModifierIndexes(surfaceWords);
   const subjects = surfaceWords.map((word, index) => ({ word, index }))

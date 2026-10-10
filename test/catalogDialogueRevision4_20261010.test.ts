@@ -568,14 +568,16 @@ test("a later category or general refusal clears earlier grounded checkout choic
  }
  const pizzaAndDrink=[
   ...namedPizzas,
-  {name:"Лимонад",category_name:"Напитки",price:700,available:true},
+  {name:"Coca-Cola",category_name:"Напитки",price:700,available:true},
  ];
- const mixedQuantities=ctx("Хочу 2 Пицца Вектор и 1 напиток.",{menuSnapshot:{items:pizzaAndDrink,source:"preview"}});
- const initialMixedQuantities=policy.resolveAgentToolPlan(mixedQuantities);
- await groundMenuTurn(mixedQuantities,(async()=>({items:pizzaAndDrink,source:"live"})) as any);
- assert.equal(currentGroundedCatalogCheckoutDecision(mixedQuantities),true);
- assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(mixedQuantities,initialMixedQuantities).requiredTools.includes("sendMenuLink"));
- assert.equal((await createSendMenuLinkSkill(mixedQuantities).execute({reason:"mixed exact and category quantities"}) as any).allowed,true);
+ for(const text of ["Хочу 2 Пицца Вектор и 1 напиток.","Хочу 2 Пицца Вектор и 1 Колу."]){
+  const mixedQuantities=ctx(text,{menuSnapshot:{items:pizzaAndDrink,source:"preview"}});
+  const initialMixedQuantities=policy.resolveAgentToolPlan(mixedQuantities);
+  await groundMenuTurn(mixedQuantities,(async()=>({items:pizzaAndDrink,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(mixedQuantities),true,text);
+  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(mixedQuantities,initialMixedQuantities).requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(mixedQuantities).execute({reason:"mixed exact and category quantities"}) as any).allowed,true,text);
+ }
  const exactAndCategories=[
   {name:"Донер",category_name:"Донеры",price:1800,available:true},
   {name:"Пирог Комета",category_name:"Выпечка",price:1600,available:true},
@@ -588,6 +590,19 @@ test("a later category or general refusal clears earlier grounded checkout choic
   assert.equal(currentGroundedCatalogCheckoutDecision(grouped),true,text);
   assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(grouped,initialGrouped).requiredTools.includes("sendMenuLink"),text);
   assert.equal((await createSendMenuLinkSkill(grouped).execute({reason:"exact and category quantities"}) as any).allowed,true,text);
+ }
+ const partialChoices=[
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+  {name:"Донер куриный",category_name:"Донеры",price:1800,available:true},
+  {name:"Салат Комета",category_name:"Салаты",price:1600,available:true},
+ ];
+ for(const text of ["Хочу Айран и донер.","Хочу 2 Айрана и 1 донер.","Хочу Айран и салат."]){
+  const compound=ctx(text,{menuSnapshot:{items:partialChoices,source:"preview"}});
+  const out:any=await groundMenuTurn(compound,(async()=>({items:partialChoices,source:"live"})) as any);
+  assert.ok(out.items.some((item:any)=>item.name==="Айран"),text);
+  assert.ok(out.items.some((item:any)=>item.name!=="Айран"),text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(compound),true,text);
+  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(compound,policy.resolveAgentToolPlan(compound)).requiredTools.includes("sendMenuLink"),text);
  }
  assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Донер с курицей. Не хочу донеры.",{
   menuSnapshot:{items:doners,source:"live"},

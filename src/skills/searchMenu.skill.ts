@@ -281,7 +281,22 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       if (requestedSpecificItems.length) {
         const requestedKeys = new Set(requestedSpecificItems
           .map((item: any) => normalizeText(item?.name || item?.title)).filter(Boolean));
-        allMatches = allMatches.filter((item: any) => requestedKeys.has(normalizeText(item?.name || item?.title)));
+        const independentChoices = /,\s*|\s+(?:и|және|мен)\s+/iu.test(String(ctx.text || ""));
+        if (independentChoices) {
+          // A single turn may name one exact SKU and then a separate category
+          // ("Ayran and a doner"). Keep the exact live records and union them
+          // with the independently grounded query/category results. Intersecting
+          // both scopes erased every item whenever they belonged to different
+          // categories.
+          const exactMatches = selectPublicMenuItems(allowedItems, "", "", allowedItems.length || 1)
+            .filter((item: any) => requestedKeys.has(normalizeText(item?.name || item?.title)))
+            .map((item: any) => ({ ...item, match_kind: "exact_name" }));
+          const exactMatchKeys = new Set(exactMatches.map((item: any) => normalizeText(item?.name || item?.title)));
+          allMatches = [...exactMatches, ...allMatches.filter((item: any) =>
+            !exactMatchKeys.has(normalizeText(item?.name || item?.title)))];
+        } else {
+          allMatches = allMatches.filter((item: any) => requestedKeys.has(normalizeText(item?.name || item?.title)));
+        }
       }
       if (broadCategoryBrowse && isAlternativeMenuFollowUp(ctx.text)) {
         // Assistant prose is never a fact source. It is used only as a display hint:
