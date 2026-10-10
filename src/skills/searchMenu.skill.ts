@@ -275,9 +275,16 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         || (isContextualCompositionQuestion(ctx.text) ? customerCompositionSubject(ctx) : null)
         || ctx.text
         || query;
-      const requestedSpecificItems = !broadCategoryBrowse && query
+      const resolvedSpecificItems = query
         ? catalogResolvedItemsInText(items, String(specificNameSource || query))
         : [];
+      const requestedSpecificItems = broadCategoryBrowse
+        ? resolvedSpecificItems.filter((item: any) => {
+          const nameWords = String(item?.name || item?.title || "").match(/[\p{L}\p{N}-]+/gu) || [];
+          const categoryWords = String(item?.category_name || item?.category || "").match(/[\p{L}\p{N}-]+/gu) || [];
+          return nameWords.length > categoryWords.length || nameWords.some((word) => /\d/u.test(word));
+        })
+        : resolvedSpecificItems;
       let allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
       if (requestedSpecificItems.length) {
         const requestedKeys = new Set(requestedSpecificItems

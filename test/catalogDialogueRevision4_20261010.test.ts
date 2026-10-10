@@ -748,8 +748,26 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
   assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c)).requiredTools.includes("sendMenuLink"),text);
  }
+ const overlappingMenu=[
+  {name:"Донер",category_name:"Донеры",price:1000,available:true},
+  {name:"Донер Комбо",category_name:"Комбо",price:1500,available:false},
+ ];
+ const blockedOverlap=ctx("Хочу Донер Комбо.",{menuSnapshot:{items:overlappingMenu,source:"preview"}});
+ const blockedOverlapOut:any=await groundMenuTurn(blockedOverlap,(async()=>({items:overlappingMenu,source:"live"})) as any);
+ assert.equal(blockedOverlapOut.items.length,0);
+ assert.equal(currentGroundedCatalogCheckoutDecision(blockedOverlap),false);
+ assert.equal((await createSendMenuLinkSkill(blockedOverlap).execute({reason:"blocked longest overlap"}) as any).allowed,false);
+ const inflectedVariantMenu=[
+  {name:"Пицца Милан",category_name:"Пиццы",price:2400,available:true},
+  {name:"Пицца Милана",category_name:"Пиццы",price:2500,available:false},
+ ];
+ const blockedInflectedVariant=ctx("Хочу Пиццу Милана.",{menuSnapshot:{items:inflectedVariantMenu,source:"preview"}});
+ const blockedInflectedOut:any=await groundMenuTurn(blockedInflectedVariant,(async()=>({items:inflectedVariantMenu,source:"live"})) as any);
+ assert.equal(blockedInflectedOut.items.length,0);
+ assert.equal(currentGroundedCatalogCheckoutDecision(blockedInflectedVariant),false);
  const decimalMorphMenu=[
   {name:"Сет 1.5",category_name:"Сеты",price:1600,available:true},
+  {name:"Сет 1.7",category_name:"Сеты",price:1700,available:true},
   {name:"Coca-Cola",category_name:"Напитки",price:500,available:true},
  ];
  for(const [text,expected] of [
@@ -758,7 +776,8 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   ["Сет 1.5 не хочу. Хочу Сета 1.5.",true],
  ] as const){
   const c=ctx(text,{menuSnapshot:{items:decimalMorphMenu,source:"preview"}});
-  await groundMenuTurn(c,(async()=>({items:decimalMorphMenu,source:"live"})) as any);
+  const out:any=await groundMenuTurn(c,(async()=>({items:decimalMorphMenu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Сет 1.5"],text);
   assert.equal(currentGroundedCatalogCheckoutDecision(c),expected,text);
   const allowed=(await createSendMenuLinkSkill(c).execute({reason:"decimal morph decision"}) as any).allowed;
   assert.equal(allowed,expected,text);

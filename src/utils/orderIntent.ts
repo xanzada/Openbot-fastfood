@@ -168,7 +168,7 @@ function catalogProtectedWordsSameIdentity(left: string, right: string): boolean
 
 export function catalogResolvedItemsInText(items: any[], value: unknown): any[] {
   const words = catalogSurfaceWords(value);
-  const matches: Array<{ item: any; start: number; end: number; strict: boolean }> = [];
+  const matches: Array<{ item: any; start: number; end: number; exactTokens: number }> = [];
   for (const item of items) {
     const itemWords = catalogSurfaceWords(item?.name || item?.title || "");
     if (!itemWords.length) continue;
@@ -176,12 +176,15 @@ export function catalogResolvedItemsInText(items: any[], value: unknown): any[] 
       const candidate = words.slice(start, start + itemWords.length);
       if (!itemWords.every((word, offset) => catalogProtectedWordsSameIdentity(word, candidate[offset]))) continue;
       matches.push({ item, start, end: start + itemWords.length,
-        strict: itemWords.every((word, offset) => word === candidate[offset]) });
+        exactTokens: itemWords.filter((word, offset) => word === candidate[offset]).length });
     }
   }
-  const strictMatches = matches.filter((match) => match.strict);
-  const selected = matches.filter((match) => match.strict || !strictMatches.some((strict) =>
-    match.start < strict.end && match.end > strict.start));
+  const selected = matches.filter((match) => !matches.some((other) => {
+    if (other === match || !(match.start < other.end && match.end > other.start)) return false;
+    const length = match.end - match.start;
+    const otherLength = other.end - other.start;
+    return otherLength > length || otherLength === length && other.exactTokens > match.exactTokens;
+  }));
   return [...new Set(selected.map((match) => match.item))];
 }
 
