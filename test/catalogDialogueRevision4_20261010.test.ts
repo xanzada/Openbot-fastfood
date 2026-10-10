@@ -807,6 +807,22 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
   assert.equal((await createSendMenuLinkSkill(c).execute({reason:"mixed ambiguous choice"}) as any).allowed,false,text);
  }
+ for(const text of [
+  "Хочу Донер Куриный Комбо. Нет, хочу Айран.",
+  "Хочу Айран. Моку не хочу.",
+  "Вчера я писал \"Хочу Моку\". Сейчас хочу Айран.",
+  "Моку есть? Хочу Айран.",
+ ]){
+  const menu=[
+   ...mixedAmbiguousMenu,
+   {name:"Донер Куриный",category_name:"Донеры",price:1300,available:true},
+   {name:"Куриный Комбо",category_name:"Комбо",price:1700,available:true},
+  ];
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.ok(out.items.some((item:any)=>item.name==="Айран"),text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+ }
  const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
  const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
  assert.deepEqual(explicitMixedOut.items.map((item:any)=>item.name),["Айран","Моко"]);

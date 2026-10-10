@@ -210,6 +210,26 @@ export function catalogRequestHasAmbiguousOverlap(items: any[], value: unknown):
   return dominantCatalogItemSpanMatches(matches).some((match) => catalogSpanMatchConflicts(match, matches));
 }
 
+/** Ambiguity matters only for the latest positive catalog choice in a turn. */
+export function catalogRequestHasActiveAmbiguousOverlap(items: any[], value: unknown): boolean {
+  const visible = String(value || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
+  const clauses = splitCatalogTextOutsideExactSpans(items, visible,
+    /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу))/giu);
+  const refusalRe = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
+  const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
+  const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
+  const quantitySelectionRe = /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu;
+  let activeAmbiguity = false;
+  for (const raw of clauses) {
+    const clause = raw.trim();
+    if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
+    const selected = !refusalRe.test(clause) && !informationalRe.test(clause)
+      && (selectionRe.test(clause) || quantitySelectionRe.test(clause));
+    if (selected) activeAmbiguity = catalogRequestHasAmbiguousOverlap(items, clause);
+  }
+  return activeAmbiguity;
+}
+
 export function catalogResolvedItemsInText(items: any[], value: unknown): any[] {
   const matches = catalogItemSpanMatches(items, value);
   const selected = dominantCatalogItemSpanMatches(matches);
