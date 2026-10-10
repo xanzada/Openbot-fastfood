@@ -97,11 +97,12 @@ test("shopping outputs are strictly scoped to the current category query",async(
 
 test("arbitrary live SKU gains checkout only from current allowed grounding",async()=>{
  const preview=items.filter(i=>i.name!=="Хачапури");
- for(const text of ["2 хачапури пожалуйста","Хочу хачапури"]){
+ for(const text of ["2 хачапури пожалуйста","Хочу хачапури","Хочу заказать хачапури"]){
   const c=ctx(text,{menuSnapshot:{items:preview,source:"preview"}});
   const initial=policy.resolveAgentToolPlan(c);
   assert.ok(initial.requiredTools.includes("searchMenu"),text);
   assert.ok(!initial.requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"before grounding"}) as any).allowed,false,text);
   await groundMenuTurn(c,(async()=>({items,source:"live"})) as any);
   const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(c,initial);
   assert.ok(refreshed.requiredTools.includes("sendMenuLink"),text);
@@ -156,16 +157,36 @@ test("blocked and sold-out named SKU alternatives stay in its category",async()=
  }
 });
 
-test("required tool sequencing forces every planned tool in order and rechecks link gate",()=>{
+test("required tool sequencing executes search then kitchen then a dynamically gated real link",async()=>{
  const c=ctx("Какие пиццы есть и сколько ждать?");
- const plan=policy.resolveAgentToolPlan(c);
- assert.deepEqual(plan.requiredTools.slice(0,3),["getKitchenStatus","sendMenuLink","searchMenu"].filter(x=>plan.requiredTools.includes(x)));
- const p=policy.createAgentStepPolicy({requiredTools:["getKitchenStatus","sendMenuLink"],reason:["live","link"]},c);
- assert.deepEqual(p({stepNumber:0}),{toolChoice:{type:"tool",toolName:"getKitchenStatus"}});
- assert.deepEqual(p({stepNumber:1}),{toolChoice:{type:"tool",toolName:"sendMenuLink"}});
- c.runtimeStatus={...open,is_accepting_orders:false,is_emergency:true};
- const gated=policy.createAgentStepPolicy({requiredTools:["getKitchenStatus","sendMenuLink"],reason:["live","link"]},c);
- assert.deepEqual(gated({stepNumber:1}),{toolChoice:"none"});
+ const initial=policy.resolveAgentToolPlan(c);
+ assert.deepEqual(initial.requiredTools.slice(0,3),["searchMenu","getKitchenStatus","sendMenuLink"]);
+ const calls:string[]=[];
+ await groundMenuTurn(c,(async()=>{calls.push("searchMenu");return {items,source:"live"};}) as any);
+ const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(c,initial);
+ assert.deepEqual(refreshed.requiredTools.slice(0,3),["searchMenu","getKitchenStatus","sendMenuLink"]);
+ const remaining={requiredTools:refreshed.requiredTools.filter((x:string)=>x!=="searchMenu"),reason:["live kitchen","link"]} as any;
+ const step=policy.createAgentStepPolicy(remaining,c);
+ assert.deepEqual(step({stepNumber:0}),{toolChoice:{type:"tool",toolName:"getKitchenStatus"}});
+ calls.push("getKitchenStatus");
+ const linkChoice=step({stepNumber:1});
+ assert.deepEqual(linkChoice,{toolChoice:{type:"tool",toolName:"sendMenuLink"}});
+ const result:any=await createSendMenuLinkSkill(c).execute({reason:"all live gates complete"});
+ calls.push("sendMenuLink");
+ assert.equal(result.allowed,true);
+ assert.equal(c.magicLinkGranted,true);
+ assert.deepEqual(calls,["searchMenu","getKitchenStatus","sendMenuLink"]);
+
+ for(const runtimeStatus of [
+  {...open,is_accepting_orders:false,is_emergency:true},
+  {...open,wait_time:90},
+ ]){
+  c.runtimeStatus=runtimeStatus;c.hardRealtimeContext=runtimeStatus;
+  const gated=policy.createAgentStepPolicy(remaining,c);
+  assert.deepEqual(gated({stepNumber:1}),{toolChoice:"none"});
+ }
+ const complaint=policy.resolveAgentToolPlan(ctx("Ужасная доставка, позовите оператора"));
+ assert.equal(complaint.requiredTools.includes("sendMenuLink"),false);
 });
 
 test("budget replacement preserves separately grounded non-menu answer clauses",()=>{

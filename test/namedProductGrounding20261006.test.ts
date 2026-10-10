@@ -15,7 +15,8 @@ for (const phrase of phrases) for (const kind of ["text", "audio"]) {
     const plan = resolveAgentToolPlan(ctx(phrase, { mediaContext: kind === "audio" ? { kind, transcript: phrase } : null }));
     assert.equal(plan.requiredTools[0], "searchMenu");
     assert.deepEqual(createAgentStepPolicy(plan)({ stepNumber: 0 }), { toolChoice: { type: "tool", toolName: "searchMenu" } });
-    assert.equal(plan.requiredTools.includes("sendMenuLink"), direct.has(phrase));
+    // Product authorization is recomputed after the mandatory fresh lookup.
+    assert.equal(plan.requiredTools.includes("sendMenuLink"), false);
     assert.equal(hasDirectOrderIntent(phrase), direct.has(phrase));
   });
 }
@@ -86,7 +87,7 @@ for (const phrase of phrases) {
         async () => { links++; c.magicLinkGranted = true; return true; }, (async () => ({ items: liveItems })) as any);
       assert.equal(cases, 0);
       assert.ok(reply.length > 0);
-      assert.equal(links, direct.has(phrase) ? 1 : 0, phrase);
+      assert.equal(links, direct.has(phrase) || phrase === "А напитки?" ? 1 : 0, phrase);
       assert.doesNotMatch(reply, /заказ.*принят|тапсырыс.*қабылдан|TOOL_CHOICE|Gemini|OpenRouter/iu);
       assert.ok(!reply.includes("Фанта"));
     }

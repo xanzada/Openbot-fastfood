@@ -1,6 +1,8 @@
 import { intentMatches } from "./intentText.js";
 import { menuLinkDecisionForTurn, normalizeCheckoutRequestSpelling, wantsMenuAsText } from "./magicLink.js";
 import { isMenuBudgetInquiry } from "./menuBudget.js";
+import { menuLexemes, menuLexemesRelated } from "./menuQuestionContext.js";
+import type { FastFoodContext } from "../context/types.js";
 
 export const DIRECT_ORDER_INTENT_RE =
   /(?:(?:тапсырыс|заказ)\s*(?:бер|жаса|ет|қыл|хочу|оформ|сдел)|(?:алғым\s*келе|аламын|алайын|хочу\s*заказ|хочу\s*взять)|(?:[1-9]|екі|бір|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он|один|два|три|две)\s*(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]|порц)|(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]).*(?:жасап|әкел|жеткіз|берші|дайында|алғым|аламын|алайын))/iu;
@@ -66,7 +68,14 @@ function currentFoodSelection(value: string) {
 
 export function hasDirectOrderIntent(text = ""): boolean {
   const value = String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
-  if (isMenuBudgetInquiry(value)) return false;
+  if (isMenuBudgetInquiry(value)) {
+    const independent = value.split(/(?<=[.!?;])|\n|(?<!\p{L})(?:но|бірақ)(?!\p{L})/iu)
+      .filter((clause) => !isMenuBudgetInquiry(clause)).join(" ");
+    // A budget question is exploratory, but a separate later concrete food
+    // choice remains an order decision of its own.
+    if (!DIRECT_ORDER_INTENT_RE.test(independent)
+      && !/(?:пицц|донер|бургер|шаурм|лаваш|фри|суши|ролл|наггетс|сэндвич|хот-?дог|кол[ау]).*(?:керек|маған|мне|возьму|аламын|алайын)/iu.test(independent)) return false;
+  }
   // Only the observed complete abbreviated choice grants this extra permission.
   if (/^\s*мн\s+колу\s+пж[.!]*\s*$/iu.test(value)) return true;
   const choice = currentFoodSelection(value);
@@ -79,6 +88,71 @@ export function hasDirectOrderIntent(text = ""): boolean {
 }
 
 // Link permission follows the customer's current request, never model tool arguments.
+
+function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
+  const words = menuLexemes(clause);
+  const keys = new Set<string>();
+  for (const item of items) {
+    const name = String(item?.name || item?.title || "").trim();
+    const category = String(item?.category_name || item?.category || "").trim();
+    const nameTokens = menuLexemes(name);
+    const categoryTokens = menuLexemes(category);
+    if (nameTokens.length && nameTokens.some((token) =>
+      words.some((word) => menuLexemesRelated(token, word)))) keys.add("item:" + name.toLocaleLowerCase("ru-RU"));
+    if (categoryTokens.length && categoryTokens.every((token) =>
+      words.some((word) => menuLexemesRelated(token, word)))) keys.add("category:" + categoryTokens.join("|"));
+  }
+  return keys;
+}
+
+/**
+ * Catalog-derived order decision after this turn's live menu lookup.
+ * null means the turn has no grounded catalog choice and legacy link intents
+ * still decide. false is an authoritative refusal/unavailable choice.
+ */
+export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): boolean | null {
+  const grounding = ctx.menuGrounding as any;
+  if (!grounding || !Array.isArray(grounding.items)) return null;
+  const catalog = Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [];
+  const allowed = grounding.items;
+  const allowedKeys = new Set<string>();
+  for (const item of allowed) {
+    const name = String(item?.name || item?.title || "").trim();
+    const category = String(item?.category_name || item?.category || "").trim();
+    if (name) allowedKeys.add("item:" + name.toLocaleLowerCase("ru-RU"));
+    const categoryTokens = menuLexemes(category);
+    if (categoryTokens.length) allowedKeys.add("category:" + categoryTokens.join("|"));
+  }
+  const lookupTokens = menuLexemes(grounding.lookup_query || "");
+  if (allowed.length) allowedKeys.add("grounded:query");
+  const visible = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
+  const decisions = new Map<string, boolean>();
+  let saw = false;
+  const clauses = visible.split(/(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу))/iu);
+  for (const raw of clauses) {
+    const clause = raw.trim();
+    if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
+    const subjects = catalogChoiceSubjects(catalog, clause);
+    const clauseWords = menuLexemes(clause);
+    if (!subjects.size && lookupTokens.length && (allowed.length <= 1 || lookupTokens.some((token) =>
+      clauseWords.some((word) => menuLexemesRelated(token, word))))) subjects.add("grounded:query");
+    if (!subjects.size) continue;
+    const refused = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu.test(clause);
+    // A grounded item mention is still only a question when the customer asks
+    // for price, composition or availability. In particular, Kazakh "қандай"
+    // must not match the unbounded Russian imperative fragment "дай".
+    const informational = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu.test(clause);
+    const selected = !refused && !informational && (
+      /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu.test(clause)
+      || /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu.test(clause)
+    );
+    if (!refused && !selected) continue;
+    saw = true;
+    for (const subject of subjects) decisions.set(subject, selected && allowedKeys.has(subject));
+  }
+  return saw ? [...decisions.values()].some(Boolean) : null;
+}
+
 export function hasCustomerCheckoutIntent(text = ""): boolean {
   const value = normalizeCheckoutRequestSpelling(text).replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
   const menuLinkDecision = menuLinkDecisionForTurn(value);

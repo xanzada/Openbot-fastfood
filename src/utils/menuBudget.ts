@@ -4,6 +4,7 @@ const AMOUNT_RE = /(?<![\p{L}\p{N}+\-.,])([+\-]?\s*(?:(?:\d+|бир|еки|уш|
 const CURRENCY_RE = /(?<!\p{L})(?:тенге(?:ге|м|мен|лик)?|тг|kzt|₸)(?!\p{L})/iu;
 const PRICE_CEILING_RE = /(?:(?<!\p{L})(?:до|не\s+дороже)\s*(\d{1,7})(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])(\d{1,7})\s*(?:тенге(?:ге|м|мен|лик)?|тг|kzt|₸)?\s*(?:дейин|аспайтын)(?!\p{L}))/giu;
 const QUALITATIVE_BUDGET_RE = /(?<!\p{L})(?:подешевле|дешевле|недорог\p{L}*|бюджетн\p{L}*|арзанырак|арзандау|арзан)(?!\p{L})/iu;
+const NON_MENU_CEILING_RE = /(?:оплат|перев|реквизит|кас[пб]и|чек|жеткиз|достав|курьер|заказ|тапсырыс|ждать|ожидан|время|уакыт|час|минут|график|работ)/iu;
 const EXPLORATION_RE = /(?:не\s*(?:аламын|алсам|алуга|жеуге|усынасыз|бар|келеди)|кандай[^.!?]{0,30}(?:алсам|алуга|аламан)|что(?:\s+\p{L}+){0,3}\s*(?:взять|купить|выбрать|поесть|посоветуете)|на\s+что\s+хватит|что\s+посоветуете)/iu;
 const HUNGER_RE = /(?:карным[^.!?]{0,30}аш|голод(?:ен|на|ный|ная)|студент)/iu;
 // Category names belong to the live catalog. Recognise the grammatical shape
@@ -62,20 +63,24 @@ function currentBudgetClauses(text: string): string[] {
   // Mask unsupported decimal amounts, preserving inquiry kind before punctuation splitting.
   const clauses = budgetText.replace(/\d+[.,]\d+(\s*(?:тенге(?:ге|м)?|тг|kzt|₸))(?!\p{L})/giu, (_match, currency) => "unsupported_amount " + currency)
     .split(/[.!?;,\n]+|(?<!\p{L})(?:но|бирак)(?!\p{L})/iu);
-  // A real food choice remains a choice even if this turn previously considered a budget.
-  if (clauses.some(clause => FOOD_CHOICE_RE.test(clause)
-    && !EXPLORATION_RE.test(clause)
-    && !/^\s*(?:хочу\s+(?:заказать|взять)|закажу|заказываю|тапсырыс\s*(?:берей|берем|жаса))\s*$/iu.test(clause)
-    && !/(?:не\s+(?:хочу|буду)|алмай|бар\s*ма|если|можно|могу)/iu.test(clause))) return [];
   const exploratory = EXPLORATION_RE.test(value);
   const hungry = HUNGER_RE.test(value);
   return clauses.filter(clause => {
+    // An independent later order clause does not erase the earlier budget
+    // inquiry. It simply is not itself a budget clause.
+    if (FOOD_CHOICE_RE.test(clause)
+      && !EXPLORATION_RE.test(clause)
+      && !/(?:не\s+(?:хочу|буду)|алмай|бар\s*ма|если|можно|могу)/iu.test(clause)) return false;
     PRICE_CEILING_RE.lastIndex = 0;
     const ceiling = PRICE_CEILING_RE.test(clause);
     PRICE_CEILING_RE.lastIndex = 0;
     const categoryBrowse = CATEGORY_BROWSE_RE.test(clause);
+    // A ceiling attached to an ordinary lexical subject is a catalog budget
+    // shape even when the guest omits "какие". Service, money and time subjects
+    // are excluded; category names still come only from the live catalog.
+    const genericCategoryCeiling = ceiling && /\p{L}{3,}/u.test(clause) && !NON_MENU_CEILING_RE.test(clause);
     return (CURRENCY_RE.test(clause) || ceiling) && !MONEY_LEG_RE.test(clause) && !DENIED_RE.test(clause)
-      && (exploratory || hungry || /бюджет/iu.test(clause) || ceiling && categoryBrowse);
+      && (exploratory || hungry || /бюджет/iu.test(clause) || ceiling && categoryBrowse || genericCategoryCeiling);
   });
 }
 
@@ -83,6 +88,11 @@ function currentBudgetClauses(text: string): string[] {
 export function isMenuBudgetInquiry(text: string): boolean {
   const visible = foldIntentText(String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, ""));
   return currentBudgetClauses(text).length > 0 || QUALITATIVE_BUDGET_RE.test(visible);
+}
+
+export function isQualitativeMenuBudgetInquiry(text: string): boolean {
+  const visible = foldIntentText(String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, ""));
+  return QUALITATIVE_BUDGET_RE.test(visible);
 }
 
 /** Current exploratory food budget only. Integer KZT (1..1,000,000), no quoted facts.

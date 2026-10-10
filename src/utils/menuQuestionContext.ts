@@ -104,6 +104,9 @@ export function menuLexemeStem(value: unknown): string {
   while (changed && word.length >= 5) {
     changed = false;
     for (const suffix of INFLECTION_SUFFIXES) {
+      // Russian plural -ы in words such as "салаты" must not be consumed as
+      // the Kazakh accusative -ты; that produced the false stem "сала".
+      if (/^(?:ты|ті|ды|ді)$/u.test(suffix) && /[аеёиоуыэюяәөұүі]$/u.test(word.slice(0, -suffix.length))) continue;
       if (word.endsWith(suffix) && word.length - suffix.length >= 4) {
         word = word.slice(0, -suffix.length);
         changed = true;
@@ -121,7 +124,15 @@ export function menuLexemes(value: unknown): string[] {
 export function menuLexemesRelated(left: unknown, right: unknown): boolean {
   const a = menuLexemeStem(left);
   const b = menuLexemeStem(right);
-  return Boolean(a && b && a === b);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // Short Russian nouns can change only their final case vowel (кола/колу).
+  // The main stemmer intentionally keeps at least four letters; compare this
+  // narrow inflection shape without introducing any catalog vocabulary.
+  return a.length === b.length && a.length >= 4
+    && a.slice(0, -1) === b.slice(0, -1)
+    && /[аеёиоуыэюя]/u.test(a.at(-1) || "")
+    && /[аеёиоуыэюя]/u.test(b.at(-1) || "");
 }
 
 function visibleWords(value: unknown): string[] {
@@ -190,7 +201,7 @@ export function isBroadMenuCategoryBrowse(ctx: FastFoodContext): boolean {
   if (/(?:состав|ингредиент\p{L}*|что\s+входит|из\s+чего|внутри|құрам|курам|ішін|ишин|цена|стоимост\p{L}*|сколько\s+стоит|баға|бағасы|қанша\s+тұрад|канша\s+тура)/iu.test(text)) return false;
   if (/(?:посовет\p{L}*|рекоменд\p{L}*|ұсын\p{L}*|кеңес\s*бер|подбери|таңдап\s*бер|на\s+(?:мой|наш)\s+вкус|маған\s+лайық|аллерг\p{L}*|без\s+\p{L}+|бюджет|вегетари|халал|остр\p{L}*|ащы|\d+\s*(?:тг|тенге|теңге))/iu.test(text)) return false;
   if (isAlternativeMenuFollowUp(text)
-    || /(?:какие|қандай|что\s+есть|не\s+бар|бар\s*ма|покаж\p{L}*|перечисл\p{L}*|ассортимент|вариант\p{L}*)/iu.test(text)) return true;
+    || /(?:какие|какая|какой|какое|қандай|что\s+есть|не\s+бар|бар\s*ма|покаж\p{L}*|перечисл\p{L}*|ассортимент|вариант\p{L}*)/iu.test(text)) return true;
 
   // A short, bare category turn (for example, «А напитки?») is also a browse.
   // Named-item price/composition questions contain other subject words and stay

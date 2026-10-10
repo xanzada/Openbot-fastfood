@@ -207,7 +207,7 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
     // A turn that is nothing but a greeting needs no tool: live calibration (2026-10-04) saw
     // «Сәлем» spend an extra model round on updateCrmLead and take 8-22 s instead of 2-4 s.
     const greetingOnly = Boolean(readGuestGreeting(String(ctx.text || ""))?.pure) && !toolPlan.requiredTools.length;
-    const stepPolicy = greetingOnly ? () => ({ toolChoice: "none" as const }) : createAgentStepPolicy(remainingPlan);
+    const stepPolicy = greetingOnly ? () => ({ toolChoice: "none" as const }) : createAgentStepPolicy(remainingPlan, ctx);
     // Typed as any on purpose: allowSystemInMessages is valid in AI SDK v6 but
     // missing from @voltagent/core types. The old key name was allowSystemMessages,
     // which the SDK ignored, so every single generation logged a security warning

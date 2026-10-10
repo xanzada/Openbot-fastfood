@@ -1,6 +1,6 @@
 import {createHash} from "node:crypto";
 import type {FastFoodContext} from "../context/types.js";
-import {getMenuBudgetInquiry, isMenuBudgetInquiry} from "../utils/menuBudget.js";
+import {getMenuBudgetInquiry, isMenuBudgetInquiry, isQualitativeMenuBudgetInquiry} from "../utils/menuBudget.js";
 import {foldIntentText} from "../utils/intentText.js";
 import {menuItemBlockedByNotes, menuVocabulary} from "./noteProvenance.service.js";
 
@@ -38,7 +38,7 @@ export function reduceShoppingConstraints(ctx:FastFoodContext,previous:unknown,n
  const ownedMoney=/(?:у\s+меня|менде|тенгем)(?!\p{L})/iu.test(folded)&&!/(?:заказ|тапсырыс|оплат|толем|чек|стоим|сумма)/iu.test(folded);
  const amount=budgetClause?getMenuBudgetInquiry("бюджет "+budgetClause):getMenuBudgetInquiry(ownedMoney?"бюджет "+text:text);
  if(amount!==null){s.budget=amount;s.uncertainBudget=false;}
- else if((isMenuBudgetInquiry(text)||budgetClause)&&s.budget===null){s.uncertainBudget=true;}
+ else if((isMenuBudgetInquiry(text)||budgetClause)&&!isQualitativeMenuBudgetInquiry(text)&&s.budget===null){s.uncertainBudget=true;}
  const vegetarianRequest=/(?:^|[.!?;,]\s*)(?:я\s+вегетариан(?:ец|ка)(?!\p{L})|(?:(?:я|мне)\s+)?(?:хочу|нужно|нужны|дайте|предложите|посоветуйте)\s+вегетарианск(?:ое|ую|ие|ий)(?!\p{L})|вегетарианск(?:ое|ую|ие|ий)(?!\p{L}))/iu.test(folded);
  if(vegetarianRequest||/(?:без\s+мяса|не\s+ем\s+мяс|мясо\s+не\s+ем|(?<!\p{L})етсиз(?!\p{L})|ет\s+жемей)/iu.test(folded))s.avoidMeat=true;
  if(/(?:можно\s+с\s+мясом|мясо\s+(?:теперь\s+)?можно|теперь\s+ем\s+мяс|ет\s+жеймин|етти\s+болады)/iu.test(folded))s.avoidMeat=false;
@@ -142,9 +142,9 @@ export function shoppingBasketQuote(ctx:FastFoodContext) {
  return {lines:selected.map(({item,quantity})=>({name:String(item.name),quantity,unit_price:Number(item.price)})),total,budget,fits:budget===null?null:total<=budget,delivery_included:false,checkout_authority:false};
 }
 
-export function shoppingEvidence(ctx:FastFoodContext){
+export function shoppingEvidence(ctx:FastFoodContext,items:ShoppingItem[]=ctx.menuSnapshot?.items||[]){
  const s=shoppingConstraintsForContext(ctx);if(s.budget===null&&!s.avoidMeat&&!s.uncertainBudget&&!ctx.shoppingStateUnavailable)return null;const known=ctx.menuSnapshot?.source!=="menu_unavailable"&&Array.isArray(ctx.menuSnapshot?.items);
  return {budget:s.budget,currency:"KZT",avoid_meat:s.avoidMeat,amount_needs_clarification:s.uncertainBudget,source:"customer_explicit_current_session",expires_at:s.expiresAt,checkout_authority:false,
-  session_storage:ctx.shoppingStateUnavailable?"unavailable":"available",basket_quote:shoppingBasketQuote(ctx),catalog_state:known?"current_turn_snapshot":"unknown",eligible_items:known?eligibleShoppingItems(ctx).slice(0,8).map(item=>({name:item.name,price:item.price,composition:String(item.composition||item.description||"").slice(0,160)})):[],
+  session_storage:ctx.shoppingStateUnavailable?"unavailable":"available",basket_quote:shoppingBasketQuote(ctx),catalog_state:known?"current_turn_snapshot":"unknown",eligible_items:known?eligibleShoppingItems(ctx,items).slice(0,8).map(item=>({name:item.name,price:item.price,composition:String(item.composition||item.description||"").slice(0,160)})):[],
   rule:"Keep these explicit customer constraints through followups until their explicit reset/change or session expiry. Only verified available, note-permitted items can be recommended. Actual requested catalog prices remain facts even above the ceiling. Unknown composition is not proof of dietary/allergen safety. Never infer a combined basket total or checkout authority."};
 }

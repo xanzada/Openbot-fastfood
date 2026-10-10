@@ -1,5 +1,6 @@
-import { activeOrderQuestionKind, hasDirectOrderIntent, hasCustomerCheckoutIntent } from "../utils/orderIntent.js";
+import { activeOrderQuestionKind, hasDirectOrderIntent, hasCustomerCheckoutIntent, currentGroundedCatalogCheckoutDecision } from "../utils/orderIntent.js";
 import { isBroadMenuCategoryBrowse } from "../utils/menuQuestionContext.js";
+import { isPotentialUnseenCatalogRequest } from "../agent/toolPolicy.js";
 import { menuLinkDecisionForTurn } from "../utils/magicLink.js";
 import { isCurrentPaymentDetailsIntent } from "../utils/paymentIntent.js";
 import { complaintHasActionableDetail, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest, isLikelyComplaintText } from "../services/complaintRouting.service.js";
@@ -98,8 +99,15 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       const menuLinkDecision = menuLinkDecisionForTurn(text);
       const paymentDetailsIntent = isCurrentPaymentDetailsIntent(text, activeOrderQuestionKind(text, ctx.activeOrder));
       const categoryConsultation = menuLinkDecision !== "deny" && menuLinkDecision !== "text_only" && !immediateServiceIncident && !paymentDetailsIntent && isBroadMenuCategoryBrowse(ctx);
+      const groundedCheckoutDecision = currentGroundedCatalogCheckoutDecision(ctx);
+      const pendingCatalogGrounding = !ctx.menuGrounding
+        && isPotentialUnseenCatalogRequest(text)
+        && hasCustomerCheckoutIntent(text);
+      const checkoutIntent = pendingCatalogGrounding
+        ? false
+        : groundedCheckoutDecision ?? hasCustomerCheckoutIntent(text);
       if (immediateServiceIncident || paymentDetailsIntent || menuLinkDecision === "deny"
-        || !hasCustomerCheckoutIntent(text) && !consentContinuation && !categoryConsultation) {
+        || !checkoutIntent && !consentContinuation && !categoryConsultation) {
         ctx.magicLinkGranted = false;
         return { allowed: false, link: null, reason: "link_not_requested", message: null,
           note: "Answer the customer's question. No current checkout/link request exists; do not promise or point to a link." };

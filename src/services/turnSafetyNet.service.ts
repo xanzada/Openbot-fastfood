@@ -1,5 +1,5 @@
 import type { FastFoodContext } from "../context/types.js";
-import { resolveAgentToolPlan, resolveLiveAgentToolPlan } from "../agent/toolPolicy.js";
+import { refreshAgentToolPlanAfterMenuGrounding, resolveAgentToolPlan, resolveLiveAgentToolPlan } from "../agent/toolPolicy.js";
 import { groundMenuTurn } from "../skills/searchMenu.skill.js";
 import { customerCompositionSubject, isContextualCompositionQuestion } from "../utils/menuQuestionContext.js";
 import { getCustomerOrder } from "./customerOrder.service.js";
@@ -285,7 +285,7 @@ export async function answerAgentFailure(
     return say(ctx, "Тапсырыстың қазіргі күйін растай алмаймын. Тапсырыс нөмірін жазыңызшы.",
       "Не могу сейчас подтвердить состояние заказа. Уточните, пожалуйста, номер заказа.");
   }
-  const requestedLink = plan.requiredTools.includes("sendMenuLink");
+  let requestedLink = plan.requiredTools.includes("sendMenuLink");
   const linkReply = (linked: boolean) => {
     if (!linked) return say(ctx, "Қазір сілтемені жіберу мүмкін болмады. Біраздан кейін қайта сұраңызшы.",
       "Сейчас не удалось отправить ссылку. Попробуйте, пожалуйста, чуть позже.");
@@ -300,6 +300,7 @@ export async function answerAgentFailure(
   const menuLookup = plan.requiredTools.includes("searchMenu");
   if (menuLookup && !needsHumanRecovery(ctx)) {
     const grounding = await groundMenuTurn(ctx, readMenu);
+    requestedLink = refreshAgentToolPlanAfterMenuGrounding(ctx, plan).requiredTools.includes("sendMenuLink");
     if (grounding.menu_lookup === "unavailable") return say(ctx,
       "Қазір мәзірді тексере алмай тұрмын. Біраздан кейін қайта сұраңызшы.",
       "Сейчас не могу проверить меню. Попробуйте, пожалуйста, чуть позже.");

@@ -1,6 +1,6 @@
 import {needsShoppingPrepass} from "../services/shoppingConstraints.service.js";
 import type { FastFoodContext } from "../context/types.js";
-import { hasDirectOrderIntent, hasCustomerCheckoutIntent, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, activeOrderQuestionKind, requestedOrderNumber } from "../utils/orderIntent.js";
+import { hasDirectOrderIntent, hasCustomerCheckoutIntent, currentGroundedCatalogCheckoutDecision, hasMenuInquiryIntent, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp, activeOrderQuestionKind, requestedOrderNumber } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isLikelyComplaintText, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest } from "../services/complaintRouting.service.js";
 import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from "../services/kitchenPolicy.service.js";
 import { intentMatches } from "../utils/intentText.js";
@@ -8,7 +8,7 @@ import { isMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { isCurrentPaymentDetailsIntent } from "../utils/paymentIntent.js";
 import { getKitchenCheckoutFingerprint } from "../services/redis.service.js";
 import { menuLinkDecisionForTurn, wantsMenuAsText } from "../utils/magicLink.js";
-import { isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, isMenuCategoryConsultation } from "../utils/menuQuestionContext.js";
+import { isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, isMenuCategoryConsultation, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -80,13 +80,23 @@ function hasCurrentMenuBrowseInquiry(text: string): boolean {
   return browse;
 }
 
-function isPotentialUnseenCategoryShift(text: string): boolean {
+export function isPotentialUnseenCatalogRequest(text: string): boolean {
   const value = String(text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "").trim();
-  if (!value || value.length > 80) return false;
-  // This is a grammatical topic shift, not a catalog lexicon. Known service,
-  // payment, order and incident subjects stay on their dedicated routes.
-  if (!/^(?:а|ал)\s+[\p{L}-]{3,}[?.!\s]*$/iu.test(value)) return false;
-  return !/(?:достав|жеткіз|оплат|төлем|кас[пб]и|kaspi|реквизит|заказ|тапсырыс|оператор|админ|курьер|шағым|жалоб|мекенжай|адрес|график|уақыт|время|кухн|ас ?үй)/iu.test(value);
+  if (!value || value.length > 180) return false;
+  // Grammar identifies an unknown catalog subject; category and SKU vocabulary
+  // still comes only from the fresh catalog.
+  if (/(?:достав|жеткіз|оплат|төлем|кас[пб]и|kaspi|реквизит|сілтеме|ссылк|линк|link|url|меню|мәзір|мазір|каталог|заказ\s*[№#]|тапсырыс\s*[№#]|оператор|админ|курьер|шағым|жалоб|мекенжай|адрес|график|уақыт|время|кухн|ас ?үй)/iu.test(value)) return false;
+  if (/^(?:хочу\s+(?:(?:сделать|оформить)\s+заказ|заказать|взять)|(?:как|где)\s+(?:могу\s+)?(?:сделать|оформить)\s+заказ|тапсырыс\s*(?:бергім\s*келеді|бер|жаса))\s*[?.!]*$/iu.test(value)) return false;
+  if (/^(?:а|ал)\s+(?:заказ|тапсырыс)\s*[?.!]*$/iu.test(value)) return false;
+  if (/^(?:а|ал)\s+(?:[\p{L}-]{2,}\s*){1,4}[?.!]*$/iu.test(value)) return true;
+  if (/^(?:есть\s+(?:[\p{L}-]{2,}\s*){1,4}|(?:какая|какие|какой|какое)\s+(?:[\p{L}-]{2,}\s*){1,4}\s+есть)[?.!]*$/iu.test(value)) return true;
+  if (/^(?:(?:қандай|кандай)\s+)?(?:[\p{L}-]{2,}\s*){1,4}(?:бар\s*ма|барма|бар)[?.!]*$/iu.test(value)) return true;
+  const prefixedChoice = /(?:^|[.!?;]\s*)(?:хочу|не\s+хочу)(?:\s+(?:заказать|взять))?\s+(?:[\p{L}-]{3,}\s*){1,4}(?:пожалуйста|өтінем|отинем)?[.!?]*$/iu.test(value);
+  const quantifiedChoice = /(?:^|[.!?;]\s*)(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+[\p{L}-]{3,}(?:\s+(?:(?:и|және|мен)\s+)?[\p{L}-]{3,}){0,3}[.!?]*$/iu.test(value);
+  return prefixedChoice || quantifiedChoice
+    || /(?:алғым\s*кел|керек\s*емес|керек)(?:\s+[\p{L}-]{3,}){1,4}[.!?]*$/iu.test(value)
+    || /(?:^|[.!?;]\s*)(?:онда\s+)?(?:[\p{L}-]{3,}\s+){1,5}(?:алайын|аламын|алғым\s*келеді|возьму|беру|закажу|керек)[.!?]*$/iu.test(value)
+    || /^(?:мне|маған|тогда|онда)\s+(?:[\p{L}-]{3,}\s*){1,4}[.!?]*$/iu.test(value);
 }
 
 function add(plan: AgentToolPlan, tool: AgentToolName, reason: string) {
@@ -149,22 +159,28 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   // complaining is asking to start a new order.
   const directOrderIntent = hasDirectOrderIntent(text);
   const catalogWords = (Array.isArray(ctx.menuSnapshot?.items) ? ctx.menuSnapshot.items : [])
-    .flatMap((item: any) => String(item?.name || item?.title || "").toLowerCase().match(/\p{L}{3,}/gu) || []);
-  const customerWords = text.toLowerCase().match(/\p{L}{3,}/gu) || [];
+    .flatMap((item: any) => menuLexemes(item?.name || item?.title || ""));
+  const customerWords = menuLexemes(text);
   const namedCatalogItem = catalogWords.some((name: string) => customerWords.some((word) =>
-    word === name || (name.length >= 4 && word.startsWith(name))));
+    menuLexemesRelated(name, word)));
    const currentCatalogRequest=intentMatches(/(?:какое|какие)\s+(?:блюдо|блюда|вариант\p{L}*)[^.!?]{0,45}(?:вместо|взамен)|(?:покаж\p{L}*|пришл\p{L}*|отправ\p{L}*)\s+(?:актуальн\p{L}*|текущ\p{L}*|свеж\p{L}*)\s+меню/iu,text)
      &&!/(?:не\s+(?:присылай|пришл|отправ|показы)|не\s+нуж)/iu.test(text);
    const categoryConsultation = isMenuCategoryConsultation(ctx);
    const broadCategoryBrowse = isBroadMenuCategoryBrowse(ctx);
    const menuLinkDecision = menuLinkDecisionForTurn(text);
-   const unseenCategoryShift = !categoryConsultation && isPotentialUnseenCategoryShift(text)
+   const unseenCategoryShift = !namedCatalogItem && isPotentialUnseenCatalogRequest(text)
+     && (!categoryConsultation || hasCustomerCheckoutIntent(text))
+     && !isMenuBudgetInquiry(text)
      && !paymentDetailsIntent && !orderQuestion && !immediateServiceIncident
      && !intentMatches(BUSINESS_INFO_RE, text) && !intentMatches(KITCHEN_STATUS_RE, text);
    const menuLookup = categoryConsultation || unseenCategoryShift || currentCatalogRequest || isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
-  const checkoutIntent = hasCustomerCheckoutIntent(text);
+  const groundedCheckoutDecision = currentGroundedCatalogCheckoutDecision(ctx);
+  const checkoutIntent = groundedCheckoutDecision ?? hasCustomerCheckoutIntent(text);
+  const liveCatalogBrowseConfirmed = Boolean((ctx.menuGrounding as any)?.items?.length
+    && (categoryConsultation || broadCategoryBrowse));
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && menuLinkDecision !== "deny"
+    && (!unseenCategoryShift || groundedCheckoutDecision === true || liveCatalogBrowseConfirmed)
     && (broadCategoryBrowse && menuLinkDecision !== "text_only" || checkoutIntent || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }
@@ -186,6 +202,17 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     plan.reason[searchIndex] = reason;
   }
 
+  // A multi-intent menu question must ground the catalog before reading the
+  // kitchen and must complete both reads before the checkout URL can be sent.
+  const groundedSearchIndex = plan.requiredTools.indexOf("searchMenu");
+  const kitchenIndex = plan.requiredTools.indexOf("getKitchenStatus");
+  if (groundedSearchIndex > -1 && kitchenIndex > -1 && groundedSearchIndex > kitchenIndex) {
+    [plan.requiredTools[groundedSearchIndex], plan.requiredTools[kitchenIndex]] =
+      [plan.requiredTools[kitchenIndex], plan.requiredTools[groundedSearchIndex]];
+    [plan.reason[groundedSearchIndex], plan.reason[kitchenIndex]] =
+      [plan.reason[kitchenIndex], plan.reason[groundedSearchIndex]];
+  }
+
   // Accepted deferred checkout must spend the first autonomous step on its link.
   if (ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint && detectKitchenConsentAnswer(text) === "yes") {
     const continuationLink = plan.requiredTools.indexOf("sendMenuLink");
@@ -204,8 +231,11 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
 /** Re-evaluate catalog-derived permissions after searchMenu replaced a bounded preview with the live catalog. */
 export function refreshAgentToolPlanAfterMenuGrounding(ctx: FastFoodContext, initial: AgentToolPlan): AgentToolPlan {
   const refreshed = resolveAgentToolPlan(ctx);
-  const tools = [...initial.requiredTools];
-  const reasons = [...initial.reason];
+  // A fresh catalog decision may withdraw a preview-era link (unavailable SKU
+  // or a later product refusal). Keep other reads, but recompute URL authority.
+  const refreshedHasLink = refreshed.requiredTools.includes("sendMenuLink");
+  const tools = initial.requiredTools.filter((tool) => tool !== "sendMenuLink" || refreshedHasLink);
+  const reasons = initial.reason.filter((_reason, index) => initial.requiredTools[index] !== "sendMenuLink" || refreshedHasLink);
   for (let index = 0; index < refreshed.requiredTools.length; index++) {
     const tool = refreshed.requiredTools[index];
     if (tools.includes(tool)) continue;
@@ -251,17 +281,21 @@ export async function resolveLiveAgentToolPlan(ctx: FastFoodContext): Promise<Ag
  * pinned so the answer is always grounded in fresh data. Every later step is
  * the agent's own decision, with the full toolset available.
  */
-export function createAgentStepPolicy(plan: AgentToolPlan) {
+export function createAgentStepPolicy(plan: AgentToolPlan, ctx?: FastFoodContext) {
   return ({ stepNumber }: { stepNumber: number }) => {
-    if (stepNumber === 0 && plan.requiredTools.length) {
-      const firstTool = plan.requiredTools[0];
-      return {
-        toolChoice: { type: "tool" as const, toolName: firstTool },
-      };
+    if (stepNumber < plan.requiredTools.length) {
+      const tool = plan.requiredTools[stepNumber];
+      if (tool === "sendMenuLink" && ctx) {
+        // A preceding live kitchen read can close the kitchen or introduce a
+        // wait-consent gate. Re-evaluate immediately before the URL side effect.
+        if (!resolveAgentToolPlan(ctx).requiredTools.includes("sendMenuLink")) {
+          return { toolChoice: "none" as const };
+        }
+      }
+      return { toolChoice: { type: "tool" as const, toolName: tool } };
     }
     // Four autonomous tool rounds are enough even for a multi-intent request.
-    // The final two steps are reserved for synthesis so a model cannot spend the
-    // whole budget repeating lookups and return an empty customer reply.
+    // The final two steps are reserved for synthesis.
     if (stepNumber >= 4) return { toolChoice: "none" as const };
     return { toolChoice: "auto" as const };
   };

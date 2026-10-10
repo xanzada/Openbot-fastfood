@@ -154,6 +154,9 @@ export function menuLinkDecisionForTurn(text = ""): MenuLinkTurnDecision {
   const supportedMax = 8192;
   const oversized = raw.length > supportedMax;
   const implicitOversized = raw.length > implicitTrustMax;
+  // The omitted middle can contain a later reversal. No substring of an
+  // oversized message can establish safe URL authorization.
+  if (oversized) return "deny";
   // Scan every character through the supported maximum. For larger input the
   // omitted middle cannot be ordered safely against a head decision, so only a
   // complete explicit decision in the retained tail may grant a link.

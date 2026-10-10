@@ -3,7 +3,7 @@ import {shoppingConstraintsForContext, eligibleShoppingItems, isShoppingDecision
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import {classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer} from "../services/kitchenPolicy.service.js";
 import type { FastFoodContext } from "../context/types.js";
-import { getMenuBudgetInquiry, isMenuBudgetInquiry } from "../utils/menuBudget.js";
+import { getMenuBudgetInquiry, isMenuBudgetInquiry, isQualitativeMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { activeOrderQuestionKind, isCustomerOrderStatusQuestion, isLikelyOrderStatusFollowUp } from "../utils/orderIntent.js";
 import { complaintHasActionableDetail, isCurrentComplaintRequest, isExplicitCourierContactRequest, isExplicitHumanOperatorRequest, isLikelyComplaintText } from "../services/complaintRouting.service.js";
 import { menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
@@ -1642,8 +1642,9 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   }
   if (!isShoppingDecision(ctx)) return null;
   if (ctx.shoppingPriorStateUnknown || ctx.shoppingStateUnavailable && budget === null && !shopping.avoidMeat) return ctx.language === "kk" ? "Алдыңғы шектеулеріңізді растай алмаймын. Бюджет пен тағам шектеулерін нақтылай аласыз ба?" : "Не могу подтвердить прежние ограничения. Уточните бюджет и ограничения по еде.";
-  if (budget === null && !shopping.avoidMeat && !shopping.uncertainBudget) return null;
-  if (shopping.uncertainBudget) return ctx.language === "kk" ? "Бюджет сомасын нақтылай аласыз ба?" : "Уточните, пожалуйста, сумму бюджета.";
+  const qualitativeCheap = isQualitativeMenuBudgetInquiry(ctx.text);
+  if (budget === null && !shopping.avoidMeat && !shopping.uncertainBudget && !qualitativeCheap) return null;
+  if (shopping.uncertainBudget && !qualitativeCheap) return ctx.language === "kk" ? "Бюджет сомасын нақтылай аласыз ба?" : "Уточните, пожалуйста, сумму бюджета.";
   const current = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
   // A budget answer must not replace another current requested answer/action.
   const requestedAction = current.replace(/(?<!\p{L})бас[қк]а\s+а[қк]шам?\s+жо[қк](?!\p{L})/giu, "");
@@ -1694,7 +1695,7 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     && (!beveragesOnly || /(?:напит\p{L}*|сусын\p{L}*|сок|шырын|спрайт|кола|фанта|вода|су(?:\s|$)|чай|шай|кофе)/iu.test(
       String(item.category_name || item.category || "") + " " + String(item.name || ""),
     )))
-    .sort((a: any, b: any) => b.price - a.price)
+    .sort((a: any, b: any) => qualitativeCheap ? a.price - b.price : b.price - a.price)
     .slice(0, 3);
   if (!choices.length) return ctx.language === "kk"
     ? `Бағасы расталған қолжетімді нұсқалардан ${budget} тг бюджетке сай келетінін таппадым.`
@@ -1705,6 +1706,37 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     : `${budget === null ? "С учётом ваших ограничений" : "В пределах " + budget + " тг"} можно выбрать каждый вариант отдельно: ${lines}.`;
 }
 
+
+
+/** Replace only catalog recommendation clauses while preserving independently
+ * grounded answers from other tools in a multi-intent turn. */
+function mergeGroundedMenuAnswer(draft: string, menuAnswer: string, ctx: FastFoodContext, toolsCalled: string[] = []): string {
+  const urls = draft.match(/https?:\/\/[^\s<>]+/giu) || [];
+  const factTools = new Set(["getBusinessInfo", "checkOrderStatus", "getKitchenStatus", "getPaymentDetails", "getShiftNotes", "escalateToAdmin"]);
+  const hasIndependentGrounding = toolsCalled.some((tool) => factTools.has(tool));
+  if (!hasIndependentGrounding) return [menuAnswer, ...urls].filter(Boolean).join(" ");
+  const catalogTerms: string[] = [...new Set<string>((ctx.menuSnapshot?.items || []).flatMap((item: any) => [
+    String(item?.name || item?.title || "").trim(),
+    String(item?.category_name || item?.category || "").trim(),
+  ]).filter(Boolean))].sort((a, b) => b.length - a.length);
+  const isMenuClause = (clause: string) => {
+    const visible = clause.replace(/https?:\/\/[^\s<>]+/giu, "").trim();
+    if (!visible) return true;
+    const words = visible.match(/[\p{L}\p{N}-]{3,}/gu) || [];
+    const catalogReference = catalogTerms.some((term) => {
+      const termWords = term.match(/[\p{L}\p{N}-]{3,}/gu) || [];
+      return termWords.length && termWords.every((termWord) =>
+        words.some((word) => menuLexemesRelated(termWord, word)));
+    });
+    return catalogReference
+      || /\d[\d ]*\s*(?:тг|тенге|теңге|₸|kzt)(?!\p{L})/iu.test(visible)
+      || /(?:в\s+пределах|бюджет\p{L}*|шегінде|выбрать|нұсқа\p{L}*|вариант\p{L}*|позици\p{L}*|блюд\p{L}*|тағам\p{L}*)/iu.test(visible);
+  };
+  const withoutUrls = draft.replace(/https?:\/\/[^\s<>]+/giu, " ");
+  const preserved = (withoutUrls.match(/[^.!?\n]+[.!?]?/gu) || [withoutUrls])
+    .map((clause) => clause.trim()).filter((clause) => clause && !isMenuClause(clause));
+  return [menuAnswer, ...preserved, ...urls].filter(Boolean).join(" ").replace(/\s{2,}/g, " ").trim();
+}
 
 // These public claims must follow this turn's tenant configuration and catalog,
 // rather than a default schedule or an old business-side message.
@@ -1996,8 +2028,7 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   let finalText = voiceReplacement || aligned.text;
   const budgetReply = boundedBudgetAlternatives(args[1], args[2]?.toolsCalled, finalText);
   if (budgetReply !== null) {
-    const links = finalText.match(/https?:\/\/[^\s<>]+/giu) || [];
-    finalText = [budgetReply, ...links].join(" ");
+    finalText = mergeGroundedMenuAnswer(finalText, budgetReply, args[1], args[2]?.toolsCalled || []);
     warnings.push("budget_alternatives_grounded");
   }
   if (allergySafetyGuaranteeRequested(args[1]) && !hasHonestSafetyGuaranteeDenial(finalText)) {

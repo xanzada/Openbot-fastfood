@@ -25,7 +25,6 @@ const negatives=[
  "2000 теңге төледім","Я оплатил 2000 тенге, что дальше?","2000 тг перевел",
  "Қарным аш, студентпін, 2000 теңге төледім","Қарным аш, менде 2000 теңге жоқ",
  "Бюджет 2000 тенге не интересует","Екі донер аламын","2000 теңгеге екі донер аламын",
- "2000 теңгеге не аламын? Бірақ екі донер аламын","Что можно купить на 2000 тенге? Но возьму два донера",
  "0 теңгеге не аламын?","-2000 теңгеге не аламын?","+2000 теңгеге не аламын?",
  "1000001 тенге бюджет","10000000 тенге бюджет","1 000 001 тенге бюджет",
  "2000.50 тенге бюджет","2000,50 тенге бюджет","2e3 тенге бюджет","NaN тенге бюджет",
@@ -33,6 +32,12 @@ const negatives=[
  "Бюджет 2000 тенге или 3000 тенге","1 000 000 000 тенге бюджет",
 ];
 for(const text of negatives)test("unsupported/non-exploratory/decisive context gives no budget advice authority: "+text,()=>assert.equal(getMenuBudgetInquiry(text),null));
+test("a later order clause does not erase an earlier independent budget inquiry", () => {
+ assert.equal(getMenuBudgetInquiry("2000 теңгеге не аламын? Бірақ екі донер аламын"), 2000);
+ assert.equal(getMenuBudgetInquiry("Что можно купить на 2000 тенге? Но возьму два донера"), 2000);
+ assert.equal(getMenuBudgetInquiry("2000 теңгеге не келеді? Бірақ екі донер аламын."), 2000);
+ assert.equal(getMenuBudgetInquiry("Екі мың теңгеге не аламын? Екі донер аламын."), 2000);
+});
 test("current budget signature does not consult prior assistant facts",()=>{
  assert.equal(getMenuBudgetInquiry("Сәлем"),null);
  assert.equal(getMenuBudgetInquiry("Алдыңғы жауап: «Бюджет 2000 тенге». Не бар?"),null);
@@ -42,7 +47,7 @@ test("unsupported amount remains inquiry kind without a numeric advice amount",a
  for(const text of ["1000001 теңгеге не аламын?","0 теңгеге не аламын?","2000.50 теңгеге не аламын?","2000,50 теңгеге не аламын?"]){
   assert.equal(isMenuBudgetInquiry(text),true);assert.equal(getMenuBudgetInquiry(text),null);
  }
- assert.equal(isMenuBudgetInquiry("1000001 теңгеге не аламын? Бірақ екі донер аламын"),false);
+ assert.equal(isMenuBudgetInquiry("1000001 теңгеге не аламын? Бірақ екі донер аламын"),true);
 });
 
 
@@ -74,8 +79,6 @@ for (const text of [
  "Екі мың немесе үш мың теңгеге не аламын?",
  "Екі мың теңге немесе 3000 теңге бюджет",
  "Бір миллион бір теңгеге не аламын?",
- "Екі мың теңгеге не аламын? Екі донер аламын.",
- "2000 теңгеге не келеді? Бірақ екі донер аламын.",
 ] as const) test("menu-budget actual20261008 strict exclusion: " + text, () => {
  assert.equal(getMenuBudgetInquiry(text), null);
 });

@@ -1,6 +1,6 @@
 import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemesRelated } from "../utils/menuQuestionContext.js";
+import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -31,14 +31,15 @@ const QUERY_FILLERS = new Set([
   "мне", "тогда", "есть", "ли", "если", "нет", "что", "какие", "у", "вас", "из", "и", "а", "два",
   "екі", "бір", "үш", "нужна", "нужен", "нужно", "возьму", "хочу", "сколько", "стоит", "қанша", "тұрады",
   "меню", "мәзір", "мәзірде", "сыздерде", "сіздерде", "в", "дай", "дайте", "пожалуйста",
+  "заказать", "заказ", "тапсырыс", "потом", "затем", "передумал", "не", "нет", "жоқ", "жок",
 ]);
 
 export function menuQueryForTurn(text: string, ctx?: FastFoodContext) {
   const relation=ctx?customerMenuRelationSubject(ctx):null;
   const queryText = relation ? relation.subject || "" : ctx && isContextualCompositionQuestion(text)
     ? customerCompositionSubject(ctx) || "" : ctx ? customerMenuTopic(ctx) || text : text;
-  return filterMenuQueryNoise(normalizeText(queryText).match(/[\p{L}\p{N}]+/gu) || [])
-    .filter((word) => !QUERY_FILLERS.has(word)).join(" ").slice(0, 80);
+  return [...new Set(filterMenuQueryNoise(normalizeText(queryText).match(/[\p{L}\p{N}]+/gu) || [])
+    .filter((word) => !QUERY_FILLERS.has(word)))].join(" ").slice(0, 80);
 }
 
 function fieldWords(value: string): string[] {
@@ -64,6 +65,27 @@ function fieldMatchesToken(field: string, token: string): boolean {
 
 function fieldCoversQuery(field: string, tokens: string[]): boolean {
   return tokens.length > 0 && tokens.every((token) => fieldMatchesToken(field, token));
+}
+
+/** Resolve a full live category only when the phrase identifies it uniquely.
+ * A one-word family such as "пицца" stays broad when several live sections
+ * contain that lexeme (for example "Пиццы" and "Римские пиццы"). */
+function exactCatalogCategory(items: Record<string, any>[], topic: unknown): string | null {
+  const topicTokens = [...new Set(menuLexemes(topic))];
+  if (!topicTokens.length) return null;
+  const categories = [...new Set(items.map((item) => String(item?.category_name || item?.category || "").trim()).filter(Boolean))];
+  const exact = categories.filter((category) => {
+    const categoryTokens = [...new Set(menuLexemes(category))];
+    return categoryTokens.length === topicTokens.length
+      && categoryTokens.every((token) => topicTokens.some((candidate) => menuLexemesRelated(token, candidate)));
+  });
+  if (exact.length !== 1) return null;
+  if (topicTokens.length === 1) {
+    const related = categories.filter((category) => menuLexemes(category)
+      .some((token) => menuLexemesRelated(token, topicTokens[0])));
+    if (related.length > 1) return null;
+  }
+  return exact[0];
 }
 
 function scoreMenuItem(item: Record<string, any>, tokens: string[], query: string) {
@@ -147,7 +169,7 @@ export function selectPublicMenuItems(items: Record<string, any>[], query = "", 
       );
       return {
         name: entry.item.name,
-        category: entry.item.category_name,
+        category: entry.item.category_name || entry.item.category,
         ingredients: entry.item.composition || entry.item.description || "",
         price: entry.item.price,
         // The crossed-out "was" price the storefront shows. Without it the tool could not
@@ -198,7 +220,7 @@ export function pageMenuMatches(allMatches: Record<string, any>[], limit?: numbe
     ...(nextOffset !== null
       ? {
           truncated: true,
-          more_hint: `Showing ${items.length} of ${allMatches.length} matching items. This list is INCOMPLETE - never say or imply it is everything we have. Call searchMenu again with offset=${nextOffset} for the next page, or with a category to narrow it down.`,
+          more_hint: `Showing ${items.length} of ${uniqueMatches.length} matching items. This list is INCOMPLETE - never say or imply it is everything we have. Call searchMenu again with offset=${nextOffset} for the next page, or with a category to narrow it down.`,
         }
       : {}),
   };
@@ -224,6 +246,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         : await readMenu(ctx.instanceId, domain, ctx.language, { forceFresh: true });
       ctx.menuSnapshot = menu;
       const items = Array.isArray(menu?.items) ? menu.items : [];
+      // Category authority comes from the freshly loaded complete catalog.
       const relation=customerMenuRelationSubject(ctx);
       if(relation?.needsClarification)return {
         ...pageMenuMatches([]),eligible_choices:[],categories:[],promotions_now:[],
@@ -231,6 +254,15 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         ...(menu?.source==="menu_unavailable"?{menu_lookup:"unavailable"}:{})
       };
       if(relation?.subject)query=relation.subject;
+      // Resolve the section after a relation follow-up has restored its subject.
+      // Otherwise a word such as "комбо" in "продаётся отдельно или в комбо?"
+      // becomes the category and excludes the referenced product itself.
+      // Exact multiword sections are filtered as a whole; generic one-word
+      // families remain free to span related sections.
+      if (!category) {
+        const liveTopic = relation?.subject || customerMenuTopic(ctx) || query || "";
+        category = exactCatalogCategory(items, liveTopic) || undefined;
+      }
       const vocabulary = menuVocabulary(items);
       // Hub-level availability was carried in the payload (line ~94) but never acted
       // on: allowedItems filtered only note-blocked dishes, so a dish the hub marks
@@ -285,25 +317,39 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       // drawn from allowedItems, which already dropped everything a note blocks,
       // so an alternative can never contain the missing ingredient itself.
       const verification = isMenuAttributeVerificationQuestion(ctx.text);
-      const safeAlternatives = !verification && matches.length === 0 && allowedItems.length
-        ? selectPublicMenuItems(allowedItems, "", category, 3).map((item: any) => ({
+      // If the requested SKU exists but is currently blocked/sold out, recover
+      // its live category from the full snapshot and keep alternatives there.
+      // This prevents a missing pizza from producing a drink or dessert.
+      const requestedFromFull = query
+        ? selectPublicMenuItems(items, query, "", items.length || 1)
+        : [];
+      const requestedExact = requestedFromFull.find((item: any) => item.match_kind === "exact_name")
+        || (requestedFromFull.length === 1 ? requestedFromFull[0] : null);
+      const alternativeCategory = category
+        || (matches.length === 0 ? String(requestedExact?.category || "").trim() : "");
+      const safeAlternatives = !verification && matches.length === 0 && allowedItems.length && alternativeCategory
+        ? selectPublicMenuItems(allowedItems, "", alternativeCategory, 3).map((item: any) => ({
             name: item?.name || item?.title || "",
             price: item?.price ?? null,
             category: item?.category || "",
           })).filter((item: any) => item.name)
         : [];
+      const scopedMatchKeys = new Set(allMatches.map((item: any) =>
+        normalizeText(item?.name || item?.title || "")));
+      const scopedShoppingItems = allowedItems.filter((item: any) =>
+        scopedMatchKeys.has(normalizeText(item?.name || item?.title || "")));
       return {
         // An unreachable catalog used to look exactly like an empty one, so the
         // bot confidently told guests a dish does not exist. The model needs to
         // see the difference to say "I cannot check right now" instead.
         ...(menu?.source === "menu_unavailable" ? { menu_lookup: "unavailable" } : {}),
-        ...(safeAlternatives.length ? { safe_alternatives: safeAlternatives } : {}),
+        ...(matches.length === 0 && alternativeCategory ? { safe_alternatives: safeAlternatives } : {}),
         // items / offset / nextOffset / totalMatched / returned / hasMore, and the
         // truncation hint whenever the page is shorter than the total.
         ...page,
         ...(broadCategoryBrowse ? { category_browse: true } : {}),
-        shopping_constraints: shoppingEvidence(ctx),
-        eligible_choices: verification ? [] : selectPublicMenuItems(eligibleShoppingItems(ctx, allowedItems), "", category, 12),
+        shopping_constraints: shoppingEvidence(ctx, scopedShoppingItems),
+        eligible_choices: verification ? [] : selectPublicMenuItems(eligibleShoppingItems(ctx, scopedShoppingItems), "", category, 12),
         ...(verification ? {menu_verification:{subject:relation?.subject ?? null,attribute:"volume_or_size",rule:"Answer only the requested attribute from this exact current item. Missing volume/size is unknown; ask clarification, never substitute unrelated products."}} : {}),
         // The catalog's own section list, taken from every item the guest may be
         // shown - not from the page above. It is what makes "what categories do

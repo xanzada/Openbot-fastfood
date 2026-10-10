@@ -183,7 +183,7 @@ test("multi-intent messages can require several independent live tools", () => {
   assert.deepEqual(result.requiredTools, ["getPaymentDetails", "searchMenu"]);
 });
 
-test("step policy pins only the first live tool and then returns control to the model", () => {
+test("step policy deterministically executes every required live tool before returning control", () => {
   const policy = createAgentStepPolicy({
     requiredTools: ["getPaymentDetails", "searchMenu"],
     reason: ["live_payment_details", "live_menu_lookup"],
@@ -191,7 +191,9 @@ test("step policy pins only the first live tool and then returns control to the 
   assert.deepEqual(policy({ stepNumber: 0 }), {
     toolChoice: { type: "tool", toolName: "getPaymentDetails" },
   });
-  assert.deepEqual(policy({ stepNumber: 1 }), { toolChoice: "auto" });
+  assert.deepEqual(policy({ stepNumber: 1 }), {
+    toolChoice: { type: "tool", toolName: "searchMenu" },
+  });
   assert.deepEqual(policy({ stepNumber: 2 }), { toolChoice: "auto" });
   assert.deepEqual(policy({ stepNumber: 3 }), { toolChoice: "auto" });
   assert.deepEqual(policy({ stepNumber: 4 }), { toolChoice: "none" });

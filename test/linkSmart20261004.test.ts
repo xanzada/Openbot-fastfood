@@ -132,16 +132,14 @@ test("the tool grants a current order and refuses a work-hours follow-up", async
   assert.equal(resend.allowed, true);
 });
 
-test("the tool grants a link on direct order intent even if magicLinkAlreadySent is true", async () => {
-  for (const text of [
-    "Бауырым екі пицца екі донер",
-    "донер алғым келеді",
-    "тапсырыс берейін",
-    "2 донер жасап қойшы",
-  ]) {
-    const orderingCtx = baseCtx({ magicLinkAlreadySent: true, text });
-    const granted = await (createSendMenuLinkSkill(orderingCtx) as any).execute({ reason: "ordering" });
-    assert.equal(granted.allowed, true, text);
-    assert.equal(orderingCtx.magicLinkGranted, true, text);
-  }
+test("the tool grants generic checkout, while an arbitrary SKU requires live grounding", async () => {
+  const genericCtx = baseCtx({ magicLinkAlreadySent: true, text: "тапсырыс берейін" });
+  const granted = await (createSendMenuLinkSkill(genericCtx) as any).execute({ reason: "ordering" });
+  assert.equal(granted.allowed, true);
+  assert.equal(genericCtx.magicLinkGranted, true);
+
+  const arbitraryCtx = baseCtx({ magicLinkAlreadySent: true, text: "Хочу хачапури" });
+  const denied = await (createSendMenuLinkSkill(arbitraryCtx) as any).execute({ reason: "ordering" });
+  assert.equal(denied.allowed, false);
+  assert.equal(arbitraryCtx.magicLinkGranted, false);
 });

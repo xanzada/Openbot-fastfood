@@ -6,6 +6,7 @@ process.env.REDIS_OPERATION_TIMEOUT_MS="100";
 const {hasCustomerCheckoutIntent,hasDirectOrderIntent}=await import("../src/utils/orderIntent.js");
 const {resolveAgentToolPlan}=await import("../src/agent/toolPolicy.js");
 const {createSendMenuLinkSkill}=await import("../src/skills/menuLink.skill.js");
+const {groundMenuTurn}=await import("../src/skills/searchMenu.skill.js");
 const {redisClient}=await import("../src/services/redis.service.js");
 test.after(()=>{if(redisClient.isOpen)redisClient.destroy();});
 const context=(text:string,extra:any={})=>({
@@ -37,6 +38,7 @@ for(const text of [
   const ctx=context(text),plan=resolveAgentToolPlan(ctx);
   assert.equal(hasDirectOrderIntent(text),true);assert.equal(hasCustomerCheckoutIntent(text),true);
   assert.ok(plan.requiredTools.includes("searchMenu"));assert.ok(plan.requiredTools.includes("sendMenuLink"));
+  await groundMenuTurn(ctx,(async()=>ctx.menuSnapshot) as any);
   const result:any=await createSendMenuLinkSkill(ctx).execute({reason:"current choice"});assert.equal(result.allowed,true);
  });
 }

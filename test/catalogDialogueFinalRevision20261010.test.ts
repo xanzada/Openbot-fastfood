@@ -39,7 +39,7 @@ assert.equal(menuLinkDecisionForTurn("Ссылку не присылай. "+fill
 assert.equal(menuLinkDecisionForTurn(fill+". Сілтемені жібермеңіз. "+fill),"deny");
 assert.equal(menuLinkDecisionForTurn(fill+". Сілтемені жіберіңіз. "+fill),"allow");
 assert.equal(menuLinkDecisionForTurn("Пришлите ссылку. "+"а".repeat(9000)),"deny");
-assert.equal(menuLinkDecisionForTurn("Какие салаты? "+"а".repeat(9000)+". Нет, пришлите ссылку."),"allow");
+assert.equal(menuLinkDecisionForTurn("Какие салаты? "+"а".repeat(9000)+". Нет, пришлите ссылку."),"deny");
 assert.equal(menuLinkDecisionForTurn("Какие салаты? "+"а".repeat(9000)),"deny");
 });
 

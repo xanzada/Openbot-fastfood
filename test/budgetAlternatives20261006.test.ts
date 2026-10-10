@@ -101,8 +101,11 @@ test("menu-budget actual20261008 independent requested URL survives affordable g
  }),grounding);
  assert.ok(r.warnings.includes("budget_alternatives_grounded"));assert.ok(r.text.includes(url));assert.doesNotMatch(r.text,/2500/);
 });
+test("menu-budget keeps the valid first clause when a later food choice is separate",()=>{
+ const r=validateFinalText("Уточните, пожалуйста.",actualBudgetContext20261008("2000 теңгеге не келеді? Екі донер аламын."),grounding);
+ assert.ok(r.warnings.includes("budget_alternatives_grounded"),JSON.stringify(r));
+});
 for (const text of [
- "2000 теңгеге не келеді? Екі донер аламын.",
  "2000 теңгеге не келеді? Оформите заказ.",
  "2000 теңгеге не келеді? Измените заказ 98.",
  "2000 теңгеге не келеді? Отмените заказ 98.",

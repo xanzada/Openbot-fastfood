@@ -62,7 +62,8 @@ test("voice media returns a transcript to the main agent instead of becoming a f
     ...context("kk"),
     text: voiceTranscriptForAgent(analysis, "audio/ogg"),
   });
-  assert.equal(plan.requiredTools.includes("sendMenuLink"), true);
+  assert.equal(plan.requiredTools.includes("searchMenu"), true);
+  assert.equal(plan.requiredTools.includes("sendMenuLink"), false);
 });
 
 test("a bare delivery address keeps the established Kazakh conversation language", () => {
@@ -123,7 +124,7 @@ test("a voice transcript hydrates the personal checkout link before the agent ru
   assert.ok(plan.requiredTools.includes("sendMenuLink"));
 });
 
-test("dish plus алайын voice orders prewarm and pin the personal checkout link", async () => {
+test("dish plus алайын voice orders prewarm but wait for live catalog grounding", async () => {
   for (const text of ["Онда донер куриный алайын", "Цезарь алайын", "Екі донер аламын"]) {
     const ctx = {
       ...context("kk"),
@@ -147,7 +148,7 @@ test("dish plus алайын voice orders prewarm and pin the personal checkout 
     assert.equal(issued, 1, text);
     assert.equal(ctx.explicitMenuLinkIntent, true, text);
     assert.equal(plan.requiredTools[0], "searchMenu", text);
-    assert.ok(plan.requiredTools.includes("sendMenuLink"), text);
+    assert.equal(plan.requiredTools.includes("sendMenuLink"), false, text);
   }
 });
 
