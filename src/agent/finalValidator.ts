@@ -1833,6 +1833,40 @@ function dropRepeatedGenericClosing(text: string, ctx: FastFoodContext): string 
   return result;
 }
 
+function groundedCategoryEnumeration(text: string, ctx: FastFoodContext): string | null {
+  const grounding = ctx.menuGrounding as any;
+  if (!grounding?.category_browse || grounding.menu_lookup === "unavailable" || grounding.error) return null;
+  const items = (Array.isArray(grounding.items) ? grounding.items : [])
+    .filter((item: any) => item?.available !== false && typeof item?.name === "string" && item.name.trim())
+    .map((item: any) => ({
+      name: String(item.name).trim(),
+      price: typeof item.price === "number" ? item.price
+        : typeof item.price === "string" && /^\d+(?:[.,]\d+)?$/.test(item.price.trim()) ? Number(item.price.replace(",", ".")) : null,
+    }));
+  if (items.length < 2) return null;
+  const total = Math.max(items.length, Number(grounding.totalMatched) || items.length);
+  const targetCount = items.length <= 8 ? items.length : Math.min(5, items.length);
+  const normalized = text.toLocaleLowerCase();
+  const covered = items.filter((item: any) => normalized.includes(item.name.toLocaleLowerCase())).length;
+  const shownRemaining = Math.max(0, total - targetCount);
+  const truthPresent = shownRemaining === 0 || new RegExp(`(?<!\d)${shownRemaining}(?!\d)`, "u").test(text);
+  if (covered >= targetCount && (items.length > 8 ? truthPresent : covered === items.length)) return null;
+
+  const sample = items.slice(0, targetCount);
+  const rendered = sample.map((item: any) => item.price !== null ? `${item.name} — ${item.price} тг` : item.name).join("; ");
+  const remaining = Math.max(0, total - sample.length);
+  if (ctx.language === "kk") {
+    const tail = remaining > 0
+      ? (ctx.magicLinkGranted ? `Тағы ${remaining} нұсқа жіберілген мәзір сілтемесінде бар.` : `Тағы ${remaining} нұсқа бар.`)
+      : "";
+    return [rendered + ".", tail].filter(Boolean).join(" ");
+  }
+  const tail = remaining > 0
+    ? (ctx.magicLinkGranted ? `Ещё ${remaining} вариантов есть в отправленной ссылке на меню.` : `Есть ещё ${remaining} вариантов.`)
+    : "";
+  return [rendered + ".", tail].filter(Boolean).join(" ");
+}
+
 const ORDER_TAKING_COLLECTION_QUESTION_RE = /^(?:(?:қай|қандай)\s+мекенжайға\s+(?:(?:тапсырыс(?:ты)?\s+)?жеткіз\p{L}*(?:\s+керек)?|тапсырыс\s+бересіз)|(?:куда|на\s+какой\s+адрес)\s+(?:вам\s+)?доставить(?:\s+заказ)?|сколько\s+(?:штук|порций|единиц)\s+(?:вам\s+)?(?:нужно|нужны)|неше\s+(?:дана|порция)\s+(?:сізге\s+)?(?:керек|аласыз)|(?:как|каким\s+способом)\s+(?:вы\s+)?будете\s+оплачивать|қалай\s+төлейсіз)\s*\?$/iu;
 
 function isCatalogOrderSelectionQuestion(clause: string, ctx: FastFoodContext): boolean {
@@ -1872,6 +1906,11 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   if (allergySafetyGuaranteeRequested(args[1]) && !hasHonestSafetyGuaranteeDenial(finalText)) {
     finalText = `${safetyGuaranteeDenialText(args[1])} ${finalText}`.trim();
     warnings.push("missing_allergy_guarantee_denial_added");
+  }
+  const categoryEnumeration = groundedCategoryEnumeration(finalText, args[1]);
+  if (categoryEnumeration !== null) {
+    finalText = categoryEnumeration;
+    warnings.push("category_enumeration_grounded");
   }
   const checkoutSelection = guardCheckoutSelection(finalText, args[1], args[2]?.toolsCalled);
   if (checkoutSelection.changed) warnings.push(checkoutSelection.changed);

@@ -142,6 +142,34 @@ export function normalizeCheckoutRequestSpelling(text: string): string {
     .join("");
 }
 
+export type MenuLinkTurnDecision = "allow" | "deny" | "text_only" | "unspecified";
+
+/**
+ * One current-turn decision shared by planning and execution. A correction later
+ * in the same message supersedes an earlier instruction; quoted reports do not.
+ */
+export function menuLinkDecisionForTurn(text = ""): MenuLinkTurnDecision {
+  const value = normalizeCheckoutRequestSpelling(text).slice(0, 4096)
+    .replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "").toLowerCase();
+  const textOnly = wantsMenuAsText(value);
+  const topic = /(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url|меню|мәзір\p{L}*|мазір\p{L}*|каталог\p{L}*|корзин\p{L}*|себет\p{L}*)/iu;
+  if (!topic.test(value)) return "unspecified";
+  let decision: MenuLinkTurnDecision = textOnly ? "text_only" : "unspecified";
+  for (const clause of value.split(/(?<=[.!?;,\n])|[—–]|(?<!\p{L})(?:но|бірақ|хотя)(?!\p{L})/iu)) {
+    const explicitUrlAction = /(?:(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?)[^.!?]{0,30}(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)|(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)[^.!?]{0,30}(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?))/iu.test(clause);
+    if (wantsMenuAsText(clause) && !explicitUrlAction) { decision = "text_only"; continue; }
+    const denied = /(?:(?<!\p{L})не(?!\p{L})\s+(?:присыл\p{L}*|пришл\p{L}*|отправ\p{L}*|скидыва\p{L}*|скинь\p{L}*|показыва\p{L}*|покаж\p{L}*|давай\p{L}*|дай)|(?:(?<!\p{L})не(?!\p{L})\s+(?:нуж\p{L}*|надо)|керек\s*емес|қажет\s*емес|керегі\s*жоқ)[^.!?]{0,30}(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url|меню|мәзір\p{L}*|каталог\p{L}*)|(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url|меню|мәзір\p{L}*|каталог\p{L}*)[^.!?]{0,30}(?:(?<!\p{L})не(?!\p{L})\s+(?:нуж\p{L}*|надо)|керек\s*емес|қажет\s*емес|керегі\s*жоқ)|(?<!\p{L})(?:жіберме\p{L}*|жиберме\p{L}*|көрсетпе\p{L}*|корсетпе\p{L}*|ашпа\p{L}*))(?!\p{L})/iu.test(clause);
+    if (denied) { decision = "deny"; continue; }
+    if (/(?:отправил\p{L}*|прислал\p{L}*|скинул\p{L}*|показал\p{L}*|жіберді\p{L}*|көрсетті\p{L}*)/iu.test(clause)) continue;
+    const action = /(?<!\p{L})(?:пришл(?:и|ите)|присылай(?:те)?|отправ(?:ь|ьте)|скинь(?:те)?|покаж(?:и|ите)|откро(?:й|йте)|дай(?:те)?|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?|көрсет(?:іңіз|ші)?|корсет(?:иниз|іңіз|ші)?|аш(?:ыңыз|ып\s*беріңіз|шы)?|бер(?:іңіз|ші)?)(?!\p{L})/iu;
+    const localTopic = topic.test(clause);
+    const bareCorrection = /^\s*(?:(?:нет|жоқ|жок|хотя|бірақ|но)[,\s-]*)*(?:пришл(?:и|ите)|отправ(?:ь|ьте)|скинь(?:те)?|покаж(?:и|ите)|откро(?:й|йте)|жібер(?:іңіз|іңдер|ші)?|жибер(?:иниз|іңіз|ші)?|көрсет(?:іңіз|ші)?|корсет(?:иниз|іңіз|ші)?|аш(?:ыңыз|шы)?|бер(?:іңіз|ші)?)[.!?\s]*$/iu.test(clause);
+    const needed = /(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)[^.!?]{0,24}(?:керек|қажет|нуж\p{L}*)|(?:керек|қажет|нуж\p{L}*)[^.!?]{0,24}(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)/iu.test(clause);
+    if (localTopic && action.test(clause) || bareCorrection || needed) decision = "allow";
+  }
+  return decision;
+}
+
 export function hasExplicitMenuLinkIntent(text: string): boolean {
   const value = normalizeCheckoutRequestSpelling(text).toLowerCase();
   if (wantsMenuAsText(value)) return false;

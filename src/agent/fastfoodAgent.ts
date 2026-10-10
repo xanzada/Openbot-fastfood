@@ -8,7 +8,7 @@ import { fallbackReply, groundedReplyFallback, validateFinalText, replyLanguageM
 import { readGuestGreeting } from "./greeting.js";
 import { buildAgentInstructions, composeReadyAnalysisStepPolicy, createTurnThinkingState } from "./instructionAssembly.js";
 import { resolveModel } from "./modelRouter.js";
-import { createAgentStepPolicy, resolveLiveAgentToolPlan } from "./toolPolicy.js";
+import { createAgentStepPolicy, refreshAgentToolPlanAfterMenuGrounding, resolveLiveAgentToolPlan } from "./toolPolicy.js";
 import { groundMenuTurn, menuQueryForTurn } from "../skills/searchMenu.skill.js";
 import { honorMenuLinkPromise } from "./linkPromise.js";
 import { classifyKitchenSalesPolicyForContext } from "../services/kitchenPolicy.service.js";
@@ -156,11 +156,15 @@ export async function runFastFoodAgent(ctx: FastFoodContext) {
   const REGEN_BUDGET_MS = envNumber(process.env.REGEN_BUDGET_MS, 38_000, { min: CRITIC_BUDGET_MS + 5_000, max: 90_000 });
 
   await refreshShoppingConstraints(ctx);
-  const toolPlan = await resolveLiveAgentToolPlan(ctx);
+  let toolPlan = await resolveLiveAgentToolPlan(ctx);
   const menuGrounding = toolPlan.requiredTools.includes("searchMenu") ? await groundMenuTurn(ctx) : null;
-  const groundedCalls = menuGrounding ? [{ name: "searchMenu", arguments: { query: typeof menuGrounding.lookup_query === "string" ? menuGrounding.lookup_query : menuQueryForTurn(ctx.text, ctx), limit: 12 } }] : [];
+  if (menuGrounding) toolPlan = refreshAgentToolPlanAfterMenuGrounding(ctx, toolPlan);
+  const groundedCalls = menuGrounding ? [{ name: "searchMenu", arguments: {
+    query: typeof menuGrounding.lookup_query === "string" ? menuGrounding.lookup_query : menuQueryForTurn(ctx.text, ctx),
+    limit: Number(menuGrounding.returned) || 12,
+  } }] : [];
   const menuInstruction = menuGrounding
-    ? "searchMenu already executed for THIS turn. Use this verified result, including unavailable flags; do not invent a missing exact match. When needs_dish_clarification is true, ask which dish the customer means instead of selecting one from previous assistant text.\n" + JSON.stringify(menuGrounding)
+    ? "searchMenu already executed for THIS turn. Use this verified result, including unavailable flags; do not invent a missing exact match. When category_browse=true, this is broad assortment enumeration: name all returned variants when the set is small, or a concise multi-item sample plus the truthful remaining count when it is large; do not collapse it to one recommendation. Personalized recommendation requests still use one to three matched choices. When needs_dish_clarification is true, ask which dish the customer means instead of selecting one from previous assistant text.\n" + JSON.stringify(menuGrounding)
     : undefined;
   const kitchenPolicy = classifyKitchenSalesPolicyForContext(ctx.runtimeStatus, ctx.activeShiftNotes);
   const consentInstruction = kitchenPolicy.requiresConsent && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint

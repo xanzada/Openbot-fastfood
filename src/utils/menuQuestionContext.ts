@@ -4,8 +4,13 @@ import type { FastFoodContext } from "../context/types.js";
 // Previous replies never supply either the identity or the ingredient facts.
 const COMPOSITION_FOLLOW_UP_RE = /^(?:(?:а|ал)\s+)?(?:ішінде\s+не\s+(?:бар|болады)|ишинде\s+не\s+бар|что\s+(?:у\s+него\s+)?внутри|из\s+чего(?:\s+(?:он|она|оно|это))?(?:\s+(?:состоит|сделан|сделана|сделано))?|(?:(?:его|её|ее|оның)\s+)?(?:состав|құрамы|курамы)(?:\s+(?:какой|қандай))?)[?.!]*$/iu;
 const NEUTRAL_ACK_RE = /^(?:спасибо|рахмет|ок|ладно|жақсы|жарайды|понятно|түсінікті)[.!?\s]*$/iu;
+const MAX_MENU_CONTEXT_TEXT = 4096;
 const fold = (value: unknown) => String(value || "").toLowerCase().replace(/ё/g, "е").trim();
-const unquoted = (value: unknown) => String(value || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+/** Keep topic scans linear and bounded even when an inbound message has unmatched quotes. */
+export function stripMenuContextQuotes(value: unknown): string {
+  return String(value || "").slice(0, MAX_MENU_CONTEXT_TEXT).replace(/«[^»]*»|“[^”]*”|"[^"]*"/gu, "");
+}
+const unquoted = stripMenuContextQuotes;
 
 export function isContextualCompositionQuestion(text: unknown): boolean {
   return COMPOSITION_FOLLOW_UP_RE.test(fold(unquoted(text)));
@@ -81,7 +86,7 @@ const MENU_QUERY_NOISE = new Set([
 const MENU_FOLLOW_UP_NOISE = new Set([
   "а", "ал", "и", "да", "тағы", "еще", "ещё", "басқа", "другие", "другой", "другое",
 ]);
-const ALTERNATIVE_FOLLOW_UP_RE = /^(?:(?:а|и|ал)\s+)?(?:(?:есть|бар)\s+)?(?:(?:другие|другой|другое)(?:\s+(?:варианты|варианттары))?|(?:еще|ещё)(?:\s+(?:что-нибудь|варианты?))?|тағы(?:\s+да)?|басқа(?:\s+(?:не|бірдеңе|нұсқалар))?)[?.!\s]*$/iu;
+const ALTERNATIVE_FOLLOW_UP_RE = /^(?:(?:а|и|ал)\s+)?(?:(?:есть|бар)\s+)?(?:(?:другие|другой|другое)(?:\s+(?:варианты|варианттары))?|(?:еще|ещё)(?:\s+(?:что-нибудь|варианты?))?|тағы(?:\s+да|\s+бар\s*ма?)?|басқа(?:\s+(?:не|бірдеңе|нұсқалар))?)[?.!\s]*$/iu;
 const INFLECTION_SUFFIXES = [
   "ларыңыз", "леріңіз", "дарыңыз", "деріңіз", "тарыңыз", "теріңіз",
   "лар", "лер", "дар", "дер", "тар", "тер",
@@ -116,7 +121,7 @@ export function menuLexemes(value: unknown): string[] {
 export function menuLexemesRelated(left: unknown, right: unknown): boolean {
   const a = menuLexemeStem(left);
   const b = menuLexemeStem(right);
-  return Boolean(a && b && (a === b || a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a))));
+  return Boolean(a && b && a === b);
 }
 
 function visibleWords(value: unknown): string[] {
@@ -166,6 +171,9 @@ export function customerMenuTopic(ctx: FastFoodContext): string | null {
     const at = typeof raw === "number" ? raw : Date.parse(String(raw || ""));
     if (!Number.isFinite(at) || at > now || at <= now - 30 * 60_000) return null;
     if (NEUTRAL_ACK_RE.test(text)) continue;
+    // Customer history can carry quoted/pasted instructions. It may recover only
+    // a normal catalog subject, never a prompt-like instruction.
+    if (/(?<!\p{L})(?:system|assistant|developer|ignore|prompt|инструкц\p{L}*|промпт\p{L}*|ассистент|жүйелік)(?!\p{L})/iu.test(text)) return null;
     return catalogTopicInText(items, text, true);
   }
   return null;
@@ -173,6 +181,25 @@ export function customerMenuTopic(ctx: FastFoodContext): string | null {
 
 export function isMenuCategoryConsultation(ctx: FastFoodContext): boolean {
   return Boolean(customerMenuTopic(ctx));
+}
+
+/** Broad assortment enumeration is distinct from a one-to-three personalized recommendation. */
+export function isBroadMenuCategoryBrowse(ctx: FastFoodContext): boolean {
+  if (!isMenuCategoryConsultation(ctx)) return false;
+  const text = fold(unquoted(ctx.text));
+  if (/(?:состав|ингредиент\p{L}*|что\s+входит|из\s+чего|внутри|құрам|курам|ішін|ишин|цена|стоимост\p{L}*|сколько\s+стоит|баға|бағасы|қанша\s+тұрад|канша\s+тура)/iu.test(text)) return false;
+  if (/(?:посовет\p{L}*|рекоменд\p{L}*|ұсын\p{L}*|кеңес\s*бер|подбери|таңдап\s*бер|на\s+(?:мой|наш)\s+вкус|маған\s+лайық|аллерг\p{L}*|без\s+\p{L}+|бюджет|вегетари|халал|остр\p{L}*|ащы|\d+\s*(?:тг|тенге|теңге))/iu.test(text)) return false;
+  if (isAlternativeMenuFollowUp(text)
+    || /(?:какие|қандай|что\s+есть|не\s+бар|бар\s*ма|покаж\p{L}*|перечисл\p{L}*|ассортимент|вариант\p{L}*)/iu.test(text)) return true;
+
+  // A short, bare category turn (for example, «А напитки?») is also a browse.
+  // Named-item price/composition questions contain other subject words and stay
+  // informational, so they do not inherit automatic link permission.
+  const topicWords = visibleWords(customerMenuTopic(ctx));
+  const subjectWords = visibleWords(text).filter((word) => !MENU_TOPIC_STOP_WORDS.has(word));
+  return Boolean(subjectWords.length && topicWords.length
+    && subjectWords.length <= topicWords.length
+    && subjectWords.every((word) => topicWords.some((topicWord) => menuLexemesRelated(word, topicWord))));
 }
 
 export function filterMenuQueryNoise(words: string[]): string[] {

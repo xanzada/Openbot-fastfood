@@ -1,5 +1,5 @@
 import { intentMatches } from "./intentText.js";
-import { normalizeCheckoutRequestSpelling, wantsMenuAsText } from "./magicLink.js";
+import { menuLinkDecisionForTurn, normalizeCheckoutRequestSpelling, wantsMenuAsText } from "./magicLink.js";
 import { isMenuBudgetInquiry } from "./menuBudget.js";
 
 export const DIRECT_ORDER_INTENT_RE =
@@ -81,11 +81,12 @@ export function hasDirectOrderIntent(text = ""): boolean {
 // Link permission follows the customer's current request, never model tool arguments.
 export function hasCustomerCheckoutIntent(text = ""): boolean {
   const value = normalizeCheckoutRequestSpelling(text).replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
+  const menuLinkDecision = menuLinkDecisionForTurn(value);
   const explicitOrderActionRe = /(?:хочу\s*(?:заказать|оформить|сделать\s*заказ|заказ|взять)|закажу|заказываю|оформлю|тапсырыс\s*(?:бер(?:ейін|ей|ем|емін|гім)|жас(?:ай|ағым))|алғым\s*келе|аламын|алайын|(?:жасап|дайындап)\s*(?:бер|қой)|дай(?:те)?\s+\d)/iu;
   const explicitLinkRequestRe = /(?:(?<!\p{L})(?:повтор(?:и|ите)|перешл(?:и|ите)|отправ(?:ь|ьте)|пришл(?:и|ите)|покаж(?:и|ите)|откро(?:й|йте)|жібер(?:ші|іңіз|іңдер)?|жибер(?:ші|иниз|ініз|іңіз)?|аш(?:ып\s*бер(?:іңіз|ші)?|ыңыз|шы)?|көрсет(?:ші|іңіз)?|корсет(?:ші|иниз|ініз|іңіз)?)(?!\p{L})\s*(?:(?:мне|нам|пожалуйста|маған|бізге|қазір|қайта)\s*){0,3}(?:меню|мәзір(?:ді|ін|іңізді)?|мазір(?:ді|ін|іңізді)?|каталог(?:ты|ті|а|у)?|корзин(?:у|а|ы)|себет(?:ті|ін|іңізді)?|ссылк(?:у|а|и)|сілтеме(?:ні|ңізді|мізді)?|линк|link)(?!\p{L})|(?<!\p{L})(?:меню|мәзір(?:ді|ін|іңізді)?|мазір(?:ді|ін|іңізді)?|каталог(?:ты|ті|а|у)?|корзин(?:у|а|ы)|себет(?:ті|ін|іңізді)?|ссылк(?:у|а|и)|сілтеме(?:ні|ңізді|мізді)?|линк|link)(?!\p{L})\s*(?:(?:мне|нам|пожалуйста|маған|бізге|қазір|қайта)\s*){0,3}(?:повтор(?:и|ите)|перешл(?:и|ите)|отправ(?:ь|ьте)|пришл(?:и|ите)|покаж(?:и|ите)|откро(?:й|йте)|жібер(?:ші|іңіз|іңдер)?|жибер(?:ші|иниз|ініз|іңіз)?|аш(?:ып\s*бер(?:іңіз|ші)?|ыңыз|шы)?|көрсет(?:ші|іңіз)?|корсет(?:ші|иниз|ініз|іңіз)?)(?!\p{L}))|(?<!\p{L})(?:мәзірді|мазірді|меню|каталогты|себетті|сілтемені)(?!\p{L})\s*(?:және|мен|и)\s+[^.!?]{0,60}(?:көрсет(?:іңіз|ші)?|корсет(?:иниз|ініз|іңіз|ші)?|покаж(?:ите|и)|жібер(?:іңіз|ші)?|жибер(?:иниз|ініз|іңіз|ші)?)(?!\p{L})/iu;
   const explicitLinkNeedRe = /(?:(?<!\p{L})(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)(?!\p{L})\s*(?:(?:маған|мне|нам|бізге)\s*)?(?:керек|қажет|нуж(?:на|ен|ны|но))(?!\p{L})|(?<!\p{L})(?:керек|қажет|нуж(?:на|ен|ны|но))(?!\p{L})\s*(?:(?:маған|мне|нам|бізге)\s*)?(?:сілтеме\p{L}*|ссылк\p{L}*|линк|link|url)(?!\p{L}))/iu;
   const quantityOrPriceQuestionRe = /(?:қанша|канша|қаншадан|каншадан|сколько|сто(?:ит|ят)|цен[аыу]|бағ[аә]|баг[аә]|поч[её]м|покаж|көрсет|корсет|фото|какие|(?<!\p{L})есть(?!\p{L})|бар\s*ма|состав|из\s*чего)/iu;
-  if (quantityOrPriceQuestionRe.test(value) && !explicitOrderActionRe.test(value) && !explicitLinkRequestRe.test(value) && !explicitLinkNeedRe.test(value)) return false;
+  if (quantityOrPriceQuestionRe.test(value) && menuLinkDecision !== "allow" && !explicitOrderActionRe.test(value) && !explicitLinkRequestRe.test(value) && !explicitLinkNeedRe.test(value)) return false;
   // A later explicit decision supersedes an earlier request or refusal. Ordinary
   // questions do not create permission, and quoted customer summaries are removed.
   const clauses = value.split(/(?<=[.!?;\n])|(?<!\p{L})(?:но|бірақ)(?!\p{L})|(?:,\s*|(?<!\p{L})(?:и|және)(?!\p{L})\s+)(?=(?:откро\p{L}*|покаж\p{L}*|жібер\p{L}*|жибер\p{L}*|отправ\p{L}*|пришл\p{L}*|(?:себет|корзин|каталог|меню|мәзір|ссылк|сілтеме)\p{L}*[^,;.!?]{0,20}(?:аш|көрсет|корсет|откр|покаж|жібер|жибер|отправ|пришл|керек|қажет|нуж|не\s+нуж)))/iu);
@@ -126,7 +127,8 @@ export function hasCustomerCheckoutIntent(text = ""): boolean {
       || /(?:жібер|жибер|скинь|отправ\p{L}*|пришл\p{L}*|открой\p{L}*|покаж\p{L}*|дай|аш|көрсет|повтор|перешли|қайдан\s*қарай|где\s*посмотреть)[^.!?]{0,40}(?:меню|мәзір|мазір|каталог|корзин|себет|ссылк|сілтеме|линк|link)/iu.test(clause)
       || /(?:хочу\s*(?:(?:сделать|оформить)\s*)?(?:заказ|оформ)|(?:где|как)\s*(?:могу\s*)?(?:оформить|сделать)\s*заказ|заказать|(?:заказ|тапсырыс)\s*(?:бер|берей|берем|жаса|хочу|сдел|оформ)|(?:тапсырысты\s*)?жалғастыр|продолж(?:у|им|ить)\s*(?:заказ|оформ))/iu.test(clause)) decision = true;
   }
-  return decision || selectedFoods.size > 0;
+  if (menuLinkDecision === "deny") return false;
+  return menuLinkDecision === "allow" || decision || selectedFoods.size > 0;
 }
 
 const ORDER_STATUS_QUESTION_RE =

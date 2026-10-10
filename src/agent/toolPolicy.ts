@@ -6,8 +6,8 @@ import { classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer } from
 import { intentMatches } from "../utils/intentText.js";
 import { isMenuBudgetInquiry } from "../utils/menuBudget.js";
 import { getKitchenCheckoutFingerprint } from "../services/redis.service.js";
-import { wantsMenuAsText } from "../utils/magicLink.js";
-import { isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, isMenuCategoryConsultation } from "../utils/menuQuestionContext.js";
+import { menuLinkDecisionForTurn, wantsMenuAsText } from "../utils/magicLink.js";
+import { isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, isMenuCategoryConsultation } from "../utils/menuQuestionContext.js";
 
 export type AgentToolName =
   | "searchMenu"
@@ -150,9 +150,13 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
    const currentCatalogRequest=intentMatches(/(?:какое|какие)\s+(?:блюдо|блюда|вариант\p{L}*)[^.!?]{0,45}(?:вместо|взамен)|(?:покаж\p{L}*|пришл\p{L}*|отправ\p{L}*)\s+(?:актуальн\p{L}*|текущ\p{L}*|свеж\p{L}*)\s+меню/iu,text)
      &&!/(?:не\s+(?:присылай|пришл|отправ|показы)|не\s+нуж)/iu.test(text);
    const categoryConsultation = isMenuCategoryConsultation(ctx);
+   const broadCategoryBrowse = isBroadMenuCategoryBrowse(ctx);
+   const menuLinkDecision = menuLinkDecisionForTurn(text);
    const menuLookup = categoryConsultation || currentCatalogRequest || isMenuAttributeVerificationQuestion(text) || needsShoppingPrepass(ctx) || hasCurrentMenuBrowseInquiry(text) || isMenuBudgetInquiry(text) || intentMatches(MENU_LOOKUP_RE, text) || namedCatalogItem || wantsMenuAsText(text) || isContextualCompositionQuestion(text);
+  const checkoutIntent = hasCustomerCheckoutIntent(text);
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
-    && (categoryConsultation || hasCustomerCheckoutIntent(text) || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
+    && menuLinkDecision !== "deny"
+    && (broadCategoryBrowse && menuLinkDecision !== "text_only" || checkoutIntent || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }
 
@@ -186,6 +190,26 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
     requiredTools: plan.requiredTools.slice(0, 3),
     reason: plan.reason.slice(0, 3),
   };
+}
+
+/** Re-evaluate catalog-derived permissions after searchMenu replaced a bounded preview with the live catalog. */
+export function refreshAgentToolPlanAfterMenuGrounding(ctx: FastFoodContext, initial: AgentToolPlan): AgentToolPlan {
+  const refreshed = resolveAgentToolPlan(ctx);
+  const tools = [...initial.requiredTools];
+  const reasons = [...initial.reason];
+  for (let index = 0; index < refreshed.requiredTools.length; index++) {
+    const tool = refreshed.requiredTools[index];
+    if (tools.includes(tool)) continue;
+    tools.push(tool);
+    reasons.push(refreshed.reason[index] || "post_grounding_refresh");
+  }
+  const searchIndex = tools.indexOf("searchMenu");
+  const linkIndex = tools.indexOf("sendMenuLink");
+  if (searchIndex > -1 && linkIndex > -1 && linkIndex < searchIndex) {
+    [tools[searchIndex], tools[linkIndex]] = [tools[linkIndex], tools[searchIndex]];
+    [reasons[searchIndex], reasons[linkIndex]] = [reasons[linkIndex], reasons[searchIndex]];
+  }
+  return { requiredTools: tools.slice(0, 3), reason: reasons.slice(0, 3) };
 }
 
 // Both webhook and standalone agent entrypoints honor the same persisted consent.

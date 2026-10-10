@@ -76,6 +76,20 @@ test("the latest explicit RU/KK menu-link decision wins", async () => {
   }
 });
 
+test("exact informational product questions do not inherit broad-category link permission", async () => {
+  for (const text of [
+    "Что входит в Римскую Альфу?", "Сколько стоит Римская Альфа?",
+    "Римская Альфаның құрамы қандай?", "Римская Альфаның бағасы қандай?",
+  ]) {
+    const ctx = context(text);
+    assert.ok(toolPolicy.resolveAgentToolPlan(ctx).requiredTools.includes("searchMenu"));
+    assert.ok(!toolPolicy.resolveAgentToolPlan(ctx).requiredTools.includes("sendMenuLink"));
+    const result: any = await createSendMenuLinkSkill(ctx).execute({ reason: "exact informational question" });
+    assert.equal(result.allowed, false);
+    assert.equal(result.reason, "link_not_requested");
+  }
+});
+
 test("bare тағы бар ма recovers only a fresh scoped customer category", () => {
   const history = [{ role: "user", text: "Пиццалар қандай?", instanceId: "catalog-blocker-fixture", phone: "77000000001", createdAt: now - 1000 }];
   const ctx = context("тағы бар ма?", { chatHistory: history });

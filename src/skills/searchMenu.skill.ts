@@ -1,6 +1,6 @@
 import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemesRelated } from "../utils/menuQuestionContext.js";
+import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemesRelated } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -224,8 +224,23 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       // The ranked list behind the page is built in full: `totalMatched` has to be
       // the real number of matches, or the page and the total agree and nothing
       // tells the model that more of the menu exists.
-      const allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
-      const page = pageMenuMatches(allMatches, limit, offset);
+      const broadCategoryBrowse = isBroadMenuCategoryBrowse(ctx);
+      let allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
+      if (broadCategoryBrowse && isAlternativeMenuFollowUp(ctx.text)) {
+        // Assistant prose is never a fact source. It is used only as a display hint:
+        // an exact name must also exist in this freshly filtered live result.
+        const assistantText = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-8)
+          .filter((row: any) => row?.role === "assistant")
+          .map((row: any) => normalizeText(row?.text ?? row?.content ?? "")).join(" ");
+        const mentioned = new Set(allMatches.filter((item: any) => {
+          const name = normalizeText(item?.name);
+          return Boolean(name && assistantText.includes(name));
+        }).map((item: any) => normalizeText(item?.name)));
+        allMatches = allMatches.map((item: any, index: number) => ({ item, index }))
+          .sort((left, right) => Number(mentioned.has(normalizeText(left.item?.name))) - Number(mentioned.has(normalizeText(right.item?.name))) || left.index - right.index)
+          .map((entry) => entry.item);
+      }
+      const page = pageMenuMatches(allMatches, broadCategoryBrowse ? 50 : limit, offset);
       const matches = page.items;
       const filteringApplied = items.length !== allowedItems.length;
       // Why an item vanished, without ever handing the model the operator's raw
@@ -262,6 +277,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         // items / offset / nextOffset / totalMatched / returned / hasMore, and the
         // truncation hint whenever the page is shorter than the total.
         ...page,
+        ...(broadCategoryBrowse ? { category_browse: true } : {}),
         shopping_constraints: shoppingEvidence(ctx),
         eligible_choices: verification ? [] : selectPublicMenuItems(eligibleShoppingItems(ctx, allowedItems), "", category, 12),
         ...(verification ? {menu_verification:{subject:relation?.subject ?? null,attribute:"volume_or_size",rule:"Answer only the requested attribute from this exact current item. Missing volume/size is unknown; ask clarification, never substitute unrelated products."}} : {}),
