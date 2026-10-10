@@ -566,6 +566,29 @@ test("a later category or general refusal clears earlier grounded checkout choic
   assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(multipleCategoryQuantities,initialMultipleCategoryQuantities).requiredTools.includes("sendMenuLink"),text);
   assert.equal((await createSendMenuLinkSkill(multipleCategoryQuantities).execute({reason:"multiple category quantities"}) as any).allowed,true,text);
  }
+ const pizzaAndDrink=[
+  ...namedPizzas,
+  {name:"Лимонад",category_name:"Напитки",price:700,available:true},
+ ];
+ const mixedQuantities=ctx("Хочу 2 Пицца Вектор и 1 напиток.",{menuSnapshot:{items:pizzaAndDrink,source:"preview"}});
+ const initialMixedQuantities=policy.resolveAgentToolPlan(mixedQuantities);
+ await groundMenuTurn(mixedQuantities,(async()=>({items:pizzaAndDrink,source:"live"})) as any);
+ assert.equal(currentGroundedCatalogCheckoutDecision(mixedQuantities),true);
+ assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(mixedQuantities,initialMixedQuantities).requiredTools.includes("sendMenuLink"));
+ assert.equal((await createSendMenuLinkSkill(mixedQuantities).execute({reason:"mixed exact and category quantities"}) as any).allowed,true);
+ const exactAndCategories=[
+  {name:"Донер",category_name:"Донеры",price:1800,available:true},
+  {name:"Пирог Комета",category_name:"Выпечка",price:1600,available:true},
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+ ];
+ for(const text of ["Хочу 2 Донера и 1 Выпечку.","Хочу 2 Донера и 1 напиток."]){
+  const grouped=ctx(text,{menuSnapshot:{items:exactAndCategories,source:"preview"}});
+  const initialGrouped=policy.resolveAgentToolPlan(grouped);
+  await groundMenuTurn(grouped,(async()=>({items:exactAndCategories,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(grouped),true,text);
+  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(grouped,initialGrouped).requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(grouped).execute({reason:"exact and category quantities"}) as any).allowed,true,text);
+ }
  assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Донер с курицей. Не хочу донеры.",{
   menuSnapshot:{items:doners,source:"live"},
   menuGrounding:{lookup_query:"донеры",items:doners},

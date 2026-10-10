@@ -165,11 +165,12 @@ function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
   const supportedIndexes = surfaceWords.map((word, index) => ({ word, index }))
     .filter(({ word }) => catalogWordSupported(items, word)).map(({ index }) => index);
   const firstSupportedIndex = Math.min(Number.POSITIVE_INFINITY, ...supportedIndexes);
-  const exactQuantityIndexes = new Set(surfaceWords.map((word, index) => ({ word, index }))
-    .filter(({ word, index }) => /^\d+$/u.test(word) && exactIndexes.has(index + 1))
+  const leadingQuantityIndexes = new Set(surfaceWords.map((word, index) => ({ word, index }))
+    .filter(({ word, index }) => /^\d+$/u.test(word)
+      && (exactIndexes.has(index + 1) || catalogWordSupported(items, surfaceWords[index + 1] || "")))
     .map(({ index }) => index));
   const unresolvedWords = subjects.filter(({ word, index }) =>
-    !(/^\d+$/u.test(word) && (index < firstSupportedIndex || exactQuantityIndexes.has(index))));
+    !(/^\d+$/u.test(word) && (index < firstSupportedIndex || leadingQuantityIndexes.has(index))));
   // Once a concrete SKU owns its span, leftover words may describe only an
   // independently known category or an operational modifier. A token borrowed
   // from another item's name/description cannot silently extend this SKU.
