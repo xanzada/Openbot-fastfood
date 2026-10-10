@@ -181,3 +181,22 @@ test("budget replacement preserves separately grounded non-menu answer clauses",
  }
 });
 
+
+test("qualitative cheap request chooses cheapest scoped items without demanding an amount",async()=>{
+ const {reduceShoppingConstraints}=await import("../src/services/shoppingConstraints.service.js");
+ for(const [language,text] of [["ru","Салаты подешевле"],["kk","Салаттар арзанырақ"]] as const){
+  const c=ctx(text,{language});
+  c.shoppingConstraints=reduceShoppingConstraints(c,null);
+  const out:any=await groundMenuTurn(c,(async()=>({items,source:"live"})) as any);
+  const r=validateFinalText(language==="kk"?"Бюджет сомасын нақтылаңыз.":"Уточните сумму бюджета.",c,{toolsCalled:["searchMenu"]});
+  assert.doesNotMatch(r.text,/уточните.*сумм|сомасын нақтыла/iu,text);
+  assert.match(r.text,/Цезарь/u,text);
+  assert.equal((out.eligible_choices||[])[0]?.name,"Цезарь",text);
+ }
+ const previous=reduceShoppingConstraints(ctx("Какие салаты до 2500?"),null);
+ const c=ctx("Салаты подешевле",{shoppingConstraints:previous});
+ await groundMenuTurn(c,(async()=>({items,source:"live"})) as any);
+ const r=validateFinalText("Предложу варианты.",c,{toolsCalled:["searchMenu"]});
+ assert.ok(r.text.indexOf("Цезарь")>=0);
+ assert.doesNotMatch(r.text,/Тёплый салат/u);
+});
