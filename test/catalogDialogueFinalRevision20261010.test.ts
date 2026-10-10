@@ -62,4 +62,3 @@ for(const [text,category,language] of [["А выпечка?","Выпечка","r
 test("unrelated short turns gain no catalog authority",()=>{for(const text of ["А доставка?","А оплата?","А оператор?","Как дела?","Спасибо?","А заказ?"]){const p=policy.resolveAgentToolPlan(ctx(text));assert.ok(!p.requiredTools.includes("sendMenuLink"),text);assert.ok(!p.requiredTools.includes("escalateToAdmin"),text);assert.ok(!p.requiredTools.includes("searchMenu"),text);}});
 
 test("paging totals deduplicate public SKU names before slicing",()=>{const unique=Array.from({length:61},(_,i)=>({name:"Позиция "+(i+1),category_name:"Выпечка",price:1000+i,available:true}));const page=pageMenuMatches([...unique.slice(0,60),{...unique[0]},unique[60]],50,0);assert.equal(page.totalMatched,61);assert.equal(page.nextOffset,50);});
-
