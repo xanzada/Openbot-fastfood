@@ -861,11 +861,17 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.equal((await createSendMenuLinkSkill(c).execute({reason:"mixed polarity exact choices"}) as any).allowed,true,text);
  }
  {
-  const text="Хочу Моку. Не хочу ничего. Хочу Айран.";
-  const c=ctx(text,{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
-  const out:any=await groundMenuTurn(c,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
-  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
-  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  for(const text of [
+   "Хочу Моку. Не хочу ничего. Хочу Айран.",
+   "Хочу Моку. Передумал. Хочу Айран.",
+   "Хочу Моку. Я передумал. Хочу Айран.",
+   "Моку алайын. Ойымнан қайттым. Айран алайын.",
+  ]){
+   const c=ctx(text,{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
+   const out:any=await groundMenuTurn(c,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
+   assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
+   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  }
  }
  {
   const text="Хочу Альфа Бета Гамма и Айран. Альфу Бету Гамму не хочу.";
@@ -885,6 +891,20 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
   assert.equal((await createSendMenuLinkSkill(c).execute({reason:"long postposed refusal"}) as any).allowed,true,text);
+ }
+ for(const text of [
+  "Хочу Айран, Пирог Комета, Моко не хочу.",
+  "Айран алайын, Пирог Комета, Моко керек емес.",
+ ]){
+  const menu=[
+   {name:"Айран",category_name:"Напитки",price:500,available:true},
+   {name:"Моко",category_name:"Напитки",price:600,available:true},
+   {name:"Пирог Вектор",category_name:"Пироги",price:1800,available:true},
+  ];
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"inherited comma selection"}) as any).allowed,false,text);
  }
  const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
  const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);

@@ -157,7 +157,8 @@ function catalogWordSupportedByCategory(items: any[], word: string): boolean {
 
 const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|мен)\s+/giu;
 const CATALOG_DECISION_CLAUSE_SEPARATOR_RE = /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})/giu;
-const CATALOG_DECISION_PART_POLARITY_RE = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт|хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|маған|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
+const CATALOG_DECISION_PART_REFUSAL_RE = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
+const CATALOG_DECISION_PART_SELECTION_RE = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|маған|алайын|аламын|тапсырыс\s*(?:бер|жаса)|(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L})/iu;
 
 type CatalogTextSpan = { start: number; end: number };
 
@@ -235,7 +236,7 @@ export function catalogRequestHasActiveAmbiguousOverlap(items: any[], value: unk
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
   const quantitySelectionRe = /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu;
-  const generalRefusalRe = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:не\s+(?:хочу|буду|нужно|надо)|қаламай\p{L}*|керек\s+емес)\s+(?:ничего|ештеңе|ештене)|(?:отмена|отменяю|болдырма))/iu;
+  const generalRefusalRe = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:не\s+(?:хочу|буду|нужно|надо)|қаламай\p{L}*|керек\s+емес)\s+(?:ничего|ештеңе|ештене)|(?:отмена|отменяю|болдырма)|^(?:(?:я|мен)\s+)?(?:передумал\p{L}*|ойымнан\s+қайттым)[.!\s]*$)/iu;
   const active = new Set<string>();
   let resetNextSelection = false;
   for (const raw of clauses) {
@@ -327,8 +328,17 @@ function catalogDecisionClauses(items: any[], value: unknown): string[] {
   return coarse.flatMap((clause) => {
     const commaParts = splitCatalogTextOutsideExactSpans(items, clause, /,\s*/gu);
     if (commaParts.length <= 1) return [clause];
-    return commaParts.slice(1).some((part) => CATALOG_DECISION_PART_POLARITY_RE.test(part))
-      ? commaParts : [clause];
+    const modes = commaParts.map((part) => CATALOG_DECISION_PART_REFUSAL_RE.test(part)
+      ? "refused" as const
+      : CATALOG_DECISION_PART_SELECTION_RE.test(part) ? "selected" as const : null);
+    if (!modes.slice(1).some(Boolean)) return [clause];
+    let inherited: "selected" | "refused" | null = null;
+    return commaParts.map((part, index) => {
+      if (modes[index]) { inherited = modes[index]; return part; }
+      if (inherited === "selected") return `хочу ${part}`;
+      if (inherited === "refused") return `не хочу ${part}`;
+      return part;
+    });
   });
 }
 
