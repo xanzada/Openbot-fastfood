@@ -1,7 +1,7 @@
 import { intentMatches } from "./intentText.js";
 import { menuLinkDecisionForTurn, normalizeCheckoutRequestSpelling, wantsMenuAsText } from "./magicLink.js";
 import { isMenuBudgetInquiry } from "./menuBudget.js";
-import { catalogNamedItemsInText, menuLexemes, menuLexemesRelated } from "./menuQuestionContext.js";
+import { catalogNamedItemsInText, menuLexemes, menuLexemesRelated, menuLexemesSameIdentity } from "./menuQuestionContext.js";
 import type { FastFoodContext } from "../context/types.js";
 
 export const DIRECT_ORDER_INTENT_RE =
@@ -94,48 +94,110 @@ function catalogSurfaceWords(value: unknown): string[] {
     .match(/[\p{L}\p{N}-]+/gu) || [];
 }
 
-function containsCatalogSurfacePhrase(words: string[], phrase: string[]): boolean {
-  if (!phrase.length || phrase.length > words.length) return false;
-  return words.some((_, start) => start + phrase.length <= words.length
-    && phrase.every((token, offset) => token === words[start + offset]));
+const CATALOG_DECISION_NOISE_RE = /^(?:а|ал|и|және|мен|я|мы|вы|но|бірақ|хоч\p{L}*|возьм\p{L}*|беру|закаж\p{L}*|заказ\p{L}*|дай(?:те)?|нуж\p{L}*|мне|нам|маған|бізге|тогда|онда|керек|қажет|алғым|кел\p{L}*|алайын|аламын|тапсырыс|бер\p{L}*|жаса\p{L}*|не|нет|жоқ|жок|емес|алмай\p{L}*|қаламай\p{L}*|передумал\p{L}*|отказ\p{L}*|ничего|никак\p{L}*|особенно|әсіресе|бір|екі|үш|төрт|бес|один|одну|два|две|три|четыре|пять|сколько|қанша|канша|стоит|цена|баға|бағасы|тг|тенге|теңге|пожалуйста)$/iu;
+
+function catalogDecisionSubjectWords(clause: string): string[] {
+  return catalogSurfaceWords(clause).filter((word) => !CATALOG_DECISION_NOISE_RE.test(word));
+}
+
+function normalizeCatalogAliasToken(value: unknown): string {
+  return String(value || "").toLocaleLowerCase("ru-RU")
+    .replace(/^(?:coca[-\s]*cola|кока[-\s]*кол[ауы]|кол[ауы]|cola)$/iu, "кола")
+    .replace(/^(?:sprite|спрайт)$/iu, "спрайт")
+    .replace(/^(?:fanta|фанта)$/iu, "фанта");
+}
+
+function catalogWordSupported(items: any[], word: string): boolean {
+  const wordTokens = menuLexemes(word);
+  if (!wordTokens.length) return false;
+  return items.some((item) => {
+    const fields = [item?.name || item?.title || "", item?.category_name || item?.category || "",
+      item?.label || "", item?.composition || "", item?.description || ""];
+    return fields.some((field) => {
+      const fieldTokens = menuLexemes(field);
+      const aliasWords = catalogSurfaceWords(field).map(normalizeCatalogAliasToken);
+      const normalizedWord = normalizeCatalogAliasToken(word);
+      return aliasWords.includes(normalizedWord) || wordTokens.some((token) =>
+        fieldTokens.some((fieldToken) => menuLexemesRelated(token, fieldToken)));
+    });
+  });
 }
 
 function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
-  if (catalogNamedItemsInText(items, clause).length) return false;
-  return catalogSurfaceWords(clause).some((token) =>
-    /\d/u.test(token) || /^[a-z]{1,3}$/iu.test(token));
+  const surfaceWords = catalogSurfaceWords(clause);
+  const exactItems = catalogNamedItemsInText(items, clause);
+  const exactIndexes = exactCatalogItemSpanIndexes(surfaceWords, exactItems);
+  const subjects = surfaceWords.map((word, index) => ({ word, index }))
+    .filter(({ word, index }) => !CATALOG_DECISION_NOISE_RE.test(word) && !exactIndexes.has(index));
+  const supportedIndexes = surfaceWords.map((word, index) => ({ word, index }))
+    .filter(({ word }) => catalogWordSupported(items, word)).map(({ index }) => index);
+  const firstSupportedIndex = Math.min(Number.POSITIVE_INFINITY, ...supportedIndexes);
+  const unresolvedWords = subjects.filter(({ word, index }) =>
+    !(/^\d+$/u.test(word) && index < firstSupportedIndex));
+  if (unresolvedWords.some(({ word }) => /\d/u.test(word) || /^[a-z]{1,3}$/iu.test(word))) return true;
+  if (exactItems.length) return unresolvedWords.some(({ word }) => !catalogWordSupported(items, word));
+  const supported = unresolvedWords.filter(({ word }) => catalogWordSupported(items, word));
+  return supported.length > 0 && supported.length < unresolvedWords.length;
 }
 
 function looksLikePluralCatalogLabel(value: unknown): boolean {
   return catalogSurfaceWords(value).some((word) =>
-    /(?:ы|и|ьи|лар|лер|дар|дер|тар|тер|s|es)$/iu.test(word));
+    /(?:ы|и|ьи|ов|ев|ей|лар|лер|дар|дер|тар|тер|s|es)$/iu.test(word));
+}
+
+function exactCatalogItemSpanIndexes(surfaceWords: string[], exactItems: any[]): Set<number> {
+  const indexes = new Set<number>();
+  for (const item of exactItems) {
+    const itemWords = catalogSurfaceWords(item?.name || item?.title || "");
+    if (!itemWords.length) continue;
+    const spans: Array<{ start: number; strict: boolean }> = [];
+    for (let start = 0; start + itemWords.length <= surfaceWords.length; start += 1) {
+      const candidate = surfaceWords.slice(start, start + itemWords.length);
+      if (itemWords.every((word, offset) => menuLexemesSameIdentity(word, candidate[offset]))) {
+        spans.push({ start, strict: itemWords.every((word, offset) => word === candidate[offset]) });
+      }
+    }
+    const selected = spans.some((span) => span.strict)
+      ? spans.filter((span) => span.strict)
+      : spans;
+    for (const span of selected) {
+      for (let offset = 0; offset < itemWords.length; offset += 1) indexes.add(span.start + offset);
+    }
+  }
+  return indexes;
+}
+
+function groundedClauseHasCatalogCoverage(items: any[], clause: string, grounding: any): boolean {
+  if (catalogNamedItemsInText(items, clause).length) return true;
+  if (hasUnresolvedCatalogVariant(items, clause)) return false;
+  const subjectWords = catalogDecisionSubjectWords(clause).filter((word) => !/^\d+$/u.test(word));
+  if (subjectWords.length && subjectWords.every((word) => catalogWordSupported(items, word))) return true;
+  const groundedItems = Array.isArray(grounding?.items) ? grounding.items : [];
+  if (!groundedItems.some((item: any) => item?.match_kind === "exact_name")) return false;
+  const queryTokens = menuLexemes(grounding?.lookup_query || "");
+  const clauseTokens = menuLexemes(clause);
+  return queryTokens.length > 0 && queryTokens.every((queryToken) =>
+    clauseTokens.some((clauseToken) => menuLexemesRelated(queryToken, clauseToken)));
 }
 
 function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   const words = menuLexemes(clause);
   const surfaceWords = catalogSurfaceWords(clause);
-  const itemMatches: Array<{ key: string; matched: number }> = [];
   const categoryKeys = new Set<string>();
   const categoryTokensByKey = new Map<string, string[]>();
-  const pluralLiteralCategoryKeys = new Set<string>();
+  const pluralMentionedCategoryKeys = new Set<string>();
   for (const item of items) {
-    const name = String(item?.name || item?.title || "").trim();
     const category = String(item?.category_name || item?.category || "").trim();
-    const nameTokens = menuLexemes(name);
-    const matched = nameTokens.filter((token) =>
-      words.some((word) => menuLexemesRelated(token, word))).length;
-    if (name && matched) itemMatches.push({
-      key: "item:" + name.toLocaleLowerCase("ru-RU"),
-      matched,
-    });
     const categoryTokens = menuLexemes(category);
     if (categoryTokens.length && categoryTokens.every((token) =>
       words.some((word) => menuLexemesRelated(token, word)))) {
       const categoryKey = "category:" + categoryTokens.join("|");
       categoryKeys.add(categoryKey);
       categoryTokensByKey.set(categoryKey, categoryTokens);
-      if (containsCatalogSurfacePhrase(surfaceWords, catalogSurfaceWords(category))) {
-        if (looksLikePluralCatalogLabel(category)) pluralLiteralCategoryKeys.add(categoryKey);
+      if (surfaceWords.some((word) => looksLikePluralCatalogLabel(word)
+        && menuLexemes(word).some((stem) =>
+          categoryTokens.some((token) => menuLexemesRelated(stem, token))))) {
+        pluralMentionedCategoryKeys.add(categoryKey);
       }
     }
   }
@@ -145,38 +207,28 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   // match a short same-root SKU and must keep the category refusal visible.
   const exactItems = catalogNamedItemsInText(items, clause);
   if (exactItems.length) {
+    if (hasUnresolvedCatalogVariant(items, clause)) return new Set();
     const keys = new Set(exactItems.map((item) =>
       "item:" + String(item?.name || item?.title || "").trim().toLocaleLowerCase("ru-RU")));
-    const hasLiteralItem = exactItems.some((item) =>
-      containsCatalogSurfacePhrase(surfaceWords,
-        catalogSurfaceWords(item?.name || item?.title || "")));
-    const literalItemWords = new Set(exactItems.flatMap((item) =>
-      catalogSurfaceWords(item?.name || item?.title || "")));
+    const exactItemSpanIndexes = exactCatalogItemSpanIndexes(surfaceWords, exactItems);
     const independentlyMentionedCategories = [...categoryKeys].filter((key) => {
       const tokens = categoryTokensByKey.get(key) || [];
-      return surfaceWords.some((word) => !literalItemWords.has(word)
+      return surfaceWords.some((word, index) => !exactItemSpanIndexes.has(index)
         && menuLexemes(word).some((stem) =>
           tokens.some((token) => menuLexemesRelated(stem, token))));
     });
-    if (!hasLiteralItem) {
-      for (const key of categoryKeys) keys.add(key);
-    } else {
-      // When an item and its category have the same literal label, a singular
-      // mention belongs to the exact SKU. A plural/collective label still means
-      // the category, and a separate category word is handled independently.
-      for (const key of pluralLiteralCategoryKeys) keys.add(key);
-      for (const key of independentlyMentionedCategories) keys.add(key);
-    }
+    // A singular category word inside an exact item belongs to that SKU. A
+    // plural/collective label still means the category, and a separate category
+    // occurrence outside the chosen item span remains independently actionable.
+    for (const key of pluralMentionedCategoryKeys) keys.add(key);
+    for (const key of independentlyMentionedCategories) keys.add(key);
     return keys;
   }
 
   // A number or short Latin size/code makes the request SKU-specific. If that
   // SKU is absent, a shared category token cannot authorize a sibling product.
   if (hasUnresolvedCatalogVariant(items, clause)) return new Set();
-  if (categoryKeys.size) return categoryKeys;
-  const greatestOverlap = Math.max(0, ...itemMatches.map((match) => match.matched));
-  return new Set(itemMatches.filter((match) => match.matched === greatestOverlap)
-    .map((match) => match.key));
+  return categoryKeys;
 }
 
 /**
@@ -217,15 +269,6 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
   const quantitySelectionRe = /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu;
-  const meaningfulClauseCount = clauses.filter((raw) => {
-    const clause = raw.trim();
-    if (!clause) return false;
-    const clauseWords = menuLexemes(clause.replace(/-/gu, " "));
-    const lookupOverlap = lookupTokens.some((token) =>
-      clauseWords.some((word) => menuLexemesRelated(token, word)));
-    return lookupOverlap || catalogChoiceSubjects(catalog, clause).size > 0
-      || refusalRe.test(clause) || selectionRe.test(clause) || quantitySelectionRe.test(clause);
-  }).length;
   for (const raw of clauses) {
     const clause = raw.trim();
     if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
@@ -251,8 +294,9 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
     // Colloquial aliases such as Кола -> Coca-Cola may use the grounded query
     // only for a single positive choice. Refusals can still cancel that exact
     // grounding; a later unknown choice cannot borrow whole-turn query tokens.
+    const clauseCatalogCoverage = groundedClauseHasCatalogCoverage(catalog, clause, grounding);
     if (!subjects.size && lookupOverlap
-      && (refused || selected && meaningfulClauseCount === 1 && !unresolvedVariant)) {
+      && (refused || selected && !unresolvedVariant && clauseCatalogCoverage)) {
       subjects.add("grounded:query");
     }
     if (!subjects.size) {

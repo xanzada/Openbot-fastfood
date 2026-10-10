@@ -435,10 +435,54 @@ test("a later category or general refusal clears earlier grounded checkout choic
  assert.equal(currentGroundedCatalogCheckoutDecision(crossCategoryContext),false);
  assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(crossCategoryContext,policy.resolveAgentToolPlan(crossCategoryContext)).requiredTools.includes("sendMenuLink"));
  assert.equal((await createSendMenuLinkSkill(crossCategoryContext).execute({reason:"declined category with cross-category item"}) as any).allowed,false);
+ const lonePie=[{name:"Пирог Вектор",category_name:"Выпечка",price:1300,available:true}];
+ for(const text of [
+  "Хочу Пирог Комета.",
+  "Пирог Вектор не хочу. Хочу Пирог Комета.",
+  "Сколько стоит Пирог Вектор? Хочу Пирог Комета.",
+ ]){
+  const unknownPie=ctx(text,{menuSnapshot:{items:lonePie,source:"preview"}});
+  const initialUnknownPie=policy.resolveAgentToolPlan(unknownPie);
+  await groundMenuTurn(unknownPie,(async()=>({items:lonePie,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(unknownPie),false,text);
+  assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(unknownPie,initialUnknownPie).requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(unknownPie).execute({reason:"unknown lexical variant"}) as any).allowed,false,text);
+ }
+ const namedPizzas=[
+  {name:"Пицца Вектор",category_name:"Пицца",price:2200,available:true},
+  {name:"Пицца Милана",category_name:"Пицца",price:2400,available:true},
+ ];
+ const exactInflectedRefusal=ctx("Хочу Пицца Вектор. Не хочу пиццу Милана.",{
+  menuSnapshot:{items:namedPizzas,source:"preview"},
+ });
+ const initialExactInflected=policy.resolveAgentToolPlan(exactInflectedRefusal);
+ await groundMenuTurn(exactInflectedRefusal,(async()=>({items:namedPizzas,source:"live"})) as any);
+ assert.equal(currentGroundedCatalogCheckoutDecision(exactInflectedRefusal),true);
+ assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(exactInflectedRefusal,initialExactInflected).requiredTools.includes("sendMenuLink"));
+ assert.equal((await createSendMenuLinkSkill(exactInflectedRefusal).execute({reason:"remaining exact choice"}) as any).allowed,true);
+ for(const text of [
+  "Хочу Пицца Небула.",
+  "Хочу Пицца Вектор Небула.",
+  "Хочу Пицца Вектор XL.",
+  "Хочу Пицца Вектор. Нет, хочу Пицца Небула.",
+  "Пицца Небула керек.",
+ ]){
+  const unknownNamedPizza=ctx(text,{menuSnapshot:{items:namedPizzas,source:"preview"}});
+  const initialUnknownNamedPizza=policy.resolveAgentToolPlan(unknownNamedPizza);
+  await groundMenuTurn(unknownNamedPizza,(async()=>({items:namedPizzas,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(unknownNamedPizza),false,text);
+  assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(unknownNamedPizza,initialUnknownNamedPizza).requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(unknownNamedPizza).execute({reason:"unknown named pizza"}) as any).allowed,false,text);
+ }
  const doners=[
   {name:"Донер с курицей",category_name:"Донеры",price:1600,available:true},
   {name:"Донер с говядиной",category_name:"Донеры",price:1800,available:true},
  ];
+ const numericGeneric=ctx("2 донера возьму.",{menuSnapshot:{items:[{name:"Донер куриный",price:1800,available:true}],source:"preview"}});
+ const initialNumericGeneric=policy.resolveAgentToolPlan(numericGeneric);
+ await groundMenuTurn(numericGeneric,(async()=>({items:[{name:"Донер куриный",price:1800,available:true}],source:"live"})) as any);
+ assert.equal(currentGroundedCatalogCheckoutDecision(numericGeneric),true);
+ assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(numericGeneric,initialNumericGeneric).requiredTools.includes("sendMenuLink"));
  assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Донер с курицей. Не хочу донеры.",{
   menuSnapshot:{items:doners,source:"live"},
   menuGrounding:{lookup_query:"донеры",items:doners},
