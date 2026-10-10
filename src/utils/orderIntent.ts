@@ -166,9 +166,11 @@ function catalogProtectedWordsSameIdentity(left: string, right: string): boolean
     && /^[аяуюыие]$/u.test(pair[1].slice(pair[0].length));
 }
 
-export function catalogResolvedItemsInText(items: any[], value: unknown): any[] {
+type CatalogItemSpanMatch = { item: any; start: number; end: number; exactTokens: number };
+
+function catalogItemSpanMatches(items: any[], value: unknown): CatalogItemSpanMatch[] {
   const words = catalogSurfaceWords(value);
-  const matches: Array<{ item: any; start: number; end: number; exactTokens: number }> = [];
+  const matches: CatalogItemSpanMatch[] = [];
   for (const item of items) {
     const itemWords = catalogSurfaceWords(item?.name || item?.title || "");
     if (!itemWords.length) continue;
@@ -179,13 +181,44 @@ export function catalogResolvedItemsInText(items: any[], value: unknown): any[] 
         exactTokens: itemWords.filter((word, offset) => word === candidate[offset]).length });
     }
   }
-  const selected = matches.filter((match) => !matches.some((other) => {
+  return matches;
+}
+
+function dominantCatalogItemSpanMatches(matches: CatalogItemSpanMatch[]): CatalogItemSpanMatch[] {
+  return matches.filter((match) => !matches.some((other) => {
     if (other === match || !(match.start < other.end && match.end > other.start)) return false;
     const length = match.end - match.start;
     const otherLength = other.end - other.start;
     return otherLength > length || otherLength === length && other.exactTokens > match.exactTokens;
   }));
-  return [...new Set(selected.map((match) => match.item))];
+}
+
+function catalogSpanMatchConflicts(match: CatalogItemSpanMatch, matches: CatalogItemSpanMatch[]): boolean {
+  return matches.some((other) => {
+    if (other === match || !(match.start < other.end && match.end > other.start)) return false;
+    const crossing = other.start < match.start || other.end > match.end;
+    const sameSpanTie = other.start === match.start && other.end === match.end
+      && other.exactTokens === match.exactTokens
+      && String(other.item?.name || other.item?.title || "").trim().toLocaleLowerCase("ru-RU")
+        !== String(match.item?.name || match.item?.title || "").trim().toLocaleLowerCase("ru-RU");
+    return crossing || sameSpanTie;
+  });
+}
+
+export function catalogRequestHasAmbiguousOverlap(items: any[], value: unknown): boolean {
+  const matches = catalogItemSpanMatches(items, value);
+  return dominantCatalogItemSpanMatches(matches).some((match) => catalogSpanMatchConflicts(match, matches));
+}
+
+export function catalogResolvedItemsInText(items: any[], value: unknown): any[] {
+  const matches = catalogItemSpanMatches(items, value);
+  const selected = dominantCatalogItemSpanMatches(matches);
+  // A longer catalog name may safely contain a shorter one ("Донер Комбо"
+  // contains "Донер"). Crossing spans instead describe an unknown combined
+  // SKU assembled from two real products. Same-span morphological ties are
+  // also ambiguous unless the public names are identical, so fail closed.
+  const conflictFree = selected.filter((match) => !catalogSpanMatchConflicts(match, matches));
+  return [...new Set(conflictFree.map((match) => match.item))];
 }
 
 function exactCatalogProtectedSpans(items: any[], value: string): CatalogTextSpan[] {

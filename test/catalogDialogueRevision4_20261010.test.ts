@@ -765,6 +765,36 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
  const blockedInflectedOut:any=await groundMenuTurn(blockedInflectedVariant,(async()=>({items:inflectedVariantMenu,source:"live"})) as any);
  assert.equal(blockedInflectedOut.items.length,0);
  assert.equal(currentGroundedCatalogCheckoutDecision(blockedInflectedVariant),false);
+ const crossingOverlapCases=[
+  {
+   text:"Хочу Донер Куриный Комбо.",
+   menu:[
+    {name:"Донер Куриный",category_name:"Донеры",price:1300,available:true},
+    {name:"Куриный Комбо",category_name:"Комбо",price:1700,available:true},
+   ],
+  },
+  {
+   text:"Хочу Донер Куриный Комбо Большой.",
+   menu:[
+    {name:"Донер Куриный",category_name:"Донеры",price:1300,available:true},
+    {name:"Куриный Комбо Большой",category_name:"Комбо",price:1900,available:true},
+   ],
+  },
+  {
+   text:"Хочу Моку.",
+   menu:[
+    {name:"Моко",category_name:"Напитки",price:600,available:true},
+    {name:"Мока",category_name:"Напитки",price:650,available:true},
+   ],
+  },
+ ];
+ for(const {text,menu} of crossingOverlapCases){
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.deepEqual(out.items,[],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"ambiguous overlap"}) as any).allowed,false,text);
+ }
  const decimalMorphMenu=[
   {name:"Сет 1.5",category_name:"Сеты",price:1600,available:true},
   {name:"Сет 1.7",category_name:"Сеты",price:1700,available:true},

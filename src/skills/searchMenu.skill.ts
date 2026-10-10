@@ -5,7 +5,8 @@ import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { publicNoteConstraints, menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
-import { catalogIndependentChoiceGroups, catalogResolvedItemsInText } from "../utils/orderIntent.js";
+import { catalogIndependentChoiceGroups, catalogRequestHasAmbiguousOverlap,
+  catalogResolvedItemsInText } from "../utils/orderIntent.js";
 
 function normalizeText(value: unknown) {
   return String(value || "")
@@ -286,6 +287,9 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         })
         : resolvedSpecificItems;
       let allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
+      const ambiguousCatalogOverlap = !requestedSpecificItems.length
+        && catalogRequestHasAmbiguousOverlap(items, String(specificNameSource || query));
+      if (ambiguousCatalogOverlap) allMatches = [];
       if (requestedSpecificItems.length) {
         const requestedKeys = new Set(requestedSpecificItems
           .map((item: any) => normalizeText(item?.name || item?.title)).filter(Boolean));
