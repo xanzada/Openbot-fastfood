@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { publicNoteConstraints, menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
+import { catalogIndependentChoiceGroups } from "../utils/orderIntent.js";
 
 function normalizeText(value: unknown) {
   return String(value || "")
@@ -281,19 +282,34 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       if (requestedSpecificItems.length) {
         const requestedKeys = new Set(requestedSpecificItems
           .map((item: any) => normalizeText(item?.name || item?.title)).filter(Boolean));
-        const independentChoices = /,\s*|\s+(?:и|және|мен)\s+/iu.test(String(ctx.text || ""));
-        if (independentChoices) {
-          // A single turn may name one exact SKU and then a separate category
-          // ("Ayran and a doner"). Keep the exact live records and union them
-          // with the independently grounded query/category results. Intersecting
-          // both scopes erased every item whenever they belonged to different
-          // categories.
+        const choiceGroups = catalogIndependentChoiceGroups(items, ctx.text);
+        if (choiceGroups.length > 1) {
+          // Resolve every independent choice against the same fresh catalog. A
+          // single query chosen from the whole turn loses later cross-category
+          // choices, while raw separator matching mistakes "and" inside a SKU
+          // name for a new choice.
+          const choiceMatches = choiceGroups.flatMap((group) => {
+            const groupQuery = menuQueryForTurn(group);
+            const groupCategory = exactCatalogCategory(items, group) || undefined;
+            let matches = selectPublicMenuItems(allowedItems, groupQuery, groupCategory, allowedItems.length || 1);
+            const groupSpecificItems = catalogNamedItemsInText(items, group);
+            if (groupSpecificItems.length) {
+              const groupKeys = new Set(groupSpecificItems
+                .map((item: any) => normalizeText(item?.name || item?.title)).filter(Boolean));
+              matches = matches.filter((item: any) => groupKeys.has(normalizeText(item?.name || item?.title)));
+            }
+            return matches;
+          });
           const exactMatches = selectPublicMenuItems(allowedItems, "", "", allowedItems.length || 1)
             .filter((item: any) => requestedKeys.has(normalizeText(item?.name || item?.title)))
             .map((item: any) => ({ ...item, match_kind: "exact_name" }));
-          const exactMatchKeys = new Set(exactMatches.map((item: any) => normalizeText(item?.name || item?.title)));
-          allMatches = [...exactMatches, ...allMatches.filter((item: any) =>
-            !exactMatchKeys.has(normalizeText(item?.name || item?.title)))];
+          const seen = new Set<string>();
+          allMatches = [...exactMatches, ...choiceMatches].filter((item: any) => {
+            const key = normalizeText(item?.name || item?.title);
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
         } else {
           allMatches = allMatches.filter((item: any) => requestedKeys.has(normalizeText(item?.name || item?.title)));
         }

@@ -154,16 +154,51 @@ function catalogWordSupportedByCategory(items: any[], word: string): boolean {
   return items.some((item) => catalogFieldSupportsWord(item?.category_name || item?.category || "", word));
 }
 
-const CATALOG_CHOICE_SEPARATOR_RE = /,\s*|\s+(?:и|және|мен)\s+/iu;
+const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|мен)\s+/giu;
 
-function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
+function escapeCatalogLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function exactCatalogLiteralSpans(items: any[], value: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const item of catalogNamedItemsInText(items, value)) {
+    const name = String(item?.name || item?.title || "").trim();
+    if (!name) continue;
+    const pattern = name.split(/\s+/u).map(escapeCatalogLiteral).join("\\s+");
+    for (const match of value.matchAll(new RegExp(pattern, "giu"))) {
+      const start = match.index ?? 0;
+      spans.push({ start, end: start + match[0].length });
+    }
+  }
+  return spans;
+}
+
+/** Split independent catalog choices while keeping separators inside an exact SKU name protected. */
+export function catalogIndependentChoiceGroups(items: any[], value: unknown): string[] {
+  const source = String(value || "");
+  const protectedSpans = exactCatalogLiteralSpans(items, source);
+  const groups: string[] = [];
+  let cursor = 0;
+  for (const match of source.matchAll(CATALOG_CHOICE_SEPARATOR_RE)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    if (protectedSpans.some((span) => start < span.end && end > span.start)) continue;
+    const group = source.slice(cursor, start).trim();
+    if (group) groups.push(group);
+    cursor = end;
+  }
+  const tail = source.slice(cursor).trim();
+  if (tail) groups.push(tail);
+  return groups.length ? groups : [source.trim()].filter(Boolean);
+}
+
+function hasUnresolvedCatalogVariant(items: any[], clause: string, requireCatalogSubject = false): boolean {
   const surfaceWords = catalogSurfaceWords(clause);
   const exactItems = catalogNamedItemsInText(items, clause);
-  const independentGroups = clause.split(CATALOG_CHOICE_SEPARATOR_RE).filter((group) => group.trim());
-  const separatorBelongsToExactName = exactItems.some((item) =>
-    CATALOG_CHOICE_SEPARATOR_RE.test(String(item?.name || item?.title || "")));
-  if (independentGroups.length > 1 && !separatorBelongsToExactName) {
-    return independentGroups.some((group) => hasUnresolvedCatalogVariant(items, group));
+  const independentGroups = catalogIndependentChoiceGroups(items, clause);
+  if (independentGroups.length > 1) {
+    return independentGroups.some((group) => hasUnresolvedCatalogVariant(items, group, true));
   }
   const exactIndexes = exactCatalogItemSpanIndexes(surfaceWords, exactItems);
   const modifierIndexes = catalogOperationalModifierIndexes(surfaceWords);
@@ -197,7 +232,7 @@ function hasUnresolvedCatalogVariant(items: any[], clause: string): boolean {
       !(/^\d+$/u.test(word) && firstCatalogIndex >= 0 && index < firstCatalogIndex));
     if (relevant.some((word) => /\d/u.test(word) || /^[a-z]{1,3}$/iu.test(word))) return true;
     const supported = relevant.filter((word) => catalogWordSupported(items, word));
-    if (!supported.length) return false;
+    if (!supported.length) return requireCatalogSubject && relevant.length > 0;
     if (supported.length < relevant.length) return true;
     return !items.some((item) => catalogItemSupportsWords(item, relevant));
   });
@@ -371,6 +406,14 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
     // only for a single positive choice. Refusals can still cancel that exact
     // grounding; a later unknown choice cannot borrow whole-turn query tokens.
     const clauseCatalogCoverage = groundedClauseHasCatalogCoverage(catalog, clause, grounding);
+    if (!subjects.size && !unresolvedVariant && clauseCatalogCoverage && (selected || refused)) {
+      const decisionWords = catalogDecisionSubjectWords(clause).filter((word) => !/^\d+$/u.test(word));
+      for (const item of allowed) {
+        if (!decisionWords.length || !catalogItemSupportsWords(item, decisionWords)) continue;
+        const name = String(item?.name || item?.title || "").trim();
+        if (name) subjects.add("item:" + name.toLocaleLowerCase("ru-RU"));
+      }
+    }
     if (!subjects.size && lookupOverlap
       && (refused || selected && !unresolvedVariant && clauseCatalogCoverage)) {
       subjects.add("grounded:query");

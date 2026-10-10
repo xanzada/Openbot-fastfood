@@ -692,3 +692,34 @@ test("semantic category aliases never become exact SKU identity",async()=>{
   assert.ok(!refreshed.requiredTools.includes("sendMenuLink"),text);
  }
 });
+
+test("catalog choice boundaries protect exact names and reject unknown sibling choices",async()=>{
+ const live=[
+  {name:"Пицца Сыр и Ветчина",category_name:"Пиццы",price:2800,available:true},
+  {name:"Пицца Грибная",category_name:"Пиццы",price:2600,available:true},
+  {name:"Coca-Cola",category_name:"Напитки",price:700,available:true},
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+ ];
+ const exactOnly=ctx("Хочу Пицца Сыр и Ветчина.",{menuSnapshot:{items:live,source:"preview"}});
+ const exactOut:any=await groundMenuTurn(exactOnly,(async()=>({items:live,source:"live"})) as any);
+ assert.deepEqual(exactOut.items.map((item:any)=>item.name),["Пицца Сыр и Ветчина"]);
+ for(const text of [
+  "Хочу Пицца Сыр и Ветчина и Колу.",
+  "Хочу Пицца Сыр и Ветчина, 1 Колу.",
+  "Хочу 2 Пицца Сыр и Ветчина. 1 Колу.",
+ ]){
+  const c=ctx(text,{menuSnapshot:{items:live,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+  assert.ok(out.items.some((item:any)=>item.name==="Пицца Сыр и Ветчина"),text);
+  assert.ok(out.items.some((item:any)=>item.name==="Coca-Cola"),text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  assert.ok(policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c)).requiredTools.includes("sendMenuLink"),text);
+ }
+ for(const text of ["Хочу Айран и Зефир Орбита.","Хочу Пицца Сыр и Ветчина и Небула Комета."]){
+  const c=ctx(text,{menuSnapshot:{items:live,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  assert.ok(!policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c)).requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"mixed known and unknown"}) as any).allowed,false,text);
+ }
+});
