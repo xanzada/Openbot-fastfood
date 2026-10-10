@@ -795,6 +795,22 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
   assert.equal((await createSendMenuLinkSkill(c).execute({reason:"ambiguous overlap"}) as any).allowed,false,text);
  }
+ const mixedAmbiguousMenu=[
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+  {name:"Моко",category_name:"Напитки",price:600,available:true},
+  {name:"Мока",category_name:"Напитки",price:650,available:true},
+ ];
+ for(const text of ["Хочу Айран и Моку.","Хочу Айран. Хочу Моку."]){
+  const c=ctx(text,{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
+  assert.deepEqual(out.items,[],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"mixed ambiguous choice"}) as any).allowed,false,text);
+ }
+ const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
+ const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
+ assert.deepEqual(explicitMixedOut.items.map((item:any)=>item.name),["Айран","Моко"]);
+ assert.equal(currentGroundedCatalogCheckoutDecision(explicitMixed),true);
  const decimalMorphMenu=[
   {name:"Сет 1.5",category_name:"Сеты",price:1600,available:true},
   {name:"Сет 1.7",category_name:"Сеты",price:1700,available:true},

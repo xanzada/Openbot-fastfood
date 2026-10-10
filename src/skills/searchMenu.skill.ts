@@ -287,10 +287,9 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         })
         : resolvedSpecificItems;
       let allMatches = selectPublicMenuItems(allowedItems, query, category, allowedItems.length || 1);
-      const ambiguousCatalogOverlap = !requestedSpecificItems.length
-        && catalogRequestHasAmbiguousOverlap(items, String(specificNameSource || query));
+      const ambiguousCatalogOverlap = catalogRequestHasAmbiguousOverlap(items, String(specificNameSource || query));
       if (ambiguousCatalogOverlap) allMatches = [];
-      if (requestedSpecificItems.length) {
+      if (!ambiguousCatalogOverlap && requestedSpecificItems.length) {
         const requestedKeys = new Set(requestedSpecificItems
           .map((item: any) => normalizeText(item?.name || item?.title)).filter(Boolean));
         const choiceGroups = catalogIndependentChoiceGroups(items, ctx.text);

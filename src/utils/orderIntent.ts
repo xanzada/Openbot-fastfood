@@ -278,6 +278,7 @@ export function catalogIndependentChoiceGroups(items: any[], value: unknown): st
 }
 
 function hasUnresolvedCatalogVariant(items: any[], clause: string, requireCatalogSubject = false): boolean {
+  if (catalogRequestHasAmbiguousOverlap(items, clause)) return true;
   const surfaceWords = catalogSurfaceWords(clause);
   const exactItems = catalogResolvedItemsInText(items, clause);
   const independentGroups = catalogIndependentChoiceGroups(items, clause);
