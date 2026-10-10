@@ -156,7 +156,8 @@ function catalogWordSupportedByCategory(items: any[], word: string): boolean {
 }
 
 const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|мен)\s+/giu;
-const CATALOG_DECISION_CLAUSE_SEPARATOR_RE = /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу)|[^,;.!?]{0,48}(?:не\s+(?:хочу|буду|нужно|надо)|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт))/giu;
+const CATALOG_DECISION_CLAUSE_SEPARATOR_RE = /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})/giu;
+const CATALOG_DECISION_PART_POLARITY_RE = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт|хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|маған|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
 
 type CatalogTextSpan = { start: number; end: number };
 
@@ -207,15 +208,17 @@ function catalogSpanMatchConflicts(match: CatalogItemSpanMatch, matches: Catalog
 }
 
 function catalogAmbiguousOverlapKeys(items: any[], value: unknown): Set<string> {
-  const words = catalogSurfaceWords(value);
   const matches = catalogItemSpanMatches(items, value);
   const keys = new Set<string>();
   for (const match of dominantCatalogItemSpanMatches(matches)) {
     if (!catalogSpanMatchConflicts(match, matches)) continue;
     const cluster = matches.filter((other) => match.start < other.end && match.end > other.start);
-    const start = Math.min(match.start, ...cluster.map((other) => other.start));
-    const end = Math.max(match.end, ...cluster.map((other) => other.end));
-    keys.add(words.slice(start, end).join("|"));
+    // Key the ambiguous subject by the live catalog identities, not by the
+    // customer's inflected spelling, so a later refusal cancels the same choice.
+    const identities = [...new Set(cluster.map((entry) =>
+      String(entry.item?.name || entry.item?.title || "").trim().toLocaleLowerCase("ru-RU")))]
+      .filter(Boolean).sort();
+    keys.add(identities.join("||"));
   }
   return keys;
 }
@@ -227,12 +230,12 @@ export function catalogRequestHasAmbiguousOverlap(items: any[], value: unknown):
 /** Track ambiguous choices by subject until corrected or explicitly refused. */
 export function catalogRequestHasActiveAmbiguousOverlap(items: any[], value: unknown): boolean {
   const visible = String(value || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
-  const clauses = splitCatalogTextOutsideExactSpans(items, visible, CATALOG_DECISION_CLAUSE_SEPARATOR_RE);
+  const clauses = catalogDecisionClauses(items, visible);
   const refusalRe = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
   const quantitySelectionRe = /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu;
-  const generalRefusalRe = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:отмена|отменяю|болдырма))/iu;
+  const generalRefusalRe = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:не\s+(?:хочу|буду|нужно|надо)|қаламай\p{L}*|керек\s+емес)\s+(?:ничего|ештеңе|ештене)|(?:отмена|отменяю|болдырма))/iu;
   const active = new Set<string>();
   let resetNextSelection = false;
   for (const raw of clauses) {
@@ -317,6 +320,16 @@ function splitCatalogTextOutsideExactSpans(items: any[], value: unknown, separat
   const tail = source.slice(cursor).trim();
   if (tail) groups.push(tail);
   return groups.length ? groups : [source.trim()].filter(Boolean);
+}
+
+function catalogDecisionClauses(items: any[], value: unknown): string[] {
+  const coarse = splitCatalogTextOutsideExactSpans(items, value, CATALOG_DECISION_CLAUSE_SEPARATOR_RE);
+  return coarse.flatMap((clause) => {
+    const commaParts = splitCatalogTextOutsideExactSpans(items, clause, /,\s*/gu);
+    if (commaParts.length <= 1) return [clause];
+    return commaParts.slice(1).some((part) => CATALOG_DECISION_PART_POLARITY_RE.test(part))
+      ? commaParts : [clause];
+  });
 }
 
 /** Split independent catalog choices while keeping separators inside an exact SKU name protected. */
@@ -507,7 +520,7 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   const visible = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
   const decisions = new Map<string, boolean>();
   let saw = false;
-  const clauses = splitCatalogTextOutsideExactSpans(catalog, visible, CATALOG_DECISION_CLAUSE_SEPARATOR_RE);
+  const clauses = catalogDecisionClauses(catalog, visible);
   const refusalRe = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;

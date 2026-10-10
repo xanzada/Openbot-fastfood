@@ -860,6 +860,32 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
   assert.equal((await createSendMenuLinkSkill(c).execute({reason:"mixed polarity exact choices"}) as any).allowed,true,text);
  }
+ {
+  const text="Хочу Моку. Не хочу ничего. Хочу Айран.";
+  const c=ctx(text,{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+ }
+ {
+  const text="Хочу Альфа Бета Гамма и Айран. Альфу Бету Гамму не хочу.";
+  const c=ctx(text,{menuSnapshot:{items:subjectOverlapMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:subjectOverlapMenu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+ }
+ {
+  const longName="Пирог Восходящего Осеннего Солнца с Ягодами и Нежнейшим Кремом";
+  const menu=[
+   {name:"Айран",category_name:"Напитки",price:500,available:true},
+   {name:longName,category_name:"Выпечка",price:2000,available:true},
+  ];
+  const text=`Хочу Айран, ${longName} не хочу.`;
+  const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
+  await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"long postposed refusal"}) as any).allowed,true,text);
+ }
  const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
  const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
  assert.deepEqual(explicitMixedOut.items.map((item:any)=>item.name),["Айран","Моко"]);
