@@ -156,6 +156,7 @@ function catalogWordSupportedByCategory(items: any[], word: string): boolean {
 }
 
 const CATALOG_CHOICE_SEPARATOR_RE = /[.!?;]+\s*|\r?\n+|,\s*|\s+(?:и|және|мен)\s+/giu;
+const CATALOG_DECISION_CLAUSE_SEPARATOR_RE = /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу)|[^,;.!?]{0,48}(?:не\s+(?:хочу|буду|нужно|надо)|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт))/giu;
 
 type CatalogTextSpan = { start: number; end: number };
 
@@ -205,29 +206,55 @@ function catalogSpanMatchConflicts(match: CatalogItemSpanMatch, matches: Catalog
   });
 }
 
-export function catalogRequestHasAmbiguousOverlap(items: any[], value: unknown): boolean {
+function catalogAmbiguousOverlapKeys(items: any[], value: unknown): Set<string> {
+  const words = catalogSurfaceWords(value);
   const matches = catalogItemSpanMatches(items, value);
-  return dominantCatalogItemSpanMatches(matches).some((match) => catalogSpanMatchConflicts(match, matches));
+  const keys = new Set<string>();
+  for (const match of dominantCatalogItemSpanMatches(matches)) {
+    if (!catalogSpanMatchConflicts(match, matches)) continue;
+    const cluster = matches.filter((other) => match.start < other.end && match.end > other.start);
+    const start = Math.min(match.start, ...cluster.map((other) => other.start));
+    const end = Math.max(match.end, ...cluster.map((other) => other.end));
+    keys.add(words.slice(start, end).join("|"));
+  }
+  return keys;
 }
 
-/** Ambiguity matters only for the latest positive catalog choice in a turn. */
+export function catalogRequestHasAmbiguousOverlap(items: any[], value: unknown): boolean {
+  return catalogAmbiguousOverlapKeys(items, value).size > 0;
+}
+
+/** Track ambiguous choices by subject until corrected or explicitly refused. */
 export function catalogRequestHasActiveAmbiguousOverlap(items: any[], value: unknown): boolean {
   const visible = String(value || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
-  const clauses = splitCatalogTextOutsideExactSpans(items, visible,
-    /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу))/giu);
+  const clauses = splitCatalogTextOutsideExactSpans(items, visible, CATALOG_DECISION_CLAUSE_SEPARATOR_RE);
   const refusalRe = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
   const quantitySelectionRe = /(?:^|[^\p{L}\p{N}])(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+\p{L}/iu;
-  let activeAmbiguity = false;
+  const generalRefusalRe = /(?:(?:передумал\p{L}*[, ]*)?(?:ничего|ештеңе|ештене)\s+(?:не\s+)?(?:хочу|буду|нужно|надо|керек|қажет|қаламай\p{L}*|алмай\p{L}*)|(?:отмена|отменяю|болдырма))/iu;
+  const active = new Set<string>();
+  let resetNextSelection = false;
   for (const raw of clauses) {
     const clause = raw.trim();
-    if (!clause || /(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
-    const selected = !refusalRe.test(clause) && !informationalRe.test(clause)
+    if (!clause) continue;
+    if (/^(?:нет|жоқ|жок)[.!\s]*$/iu.test(clause)) { resetNextSelection = true; continue; }
+    if (/(?<!\p{L})(?:если|бы|вчера|кеше|раньше|бұрын|цитир\p{L}*)(?!\p{L})/iu.test(clause)) continue;
+    if (generalRefusalRe.test(clause)) { active.clear(); resetNextSelection = false; continue; }
+    const refused = refusalRe.test(clause);
+    const selected = !refused && !informationalRe.test(clause)
       && (selectionRe.test(clause) || quantitySelectionRe.test(clause));
-    if (selected) activeAmbiguity = catalogRequestHasAmbiguousOverlap(items, clause);
+    if (!refused && !selected) continue;
+    if (selected && (resetNextSelection || /^(?:нет|жоқ|жок)[,\s]+/iu.test(clause))) active.clear();
+    resetNextSelection = false;
+    const groups = catalogIndependentChoiceGroups(items, clause);
+    const keys = new Set(groups.flatMap((group) => [...catalogAmbiguousOverlapKeys(items, group)]));
+    for (const key of keys) {
+      if (refused) active.delete(key);
+      else if (selected) active.add(key);
+    }
   }
-  return activeAmbiguity;
+  return active.size > 0;
 }
 
 export function catalogResolvedItemsInText(items: any[], value: unknown): any[] {
@@ -480,8 +507,7 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
   const visible = String(ctx.text || "").replace(/«[^»]*»|“[^”]*”|"[^"]*"|‘[^’]*’|'[^']*'/gu, "");
   const decisions = new Map<string, boolean>();
   let saw = false;
-  const clauses = splitCatalogTextOutsideExactSpans(catalog, visible,
-    /(?<=[.!?;])|\n|(?<!\p{L})(?:потом|затем|но|бірақ)(?!\p{L})|,\s*(?=(?:нет|жоқ|жок|не\s+хочу|хочу))/giu);
+  const clauses = splitCatalogTextOutsideExactSpans(catalog, visible, CATALOG_DECISION_CLAUSE_SEPARATOR_RE);
   const refusalRe = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu;
   const informationalRe = /[?]|состав|құрам|ингредиент|что\s+входит|ішінде|из\s+чего|қандай|кандай|сколько|қанша|канша|цен|бағ|баг|сто(?:ит|ят)|бар\s*ма|есть\s+ли/iu;
   const selectionRe = /(?:хочу(?:\s+(?:заказать|взять))?|закажу|возьму|беру|(?<!\p{L})дай(?:те)?(?!\p{L})|нуж(?:ен|на|но|ны)|мне|маған|тогда|онда|керек|алғым\s*кел|алайын|аламын|тапсырыс\s*(?:бер|жаса))/iu;
@@ -503,7 +529,16 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
     const informational = informationalRe.test(clause);
     const selected = !refused && !informational
       && (selectionRe.test(clause) || quantitySelectionRe.test(clause));
-    const subjects = catalogChoiceSubjects(catalog, clause);
+    let subjects = catalogChoiceSubjects(catalog, clause);
+    const choiceGroups = catalogIndependentChoiceGroups(catalog, clause);
+    const ambiguousKeys = new Set(choiceGroups.flatMap((group) => [...catalogAmbiguousOverlapKeys(catalog, group)]));
+    // Preserve independently valid choices beside an ambiguous subject. The
+    // ambiguous subject remains a separate deny entry until it is corrected or
+    // explicitly refused.
+    if (!subjects.size && ambiguousKeys.size) {
+      subjects = new Set(choiceGroups.flatMap((group) =>
+        catalogRequestHasAmbiguousOverlap(catalog, group) ? [] : [...catalogChoiceSubjects(catalog, group)]));
+    }
     const clauseWords = menuLexemes(clause.replace(/-/gu, " "));
     const lookupOverlap = lookupTokens.length && lookupTokens.some((token) =>
       clauseWords.some((word) => menuLexemesRelated(token, word)));
@@ -524,10 +559,17 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
       && (refused || selected && !unresolvedVariant && clauseCatalogCoverage)) {
       subjects.add("grounded:query");
     }
+    if (refused) {
+      for (const key of ambiguousKeys) decisions.delete("ambiguous:" + key);
+    } else if (selected) {
+      for (const key of ambiguousKeys) decisions.set("ambiguous:" + key, false);
+    }
     if (!subjects.size) {
       if (selected) {
-        decisions.clear();
-        decisions.set("grounded:unresolved", false);
+        if (!ambiguousKeys.size) {
+          decisions.clear();
+          decisions.set("grounded:unresolved", false);
+        }
         saw = true;
       }
       continue;

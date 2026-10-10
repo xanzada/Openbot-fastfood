@@ -5,7 +5,7 @@ import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
 import { publicNoteConstraints, menuItemBlockedByNotes, menuVocabulary } from "../services/noteProvenance.service.js";
-import { catalogIndependentChoiceGroups, catalogRequestHasActiveAmbiguousOverlap,
+import { catalogIndependentChoiceGroups, catalogRequestHasActiveAmbiguousOverlap, catalogRequestHasAmbiguousOverlap,
   catalogResolvedItemsInText } from "../utils/orderIntent.js";
 
 function normalizeText(value: unknown) {
@@ -299,8 +299,13 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
           // choices, while raw separator matching mistakes "and" inside a SKU
           // name for a new choice.
           const choiceMatches = choiceGroups.flatMap((group) => {
+            // Ambiguous crossing/tied names are never usable evidence. Active
+            // ambiguity already vetoes the turn; cancelled, quoted or refused
+            // ambiguity must not leak fuzzy sibling rows into the model context.
+            if (catalogRequestHasAmbiguousOverlap(items, group)) return [];
             const groupQuery = menuQueryForTurn(group);
             const groupCategory = exactCatalogCategory(items, group) || undefined;
+            if (!groupQuery && !groupCategory) return [];
             let matches = selectPublicMenuItems(allowedItems, groupQuery, groupCategory, allowedItems.length || 1);
             const groupSpecificItems = catalogResolvedItemsInText(items, group);
             if (groupSpecificItems.length) {

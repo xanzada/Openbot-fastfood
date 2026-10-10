@@ -820,8 +820,45 @@ test("catalog choice boundaries protect exact names and reject unknown sibling c
   ];
   const c=ctx(text,{menuSnapshot:{items:menu,source:"preview"}});
   const out:any=await groundMenuTurn(c,(async()=>({items:menu,source:"live"})) as any);
-  assert.ok(out.items.some((item:any)=>item.name==="Айран"),text);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
   assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+ }
+ const subjectOverlapMenu=[
+  {name:"Альфа Бета",category_name:"Выпечка",price:1000,available:true},
+  {name:"Бета Гамма",category_name:"Выпечка",price:1200,available:true},
+  {name:"Айран",category_name:"Напитки",price:500,available:true},
+ ];
+ for(const text of [
+  "Альфа Бета Гамма алайын. Айран да алайын.",
+  "Хочу Альфа Бета Гамма; ещё хочу Айран.",
+ ]){
+  const c=ctx(text,{menuSnapshot:{items:subjectOverlapMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:subjectOverlapMenu,source:"live"})) as any);
+  assert.deepEqual(out.items,[],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),false,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"active ambiguous subject"}) as any).allowed,false,text);
+ }
+ for(const text of [
+  "Хочу Альфа Бета Гамма и Айран. Альфа Бета Гамма не хочу.",
+  "Альфа Бета Гамма не хочу; Айран алайын.",
+ ]){
+  const c=ctx(text,{menuSnapshot:{items:subjectOverlapMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:subjectOverlapMenu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран"],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"ambiguous subject cancelled"}) as any).allowed,true,text);
+ }
+ for(const text of [
+  "Хочу Айран, Моко не хочу.",
+  "Айран алайын, Моко керек емес.",
+  "Айран алайын, Моко қаламаймын.",
+ ]){
+  const explicitMenu=mixedAmbiguousMenu.filter((item)=>item.name!=="Мока");
+  const c=ctx(text,{menuSnapshot:{items:explicitMenu,source:"preview"}});
+  const out:any=await groundMenuTurn(c,(async()=>({items:explicitMenu,source:"live"})) as any);
+  assert.deepEqual(out.items.map((item:any)=>item.name),["Айран","Моко"],text);
+  assert.equal(currentGroundedCatalogCheckoutDecision(c),true,text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"mixed polarity exact choices"}) as any).allowed,true,text);
  }
  const explicitMixed=ctx("Хочу Айран и Моко.",{menuSnapshot:{items:mixedAmbiguousMenu,source:"preview"}});
  const explicitMixedOut:any=await groundMenuTurn(explicitMixed,(async()=>({items:mixedAmbiguousMenu,source:"live"})) as any);
