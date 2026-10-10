@@ -1670,7 +1670,8 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   if (!snapshot || !Array.isArray(snapshot.items) || snapshot.source === "menu_unavailable"
     || grounding?.menu_lookup === "unavailable" || grounding?.error
     || (!grounding && !toolsCalled.includes("searchMenu"))) return unknown;
-  const hasScopedGrounding = toolsCalled.includes("searchMenu") && grounding && Array.isArray(grounding.items);
+  const hasScopedGrounding = toolsCalled.includes("searchMenu") && grounding && Array.isArray(grounding.items)
+    && Object.prototype.hasOwnProperty.call(grounding, "lookup_query");
   const groundedCategoryItems = hasScopedGrounding ? grounding.items
     : grounding?.category_browse && Array.isArray(grounding.items) ? grounding.items : snapshot.items;
   const vocabulary = menuVocabulary(snapshot.items);
