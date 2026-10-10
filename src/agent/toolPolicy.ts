@@ -58,7 +58,7 @@ export const BUSINESS_INFO_RE =
 // thing a cached snapshot knows. Any question about waiting, closure or whether
 // an order can be taken right now must re-read it instead of trusting context.
 const KITCHEN_STATUS_RE =
-  /(қанша\s*(?:уақыт|минут)|неше\s*минут|күтем|күту\s*уақыт|дайын\s*бол|сколько\s*(?:ждать|минут|по\s*времени)|ждать|ожидан|как\s*(?:долго|быстро)|быстро\s*ли|жеткіз\p{L}*\s*(?:бар|қанша|уақыт)|доставка\s*(?:работает|есть|сколько)|өзім\s*алып|самовывоз|навынос|қабылдай\s*(?:ма|сыз\s*ба)|принима\p{L}*\s*заказ|ашық\s*па|жабық\s*па|закрыт\p{L}*\s*ли|открыт\p{L}*\s*ли|жұмыс\s*(?:істеп\s*)?(?:тұр\s*ма|жасай\s*ма))/iu;
+  /(қанша\s*(?:уақыт|минут|күту)|канша\s*(?:уакыт|минут|куту)|неше\s*минут|күтем|күту\s*уақыт|дайын\s*бол|сколько\s*(?:ждать|минут|по\s*времени)|ждать|ожидан|как\s*(?:долго|быстро)|быстро\s*ли|жеткіз\p{L}*\s*(?:бар|қанша|уақыт)|доставка\s*(?:работает|есть|сколько)|өзім\s*алып|самовывоз|навынос|қабылдай\s*(?:ма|сыз\s*ба)|принима\p{L}*\s*заказ|ашық\s*па|жабық\s*па|закрыт\p{L}*\s*ли|открыт\p{L}*\s*ли|жұмыс\s*(?:істеп\s*)?(?:тұр\s*ма|жасай\s*ма))/iu;
 
 // Browsing needs catalog facts even when checkout is unavailable. Keep the
 // shared broad inquiry detector behind a current, unquoted menu + viewing ask;
@@ -91,7 +91,7 @@ export function isPotentialUnseenCatalogRequest(text: string): boolean {
   if (/^(?:а|ал)\s+(?:[\p{L}-]{2,}\s*){1,4}[?.!]*$/iu.test(value)) return true;
   if (/^(?:есть\s+(?:[\p{L}-]{2,}\s*){1,4}|(?:какая|какие|какой|какое)\s+(?:[\p{L}-]{2,}\s*){1,4}\s+есть)[?.!]*$/iu.test(value)) return true;
   if (/^(?:(?:қандай|кандай)\s+)?(?:[\p{L}-]{2,}\s*){1,4}(?:бар\s*ма|барма|бар)[?.!]*$/iu.test(value)) return true;
-  const prefixedChoice = /(?:^|[.!?;]\s*)(?:хочу|не\s+хочу)(?:\s+(?:заказать|взять))?\s+(?:[\p{L}-]{3,}\s*){1,4}(?:пожалуйста|өтінем|отинем)?[.!?]*$/iu.test(value);
+  const prefixedChoice = /(?:^|[.!?;]\s*)(?:(?:нет|жоқ|жок)\s*,?\s*)?(?:хочу|не\s+хочу)(?:\s+(?:заказать|взять))?\s+(?:[\p{L}-]{3,}\s*){1,4}(?:пожалуйста|өтінем|отинем)?[.!?]*$/iu.test(value);
   const quantifiedChoice = /(?:^|[.!?;]\s*)(?:[1-9]\d?|один|одну|два|две|три|бір|екі|үш)\s+[\p{L}-]{3,}(?:\s+(?:(?:и|және|мен)\s+)?[\p{L}-]{3,}){0,3}[.!?]*$/iu.test(value);
   return prefixedChoice || quantifiedChoice
     || /(?:алғым\s*кел|керек\s*емес|керек)(?:\s+[\p{L}-]{3,}){1,4}[.!?]*$/iu.test(value)
@@ -181,7 +181,7 @@ export function resolveAgentToolPlan(ctx: FastFoodContext): AgentToolPlan {
   if (!paymentDetailsIntent && !checkoutBlocked && !immediateServiceIncident
     && menuLinkDecision !== "deny"
     && (!unseenCategoryShift || groundedCheckoutDecision === true || liveCatalogBrowseConfirmed)
-    && (broadCategoryBrowse && menuLinkDecision !== "text_only" || checkoutIntent || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
+    && (broadCategoryBrowse && groundedCheckoutDecision !== false && menuLinkDecision !== "text_only" || checkoutIntent || ctx.explicitMenuLinkIntent && detectKitchenConsentAnswer(text) === "yes" && ctx.kitchenCheckoutFingerprint === kitchenPolicy.fingerprint)) {
     add(plan, "sendMenuLink", "personal_menu_link");
   }
 

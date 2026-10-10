@@ -91,17 +91,41 @@ export function hasDirectOrderIntent(text = ""): boolean {
 
 function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   const words = menuLexemes(clause);
-  const keys = new Set<string>();
+  const itemMatches: Array<{ key: string; matched: number; total: number }> = [];
+  const categoryKeys = new Set<string>();
   for (const item of items) {
     const name = String(item?.name || item?.title || "").trim();
     const category = String(item?.category_name || item?.category || "").trim();
     const nameTokens = menuLexemes(name);
     const categoryTokens = menuLexemes(category);
-    if (nameTokens.length && nameTokens.some((token) =>
-      words.some((word) => menuLexemesRelated(token, word)))) keys.add("item:" + name.toLocaleLowerCase("ru-RU"));
+    const matched = nameTokens.filter((token) =>
+      words.some((word) => menuLexemesRelated(token, word))).length;
+    if (name && matched) itemMatches.push({
+      key: "item:" + name.toLocaleLowerCase("ru-RU"),
+      matched,
+      total: nameTokens.length,
+    });
     if (categoryTokens.length && categoryTokens.every((token) =>
-      words.some((word) => menuLexemesRelated(token, word)))) keys.add("category:" + categoryTokens.join("|"));
+      words.some((word) => menuLexemesRelated(token, word)))) {
+      categoryKeys.add("category:" + categoryTokens.join("|"));
+    }
   }
+
+  // A complete, more-specific live product name wins over siblings that share
+  // only a generic word (for example a category noun). Otherwise a sold-out or
+  // note-blocked exact SKU could borrow checkout permission from an available
+  // sibling. Bare category queries remain broad because no multi-token product
+  // name is complete and all equally specific matches stay eligible.
+  const complete = itemMatches.filter((match) => match.total > 0 && match.matched === match.total);
+  if (complete.length) {
+    const greatestSpecificity = Math.max(...complete.map((match) => match.total));
+    return new Set(complete.filter((match) => match.total === greatestSpecificity).map((match) => match.key));
+  }
+
+  const keys = new Set<string>();
+  const greatestOverlap = Math.max(0, ...itemMatches.map((match) => match.matched));
+  for (const match of itemMatches) if (match.matched === greatestOverlap) keys.add(match.key);
+  for (const key of categoryKeys) keys.add(key);
   return keys;
 }
 

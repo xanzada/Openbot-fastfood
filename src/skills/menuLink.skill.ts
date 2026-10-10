@@ -98,8 +98,10 @@ export function createSendMenuLinkSkill(ctx: FastFoodContext) {
       // category consultation is a request to browse the self-ordering menu.
       const menuLinkDecision = menuLinkDecisionForTurn(text);
       const paymentDetailsIntent = isCurrentPaymentDetailsIntent(text, activeOrderQuestionKind(text, ctx.activeOrder));
-      const categoryConsultation = menuLinkDecision !== "deny" && menuLinkDecision !== "text_only" && !immediateServiceIncident && !paymentDetailsIntent && isBroadMenuCategoryBrowse(ctx);
       const groundedCheckoutDecision = currentGroundedCatalogCheckoutDecision(ctx);
+      const categoryConsultation = groundedCheckoutDecision !== false
+        && menuLinkDecision !== "deny" && menuLinkDecision !== "text_only"
+        && !immediateServiceIncident && !paymentDetailsIntent && isBroadMenuCategoryBrowse(ctx);
       const pendingCatalogGrounding = !ctx.menuGrounding
         && isPotentialUnseenCatalogRequest(text)
         && hasCustomerCheckoutIntent(text);

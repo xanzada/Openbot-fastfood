@@ -221,3 +221,49 @@ test("qualitative cheap request chooses cheapest scoped items without demanding 
  assert.ok(r.text.indexOf("Цезарь")>=0);
  assert.doesNotMatch(r.text,/Тёплый салат/u);
 });
+
+test("a final grounded category refusal overrides an earlier browse question",async()=>{
+ for(const [language,text] of [
+  ["ru","Какие бәліштер есть? Бәліштер не хочу."],
+  ["kk","Қандай бәліштер бар? Бәліштер керек емес."],
+ ] as const){
+  const live=[...items,{name:"Таңғы бәліш",category_name:"Бәліштер",price:700,available:true}];
+  const c=ctx(text,{language,menuSnapshot:{items:live,source:"live"}});
+  await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+  const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c));
+  assert.ok(!refreshed.requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"declined category"}) as any).allowed,false,text);
+ }
+});
+
+test("an unavailable or note-blocked exact SKU cannot select an available sibling by a shared token",async()=>{
+ const live=[
+  ...items,
+  {name:"Пирог Орбита",category_name:"Пироги",price:1800,available:false},
+  {name:"Пирог Вектор",category_name:"Пироги",price:1700,available:true},
+ ];
+ for(const [language,text,activeShiftNotes] of [
+  ["ru","Хочу Пирог Орбита.",[]],
+  ["kk","Пирог Орбита алғым келеді.",[]],
+  ["ru","Хочу Пирог Орбита.",[{id:"blocked",text:"Пирог Орбита жоқ",active:true,is_active:true,createdAt:Date.now()}]],
+ ] as any[]){
+  const c=ctx(text,{language,activeShiftNotes,menuSnapshot:{items:live,source:"live"}});
+  await groundMenuTurn(c,(async()=>({items:live,source:"live"})) as any);
+  const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(c,policy.resolveAgentToolPlan(c));
+  assert.ok(!refreshed.requiredTools.includes("sendMenuLink"),text);
+  assert.equal((await createSendMenuLinkSkill(c).execute({reason:"blocked exact SKU"}) as any).allowed,false,text);
+ }
+});
+
+test("a corrected unseen arbitrary SKU is admitted to live grounding",()=>{
+ const c=ctx("Не хочу кибины. Нет, хочу кибины.",{menuSnapshot:{items:items.slice(0,3),source:"preview"}});
+ const initial=policy.resolveAgentToolPlan(c);
+ assert.ok(initial.requiredTools.includes("searchMenu"));
+ assert.ok(!initial.requiredTools.includes("sendMenuLink"));
+});
+
+test("Kazakh explicit wait question requires a fresh kitchen read before link",()=>{
+ const c=ctx("Қандай пиццалар бар және қанша күту керек?",{language:"kk"});
+ const plan=policy.resolveAgentToolPlan(c);
+ assert.deepEqual(plan.requiredTools.slice(0,3),["searchMenu","getKitchenStatus","sendMenuLink"]);
+});
