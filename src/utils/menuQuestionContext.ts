@@ -164,9 +164,10 @@ export function menuLexemesRelated(left: unknown, right: unknown): boolean {
 export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[], value: unknown): T[] {
   // Catalog names may contain one-letter size codes, alphanumeric variants or
   // short numeric ids. Exact identity therefore retains every name token.
-  const identityLexemes = (input: unknown) => (fold(input).slice(0, MAX_MENU_CONTEXT_TEXT).match(/[\p{L}\p{N}-]+/gu) || [])
-    .map(menuLexemeStem).filter(Boolean);
-  const words = identityLexemes(value);
+  const identityTokens = (input: unknown) =>
+    fold(input).slice(0, MAX_MENU_CONTEXT_TEXT).match(/[\p{L}\p{N}-]+/gu) || [];
+  const rawWords = identityTokens(value);
+  const words = rawWords.map(menuLexemeStem).filter(Boolean);
   if (!words.length) return [];
   type CatalogSpan = { start: number; end: number; strict: boolean };
   const matches: Array<{ item: T; key: string; total: number; spans: CatalogSpan[] }> = [];
@@ -174,7 +175,8 @@ export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[
   for (const item of items) {
     const name = String(item?.name || item?.title || "").trim();
     const key = fold(name);
-    const tokens = identityLexemes(name);
+    const rawTokens = identityTokens(name);
+    const tokens = rawTokens.map(menuLexemeStem).filter(Boolean);
     if (!name || !tokens.length || seen.has(key)) continue;
     const spans: CatalogSpan[] = [];
     for (let start = 0; start + tokens.length <= words.length; start += 1) {
@@ -182,7 +184,7 @@ export function catalogNamedItemsInText<T extends Record<string, any>>(items: T[
         spans.push({
           start,
           end: start + tokens.length - 1,
-          strict: tokens.every((token, offset) => token === words[start + offset]),
+          strict: rawTokens.every((token, offset) => token === rawWords[start + offset]),
         });
       }
     }

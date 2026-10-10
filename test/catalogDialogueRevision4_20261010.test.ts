@@ -364,6 +364,32 @@ test("a later category or general refusal clears earlier grounded checkout choic
  assert.equal(decision("Хочу Айран. Передумал."),false);
  assert.equal(decision("Не хочу напитки. Хочу Айран."),true);
  assert.equal(decision("Передумал. Хочу Айран."),true);
+ const single=[{name:"Айран",category_name:"Напитки",price:500,available:true}];
+ const singleDecision=(text:string)=>currentGroundedCatalogCheckoutDecision(ctx(text,{
+  menuSnapshot:{items:single,source:"live"},
+  menuGrounding:{lookup_query:"айран",items:single},
+ }));
+ assert.equal(singleDecision("Не хочу Айран. Хочу кибины."),false);
+ assert.equal(singleDecision("Хочу Айран. Не хочу Айран. Хочу домой."),false);
+ const burgers=[
+  {name:"Бургер",category_name:"Бургеры",price:1200,available:true},
+  {name:"Чизбургер",category_name:"Бургеры",price:1500,available:true},
+ ];
+ const burgerDecision=(text:string)=>currentGroundedCatalogCheckoutDecision(ctx(text,{
+  menuSnapshot:{items:burgers,source:"live"},
+  menuGrounding:{lookup_query:"бургеры",items:burgers},
+ }));
+ assert.equal(burgerDecision("Хочу Чизбургер. Не хочу бургеры."),false);
+ assert.equal(burgerDecision("Хочу Чизбургер. Бургеры керек емес."),false);
+ assert.equal(burgerDecision("Хочу Чизбургер. Не хочу Бургер."),true);
+ const doners=[
+  {name:"Донер с курицей",category_name:"Донеры",price:1600,available:true},
+  {name:"Донер с говядиной",category_name:"Донеры",price:1800,available:true},
+ ];
+ assert.equal(currentGroundedCatalogCheckoutDecision(ctx("Донер с курицей. Не хочу донеры.",{
+  menuSnapshot:{items:doners,source:"live"},
+  menuGrounding:{lookup_query:"донеры",items:doners},
+ })),false);
  const mixed=ctx("Айран алайын. Сусындар керек емес.",{language:"kk",menuSnapshot:{items:live,source:"live"}});
  await groundMenuTurn(mixed,(async()=>({items:live,source:"live"})) as any);
  const refreshed=policy.refreshAgentToolPlanAfterMenuGrounding(mixed,policy.resolveAgentToolPlan(mixed));
@@ -406,6 +432,7 @@ test("semantic category aliases never become exact SKU identity",async()=>{
   ["Пицца XL","Пицца L","Хочу Пицца XL."],
   ["Набор A1","Набор B2","Хочу Набор A1."],
   ["Моко","Мока","Хочу Моко."],
+  ["Пицца Милана","Пицца Милан","Хочу Пицца Милана."],
   ["Сет «A1»","Сет «A2»","Хочу Сет A1."],
   ["Пицца «Орбита»","Пицца «Вектор»","Хочу Пицца Орбита."],
  ] as const){

@@ -89,10 +89,23 @@ export function hasDirectOrderIntent(text = ""): boolean {
 
 // Link permission follows the customer's current request, never model tool arguments.
 
-function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
+function catalogSurfaceWords(value: unknown): string[] {
+  return String(value || "").normalize("NFKC").toLocaleLowerCase("ru-RU")
+    .match(/[\p{L}\p{N}-]+/gu) || [];
+}
+
+function containsCatalogSurfacePhrase(words: string[], phrase: string[]): boolean {
+  if (!phrase.length || phrase.length > words.length) return false;
+  return words.some((_, start) => start + phrase.length <= words.length
+    && phrase.every((token, offset) => token === words[start + offset]));
+}
+
+function catalogChoiceSubjects(items: any[], clause: string, includeStrictCategoriesWithExact = false): Set<string> {
   const words = menuLexemes(clause);
+  const surfaceWords = catalogSurfaceWords(clause);
   const itemMatches: Array<{ key: string; matched: number; total: number }> = [];
   const categoryKeys = new Set<string>();
+  const strictCategoryKeys = new Set<string>();
   for (const item of items) {
     const name = String(item?.name || item?.title || "").trim();
     const category = String(item?.category_name || item?.category || "").trim();
@@ -107,7 +120,11 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
     });
     if (categoryTokens.length && categoryTokens.every((token) =>
       words.some((word) => menuLexemesRelated(token, word)))) {
-      categoryKeys.add("category:" + categoryTokens.join("|"));
+      const categoryKey = "category:" + categoryTokens.join("|");
+      categoryKeys.add(categoryKey);
+      if (containsCatalogSurfacePhrase(surfaceWords, catalogSurfaceWords(category))) {
+        strictCategoryKeys.add(categoryKey);
+      }
     }
   }
 
@@ -115,8 +132,14 @@ function catalogChoiceSubjects(items: any[], clause: string): Set<string> {
   // independent products while preventing a shorter overlapping name or a
   // numeric sibling from lending checkout permission to a blocked exact SKU.
   const exactItems = catalogNamedItemsInText(items, clause);
-  if (exactItems.length) return new Set(exactItems.map((item) =>
-    "item:" + String(item?.name || item?.title || "").trim().toLocaleLowerCase("ru-RU")));
+  if (exactItems.length) {
+    const keys = new Set(exactItems.map((item) =>
+      "item:" + String(item?.name || item?.title || "").trim().toLocaleLowerCase("ru-RU")));
+    if (includeStrictCategoriesWithExact) {
+      for (const key of strictCategoryKeys) keys.add(key);
+    }
+    return keys;
+  }
 
   const keys = new Set<string>();
   const greatestOverlap = Math.max(0, ...itemMatches.map((match) => match.matched));
@@ -169,12 +192,17 @@ export function currentGroundedCatalogCheckoutDecision(ctx: FastFoodContext): bo
       saw = true;
       continue;
     }
-    const subjects = catalogChoiceSubjects(catalog, clause);
-    const clauseWords = menuLexemes(clause);
-    if (!subjects.size && lookupTokens.length && (allowed.length <= 1 || lookupTokens.some((token) =>
-      clauseWords.some((word) => menuLexemesRelated(token, word))))) subjects.add("grounded:query");
-    if (!subjects.size) continue;
     const refused = /(?:не\s+(?:хочу|буду|нужно|надо)|передумал|отказываюсь|керек\s*емес|қажет\s*емес|қаламай|алмай|бас\s*тарт)/iu.test(clause);
+    const subjects = catalogChoiceSubjects(catalog, clause, refused);
+    const clauseWords = menuLexemes(clause.replace(/-/gu, " "));
+    // A colloquial query can resolve one live item without spelling its catalog
+    // name (for example Кола -> Coca-Cola). Scope that fallback to this clause's
+    // actual lookup terms; page size alone must never authorize a later choice.
+    if (!subjects.size && lookupTokens.length && lookupTokens.some((token) =>
+      clauseWords.some((word) => menuLexemesRelated(token, word)))) {
+      subjects.add("grounded:query");
+    }
+    if (!subjects.size) continue;
     // A grounded item mention is still only a question when the customer asks
     // for price, composition or availability. In particular, Kazakh "қандай"
     // must not match the unbounded Russian imperative fragment "дай".
