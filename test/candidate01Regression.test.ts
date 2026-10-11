@@ -200,7 +200,7 @@ test("candidate02 requested composition identity preserves a supported allergen 
  assert.doesNotMatch(validateFinalText(draft,ambiguous,grounded).text,/құрамында жаңғақ жоқ/u);
 });
 test("candidate02 prose length cap preserves the retained sentence separators",()=>{
- const c=context("Привет");
+ const c=context("Расскажите подробнее");
  const draft="Первое.\nВторое. Третье.\nЧетвертое. Пятое. Шестое.";
  const result=validateFinalText(draft,c);
  assert.equal(result.text,"Первое.\nВторое. Третье.\nЧетвертое. Пятое.");

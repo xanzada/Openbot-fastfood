@@ -114,7 +114,7 @@ import { updateGoalAfterTurn } from "../services/goalTracker.service.js";
 import { recordLearningEvent } from "../services/learningLoop.service.js";
 import { bumpMetric, recordLatency } from "../services/metrics.service.js";
 import { mergeBufferedParts, mergePartsDeterministic } from "../services/bufferBrain.service.js";
-import { greetingReply, hasBotSpoken, readGuestGreeting } from "../agent/greeting.js";
+import { greetingReply, shouldGreet, readGuestGreeting } from "../agent/greeting.js";
 import { enqueueVerifiedInboundWebhook, startInboundWebhookQueueWorker, type InboundWebhookPart } from "../services/inboundWebhookQueue.service.js";
 
 const STATUS_CONTEXT_RE = /(асүй|ас үй|кухн|kitchen|повар|cook|статус|status|ашылды ма|жабық па|жұмыс істеп жатыр|работает|открыт|закрыт|готов|дайын)/iu;
@@ -1770,8 +1770,7 @@ async function processWhatsAppWebhook(body: any, started: number, durable?: { fr
       !mediaContext
       && guestGreeting?.kind === "greeting"
       && guestGreeting.pure
-      && ctx.dialogueStart === true
-      && !hasBotSpoken(ctx)
+      && shouldGreet(ctx)
       && live.runtime_available !== false
       && live.is_accepting_orders !== false
       && live.within_work_hours !== false

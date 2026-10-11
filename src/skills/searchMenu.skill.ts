@@ -1,6 +1,7 @@
-import {eligibleShoppingItems, shoppingEvidence} from "../services/shoppingConstraints.service.js";
+import {eligibleShoppingItems, shoppingEvidence, shoppingConstraintsForContext} from "../services/shoppingConstraints.service.js";
 import { createTool } from "@voltagent/core";
-import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, menuLexemeStem, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
+import { readGuestGreeting } from "../agent/greeting.js";
+import { customerCompositionSubject, customerMenuRelationSubject, customerMenuTopic, filterMenuQueryNoise, isAlternativeMenuFollowUp, isBroadMenuCategoryBrowse, isContextualCompositionQuestion, isMenuAttributeVerificationQuestion, isUnscopedMenuBrowse, MAX_MENU_CONTEXT_TEXT, menuLexemeStem, menuLexemes, menuLexemesRelated } from "../utils/menuQuestionContext.js";
 import { z } from "zod";
 import { getMenuContext } from "../services/dle.service.js";
 import type { FastFoodContext } from "../context/types.js";
@@ -227,6 +228,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
       // Hub resolves the catalog by instance and ignores `domain`, so a tenant
       // without a storefront URL must still see its own menu.
       const domain = ctx.config?.domain || "";
+      const requestedCategory = category;
 
       const menu = ctx.menuGrounding && ctx.menuSnapshot
         ? ctx.menuSnapshot
@@ -329,7 +331,30 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
           allMatches = allMatches.filter((item: any) => requestedKeys.has(normalizeText(item?.name || item?.title)));
         }
       }
-      if (broadCategoryBrowse && isAlternativeMenuFollowUp(ctx.text)) {
+      let browseScope: "current_complete_menu" | undefined;
+      const currentText = readGuestGreeting(ctx.text)?.remainder ?? ctx.text;
+      const generalBrowse = String(ctx.text || "").length <= MAX_MENU_CONTEXT_TEXT && isUnscopedMenuBrowse(currentText);
+      const currentTopic = customerMenuTopic({ ...ctx, text: currentText, chatHistory: [] });
+      const constraints = shoppingConstraintsForContext(ctx);
+      const freshMenu = menu?.source !== "menu_unavailable" && !("stale" in menu && menu.stale)
+        && !("is_stale" in menu && menu.is_stale) && !("stale_menu_backup" in menu && menu.stale_menu_backup)
+        && !/stale|backup|fallback/iu.test(String(menu?.source || ""));
+      // A fresh response may still be only a page; missing rows cannot resolve nested ingredients.
+      const usableCount = items.filter((item: any) => item && typeof (item.name || item.title) === "string"
+        && String(item.name || item.title).trim()).length;
+      const completeMenu = typeof menu.count === "number" && Number.isSafeInteger(menu.count)
+        && menu.count >= 0 && menu.count <= usableCount;
+      if (!allMatches.length && generalBrowse && !requestedCategory && !currentTopic
+        && !requestedSpecificItems.length && !ambiguousCatalogOverlap && !isMenuAttributeVerificationQuestion(ctx.text)
+        && !ctx.shoppingPriorStateUnknown && !constraints.uncertainBudget
+        && !(ctx.shoppingStateUnavailable && constraints.budget === null && !constraints.avoidMeat) && freshMenu && completeMenu) {
+        // Start with the full catalog so notes and nested composition references keep their authority.
+        const eligible = eligibleShoppingItems(ctx, items);
+        allMatches = selectPublicMenuItems(eligible, "", "", eligible.length || 1);
+        category = undefined;
+        browseScope = "current_complete_menu";
+      }
+      if ((broadCategoryBrowse || browseScope) && isAlternativeMenuFollowUp(ctx.text)) {
         // Assistant prose is never a fact source. It is used only as a display hint:
         // an exact name must also exist in this freshly filtered live result.
         const assistantText = (Array.isArray(ctx.chatHistory) ? ctx.chatHistory : []).slice(-8)
@@ -400,6 +425,7 @@ export function createSearchMenuSkill(ctx: FastFoodContext, readMenu: typeof get
         // truncation hint whenever the page is shorter than the total.
         ...page,
         ...(broadCategoryBrowse ? { category_browse: true } : {}),
+        ...(browseScope ? { browse_scope: browseScope } : {}),
         shopping_constraints: shoppingEvidence(ctx, scopedShoppingItems),
         eligible_choices: verification ? [] : selectPublicMenuItems(eligibleShoppingItems(ctx, scopedShoppingItems), "", category, 12),
         ...(verification ? {menu_verification:{subject:relation?.subject ?? null,attribute:"volume_or_size",rule:"Answer only the requested attribute from this exact current item. Missing volume/size is unknown; ask clarification, never substitute unrelated products."}} : {}),

@@ -91,7 +91,7 @@ export function isShoppingDecision(ctx:FastFoodContext):boolean {
  if(specificComposition&&!choice)return false;
  const factualReference=/(?<!\p{L})(?:этот\s+вариант|это\s+комбо|это\s+блюдо|эта\s+позиция)(?!\p{L})/iu.test(text);
  if((named||factualReference)&&!choice&&/(?:сколько\s+стоит|цена|цен[ыу]|дороже|почему|состав|канша\s+турады|багасы|курам)/iu.test(text))return false;
- return isMenuBudgetInquiry(ctx.text)||/(?:посовет|рекоменд|подойдет|подходит|вариант|сытн|подходящ|что\s+(?:еще|можно|взять|поесть)|выбрат|улож|общий\s+бюджет|не\s+(?:келеди|аламын|жеуге|бар)|усына|кайсысы|лайык|(?<!\p{L})етсиз(?!\p{L})|без\s+мяса)/iu.test(text);
+ return isMenuBudgetInquiry(ctx.text)||/(?:посовет|рекоменд|подойдет|подходит|вариант|сытн|подходящ|что\s+(?:еще|можно|взять|поесть)|выбрат|улож|общий\s+бюджет|не\s+(?:келеди|аламын|жеуге)|усына|кайсысы|лайык|(?<!\p{L})етсиз(?!\p{L})|без\s+мяса)/iu.test(text);
 }
 export function needsShoppingPrepass(ctx:FastFoodContext):boolean {
  const s=shoppingConstraintsForContext(ctx);

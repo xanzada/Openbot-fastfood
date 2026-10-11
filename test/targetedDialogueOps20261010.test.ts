@@ -50,7 +50,7 @@ test("first substantive turn is greeted once; later turns never restart the gree
     { toolsCalled: ["searchMenu"] } as any,
   );
   assert.equal(later.text, "Пицца мәзірде бар.");
-  assert.equal(fallbackReply(ctx({ text: "Сәлем", chatHistory: history })), "Сұрағыңызды жаза беріңіз.");
+  assert.equal(fallbackReply(ctx({ text: "Сәлем", chatHistory: history })), "Сәлем! 😊 Сұрағыңызды жаза беріңіз.");
   const afterOperator = validateFinalText(
     "Сәлем! Мәзірді жібердім.",
     ctx({ text: "қайта жіберіңізші", chatHistory: [{ role: "operator", text: "Қазір жіберемін." }] }),
@@ -83,7 +83,7 @@ test("production dialogue-start predicate uses loaded outbound history", async (
   const preload = await readFile(new URL("../src/context/preloadContext.ts", import.meta.url), "utf8");
   assert.match(preload, /dialogueStart:\s*dialogueStartFromHistory\(chatHistory\)/u);
   const route = await readFile(new URL("../src/routes/whatsappWebhook.route.ts", import.meta.url), "utf8");
-  assert.match(route, /guestGreeting\.pure[\s\S]{0,120}ctx\.dialogueStart\s*===\s*true/u);
+  assert.match(route, /guestGreeting\.pure[\s\S]{0,120}shouldGreet\(ctx\)/u);
 });
 
 test("typing presence is awaited before the accepted turn continues", async () => {

@@ -4,7 +4,7 @@ import type { FastFoodContext } from "../context/types.js";
 // Previous replies never supply either the identity or the ingredient facts.
 const COMPOSITION_FOLLOW_UP_RE = /^(?:(?:а|ал)\s+)?(?:ішінде\s+не\s+(?:бар|болады)|ишинде\s+не\s+бар|что\s+(?:у\s+него\s+)?внутри|из\s+чего(?:\s+(?:он|она|оно|это))?(?:\s+(?:состоит|сделан|сделана|сделано))?|(?:(?:его|её|ее|оның)\s+)?(?:состав|құрамы|курамы)(?:\s+(?:какой|қандай))?)[?.!]*$/iu;
 const NEUTRAL_ACK_RE = /^(?:спасибо|рахмет|ок|ладно|жақсы|жарайды|понятно|түсінікті)[.!?\s]*$/iu;
-const MAX_MENU_CONTEXT_TEXT = 4096;
+export const MAX_MENU_CONTEXT_TEXT = 4096;
 const fold = (value: unknown) => String(value || "").toLowerCase().replace(/ё/g, "е").trim();
 /** Keep topic scans linear and bounded even when an inbound message has unmatched quotes. */
 export function stripMenuContextQuotes(value: unknown): string {
@@ -86,7 +86,7 @@ const MENU_QUERY_NOISE = new Set([
 const MENU_FOLLOW_UP_NOISE = new Set([
   "а", "ал", "и", "да", "тағы", "еще", "ещё", "басқа", "другие", "другой", "другое",
 ]);
-const ALTERNATIVE_FOLLOW_UP_RE = /^(?:(?:а|и|ал)\s+)?(?:(?:есть|бар)\s+)?(?:(?:другие|другой|другое)(?:\s+(?:варианты|варианттары))?|(?:еще|ещё)(?:\s+(?:что-нибудь|варианты?))?|тағы(?:\s+да|\s+бар\s*ма?)?|басқа(?:\s+(?:не|бірдеңе|нұсқалар))?)[?.!\s]*$/iu;
+const ALTERNATIVE_FOLLOW_UP_RE = /^(?:(?:а|и|ал|одан)\s+)?(?:(?:есть|бар)\s+)?(?:(?:другие|другой|другое)(?:\s+(?:варианты|варианттары))?|(?:еще|ещё)(?:\s+(?:что-нибудь|варианты?))?|тағы(?:\s+да|\s+бар\s*ма?|\s+не\s+бар)?|басқа(?:\s+(?:не(?:\s+бар)?|бірдеңе|нұсқалар))?)[?.!\s]*$/iu;
 const INFLECTION_SUFFIXES = [
   "ларыңыз", "леріңіз", "дарыңыз", "деріңіз", "тарыңыз", "теріңіз",
   "лар", "лер", "дар", "дер", "тар", "тер",
@@ -229,7 +229,20 @@ function catalogTopicInText(items: any[], value: unknown, allowItemName = false)
 }
 
 export function isAlternativeMenuFollowUp(value: unknown): boolean {
+  if (String(value || "").length > MAX_MENU_CONTEXT_TEXT) return false;
   return ALTERNATIVE_FOLLOW_UP_RE.test(fold(unquoted(value)));
+}
+
+/** General question grammar has no lexical product/ingredient subject; unknown words keep the search narrow. */
+export function isUnscopedMenuBrowse(value: unknown): boolean {
+  if (String(value || "").length > MAX_MENU_CONTEXT_TEXT) return false;
+  if (isAlternativeMenuFollowUp(value)) return true;
+  const text = fold(unquoted(value));
+  if (!/(?:не\s+(?:бар|келеді|келеди)|что\s+(?:есть|доступно|поесть)|какие\s+(?:варианты|блюда))/iu.test(text)) return false;
+  const withoutMoney = text.replace(/(?<!\p{N})\d+(?:\s\d{3})*\s*(?:теңге\p{L}*|тенге\p{L}*|тг|kzt|₸)(?!\p{L})/giu, " ");
+  const words = withoutMoney.match(/[\p{L}\p{N}]+/gu) || [];
+  return words.length > 0 && words.every(word => MENU_TOPIC_STOP_WORDS.has(word)
+    || /^(?:не|нема|жейтін|жеуге|жегім|тамақ|тағам|келеді|келеди|мәзірде|менюде|одан|варианты|блюда|доступно|поесть|бюджет)$/iu.test(word));
 }
 
 /**

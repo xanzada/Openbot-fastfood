@@ -32,7 +32,7 @@ const FORMS: Form[] = [
 
 // Small talk that rides along with a greeting without turning it into a request.
 const FILLER_RE =
-  /^(?:бе|ба|ма|ме|па|пе|всем|вам|ребята|друзья|жігіттер|жигиттер|достар|апа|аға|ага|қалайсыз(?:дар)?|калайсыз(?:дар)?|қалайсың(?:дар)?|калайсын(?:дар)?|как|дела|делишки|жақсы|жаксы|ма|рахмет|ассалам|ассаламу|алейкум|ағалейкум|агалейкум|уа|ва|ас|ал|саламатсыз|ба|день|вечер|утро|дня|таң|тан|күн|кун|кеш)$/u;
+  /^(?:брат|бро|бе|ба|ма|ме|па|пе|всем|вам|ребята|друзья|жігіттер|жигиттер|достар|апа|аға|ага|қалайсыз(?:дар)?|калайсыз(?:дар)?|қалайсың(?:дар)?|калайсын(?:дар)?|как|дела|делишки|жақсы|жаксы|ма|рахмет|ассалам|ассаламу|алейкум|ағалейкум|агалейкум|уа|ва|ас|ал|саламатсыз|ба|день|вечер|утро|дня|таң|тан|күн|кун|кеш)$/u;
 
 // Informal "how are you / what's up" openers that are greetings too, but questions:
 // they get a greeting back, not a mirrored echo.
@@ -52,7 +52,7 @@ function normalize(text: string) {
 const fold = (value: string) =>
   normalize(value).replace(/[әғқңөұүһі]/g, (c) => ({ "ә": "а", "ғ": "г", "қ": "к", "ң": "н", "ө": "о", "ұ": "у", "ү": "у", "һ": "х", "і": "и" } as Record<string, string>)[c]);
 
-export type GuestGreeting = { kind: "greeting" | "check_in"; mirror: string; mirrorLang: Lang | "any"; pure: boolean };
+export type GuestGreeting = { kind: "greeting" | "check_in"; mirror: string; mirrorLang: Lang | "any"; pure: boolean; remainder?: string };
 
 /** What kind of greeting the guest's message opens with, and whether it is ONLY that. */
 export function readGuestGreeting(text: string): GuestGreeting | null {
@@ -64,7 +64,9 @@ export function readGuestGreeting(text: string): GuestGreeting | null {
     const rest = norm.slice(match[0].length).trim();
     const restWords = rest ? rest.split(" ") : [];
     const pure = restWords.length <= 4 && restWords.every((word) => FILLER_RE.test(word) || CHECK_IN_RE.test(word));
-    return { kind: "greeting", mirror: form.reply, mirrorLang: form.lang, pure };
+    let addressWords = 0;
+    while (addressWords < restWords.length && FILLER_RE.test(restWords[addressWords])) addressWords++;
+    return { kind: "greeting", mirror: form.reply, mirrorLang: form.lang, pure, remainder: restWords.slice(addressWords).join(" ") };
   }
   if (CHECK_IN_RE.test(norm)) {
     const words = norm.split(" ");
@@ -104,8 +106,13 @@ export function hasBotSpoken(ctx: FastFoodContext): boolean {
   return history.some((entry: any) => ["assistant", "model", "bot", "operator"].includes(String(entry?.role || "")));
 }
 
+/** Session state and an explicit current greeting authorize a reciprocal opener. */
+export function shouldGreet(ctx: FastFoodContext): boolean {
+  return ctx.dialogueStart === true || readGuestGreeting(String(ctx.text || ""))?.kind === "greeting";
+}
+
 export function fallbackReply(ctx: FastFoodContext) {
-  return hasBotSpoken(ctx) ? INVITE[lang(ctx)] : greetingReply(ctx);
+  return shouldGreet(ctx) || !hasBotSpoken(ctx) ? greetingReply(ctx) : INVITE[lang(ctx)];
 }
 
 // Robotic service stamps that make a greeting sound like a call-centre IVR.
@@ -136,9 +143,8 @@ export function alignGreetingReply(text: string, ctx: FastFoodContext): { text: 
   const guest = readGuestGreeting(String(ctx.text || ""));
   const opener = startsWithCatalogItem(text, ctx) ? null : text.match(OPENER_RE);
 
-  // Dialogue state, not the current wording, decides whether a greeting belongs.
-  // This also strips a model's habitual greeting on every later turn.
-  if (hasBotSpoken(ctx)) {
+  // Active dialogue strips an unsolicited opener; an explicit current greeting stays reciprocal.
+  if (hasBotSpoken(ctx) && !shouldGreet(ctx)) {
     if (!opener || startsWithCatalogItem(text, ctx)) return { text, changed: null };
     const rest = text.slice(opener[0].length).replace(/^\s+/, "").trim();
     return {
@@ -147,10 +153,9 @@ export function alignGreetingReply(text: string, ctx: FastFoodContext): { text: 
     };
   }
 
-  // Only production context preload may declare a first reply. Pure greetings
-  // use the separately gated route fast lane; unmarked validator/service calls
-  // must retain their established output.
-  if (ctx.dialogueStart !== true) return { text, changed: null };
+  // Preload authorizes a first/idle reply; a current explicit greeting also authorizes its opener.
+  // Pure greetings use the separately gated route fast lane; other unmarked calls keep their output.
+  if (ctx.dialogueStart !== true && guest?.kind !== "greeting") return { text, changed: null };
   if (guest?.pure && STAMP_RE.test(text)) {
     return { text: greetingReply(ctx), changed: "greeting_stamp_replaced" };
   }

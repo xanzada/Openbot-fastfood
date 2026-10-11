@@ -106,7 +106,7 @@ test("long replies split only after complete sentences and never duplicate conte
 });
 
 test("validator leaves a natural four-sentence answer alone but caps a sixth sentence", () => {
-  const ctx = { language: "ru", text: "Привет", config: {}, fetchedSettings: {}, hardRealtimeContext: {}, runtimeStatus: null, activeOrder: null } as any;
+  const ctx = { language: "ru", text: "Расскажите подробнее", config: {}, fetchedSettings: {}, hardRealtimeContext: {}, runtimeStatus: null, activeOrder: null } as any;
   const natural = validateFinalText("Первое. Второе. Третье. Четвертое.", ctx);
   assert.equal(natural.text, "Первое. Второе. Третье. Четвертое.");
   assert.deepEqual(natural.warnings, []);

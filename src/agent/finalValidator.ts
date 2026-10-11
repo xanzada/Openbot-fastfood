@@ -1,4 +1,4 @@
-import {isMenuAttributeVerificationQuestion, customerMenuRelationSubject, menuLexemesRelated} from "../utils/menuQuestionContext.js";
+import {isMenuAttributeVerificationQuestion, customerMenuRelationSubject, isUnscopedMenuBrowse, MAX_MENU_CONTEXT_TEXT, menuLexemesRelated} from "../utils/menuQuestionContext.js";
 import {shoppingConstraintsForContext, eligibleShoppingItems, isShoppingDecision, shoppingBasketQuote, type ShoppingItem} from "../services/shoppingConstraints.service.js";
 import { alignGreetingReply, fallbackReply, readGuestGreeting, stripRoboticOpener } from "./greeting.js";
 import {classifyKitchenSalesPolicyForContext, detectKitchenConsentAnswer} from "../services/kitchenPolicy.service.js";
@@ -1640,7 +1640,13 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
     return ctx.language === "kk" ? lines+": барлығы "+basket.total+" тг."+comparison+" Жеткізу құны бұл сомаға кірмейді."
       : lines+": всего "+basket.total+" тг."+comparison+" Стоимость доставки в сумму не включена.";
   }
-  if (!isShoppingDecision(ctx)) return null;
+  // A browse is not an order decision, but its recommendations still obey this session's constraints.
+  const constrainedBrowse = String(ctx.text || "").length <= MAX_MENU_CONTEXT_TEXT
+    && isUnscopedMenuBrowse(readGuestGreeting(ctx.text)?.remainder ?? ctx.text)
+    && (budget !== null || shopping.avoidMeat)
+    && toolsCalled.includes("searchMenu") && Array.isArray(ctx.menuGrounding?.items)
+    && Object.prototype.hasOwnProperty.call(ctx.menuGrounding, "lookup_query");
+  if (!isShoppingDecision(ctx) && !constrainedBrowse) return null;
   if (ctx.shoppingPriorStateUnknown || ctx.shoppingStateUnavailable && budget === null && !shopping.avoidMeat) return ctx.language === "kk" ? "Алдыңғы шектеулеріңізді растай алмаймын. Бюджет пен тағам шектеулерін нақтылай аласыз ба?" : "Не могу подтвердить прежние ограничения. Уточните бюджет и ограничения по еде.";
   const qualitativeCheap = isQualitativeMenuBudgetInquiry(ctx.text);
   if (budget === null && !shopping.avoidMeat && !shopping.uncertainBudget && !qualitativeCheap) return null;
@@ -1676,9 +1682,12 @@ function boundedBudgetAlternatives(ctx: FastFoodContext, toolsCalled: string[] =
   const groundedCategoryItems = hasScopedGrounding ? grounding.items
     : grounding?.category_browse && Array.isArray(grounding.items) ? grounding.items : snapshot.items;
   const vocabulary = menuVocabulary(snapshot.items);
+  // Grounding defines the allowed scope; full current rows retain composition and nested references.
+  const groundedNames = new Set(groundedCategoryItems.map((item: any) => String(item?.name ?? item?.title ?? "").trim()).filter(Boolean));
   const blockedNow = new Set([...(grounding?.unavailable_now || []), ...(grounding?.sold_out_now || [])]
     .map((entry: any) => menuClaimKey(entry?.name ?? entry)).filter(Boolean));
-  const priced = eligibleShoppingItems(ctx, groundedCategoryItems).filter((item: any) => item && item.available !== false
+  const priced = eligibleShoppingItems(ctx, snapshot.items).filter((item: any) => item && item.available !== false
+    && groundedNames.has(String(item.name ?? item.title ?? "").trim())
     && !blockedNow.has(menuClaimKey(item.name))
     && typeof item.name === "string" && item.name.trim()
     && !menuItemBlockedByNotes(ctx.activeShiftNotes || [], item, vocabulary).blocked)
@@ -2064,6 +2073,9 @@ export function validateFinalText(...args: Parameters<typeof validateFinalTextCo
   const budgetReply = boundedBudgetAlternatives(args[1], args[2]?.toolsCalled, finalText);
   if (budgetReply !== null) {
     finalText = mergeGroundedMenuAnswer(finalText, budgetReply, args[1], args[2]?.toolsCalled || []);
+    const budgetGreeting = alignGreetingReply(finalText, args[1]);
+    finalText = budgetGreeting.text;
+    if (budgetGreeting.changed) warnings.push(budgetGreeting.changed);
     warnings.push("budget_alternatives_grounded");
   }
   if (allergySafetyGuaranteeRequested(args[1]) && !hasHonestSafetyGuaranteeDenial(finalText)) {
